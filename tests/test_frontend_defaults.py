@@ -1,0 +1,1117 @@
+from __future__ import annotations
+
+from pathlib import Path
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CARD_PATHS = (
+    ROOT / "custom_components" / "deye_energy" / "www" / "deye-energy-card.js",
+    ROOT / "www" / "deye-energy-card.js",
+)
+
+
+def extract_method(source: str, signature: str) -> str:
+    start = source.index(signature)
+    opening = source.index("{", start)
+    depth = 0
+    quote = None
+    escaped = False
+    for index in range(opening, len(source)):
+        character = source[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            continue
+        if character in ('"', "'", "`"):
+            quote = character
+        elif character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+    raise AssertionError(f"Method end not found: {signature}")
+
+
+def extract_between(source: str, start_signature: str, end_signature: str) -> str:
+    start = source.index(start_signature)
+    end = source.index(end_signature, start)
+    return source[start:end]
+
+
+class FrontendDefaultRestoreTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.sources = [path.read_text(encoding="utf-8") for path in CARD_PATHS]
+
+    def test_distributed_card_copies_are_identical(self):
+        self.assertEqual(CARD_PATHS[0].read_bytes(), CARD_PATHS[1].read_bytes())
+
+    def test_card_sources_declare_current_resource_revision(self):
+        for source in self.sources:
+            self.assertTrue(source.startswith("// Resource revision: v=0.8.0.44\n"))
+
+    def test_mapping_view_is_the_simple_24h_to_six_tou_ranges(self):
+        for source in self.sources:
+            self.assertIn(
+                "The 24 h schedule is arranged into six ranges and written to Deye Time Of Use",
+                source,
+            )
+            self.assertIn("<th>Function</th>", source)
+            self.assertIn("<th>SOC</th>", source)
+            self.assertNotIn(
+                "Minimum sell SOC</strong> is a logical Manager protection",
+                source,
+            )
+            self.assertIn("mappingPlanDiagnostics()", source)
+            self.assertIn("const backendPlan = this.mappingPlanDiagnostics()", source)
+            self.assertIn("No complete Deye Time Of Use mapping", source)
+
+    def test_physical_tou_view_uses_only_confirmed_backend_reads(self):
+        for source in self.sources:
+            self.assertIn("touCapabilitiesDiagnostics()", source)
+            self.assertIn("touFieldDiagnostics(slot, field)", source)
+            self.assertIn("const current = physical?.fields?.[field] || {}", source)
+            self.assertIn("capability.supported !== true", source)
+            self.assertNotIn("physical.actual_soc ?? this.numberState(tou.soc)", source)
+
+    def test_apply_defaults_uses_one_backend_service_call_only(self):
+        method = extract_method(self.sources[0], "async applyDefaultValues()")
+        self.assertEqual(method.count("this.callService("), 1)
+        self.assertIn(
+            'this.callService("deye_energy", "restore_defaults", {})',
+            method,
+        )
+        for forbidden in (
+            "select_option",
+            "set_value",
+            "default_work_mode",
+            "default_sell_power",
+            "default_discharge_current",
+            "default_charge_current",
+            "default_grid_charge_current",
+            "Zero Export To Load",
+            "numberState(",
+        ):
+            self.assertNotIn(forbidden, method)
+
+    def test_apply_defaults_blocks_duplicates_and_reports_all_states(self):
+        method = extract_method(self.sources[0], "async applyDefaultValues()")
+        for required in (
+            "if (this._defaultsApplying) return false",
+            "Applying default settings…",
+            "Default settings applied",
+            "Could not confirm the complete set of default settings",
+        ):
+            self.assertIn(required, method)
+        self.assertIn("data-default-action", self.sources[0])
+        self.assertIn("button.disabled = this._defaultsApplying", self.sources[0])
+
+    def test_stop_manager_reuses_the_same_backend_path(self):
+        method = extract_method(self.sources[0], "async stopManager()")
+        self.assertIn("return this.applyDefaultValues()", method)
+        self.assertNotIn("callService", method)
+
+
+    def test_resume_manager_uses_dedicated_backend_service(self):
+        method = extract_method(self.sources[0], "async resumeManager()")
+        self.assertEqual(method.count("this.callService("), 1)
+        self.assertIn('this.callService("deye_energy", "resume_manager", {})', method)
+        self.assertIn("data-resume-manager", self.sources[0])
+        self.assertIn("SCHEDULE APPLY ERROR", self.sources[0])
+
+    def test_ai_dialog_contains_approved_navigation_and_controls(self):
+        source = self.sources[0]
+        for required in (
+            "Overview",
+            "Proposed changes",
+            "Why this plan?",
+            "Plan and actual",
+            "Today",
+            "Tomorrow",
+            "48 h",
+            "History",
+            "Data quality",
+            "Select all",
+            "Deselect all",
+            "Full 24 h",
+            "save_future_plan",
+            "cancel_future_plan",
+            "Actual production",
+            "Solcast forecast",
+            "Corrected forecast",
+            "Forecast range",
+            "data-ai-chart-point",
+            "data-ai-weather-mode",
+            "aiReadableEnergyChart",
+            "aiReadableDayChart",
+            "ai-crisp-weather-grid",
+            "data-ai-chart-series",
+            "ai-readable-weather",
+            "ai-status-sell",
+            "ai-status-charge",
+            "ai-status-tariff",
+            "renderAiExplanation",
+            "recommended_write_by_day",
+            "waiting for prices to be published after 13:00",
+            "Optimizer shadow",
+        ):
+            self.assertIn(required, source)
+        self.assertNotIn(">P50<", source)
+
+    def test_energy_flow_panel_keeps_desktop_layout_without_media_queries(self):
+        method = extract_method(self.sources[0], "energyFlowPanel()")
+        self.assertNotIn("@media", method)
+        self.assertNotIn("flow-svg{display:none", method)
+        self.assertIn(".flow-tile-pv{grid-column:1;grid-row:1", method)
+        self.assertIn(".flow-tile-grid{grid-column:1;grid-row:1", method)
+        self.assertIn(".flow-tile-battery{grid-column:3;grid-row:1", method)
+        self.assertIn(".flow-tile-home{grid-column:3;grid-row:1", method)
+        self.assertIn(".flow-inverter{grid-column:2;grid-row:1", method)
+        self.assertIn(".flow-wrapper{", self.sources[0])
+        self.assertIn(".flow-scaler{", self.sources[0])
+        self.assertIn("scaleFlowPanel()", self.sources[0])
+        self.assertIn(".dialog-host{", self.sources[0])
+
+    def test_dashboard_has_common_scaling_logic(self):
+        method = extract_method(self.sources[0], "scaleFlowPanel() {")
+        self.assertIn("const baseWidth = parseFloat(scaler.dataset.baseWidth) || 1328", method)
+        self.assertIn("const baseHeight = parseFloat(scaler.dataset.baseHeight) || 768", method)
+        self.assertIn("Math.min(1, Math.max(available / baseWidth, 0.2))", method)
+        self.assertIn("scaler.style.transform", method)
+        self.assertIn("wrapper.style.height", method)
+
+    def test_flow_resize_observer_is_local_to_the_flow_wrapper(self):
+        connected = extract_method(self.sources[0], "connectedCallback()")
+        disconnected = extract_method(self.sources[0], "disconnectedCallback()")
+        scale = extract_method(self.sources[0], "scaleFlowPanel() {")
+        self.assertIn('typeof ResizeObserver !== "undefined"', connected)
+        self.assertIn("this._flowResizeObserver = new ResizeObserver", connected)
+        self.assertIn("this.scaleFlowPanel();", connected)
+        self.assertIn("this._flowResizeObserver.observe(wrapper)", scale)
+        self.assertIn("this._flowObservedWrapper !== wrapper", scale)
+        self.assertIn("this._flowResizeObserver?.disconnect()", disconnected)
+        self.assertNotIn("updateFlowLines()", connected)
+
+    def test_update_flow_lines_uses_dynamic_geometry(self):
+        method = extract_method(self.sources[0], "updateFlowLines() {")
+        self.assertIn("const scaler = this.querySelector(\".flow-scaler\");", method)
+        self.assertIn("parseFloat(scaler?.dataset.tileWidth) || 300", method)
+        self.assertIn("parseFloat(scaler?.dataset.tileGap) || 0", method)
+        self.assertIn("parseFloat(scaler?.dataset.inverterColumnWidth) || 640", method)
+        self.assertIn("parseFloat(scaler?.dataset.inverterVisualWidth) || 190", method)
+        self.assertIn("this.flowGeometry({ tileWidth, tileGap, inverterColumnWidth, inverterVisualWidth })", method)
+        self.assertIn('svg.setAttribute("viewBox", `0 0 ${geometry.boardWidth} ${geometry.boardHeight}`)', method)
+        self.assertIn('path[data-flow-line-bg="${key}"]', method)
+        self.assertIn('background?.setAttribute("d", d)', method)
+        self.assertIn('background?.setAttribute("stroke", color)', method)
+        self.assertIn("path.setAttribute(\"d\", d);", method)
+        self.assertIn('path.setAttribute("marker-end", `url(#flow-arrow-${key})`)', method)
+
+    def test_flow_geometry_uses_tile_edges_and_four_inverter_ports(self):
+        method = extract_between(self.sources[0], "flowGeometry({", "\n  energyFlowPanel()")
+        for required in (
+            "const boardHeight = 600",
+            "const tileTopY = 145",
+            "const tileBottomY = boardHeight - tileTopY",
+            "pvTile: { x: tileWidth, y: tileTopY }",
+            "gridTile: { x: tileWidth, y: tileBottomY }",
+            "batteryTile: { x: boardWidth - tileWidth, y: tileTopY }",
+            "homeTile: { x: boardWidth - tileWidth, y: tileBottomY }",
+            "pvPort: { x: inverterCenterX - inverterVisualWidth / 2",
+            "gridPort: { x: inverterCenterX - inverterVisualWidth / 2",
+            "batteryPort: { x: inverterCenterX + inverterVisualWidth / 2",
+            "homePort: { x: inverterCenterX + inverterVisualWidth / 2",
+        ):
+            self.assertIn(required, method)
+        self.assertIn("inverterCenterY - inverterPortOffsetY", method)
+        self.assertIn("inverterCenterY + inverterPortOffsetY", method)
+        self.assertNotIn("getBoundingClientRect", method)
+        self.assertNotIn("clientWidth", method)
+        self.assertNotIn("transform", method)
+
+    def test_flow_bezier_controls_are_proportional_and_symmetric(self):
+        method = extract_between(self.sources[0], "flowGeometry({", "\n  energyFlowPanel()")
+        self.assertIn("const controlOffset = (end.x - start.x) * 0.45;", method)
+        self.assertNotIn("+ 120", method)
+        self.assertNotIn("- 120", method)
+        self.assertNotIn("- 25", method)
+        self.assertNotIn("+ 25", method)
+
+        for tile_width, tile_gap, inverter_scale in (
+            (120, 0, 0.5),
+            (180, 28, 0.75),
+            (230, 28, 1.0),
+            (260, 20, 1.1),
+            (360, 100, 2.0),
+        ):
+            column_width = round(640 * inverter_scale)
+            visual_width = round(190 * inverter_scale)
+            board_width = tile_width * 2 + column_width + tile_gap * 2
+            inverter_center = tile_width + tile_gap + column_width / 2
+            points = {
+                "pv_tile": tile_width,
+                "battery_tile": board_width - tile_width,
+                "pv_port": inverter_center - visual_width / 2,
+                "battery_port": inverter_center + visual_width / 2,
+            }
+            self.assertEqual(points["pv_tile"] + points["battery_tile"], board_width)
+            self.assertEqual(points["pv_port"] + points["battery_port"], board_width)
+            self.assertLess(points["pv_tile"], points["pv_port"])
+            self.assertLess(points["battery_port"], points["battery_tile"])
+
+    def test_flow_viewbox_follows_board_width_and_dashboard_scaling_is_independent(self):
+        panel = extract_method(self.sources[0], "energyFlowPanel()")
+        scale = extract_method(self.sources[0], "scaleFlowPanel() {")
+        self.assertIn('viewBox="0 0 ${boardWidth} ${geometry.boardHeight}"', panel)
+        self.assertIn("data-inverter-column-width", panel)
+        self.assertIn("data-inverter-visual-width", panel)
+        self.assertIn("data-base-height", panel)
+        self.assertIn("width:${inverterVisualWidth}px", panel)
+        self.assertNotIn('viewBox="0 0 1100 420"', panel)
+        self.assertNotIn("dashboard_width", extract_between(self.sources[0], "flowGeometry({", "\n  energyFlowPanel()"))
+        for dashboard_width in (320, 768, 1300, 1400, 1600, 2400):
+            base_width = 1328
+            expected_scale = min(1, max(dashboard_width / base_width, 0.2))
+            self.assertGreaterEqual(expected_scale, 0.2)
+            self.assertLessEqual(expected_scale, 1)
+        self.assertIn("Math.min(1, Math.max(available / baseWidth, 0.2))", scale)
+
+    def test_energy_flow_panel_matches_reference_2(self):
+        method = extract_method(self.sources[0], "energyFlowPanel()")
+        # Compact directional arrows plus neon moving dots
+        self.assertIn("marker-end", method)
+        self.assertIn('markerWidth="3.4"', method)
+        self.assertIn("flow-arrow-pv", method)
+        self.assertIn("flow-arrow-grid", method)
+        self.assertIn("flow-arrow-battery", method)
+        self.assertIn("flow-arrow-home", method)
+        self.assertIn("@keyframes flowDash", method)
+        self.assertIn("stroke-dasharray:1 22", method)
+        self.assertIn("flowGlow23", method)
+        # Energy panel uses configurable layout
+        self.assertIn("const layout = this.effectiveLayout();", method)
+        self.assertIn("const tileWidth = layout.energy_tile_width;", method)
+        self.assertIn("const inverterColumnWidth = Math.round(640 * inverterScale);", method)
+        self.assertIn("const inverterVisualWidth = Math.round(190 * inverterScale);", method)
+        self.assertIn("const geometry = this.flowGeometry(", method)
+        self.assertIn("animation:flowDash ${flowDuration}s linear infinite", method)
+        self.assertIn("grid-template-columns:${tileWidth}px ${inverterColumnWidth}px ${tileWidth}px", method)
+        self.assertIn("width:${tileWidth}px;height:290px", method)
+        # Power values stay in the tiles; no duplicated floating labels over the paths.
+        self.assertNotIn("flow-line-value", method)
+        self.assertNotIn("flow-value-pv", method)
+        self.assertNotIn("flow-value-bat", method)
+        self.assertNotIn("flow-value-grid", method)
+        self.assertNotIn("flow-value-home", method)
+        self.assertNotIn('data-live="pv-line-value"', method)
+        self.assertNotIn('data-live="battery-line-value"', method)
+        self.assertNotIn('data-live="grid-line-value"', method)
+        self.assertNotIn('data-live="load-line-value"', method)
+        # No duplicated total row in PV tile
+        self.assertNotIn("Total:", method)
+        # Sold-today tile under inverter, single line kWh / GBP, no legend
+        self.assertIn("Sold today", method)
+        self.assertIn("flow-sold-tile", method)
+        self.assertIn('data-live="sold-today-line"', method)
+        self.assertNotIn("flow-legend", method)
+        self.assertIn("Deye inverter", method)
+        self.assertIn('viewBox="0 0 190 250"', method)
+        # Centered layout with tiles in correct corners
+        self.assertIn(".flow-tile-pv{grid-column:1;grid-row:1", method)
+        self.assertIn(".flow-tile-grid{grid-column:1;grid-row:1", method)
+        self.assertIn(".flow-tile-battery{grid-column:3;grid-row:1", method)
+        self.assertIn(".flow-tile-home{grid-column:3;grid-row:1", method)
+        self.assertIn(".flow-inverter{grid-column:2;grid-row:1", method)
+        # New SVG icons
+        self.assertIn('this.iconSvg("pv2")', method)
+        self.assertIn('this.iconSvg("grid2")', method)
+        self.assertIn('this.iconSvg("battery2")', method)
+        self.assertIn('this.iconSvg("home2")', method)
+        # Bottom bar separators and 4 sections
+        self.assertIn(".flow-status-tile{", method)
+        self.assertIn("border-right", method)
+        self.assertIn("grid-template-columns:repeat(4,1fr)", method)
+        # Mode colors aligned with schedule
+        self.assertIn("mode-selling", method)
+        self.assertIn("mode-normal", method)
+        self.assertIn("mode-charge", method)
+        self.assertIn("mode-disabled", method)
+        self.assertIn('data-live="manager-deye-mode"', method)
+        # External container is centered and capped
+        self.assertIn(".dem-v073{", self.sources[0])
+        self.assertIn("max-width:1280px", self.sources[0])
+        self.assertIn("margin:0 auto", self.sources[0])
+
+    def test_pv_and_home_daily_energy_follow_the_detail_rows(self):
+        method = extract_method(self.sources[0], "energyFlowPanel()")
+        self.assertIn("flow-daily-summary flow-daily-pv", method)
+        self.assertIn("Produced today:", method)
+        self.assertIn("flow-daily-summary flow-daily-home", method)
+        self.assertIn("Consumption today:", method)
+        self.assertGreater(method.index('data-live="pv-daily"'), method.index('data-live="pv2-amps"'))
+        self.assertGreater(method.index('data-live="load-daily"'), method.index('data-live="load-l3-power"'))
+        self.assertIn(".flow-daily-summary{display:flex", method)
+
+    def test_status_v23_contains_richer_svg_icons_and_inverter(self):
+        source = self.sources[0]
+        icons = extract_method(source, "iconSvg(type)")
+        panel = extract_method(source, "energyFlowPanel()")
+        for icon_name in ("pv2", "grid2", "battery2", "home2"):
+            self.assertIn(f"{icon_name}: '<svg viewBox=\"0 0 64 64\">", icons)
+        for required in (
+            'aria-label="Deye inverter"',
+            'viewBox="0 0 190 250"',
+            "invBody23",
+            "invScreen23",
+            "flow-inverter-name",
+            "flow-sold-tile",
+            ".flow-tile-icon svg{width:${tileIconSize}px",
+            ".flow-status-icon svg{width:${statusIconSize - 5}px",
+        ):
+            self.assertIn(required, panel)
+
+    def test_status_v23_is_frontend_only_and_preserves_local_scaling(self):
+        source = self.sources[0]
+        panel = extract_method(source, "energyFlowPanel()")
+        scale = extract_method(source, "scaleFlowPanel() {")
+        self.assertNotIn("callService(", panel)
+        self.assertNotIn("renderDialogOnly", panel)
+        self.assertIn('data-base-height="${panelHeight}"', panel)
+        self.assertIn("const compactStatus = boardWidth < 900", panel)
+        self.assertIn("const tilePadding = tileWidth < 150", panel)
+        self.assertIn("wrapper.style.overflow = \"hidden\"", scale)
+
+    def test_deye_mode_shows_raw_system_work_mode(self):
+        source = self.sources[0]
+        method = extract_method(source, "energyFlowPanel()")
+        entity_lookup = extract_method(source, "deyeWorkModeEntity()")
+        state_lookup = extract_method(source, "deyeWorkModeState() {")
+        # Must read the physical Deye select (or its configured mapping), not the manager selector.
+        self.assertIn('"select.deye_inverter_system_work_mode"', entity_lookup)
+        self.assertIn("this.config?.entities?.system_work_mode", entity_lookup)
+        self.assertIn("this.exists(entityId)", entity_lookup)
+        self.assertIn('"unavailable"', state_lookup)
+        self.assertIn('"unknown"', state_lookup)
+        self.assertIn('"enabled"', state_lookup)
+        self.assertIn('"disabled"', state_lookup)
+        self.assertIn('data-live="deye-mode"', method)
+        self.assertIn("this.deyeWorkModeState()", method)
+        self.assertNotIn('this.entity("select", "work_mode_select")', method)
+        self.assertNotIn('${this.slotModeLabel(currentMode)}', method)
+        update = extract_method(source, "updateDynamicValues() {")
+        self.assertIn("data-live='deye-mode'", update)
+        self.assertIn("currentModeValue", update)
+        self.assertIn("this.deyeWorkModeState()", update)
+        self.assertNotIn("slotModeLabel(currentModeValue)", update)
+        self.assertIn('currentMode || "—"', method)
+
+    def test_energy_flow_panel_updates_all_detailed_fields(self):
+        source = self.sources[0]
+        self.assertIn("data-live='pv1-power'", source)
+        self.assertIn("data-live='pv1-volts'", source)
+        self.assertIn("data-live='pv1-amps'", source)
+        self.assertIn("data-live='pv2-power'", source)
+        self.assertIn("data-live='pv2-volts'", source)
+        self.assertIn("data-live='pv2-amps'", source)
+        self.assertIn("data-live='grid-l1-power'", source)
+        self.assertIn("data-live='grid-l1-volt'", source)
+        self.assertIn("data-live='grid-l2-power'", source)
+        self.assertIn("data-live='grid-l2-volt'", source)
+        self.assertIn("data-live='grid-l3-power'", source)
+        self.assertIn("data-live='grid-l3-volt'", source)
+        self.assertIn("data-live='grid-bought'", source)
+        self.assertIn("data-live='grid-sold'", source)
+        self.assertIn("data-live='grid-frequency'", source)
+        self.assertIn("data-live='battery-voltage'", source)
+        self.assertIn("data-live='battery-current'", source)
+        self.assertIn("data-live='battery-temp'", source)
+        self.assertIn("data-live='battery-charge-daily'", source)
+        self.assertIn("data-live='battery-discharge-daily'", source)
+        self.assertIn("data-live='load-l1-power'", source)
+        self.assertIn("data-live='load-l2-power'", source)
+        self.assertIn("data-live='load-l3-power'", source)
+        self.assertIn("data-live='inverter-temp'", source)
+        self.assertIn("data-live='pv-daily'", source)
+        self.assertIn("data-live='load-daily'", source)
+        update = extract_method(source, "updateDynamicValues() {")
+        for key in [
+            "pv1-power", "pv1-volts", "pv1-amps", "pv2-power", "pv2-volts", "pv2-amps",
+            "grid-l1-power", "grid-l1-volt", "grid-l2-power", "grid-l2-volt",
+            "grid-l3-power", "grid-l3-volt", "grid-bought", "grid-sold", "grid-frequency",
+            "battery-voltage", "battery-current", "battery-temp",
+            "battery-charge-daily", "battery-discharge-daily",
+            "load-l1-power", "load-l2-power", "load-l3-power",
+            "inverter-temp", "pv-daily", "load-daily", "sold-today-line",
+        ]:
+            self.assertIn(f"data-live='{key}'", update)
+
+    def test_documentation_uses_current_card_cache_revision(self):
+        for name in ("README.md", "INSTALL.md"):
+            source = (ROOT / name).read_text(encoding="utf-8")
+            self.assertIn("deye-energy-card.js?v=0.8.0.44", source)
+            self.assertNotIn("deye-energy-card.js?v=22", source)
+            self.assertNotIn("deye-energy-card.js?v=10", source)
+            self.assertNotIn("deye-energy-card.js?v=09", source)
+            self.assertNotIn("deye-energy-card.js?v=08", source)
+            self.assertNotIn("deye-energy-card.js?v=07", source)
+            self.assertNotIn("deye-energy-card.js?v=0780", source)
+            self.assertNotIn("deye-energy-card.js?v=0778", source)
+            self.assertNotIn("deye-energy-card.js?v=0777", source)
+            self.assertNotIn("deye-energy-card.js?v=0774", source)
+            self.assertNotIn("deye-energy-card.js?v=0773", source)
+            self.assertNotIn("deye-energy-card.js?v=0772", source)
+            self.assertNotIn("deye-energy-card.js?v=0765", source)
+
+    def test_dashboard_yaml_includes_layout_examples(self):
+        yaml_path = ROOT / "dashboard" / "energy_manager.yaml"
+        self.assertTrue(yaml_path.exists(), "dashboard/energy_manager.yaml must exist")
+        source = yaml_path.read_text(encoding="utf-8")
+        for key in (
+            "layout:",
+            "layout_mode:",
+            "sections:",
+            "dashboard_width:",
+            "mobile:",
+            "energy_tile_width:",
+            "energy_tile_gap:",
+            "inverter_scale:",
+            "flow_animation_speed:",
+            "prices_ratio:",
+            "buy_prices_ratio:",
+            "solcast_ratio:",
+        ):
+            self.assertIn(key, source)
+
+    def test_card_has_explicit_direct_edit_path_for_physical_tou_entities(self):
+        source = self.sources[0]
+        self.assertIn("data-open-tou", source)
+        self.assertIn("data-save-tou", source)
+        self.assertIn("async savePhysicalTouSlot(slot)", source)
+        tou_dialog = extract_method(source, "renderDialog(slots, touStarts)")
+        editor_field = extract_method(source, "touEditorFieldHtml(slot, field)")
+        for required in ('data-tou-field="${field}"', 'data-tou-field="soc"', 'data-tou-field="grid_charge"'):
+            self.assertIn(required, editor_field)
+        for required in (
+            "this.touCapabilityRow(idx)",
+            "this.touEditorFieldHtml(idx, field)",
+            "data-save-tou",
+            "Save",
+        ):
+            self.assertIn(required, tou_dialog)
+
+    def test_unconfirmed_logical_tou_soc_never_renders_as_zero(self):
+        source = self.sources[0]
+        self.assertIn("touSocInput(entityId)", source)
+        self.assertIn('placeholder="requires confirmation"', source)
+        dialog = extract_method(source, "renderDialog(slots, touStarts)")
+        self.assertIn('this.slotDraftInput("tou_soc", "%")', dialog)
+        self.assertNotIn("this.numberInput(entities.touSoc", dialog)
+
+    def test_mapping_table_shows_only_physical_tou_fields(self):
+        source = self.sources[0]
+        mapping = extract_method(source, "  scheduleSegments(slots) {")
+        dialog = extract_method(source, "renderDialog(slots, touStarts)")
+        self.assertIn("touSoc: this.asNumber(item.tou_soc)", mapping)
+        self.assertIn("chargeEnabled: Boolean(item.grid_charge)", mapping)
+        self.assertIn('item.chargeEnabled ? "yes" : "no"', source)
+        self.assertNotIn("<th>Function</th>", dialog)
+
+    def test_charge_profile_save_uses_one_backend_service_only(self):
+        method = extract_method(self.sources[0], "async saveChargeProfile()")
+        self.assertEqual(method.count("this.callService("), 1)
+        self.assertIn(
+            'this.callService("deye_energy", "save_charge_profile", values)',
+            method,
+        )
+        for forbidden in (
+            "number.set_value",
+            "switch.turn_on",
+            "switch.turn_off",
+            "select.select_option",
+            "setNumber(",
+            "turnSwitch(",
+            "setSelect(",
+        ):
+            self.assertNotIn(forbidden, method)
+        # The save must not block when helper entities are missing; it uses a
+        # pending state that is confirmed by manager_status.
+        self.assertNotIn("Brak encji profilu", method)
+        self.assertIn("this._chargeProfilePending", method)
+        self.assertIn("this._chargeProfileDraft = {}", method)
+        self.assertIn("this._chargeProfileGridDraft = null", method)
+
+    def test_charge_current_input_keeps_draft_and_physical_range_without_zero_fallback(self):
+        method = extract_method(self.sources[0], "chargeProfileInput(name, entityId, unit = \"\")")
+        for required in (
+            "this._chargeProfileDraft",
+            '["unknown", "unavailable", ""]',
+            "entity?.attributes?.min",
+            "entity?.attributes?.max",
+            "entity?.attributes?.step",
+            'type="number"',
+            'data-charge-profile-number=',
+            "fallback.min",
+            "fallback.max",
+        ):
+            self.assertIn(required, method)
+        for forbidden in ("?? 0", "|| 0", 'value="0"'):
+            self.assertNotIn(forbidden, method)
+
+    def test_charge_profile_draft_survives_input_change_and_rerender(self):
+        source = self.sources[0]
+        self.assertIn(
+            "this._chargeProfileDraft[el.dataset.chargeProfileNumber] = el.value",
+            source,
+        )
+        self.assertIn('el.addEventListener("input", saveDraft)', source)
+        self.assertIn('el.addEventListener("change", saveDraft)', source)
+        self.assertIn(
+            'this.chargeProfileInput("charge_current", this.entity("number", "charge_profile_charge_current"), "A")',
+            source,
+        )
+
+    def test_charge_profile_form_falls_back_to_persisted_manager_status(self):
+        source = self.sources[0]
+        self.assertIn('this.entity("sensor", "manager_status")', source)
+        self.assertIn("attributes?.charge_profile", source)
+        self.assertIn("this.chargeProfileStoredValues()[profileKey]", source)
+        self.assertIn(
+            "this.chargeProfileStoredValues().grid_charge_enabled",
+            source,
+        )
+
+    def test_normal_profile_form_uses_dedicated_backend_service(self):
+        method = extract_method(self.sources[0], "async saveNormalProfile()")
+        self.assertEqual(method.count("this.callService("), 1)
+        self.assertIn(
+            'this.callService("deye_energy", "save_normal_profile", values)',
+            method,
+        )
+        self.assertIn("physical_work_mode", method)
+        self.assertIn("tou_soc", method)
+
+    def test_normal_profile_form_falls_back_to_persisted_manager_status(self):
+        source = self.sources[0]
+        self.assertIn('this.entity("sensor", "manager_status")', source)
+        self.assertIn("attributes?.normal_profile", source)
+        self.assertIn("this.normalProfileStoredValues()[profileKey]", source)
+
+    def test_normal_profile_input_never_disabled_and_uses_fallback_ranges(self):
+        method = extract_method(self.sources[0], "normalProfileInput(name, entityId, unit = \"\")")
+        self.assertNotIn("disabled", method)
+        self.assertIn("fallback", method)
+        self.assertIn("min", method)
+        self.assertIn("max", method)
+        self.assertIn("step", method)
+
+    def test_normal_profile_mode_prefers_draft_then_stored_then_entity(self):
+        method = extract_method(self.sources[0], "normalProfileMode()")
+        self.assertIn("this._normalProfileDraft.physical_work_mode", method)
+        self.assertIn("this.normalProfileStoredValues().physical_work_mode", method)
+        self.assertIn('this.entity("select", "normal_profile_mode")', method)
+
+    def test_normal_profile_mode_select_has_placeholder(self):
+        source = self.sources[0]
+        dialog = extract_method(source, "renderDialog(slots, touStarts)")
+        self.assertIn("this.normalProfileMode()", dialog)
+        self.assertIn('["", "-- select --"]', dialog)
+        self.assertIn("...this.normalProfileModeOptions()", dialog)
+
+    def test_normal_profile_save_rejects_empty_values(self):
+        method = extract_method(self.sources[0], "async saveNormalProfile()")
+        self.assertIn('raw === ""', method)
+        self.assertIn('this.failSave("normal_profile"', method)
+
+    def test_normal_profile_reload_button_calls_apply_schedule_patch_with_force_flag(self):
+        source = self.sources[0]
+        method = extract_method(source, "async reloadNormalProfileSlot(slotKey)")
+        self.assertIn('"apply_schedule_patch"', method)
+        self.assertIn('force_copy_normal_profile: true', method)
+        self.assertIn('"Normal Operation"', method)
+        self.assertIn(
+            'this.reloadNormalProfileSlot(el.dataset.reloadNormalProfile)',
+            source,
+        )
+
+    def test_charge_profile_reload_button_calls_apply_schedule_patch_with_force_flag(self):
+        source = self.sources[0]
+        method = extract_method(source, "async reloadChargeProfileSlot(slotKey)")
+        self.assertIn('"apply_schedule_patch"', method)
+        self.assertIn('force_copy_charge_profile: true', method)
+        self.assertIn('"Charging"', method)
+        self.assertNotIn('mode: "Charge"', method)
+        self.assertIn('data-reload-charge-profile', source)
+        self.assertIn(
+            'this.reloadChargeProfileSlot(el.dataset.reloadChargeProfile)',
+            source,
+        )
+
+    def test_charge_profile_save_uses_pending_until_manager_status_confirms(self):
+        method = extract_method(self.sources[0], "async saveChargeProfile()")
+        self.assertIn("this._chargeProfilePending = { ...values }", method)
+        self.assertIn("checkChargeProfilePending()", self.sources[0])
+        self.assertIn("_chargeProfilePendingMatches", self.sources[0])
+
+    def test_normal_profile_numeric_prefers_stored_over_entity(self):
+        method = extract_method(self.sources[0], "normalProfileNumericValue(entitySuffix, profileKey)")
+        # Draft -> pending -> stored -> entity, per the specification.
+        self.assertIn("this.normalProfileStoredValues()[profileKey]", method)
+        stored_index = method.index("this.normalProfileStoredValues()[profileKey]")
+        entity_index = method.index('this.entity("number", entitySuffix)')
+        self.assertLess(stored_index, entity_index)
+
+    def test_charge_profile_numeric_prefers_stored_over_entity(self):
+        method = extract_method(self.sources[0], "chargeProfileNumericValue(entitySuffix, profileKey)")
+        self.assertIn("this.chargeProfileStoredValues()[profileKey]", method)
+        stored_index = method.index("this.chargeProfileStoredValues()[profileKey]")
+        entity_index = method.index('this.entity("number", entitySuffix)')
+        self.assertLess(stored_index, entity_index)
+
+    def test_settings_menu_and_forms_follow_the_approved_layout(self):
+        source = self.sources[0]
+        dialog = extract_method(source, "renderDialog(slots, touStarts)")
+        self.assertIn('tabButton("defaults", "Mode settings', dialog)
+        self.assertNotIn('tabButton("charge"', dialog)
+        defaults_heading = dialog.index("Default settings for the inverter")
+        charge_heading = dialog.index("Charging settings", defaults_heading + 1)
+        self.assertGreater(charge_heading, defaults_heading)
+        self.assertIn("data-save-default-settings", dialog)
+        self.assertIn("data-save-charge-profile", dialog)
+
+    def test_default_and_charge_forms_have_independent_backend_calls(self):
+        default_method = extract_method(self.sources[0], "async saveDefaultSettings()")
+        charge_method = extract_method(self.sources[0], "async saveChargeProfile()")
+        self.assertIn('"save_default_settings"', default_method)
+        self.assertNotIn('"save_charge_profile"', default_method)
+        self.assertIn('"save_charge_profile"', charge_method)
+        self.assertNotIn('"save_default_settings"', charge_method)
+
+    def test_charge_slot_is_editable_and_profile_is_only_a_template(self):
+        source = self.sources[0]
+        dialog = extract_method(source, "renderDialog(slots, touStarts)")
+        for required in (
+            'slotDraftInput("charge_current"',
+            'slotDraftInput("discharge_current"',
+            'slotDraftInput("grid_charge_current"',
+            'slotDraftInput("tou_soc"',
+            'slotDraftSelect("charge_enabled"',
+            'data-draft-charge-profile="1"',
+        ):
+            self.assertIn(required, dialog)
+        self.assertIn("const isSelling", dialog)
+        self.assertIn("const socField", dialog)
+        self.assertEqual(dialog.count("${socField}"), 1)
+        self.assertNotIn("this.callService(", dialog)
+
+    def test_card_uses_polish_manager_modes(self):
+        source = self.sources[0]
+        start = source.index("  slotWorkModes() {")
+        method = source[start : source.index("\n  }", start) + 4]
+        for mode in (
+            "Normal Operation",
+            "Selling",
+            "Charging",
+        ):
+            self.assertIn(mode, method)
+        self.assertNotIn("Zero Export To Load", method)
+        self.assertNotIn("Zero Export To CT", method)
+
+    def test_slot_modes_use_display_labels(self):
+        source = self.sources[0]
+        mode_meta = extract_method(source, "modeMeta(mode, enabled = true)")
+        self.assertIn('title: "Selling"', mode_meta)
+        self.assertIn('title: "Normal Operation"', mode_meta)
+        self.assertIn('title: "Charging"', mode_meta)
+        self.assertIn('title: "Disabled"', mode_meta)
+        self.assertIn('subtitle: "Normal operation mode"', mode_meta)
+        self.assertIn('subtitle: "Slot inactive"', mode_meta)
+
+    def test_slot_mode_selectors_use_canonical_polish_values(self):
+        source = self.sources[0]
+        self.assertIn("slotModeLabel(mode)", source)
+        self.assertIn("slotModeOptions()", source)
+        self.assertIn("this.slotModeLabel(option))", source)
+        self.assertIn("this.slotModeOptions(), bulk.mode)", source)
+        self.assertNotIn('this.rawSelect("multi-mode", this.slotWorkModes(), bulk.mode)', source)
+
+    def test_zero_export_physical_modes_display_as_normal_operation(self):
+        normalizer = extract_method(self.sources[0], "  normalizeManagerMode(value) {")
+        mode_meta = extract_method(self.sources[0], "modeMeta(mode, enabled = true)")
+        self.assertIn('"Zero Export To Load": "Normal Operation"', normalizer)
+        self.assertIn('"Zero Export To CT": "Normal Operation"', normalizer)
+        self.assertIn('this.normalizeManagerMode(mode)', mode_meta)
+        self.assertIn('title: "Normal Operation"', mode_meta)
+        self.assertIn('cls: "normal"', mode_meta)
+        label_method = extract_method(self.sources[0], "slotModeLabel(mode)")
+        self.assertIn('this.normalizeManagerMode(mode)', label_method)
+
+    def test_card_labels_successful_rollback_as_restored(self):
+        status_label = extract_method(self.sources[0], "touStatusLabel(status)")
+        self.assertIn('rolled_back: "Restored"', status_label)
+
+    def test_card_uses_backend_normal_profile_labels(self):
+        source = self.sources[0]
+        dialog = extract_method(source, "renderDialog(slots, touStarts)")
+        self.assertIn('this.rawSelect("normal-profile-mode",', dialog)
+        self.assertIn("...this.normalProfileModeOptions()", dialog)
+        self.assertNotIn('["Zero Export To Load", "Export disabled — Load measurement"]', dialog)
+        self.assertNotIn('["Zero Export To CT", "Export disabled — CT measurement"]', dialog)
+
+    def test_card_uses_polish_charge_profile_label(self):
+        self.assertIn("Charging profile target SOC", self.sources[0])
+        self.assertNotIn("Docelowy SOC profilu Charge", self.sources[0])
+
+    def test_card_does_not_expose_zero_export_provider_values_as_user_labels(self):
+        dialog = extract_method(self.sources[0], "renderDialog(slots, touStarts)")
+        self.assertNotIn('["Zero Export To Load", "Zero Export To Load"]', dialog)
+        self.assertNotIn('["Zero Export To CT", "Zero Export To CT"]', dialog)
+
+    def test_card_mapping_does_not_depend_on_legacy_schedule_function(self):
+        mapping = extract_method(self.sources[0], "scheduleSegments(slots)")
+        dialog = extract_method(self.sources[0], "renderDialog(slots, touStarts)")
+        self.assertNotIn("schedule_function", mapping)
+        self.assertNotIn("<th>Function</th>", dialog)
+
+    def test_disabled_state_is_not_a_work_mode_option(self):
+        source = self.sources[0]
+        dialog = extract_method(source, "renderDialog(slots, touStarts)")
+        self.assertIn('slotDraftSelect("mode", this.slotModeOptions())', dialog)
+        self.assertNotIn("Disabled", dialog)
+
+    def test_schedule_table_always_displays_stored_grid_permission_and_current(self):
+        source = self.sources[0]
+        self.assertIn('const gridChargeLabel = isChargeMode ? (gridCharge ? "yes" : "no") : "not applicable"', source)
+        self.assertIn('class="pill ${gridChargeClass}"', source)
+        self.assertNotIn("this.pill(null, gridChargeLabel)", source)
+        self.assertIn("${gridChargeCurrent} A", source)
+        self.assertNotIn(
+            'isCharge ? (slot.chargeEnabled === "on" ? "yes" : "no") : "not applicable"',
+            source,
+        )
+
+    def test_settings_dialog_scrolls_on_desktop_tablet_and_phone(self):
+        source = self.sources[0]
+        self.assertIn(".settings-content{min-width:0;overflow:auto", source)
+        self.assertIn("@media(max-width:980px)", source)
+        self.assertIn(".settings-layout{grid-template-columns:1fr", source)
+        self.assertIn("@media(max-width:620px)", source)
+        self.assertIn(".settings-content{padding:9px}", source)
+
+    def test_diagnostics_show_logical_and_physical_soc_separately(self):
+        method = extract_method(self.sources[0], "renderDiagnostics(slots)")
+        for required in (
+            "active_slot_control",
+            "physical_tou",
+            "minimum_sell_soc",
+            "tou_soc",
+            "charge_profile_target_soc",
+            "effective_tou_soc",
+            "physical_soc_actual",
+            "grid_charge_expected",
+            "grid_charge_actual",
+            "currents",
+        ):
+            self.assertIn(required, method)
+
+    def test_layout_config_has_defaults_and_mobile_overrides(self):
+        source = self.sources[0]
+        method = extract_method(source, "layoutConfig() {")
+        for required in (
+            'layout_mode: "auto"',
+            "dashboard_width: 1280",
+            "center_dashboard: true",
+            "fit_to_width: false",
+            "allow_horizontal_scroll: false",
+            "prices_ratio: 0.80",
+            "buy_prices_ratio: 0.80",
+            "solcast_ratio: 1.40",
+            "energy_tile_width: 300",
+            "energy_tile_gap: 28",
+            "inverter_scale: 1",
+            "flow_animation_speed: 6",
+            'mobile: {',
+            'mode: "auto"',
+            "mobile_breakpoint: 768",
+        ):
+            self.assertIn(required, method)
+        # Validation helpers
+        self.assertIn("asString(", method)
+        self.assertIn("asNumber(", method)
+        self.assertIn("asBool(", method)
+        self.assertIn("clamp(", method)
+
+    def test_render_uses_layout_config_for_dashboard(self):
+        source = self.sources[0]
+        render = extract_method(source, "renderV073()")
+        self.assertIn("const layout = this.effectiveLayout();", render)
+        self.assertIn(r'dashStyle.push(layout.is_mobile ? "max-width:100%" : `max-width:${layout.dashboard_width}px`)', render)
+        self.assertIn('dashStyle.push("min-width:0")', render)
+        self.assertIn('dashStyle.push("box-sizing:border-box")', render)
+        self.assertIn('if (layout.center_dashboard) dashStyle.push("margin:0 auto")', render)
+        self.assertIn('if (layout.fit_to_width || layout.is_mobile) dashStyle.push("width:100%")', render)
+        self.assertIn('if (layout.allow_horizontal_scroll) {', render)
+        self.assertIn('dashStyle.push("overflow-x:auto")', render)
+        self.assertIn('dashStyle.push("overflow-x:hidden")', render)
+        self.assertIn('layout.is_mobile ? "grid-template-columns:minmax(0,1fr)"', render)
+        self.assertIn(r"grid-template-columns:${layout.prices_ratio}fr ${layout.buy_prices_ratio}fr ${layout.solcast_ratio}fr", render)
+        self.assertIn('if (layout.layout_mode === "grid" && layout.grid_columns)', render)
+        self.assertIn("const showStatus = isSingle ? layout.section === \"status_energy\" : layout.sections.status_energy;", render)
+        self.assertIn("if (isSingle && [\"ai\", \"settings\"].includes(layout.section) && !this._dialog)", render)
+        self.assertIn('<div class="dem-v073" style="${demStyle}">', render)
+        self.assertIn("${statusSection}", render)
+        self.assertIn("${infoGridSection}", render)
+        # Mobile-safe min-width/max-width reset
+        self.assertIn(".dem-v073>*,.info-grid>*,.panel,.schedule-shell,.sales-panel{min-width:0;max-width:100%;box-sizing:border-box}", render)
+        self.assertIn(".dem-v073{padding:18px;display:grid;gap:16px;margin:0 auto;max-width:1280px;min-width:0;box-sizing:border-box", render)
+        self.assertIn("${scheduleSection}", render)
+        self.assertIn("${salesSection}", render)
+
+    def test_dialog_host_renders_outside_dashboard_container(self):
+        source = self.sources[0]
+        render = extract_method(source, "renderV073()")
+        # Dialog host must be a sibling of .dem-v073, not inside it.
+        self.assertIn('</div>\n          <div class="dialog-host">${this.renderDialog(slots, touStarts)}</div>', render)
+        self.assertIn("this._lastSlots = slots;", render)
+        self.assertIn("this._lastTouStarts = touStarts;", render)
+
+    def test_render_dialog_only_updates_dialog_independently(self):
+        source = self.sources[0]
+        method = extract_method(source, "renderDialogOnly() {")
+        for required in (
+            "if (!this._lastSlots) return;",
+            'const host = this.querySelector(".dialog-host");',
+            "host.innerHTML = this.renderDialog(this._lastSlots, this._lastTouStarts);",
+            "this.bindDialogControls(this._lastSlots);",
+            "this.restoreScrollPositions();",
+        ):
+            self.assertIn(required, method)
+
+    def test_effective_layout_reports_mobile_flag(self):
+        source = self.sources[0]
+        method = extract_method(source, "effectiveLayout() {")
+        self.assertIn("const isMobile = this.isMobileLayout(layout) && !layout.mobile.preserve_desktop_layout;", method)
+        self.assertIn("layout.is_mobile = isMobile;", method)
+        self.assertIn("if (isMobile) {", method)
+
+    def test_mobile_detection_uses_card_width_and_viewport(self):
+        source = self.sources[0]
+        method = extract_method(source, "isMobileLayout(layout) {")
+        self.assertIn("const viewportWidth = window.innerWidth || 0;", method)
+        self.assertIn("const hostWidth = this.clientWidth", method)
+        self.assertIn("Math.min(hostWidth, viewportWidth)", method)
+        self.assertIn("layout.mobile.mobile_breakpoint", method)
+
+    def test_desktop_info_grid_uses_yaml_ratios(self):
+        source = self.sources[0]
+        render = extract_method(source, "renderV073()")
+        # Desktop path keeps proportional ratios
+        self.assertIn(r"grid-template-columns:${layout.prices_ratio}fr ${layout.buy_prices_ratio}fr ${layout.solcast_ratio}fr", render)
+        # Mobile path collapses to single column
+        self.assertIn('layout.is_mobile ? "grid-template-columns:minmax(0,1fr)"', render)
+
+    def test_allow_horizontal_scroll_false_hides_global_overflow(self):
+        source = self.sources[0]
+        render = extract_method(source, "renderV073()")
+        self.assertIn('dashStyle.push("overflow-x:hidden")', render)
+
+    def test_local_scroll_containers_preserved(self):
+        source = self.sources[0]
+        # The schedule shell cannot grow the card; only its table container scrolls.
+        self.assertIn(".schedule-shell{width:100%;max-width:100%;min-width:0;box-sizing:border-box;overflow:hidden", source)
+        self.assertIn(".schedule-table-card{width:100%;max-width:100%;min-width:0;box-sizing:border-box", source)
+        self.assertIn("overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain", source)
+        self.assertIn(".schedule-table{min-width:", source)
+        # Solcast days can scroll horizontally on mobile
+        self.assertIn(".solcast-days{display:grid;grid-template-columns:repeat(7,minmax(58px,1fr))", source)
+        self.assertIn(".solcast-days{display:flex;max-width:100%;gap:6px;overflow-x:auto;overscroll-behavior-x:contain", source)
+        self.assertIn(".solcast-panel{width:100%;max-width:100%;min-width:0;overflow:hidden", source)
+        self.assertIn(".solcast-bars{height:138px;min-width:0;width:100%;max-width:100%", source)
+        self.assertNotIn(".solcast-bars{height:138px;min-width:560px}", source)
+        # Price table scrolls inside its own card
+        self.assertIn(".price-scroll{height:auto;flex:0 0 auto;min-height:0;overflow:visible", source)
+        self.assertIn(".price-scroll{height:260px;overflow:auto", source)
+
+    def test_ai_mobile_dialog_is_width_contained_without_affecting_settings(self):
+        source = self.sources[0]
+        self.assertIn(
+            ".ai-dialog-v2{width:100%!important;max-width:100%!important;min-width:0!important;"
+            "box-sizing:border-box;overflow:hidden}",
+            source,
+        )
+        self.assertIn(
+            ".ai-dialog-v2 .ai-shell,.ai-dialog-v2 .ai-sidebar,.ai-dialog-v2 .ai-main,"
+            ".ai-dialog-v2 .ai-overview-grid",
+            source,
+        )
+        self.assertIn(
+            ".ai-dialog-v2 .ai-metric-card,.ai-dialog-v2 .ai-chart-card"
+            "{width:100%;max-width:100%;min-width:0;box-sizing:border-box}",
+            source,
+        )
+        self.assertNotIn(".settings-dialog .ai-shell", source)
+        self.assertNotIn(".settings-dialog .ai-main", source)
+
+    def test_ai_mobile_tabs_scroll_locally_with_full_labels(self):
+        source = self.sources[0]
+        self.assertIn(
+            ".ai-dialog-v2 .ai-sidebar nav{display:flex;width:100%;max-width:100%;min-width:0;"
+            "overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;touch-action:pan-x}",
+            source,
+        )
+        self.assertIn(
+            ".ai-dialog-v2 .ai-sidebar nav button{flex:0 0 auto;min-width:max-content;"
+            "max-width:none;white-space:nowrap}",
+            source,
+        )
+        render_ai = extract_method(source, "renderAiDialog(slots)")
+        for label in (
+            "Overview",
+            "Proposed changes",
+            "Plan and actual",
+            "Data quality",
+        ):
+            self.assertIn(label, render_ai)
+
+    def test_plan_execution_view_is_read_only_and_has_all_ranges(self):
+        source = self.sources[0]
+        method = extract_method(source, "renderAiPlanExecution(planner)")
+        for label in ("Today", "Tomorrow", "48 h", "History", "The plan is a frozen Optimizer Core proposal"):
+            self.assertIn(label, method)
+        self.assertIn("renderAiExecutionChart", method)
+        self.assertIn("renderAiExecutionTable", method)
+        loader = extract_method(source, "async loadAiExecutionDay(dateKey)")
+        self.assertIn('service: "get_plan_execution"', loader)
+        self.assertIn("return_response: true", loader)
+        self.assertNotIn("save_future_plan", loader)
+        self.assertNotIn("apply_schedule_patch", loader)
+
+    def test_plan_explanation_is_day_scoped_and_uses_full_slot_power(self):
+        source = self.sources[0]
+        method = extract_method(source, "renderAiExplanation(planner)")
+        self.assertIn('data-ai-explanation-day="today"', method)
+        self.assertIn('data-ai-explanation-day="tomorrow"', method)
+        self.assertIn("profile.day_summaries?.[day]", method)
+        self.assertIn("this.aiPlannedSlotPower(source)", method)
+        self.assertIn("Additional optimizer suggestions", method)
+        self.assertIn("does not count towards fulfilment of the user profile target", method)
+        self.assertIn("Today's morning selling window has already ended", method)
+        self.assertNotIn('["today", "tomorrow"].flatMap', method)
+
+    def test_execution_table_shows_only_planned_price_pair(self):
+        source = self.sources[0]
+        method = extract_method(source, "renderAiExecutionTable(data, planOnly = false)")
+        self.assertIn("Plan: buy / selling", method)
+        self.assertNotIn("Wykonanie: kupno / selling", method)
+        self.assertIn("row.effective_buy_price", method)
+        self.assertIn("row.sell_price", method)
+        self.assertNotIn("actual.buy_price_pln_kwh", method)
+        self.assertNotIn("actual.sell_price_pln_kwh", method)
+        self.assertIn('colspan="2" class="ai-exec-col-error"', method)
+        self.assertNotIn("callService", method)
+
+    def test_ai_mobile_charts_tables_and_weather_keep_only_local_overflow(self):
+        source = self.sources[0]
+        self.assertIn(
+            ".ai-dialog-v2 .ai-plan-table-wrap,.ai-dialog-v2 .ai-chart-scroll,"
+            ".ai-dialog-v2 .ai-weather-strip{width:100%;max-width:100%;min-width:0;"
+            "box-sizing:border-box;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain}",
+            source,
+        )
+        self.assertIn(
+            ".ai-dialog-v2 .ai-crisp-chart,.ai-dialog-v2 .ai-crisp-layout,"
+            ".ai-dialog-v2 .ai-crisp-main,.ai-dialog-v2 .ai-crisp-plot"
+            "{width:100%;max-width:100%;min-width:0;box-sizing:border-box}",
+            source,
+        )
+        self.assertIn(".ai-dialog-v2 .ai-crisp-chart{overflow:hidden}", source)
+        self.assertIn(
+            ".ai-dialog-v2 .ai-crisp-svg{width:100%!important;max-width:100%!important;"
+            "min-width:0!important}",
+            source,
+        )
+        self.assertIn(".ai-plan-table{width:100%;min-width:940px", source)
+        self.assertIn(".ai-chart-v2 svg{min-width:860px}", source)
+        self.assertIn(".ai-dialog-v2 .ai-weather-day,.ai-dialog-v2 .ai-weather-hour{flex:0 0 66px}", source)
+        self.assertIn(
+            ".ai-dialog-v2 .ai-weather-source{max-width:100%;white-space:normal;"
+            "overflow-wrap:anywhere}",
+            source,
+        )
+
+    def test_ai_dialog_switching_and_dialog_only_render_remain_available(self):
+        source = self.sources[0]
+        for view in ("overview", "proposals", "today", "tomorrow", "energy", "quality"):
+            self.assertIn(f'["{view}",', source)
+        self.assertIn("renderDialogOnly()", source)
+        self.assertIn("this.renderDialogOnly();", source)
+        self.assertIn('<section class="dialog ai-dialog ai-dialog-v2"', extract_method(source, "renderAiDialog(slots)"))
+
+    def test_layout_mode_grid_columns_one_on_mobile(self):
+        source = self.sources[0]
+        render = extract_method(source, "renderV073()")
+        self.assertIn('grid-template-columns:repeat(${layout.grid_columns},minmax(0,1fr))', render)
+
+    def test_sections_view_uses_verified_full_width_grid_options(self):
+        source = self.sources[0]
+        method = extract_method(source, "getGridOptions() {")
+        self.assertIn('columns: "full"', method)
+        self.assertIn("min_columns: 3", method)
+        self.assertNotIn("rows:", method)
+
+    def test_control_master_is_shown_in_schedule_header_and_status_panel(self):
+        source = self.sources[0]
+        render = extract_method(source, "renderV073()")
+        flow = extract_method(source, "energyFlowPanel()")
+        binding = extract_method(source, "bindDashboardControls(slots)")
+        self.assertIn('data-control-toggle="1"', render)
+        self.assertIn("Deye control — ${this.escapeHtml(controlStatus)}", render)
+        self.assertIn("const control = this.controlState()", flow)
+        self.assertIn("const controlOn = control.enabled", flow)
+        self.assertIn("const controlStatus = control.status", flow)
+        self.assertIn('this.entity("sensor", "planned_manager_action")', flow)
+        self.assertIn('this.entity("sensor", "executed_manager_action")', flow)
+        self.assertIn("Planned decision", flow)
+        self.assertIn("Executed decision", flow)
+        self.assertIn('[data-control-toggle]', binding)
+        self.assertIn("this.toggleControl()", binding)
+
+    def test_disabled_schedule_save_has_explicit_polish_monitoring_message(self):
+        method = extract_method(self.sources[0], "async applySchedulePatch(updates, options = null)")
+        self.assertIn("this.slotControlEnabled()", method)
+        self.assertNotIn('this.entity("switch", "control")', method)
+        self.assertIn(
+            "Changes were saved in the schedule. Deye control is disabled — they were not sent to the inverter.",
+            method,
+        )
+
+    def test_configuration_import_never_restores_external_physical_entities_directly(self):
+        source = self.sources[0]
+        editable = extract_method(source, "editableConfigEntities()")
+        snapshot = extract_method(source, "configurationSnapshot()")
+        apply = extract_method(source, "async applyConfigurationSnapshot(snapshot)")
+        self.assertNotIn("this.touEntities(", editable)
+        self.assertIn('entityId.includes("deye_energy_")', editable)
+        self.assertIn("physical_tou:", snapshot)
+        self.assertIn('entityId.includes("deye_energy_")', apply)
+        self.assertIn('this.callService("deye_energy", "set_tou_slot"', apply)
+        self.assertIn("physicalTou.length && desiredControlOn", apply)
+        self.assertIn("no physical TOU was sent to the inverter", apply)
+
+    def test_dialog_host_and_dashboard_render_unchanged(self):
+        source = self.sources[0]
+        render = extract_method(source, "renderV073()")
+        self.assertIn('</div>\n          <div class="dialog-host">${this.renderDialog(slots, touStarts)}</div>', render)
+        self.assertIn("${statusSection}", render)
+        self.assertIn("${infoGridSection}", render)
+        self.assertIn("${scheduleSection}", render)
+        self.assertIn("${salesSection}", render)
+
+
+if __name__ == "__main__":
+    unittest.main()

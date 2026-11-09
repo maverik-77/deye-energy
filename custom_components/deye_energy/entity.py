@@ -1,0 +1,31 @@
+from __future__ import annotations
+
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity import Entity
+
+from .const import DOMAIN
+from .manager import DeyeEnergyRuntime
+
+
+class DeyeEnergyEntity(Entity):
+    _attr_has_entity_name = True
+
+    def __init__(self, runtime: DeyeEnergyRuntime, key: str, name: str) -> None:
+        self.runtime = runtime
+        self._attr_unique_id = f"{runtime.entry_id}_{key}"
+        self._attr_object_id = f"deye_energy_{key}"
+        self._attr_name = name
+        self._deye_manager_key = key
+        runtime.register_entity(self)
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, self.runtime.entry_id)},
+            name="Deye Energy",
+            manufacturer="Deye",
+            model="Deye Energy",
+        )
+
+    async def async_will_remove_from_hass(self) -> None:
+        self.runtime.unregister_entity(self)

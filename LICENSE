@@ -1,0 +1,151 @@
+MIT License
+
+Copyright (c) 2026 pasierbrg
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+-------------------------------------------------------------------------------
+PROJECT-SPECIFIC SAFETY AND LIABILITY NOTICE
+DEYE ENERGY MANAGER
+-------------------------------------------------------------------------------
+
+This notice explains the risks and responsibilities connected with the use of
+Deye Energy. It does not restrict the rights granted under the MIT
+License above.
+
+1. Software provided without warranty
+
+Deye Energy is provided free of charge as open-source software and
+without any warranty of correct, safe, continuous or uninterrupted operation.
+
+The Software may read data from and request changes to an inverter, battery
+energy storage system, battery management system, meter and related Home
+Assistant entities.
+
+2. Full responsibility of the user
+
+Every user installs, configures and uses the Software entirely at their own
+risk and assumes full responsibility for:
+
+- all configuration settings;
+- all entity mappings;
+- all commands sent to connected devices;
+- inverter operating modes and export settings;
+- battery charge and discharge currents;
+- power limits and SOC limits;
+- grid charging and Time Of Use schedules;
+- safe default and emergency settings;
+- automations, tariffs, prices, forecasts and AI suggestions;
+- compatibility with the inverter, battery, BMS, meter, wiring, firmware and
+  the electrical installation;
+- backups, restoration procedures, supervision and testing of the installation.
+
+The user is solely responsible for verifying all settings against current
+manufacturer documentation, device ratings, warranty conditions, electrical
+requirements, grid operator rules and the user's energy contract.
+
+3. No liability of the author and contributors
+
+The author, project owner and contributors shall not be held responsible for
+any damage, failure, loss, cost, injury, claim or other consequence resulting
+directly or indirectly from the installation, configuration, use, misuse,
+malfunction, interruption or inability to use the Software.
+
+This includes, without limitation:
+
+- damage to an inverter, battery, BMS, meter, wiring, electrical installation
+  or other property;
+- overheating, fire, electric shock, personal injury or other safety incidents;
+- battery degradation or reduced battery life;
+- loss or corruption of data;
+- loss of warranty;
+- loss of energy, revenue or expected savings;
+- increased electricity charges;
+- unintended grid import or export;
+- incorrect operation of schedules, automations, forecasts, optimization or AI
+  functions;
+- downtime and third-party claims.
+
+By installing or using the Software, the user confirms that they understand
+the associated risks, accept those risks and agree not to hold the author,
+project owner or contributors responsible for the consequences of using the
+Software.
+
+4. Electrical and battery safety
+
+Inverters and energy storage systems may involve dangerous voltages, high
+currents, stored energy and remotely initiated operating changes. Incorrect
+configuration, communication failure or equipment failure may cause serious
+damage or injury.
+
+The Software does not replace:
+
+- hardware protection;
+- circuit breakers, fuses, contactors or emergency disconnects;
+- inverter or BMS protection functions;
+- fire protection;
+- inspections and maintenance;
+- emergency procedures;
+- work performed by a qualified electrician or installer.
+
+The Software must not be treated as an emergency shutdown system, a life-safety
+system or the sole means of preventing hazardous electrical, thermal or battery
+conditions.
+
+5. Automated operation
+
+The Software may perform scheduled or automated control actions without
+additional confirmation immediately before every action.
+
+Before enabling automatic operation, the user must verify all schedules,
+limits, protections, fallback settings and connected entities, and must test
+the installation under safe conditions.
+
+6. No professional, legal or financial advice
+
+Schedules, forecasts, prices, statistics, AI output and optimization results
+are informational only and may be incomplete, delayed or incorrect.
+
+They do not constitute electrical, engineering, safety, legal or financial
+advice and do not guarantee savings, revenue, availability or any particular
+result.
+
+7. Third-party systems and data
+
+The Software may depend on Home Assistant, ESPHome, Solarman, inverter
+firmware, external integrations, network connectivity, APIs, weather forecasts,
+energy price data and AI providers.
+
+The author and contributors do not control and do not guarantee the
+availability, accuracy, security, compatibility or behaviour of those systems.
+
+When the user enables an external API or AI provider, selected installation
+data may be transmitted to that third-party service. The user is responsible
+for reviewing the provider's terms and privacy policy, protecting API
+credentials and deciding what data may be transmitted.
+
+8. No affiliation or endorsement
+
+Deye Energy is an independent community project. It is not affiliated
+with, endorsed by, sponsored by or officially supported by Deye, Home
+Assistant, ESPHome, Solarman, any inverter or battery manufacturer, any energy
+supplier or any grid operator.
+
+All product names, company names and trademarks belong to their respective
+owners.
