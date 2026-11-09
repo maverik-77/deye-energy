@@ -20,20 +20,20 @@ SPEC.loader.exec_module(tariffs)
 NOW = datetime(2026, 8, 27, 12, tzinfo=timezone(timedelta(hours=2)))
 
 EXPECTED_GROUPS = {
-    "pge": {"g11", "g12", "g12w", "g12n", "g12as", "g12e"},
-    "tauron": {"g11", "g12", "g12w", "g12as", "g13", "g13s", "g14dynamic"},
-    "enea": {"g11", "g11pewna", "g12", "g12w", "g12as", "g12sezon", "g13active", "g11p", "g12p"},
-    "energa": {"g11", "g11f", "g12", "g12w", "g12r", "g12as"},
-    "stoen": {"g11", "g12", "g12w", "g12as", "g12eko"},
+    "dso_a": {"g11", "g12", "g12w", "g12n", "g12as", "g12e"},
+    "dso_b": {"g11", "g12", "g12w", "g12as", "g13", "g13s", "g14dynamic"},
+    "dso_c": {"g11", "g11pewna", "g12", "g12w", "g12as", "g12sezon", "g13active", "g11p", "g12p"},
+    "dso_d": {"g11", "g11f", "g12", "g12w", "g12r", "g12as"},
+    "dso_e": {"g11", "g12", "g12w", "g12as", "g12eko"},
     "other": {"custom"},
 }
 
 SUPPORTED = {
-    "pge": {"g11", "g12", "g12w", "g12n"},
-    "tauron": {"g11", "g12", "g12w", "g13"},
-    "enea": {"g11", "g12", "g12w", "g11p", "g12p"},
-    "energa": {"g11", "g12", "g12w", "g12r"},
-    "stoen": {"g11", "g12", "g12w", "g12as"},
+    "dso_a": {"g11", "g12", "g12w", "g12n"},
+    "dso_b": {"g11", "g12", "g12w", "g13"},
+    "dso_c": {"g11", "g12", "g12w", "g11p", "g12p"},
+    "dso_d": {"g11", "g12", "g12w", "g12r"},
+    "dso_e": {"g11", "g12", "g12w", "g12as"},
 }
 
 
@@ -41,7 +41,7 @@ def catalog():
     return tariffs.load_bundled_catalog()
 
 
-def distribution_profile(cat, provider="pge", plan="g12w", value=None):
+def distribution_profile(cat, provider="dso_a", plan="g12w", value=None):
     if value is not None:
         return {
             ((NOW + timedelta(days=offset)).date(), hour): value
@@ -84,7 +84,7 @@ def test_only_the_21_audited_ordinary_contracts_are_supported():
 def test_pge_g12w_generates_complete_canonical_buy_and_counts_components_once():
     cat = catalog()
     result = tariffs.seller_catalog_canonical_buy(
-        NOW, cat, "pge_obrot", "", "pge", "g12w", distribution_profile(cat)
+        NOW, cat, "supplier_a", "", "dso_a", "g12w", distribution_profile(cat)
     )
     assert result["diagnostics"]["status"] == "ready"
     assert result["diagnostics"]["coverage_today"] == 24
@@ -94,18 +94,18 @@ def test_pge_g12w_generates_complete_canonical_buy_and_counts_components_once():
         assert row["added_vat"] == 0
         assert row["added_other_variable"] == 0
         assert row["source_basis"] == "gross"
-        assert row["final_price_pln_kwh"] == pytest.approx(
-            row["source_price_pln_kwh"] + row["added_distribution"]
+        assert row["final_price_gbp_kwh"] == pytest.approx(
+            row["source_price_gbp_kwh"] + row["added_distribution"]
         )
 
 
 def test_explicit_seller_is_required_and_unsupported_special_is_fail_closed():
     cat = catalog()
     no_seller = tariffs.seller_catalog_canonical_buy(
-        NOW, cat, "", "", "pge", "g12w", distribution_profile(cat)
+        NOW, cat, "", "", "dso_a", "g12w", distribution_profile(cat)
     )
     special = tariffs.seller_catalog_canonical_buy(
-        NOW, cat, "pge_obrot", "", "pge", "g12as", distribution_profile(cat, "pge", "g12as")
+        NOW, cat, "supplier_a", "", "dso_a", "g12as", distribution_profile(cat, "dso_a", "g12as")
     )
     assert no_seller["rows"] == []
     assert no_seller["diagnostics"]["status"] == "seller_not_selected"
@@ -118,7 +118,7 @@ def test_missing_distribution_slot_is_fail_closed_instead_of_assuming_zero():
     distribution = distribution_profile(cat)
     distribution.pop(next(iter(distribution)))
     result = tariffs.seller_catalog_canonical_buy(
-        NOW, cat, "pge_obrot", "", "pge", "g12w", distribution
+        NOW, cat, "supplier_a", "", "dso_a", "g12w", distribution
     )
     assert result["rows"] == []
     assert result["diagnostics"]["status"] == "distribution_slot_unavailable"
@@ -126,15 +126,15 @@ def test_missing_distribution_slot_is_fail_closed_instead_of_assuming_zero():
 
 def dated_catalog(old_end: str, new_start: str, new_end: str):
     cat = deepcopy(catalog())
-    original = deepcopy(cat["seller_tariffs"]["pge_obrot"]["tariffs"]["pge_g11_2026"])
+    original = deepcopy(cat["seller_tariffs"]["supplier_a"]["tariffs"]["supplier_a_g11_2026"])
     old = deepcopy(original)
     old.update({"valid_from": "2026-01-01", "valid_to": old_end, "rates": {"all_day": 0.61}})
     new = deepcopy(original)
     new.update({"valid_from": new_start, "valid_to": new_end, "rates": {"all_day": 0.71}, "revision": "test-new"})
-    seller_tariffs = cat["seller_tariffs"]["pge_obrot"]["tariffs"]
-    del seller_tariffs["pge_g11_2026"]
-    seller_tariffs.update({"pge_g11_old": old, "pge_g11_new": new})
-    cat["seller_support_matrix"]["pge"]["g11"]["seller_tariff_id"] = "pge_g11_old"
+    seller_tariffs = cat["seller_tariffs"]["supplier_a"]["tariffs"]
+    del seller_tariffs["supplier_a_g11_2026"]
+    seller_tariffs.update({"supplier_a_g11_old": old, "supplier_a_g11_new": new})
+    cat["seller_support_matrix"]["dso_a"]["g11"]["seller_tariff_id"] = "supplier_a_g11_old"
     cat["valid_to"] = max("2026-12-31", new_end)
     return cat
 
@@ -150,18 +150,18 @@ def test_validity_first_transitions_mid_year_and_new_year(old_end, new_start, ne
     cat = dated_catalog(old_end, new_start, new_end)
     tariffs.validate_catalog(cat)
     tariff_id, entry, status = tariffs.resolve_seller_tariff(
-        cat, "pge_obrot", "pge_g11_old", "pge", "g11", target
+        cat, "supplier_a", "supplier_a_g11_old", "dso_a", "g11", target
     )
-    assert tariff_id == "pge_g11_new"
+    assert tariff_id == "supplier_a_g11_new"
     assert entry["rates"]["all_day"] == 0.71
     assert status == "validity_transition"
 
 
 def test_expired_price_is_never_used_as_fallback():
     cat = dated_catalog("2026-06-30", "2026-07-01", "2026-12-31")
-    del cat["seller_tariffs"]["pge_obrot"]["tariffs"]["pge_g11_new"]
+    del cat["seller_tariffs"]["supplier_a"]["tariffs"]["supplier_a_g11_new"]
     tariff_id, entry, status = tariffs.resolve_seller_tariff(
-        cat, "pge_obrot", "pge_g11_old", "pge", "g11", date(2026, 7, 1)
+        cat, "supplier_a", "supplier_a_g11_old", "dso_a", "g11", date(2026, 7, 1)
     )
     assert tariff_id == ""
     assert entry is None
@@ -173,16 +173,16 @@ def test_catalog_validator_rejects_overlap_unit_basis_and_missing_matrix():
     with pytest.raises(ValueError, match="Overlapping"):
         tariffs.validate_catalog(overlapping)
     for field, value, message in (
-        ("unit", "PLN/MWh", "unit"),
+        ("unit", "GBP/MWh", "unit"),
         ("price_basis", "net", "gross"),
         ("includes_distribution", True, "energy-only"),
     ):
         malformed = deepcopy(catalog())
-        malformed["seller_tariffs"]["pge_obrot"]["tariffs"]["pge_g11_2026"][field] = value
+        malformed["seller_tariffs"]["supplier_a"]["tariffs"]["supplier_a_g11_2026"][field] = value
         with pytest.raises(ValueError, match=message):
             tariffs.validate_catalog(malformed)
     incomplete = deepcopy(catalog())
-    del incomplete["seller_support_matrix"]["pge"]["g12e"]
+    del incomplete["seller_support_matrix"]["dso_a"]["g12e"]
     with pytest.raises(ValueError, match="incomplete"):
         tariffs.validate_catalog(incomplete)
 
@@ -257,7 +257,7 @@ def test_updater_activation_is_atomic_and_keeps_last_known_good():
 
     invalid = deepcopy(active)
     invalid["catalog_version"] = "2026.08.27.2"
-    invalid["seller_tariffs"]["pge_obrot"]["tariffs"]["pge_g11_2026"]["unit"] = "PLN/MWh"
+    invalid["seller_tariffs"]["supplier_a"]["tariffs"]["supplier_a_g11_2026"]["unit"] = "GBP/MWh"
     with pytest.raises(ValueError):
         manager._activate_if_newer(invalid, "online")
     assert manager.catalog is active

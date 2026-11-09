@@ -1933,14 +1933,14 @@ class GridChargeIndependenceTests(unittest.TestCase):
 
 
 class NormalProfileSelectTests(unittest.TestCase):
-    """Polish labels for the normal-profile physical mode select."""
+    """English labels for the normal-profile physical mode select."""
 
     def _runtime_for_provider(self, provider):
         runtime = make_runtime()
         runtime.data[const.CONF_INVERTER_PROVIDER] = provider
         return runtime
 
-    def test_normal_profile_select_exposes_only_polish_labels(self):
+    def test_normal_profile_select_exposes_only_english_labels(self):
         runtime = self._runtime_for_provider(const.PROVIDER_LEWA_REKA)
         select = select_module.DeyeNormalProfileModeSelect(runtime)
         self.assertEqual(
@@ -1951,21 +1951,21 @@ class NormalProfileSelectTests(unittest.TestCase):
             ],
         )
 
-    def test_normal_profile_select_restores_legacy_provider_value_as_polish_label(self):
+    def test_normal_profile_select_restores_legacy_provider_value_as_english_label(self):
         runtime = self._runtime_for_provider(const.PROVIDER_LEWA_REKA)
         key = select_module.physical_normal_option_to_key(
             runtime.data, "Zero Export To CT"
         )
         self.assertEqual(key, const.MODE_ZERO_EXPORT_CT)
 
-    def test_normal_profile_polish_label_maps_to_lewa_reka_option(self):
+    def test_normal_profile_english_label_maps_to_lewa_reka_option(self):
         runtime = self._runtime_for_provider(const.PROVIDER_LEWA_REKA)
         key = select_module.normal_profile_mode_label_to_key(
             runtime.data, "Export disabled — Load measurement"
         )
         self.assertEqual(key, const.MODE_ZERO_EXPORT)
 
-    def test_normal_profile_polish_label_maps_to_solarman_option(self):
+    def test_normal_profile_english_label_maps_to_solarman_option(self):
         runtime = self._runtime_for_provider(const.PROVIDER_SOLARMAN)
         select = select_module.DeyeNormalProfileModeSelect(runtime)
         self.assertEqual(
@@ -1980,7 +1980,7 @@ class NormalProfileSelectTests(unittest.TestCase):
         )
         self.assertEqual(key, const.MODE_ZERO_EXPORT)
 
-    def test_normal_profile_polish_label_maps_to_sunsynk_option(self):
+    def test_normal_profile_english_label_maps_to_sunsynk_option(self):
         runtime = self._runtime_for_provider(const.PROVIDER_SUNSYNK)
         select = select_module.DeyeNormalProfileModeSelect(runtime)
         self.assertEqual(
@@ -3662,7 +3662,7 @@ class PlanExecutionArchiveTests(unittest.TestCase):
         self.assertEqual("partial", row["actual_status"])
         self.assertIsNone(row["actual"]["pv_kwh"])
         self.assertIsNone(row["actual"]["grid_import_kwh"])
-        self.assertIsNone(row["actual"]["net_result_pln"])
+        self.assertIsNone(row["actual"]["net_result_gbp"])
         self.assertIsNone(row["errors"]["pv_kwh"])
 
     def test_invalid_history_date_is_rejected(self):
@@ -3893,7 +3893,7 @@ class FuturePlanTests(unittest.TestCase):
             "semantic_scope": "all_in_variable",
             "includes_distribution_variable": True,
             "price_basis": "gross",
-            "unit": "PLN/kWh",
+            "unit": "GBP/kWh",
             "current_price_only": True,
             "allow_state_fallback": True,
         }
@@ -4216,7 +4216,7 @@ class AiProfileValidationTests(unittest.IsolatedAsyncioTestCase):
             "window_start", "window_end", "planned_soc_start", "planned_soc_end",
             "actual_soc_start", "actual_soc_end", "planned_price", "actual_average_price",
             "planned_import_kwh", "actual_import_kwh", "planned_export_kwh",
-            "actual_export_kwh", "planned_result_pln", "actual_result_pln",
+            "actual_export_kwh", "planned_result_gbp", "actual_result_gbp",
             "failure_reason", "data_quality", "created_at", "updated_at",
         ):
             self.assertIn(field, runtime.profile_execution[0])
@@ -4257,8 +4257,8 @@ class AiProfileValidationTests(unittest.IsolatedAsyncioTestCase):
             "remaining_kwh", "planned_soc_start", "planned_soc_end",
             "actual_soc_start", "actual_soc_end", "planned_price",
             "actual_average_price", "planned_import_kwh", "actual_import_kwh",
-            "planned_export_kwh", "actual_export_kwh", "planned_result_pln",
-            "actual_result_pln", "status", "failure_reason", "data_quality",
+            "planned_export_kwh", "actual_export_kwh", "planned_result_gbp",
+            "actual_result_gbp", "status", "failure_reason", "data_quality",
             "created_at", "updated_at",
         }
         statuses = {
@@ -7544,7 +7544,7 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
                     "period": f"{start:%H:%M} - {'24:00' if end.date() != start.date() else end.strftime('%H:%M')}",
                     "dtime": end.strftime("%Y-%m-%d %H:%M:%S"),
                     "business_date": start.date().isoformat(),
-                    "rce_pln": 0.8,
+                    "rce_price": 0.8,
                 })
             return rows
 
@@ -7556,7 +7556,7 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
             const.CONF_SELL_PRICE_CONTRACT: {
                 "source_adapter": "rce_pse", "semantic_scope": "energy_only",
                 "includes_distribution_variable": False, "price_basis": "gross",
-                "unit": "PLN/kWh", "list_attribute": "prices",
+                "unit": "GBP/kWh", "list_attribute": "prices",
                 "today_entity": sell_today, "tomorrow_entity": sell_tomorrow,
             },
         })
@@ -7687,7 +7687,7 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
             "source_adapter": "generic", "direction": "buy",
             "today_entity": entity_id, "tomorrow_entity": "",
             "semantic_scope": "energy_only", "includes_distribution_variable": False,
-            "price_basis": "gross", "unit": "PLN/kWh",
+            "price_basis": "gross", "unit": "GBP/kWh",
         }
         with self.assertRaisesRegex(ValueError, "unsupported_price_schema"):
             runtime.validate_and_bind_price_contract(contract, strict=True)
@@ -7732,7 +7732,7 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
         ]
         canonical = runtime.canonical_price_context(today, tariff_rows)
         self.assertEqual(48, len(canonical["buy"]["rows"]))
-        self.assertTrue(all(row["final_price_pln_kwh"] in (0.23, 0.24) for row in canonical["buy"]["rows"]))
+        self.assertTrue(all(row["final_price_gbp_kwh"] in (0.23, 0.24) for row in canonical["buy"]["rows"]))
         self.assertTrue(all(row["added_distribution"] == 0 for row in canonical["buy"]["rows"]))
         self.assertEqual(canonical, runtime._canonical_price_snapshot)
 
@@ -7763,7 +7763,7 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
                 {
                     "period": f"{(day + timedelta(minutes=index * 15)):%H:%M} - {('24:00' if index == 95 else (day + timedelta(minutes=(index + 1) * 15)).strftime('%H:%M'))}",
                     "dtime": (day + timedelta(minutes=(index + 1) * 15)).strftime("%Y-%m-%d %H:%M:%S"),
-                    "business_date": day.date().isoformat(), "rce_pln": 0.7,
+                    "business_date": day.date().isoformat(), "rce_price": 0.7,
                 }
                 for index in range(96)
             ]
@@ -7816,7 +7816,7 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
             return [{
                 "period": f"{(day + timedelta(minutes=index * 15)):%H:%M} - {('24:00' if index == 95 else (day + timedelta(minutes=(index + 1) * 15)).strftime('%H:%M'))}",
                 "dtime": (day + timedelta(minutes=(index + 1) * 15)).strftime("%Y-%m-%d %H:%M:%S"),
-                "business_date": day.date().isoformat(), "rce_pln": 0.8,
+                "business_date": day.date().isoformat(), "rce_price": 0.8,
             } for index in range(96)]
 
         runtime.hass.states.values[rce_today] = FakeState("unknown", {"prices": rce_rows(now)}, rce_today)
@@ -7869,12 +7869,12 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
         stale_buy_row = {
             "day": "tomorrow", "hour": 23, "quality": "ready",
             "source_adapter": "pstryk", "source_semantic_scope": "all_in_variable",
-            "final_price_pln_kwh": 1.16,
+            "final_price_gbp_kwh": 1.16,
         }
         valid_sell_row = {
             "day": "today", "hour": 12, "quality": "ready",
             "source_adapter": sell_adapter, "source_semantic_scope": sell_semantic,
-            "final_price_pln_kwh": 0.8,
+            "final_price_gbp_kwh": 0.8,
         }
         runtime.optimizer_plan = {
             "canonical_prices": {

@@ -101,7 +101,7 @@ async function saveDefaultPayload(mode, physical = "Zero Export To Load", option
 }
 
 function test_default_settings_card_uses_logical_manager_modes() {
-  assertEqual(makeCard().card.defaultWorkModes(), ["Normal Operation", "Selling"], "default modes must be logical and Polish");
+  assertEqual(makeCard().card.defaultWorkModes(), ["Normal Operation", "Selling"], "default modes must be logical");
 }
 function test_default_settings_card_does_not_offer_selling_first() {
   assertTrue(!makeCard().card.defaultWorkModes().includes("Selling First"), "Selling First must not be offered");

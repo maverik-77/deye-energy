@@ -38,7 +38,7 @@ check(customEditor.includes('data-contract-field="value_field"'), "custom schema
 check(!customEditor.includes('data-contract-field="today_entity"'), "custom mapping still belongs to Options Flow");
 
 card.tariffData = () => ({
-  mode: "automatic", provider: "pge", plan: "g11", providers: [], tariffs: [],
+  mode: "automatic", provider: "dso_a", plan: "g11", providers: [], tariffs: [],
   price_source: "pstryk", price_contracts: { buy: known, sell: known }, hourly_profile: [],
 });
 const tariffHtml = card.renderTariffTab();

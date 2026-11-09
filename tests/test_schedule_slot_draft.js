@@ -282,7 +282,7 @@ function test_normal_slot_cancel_restores_original_physical_work_mode() {
   change(card, "physical_work_mode", "Zero Export To CT"); card.cancelScheduleSlotEdit(); card.openScheduleSlotEditor(KEY, LABEL);
   assertEqual(card._slotEditDraft.values.physical_work_mode, attrs.schedule_slots[KEY].physical_work_mode, "cancel must restore backend physical mode");
 }
-function test_card_uses_polish_manager_modes() {
+function test_card_uses_english_manager_modes() {
   const card = new DeyeEnergyCard();
   assertEqual(card.slotWorkModes(), BACKEND_MANAGER_MODES, "card modes must match the backend canonical values");
 }
@@ -309,7 +309,7 @@ async function assertBackendModeRoundTrip(mode) {
 async function test_schedule_slot_backend_selling_mode_round_trip() { await assertBackendModeRoundTrip("Selling"); }
 async function test_schedule_slot_backend_charging_mode_round_trip() { await assertBackendModeRoundTrip("Charging"); }
 async function test_schedule_slot_backend_normal_mode_round_trip() { await assertBackendModeRoundTrip("Normal Operation"); }
-async function test_bulk_edit_uses_polish_manager_modes() {
+async function test_bulk_edit_uses_english_manager_modes() {
   const { card } = makeCard();
   card._selectedSlots = new Set([KEY]);
   card.collectBulkEditState = () => ({
@@ -319,15 +319,15 @@ async function test_bulk_edit_uses_polish_manager_modes() {
   let captured = null;
   card.applySchedulePatch = async (updates) => { captured = updates; return true; };
   await card.applyMultiEdit(card.scheduleSlots());
-  assertEqual(captured[0].mode, "Charging", "bulk edit must send a canonical Polish mode");
+  assertEqual(captured[0].mode, "Charging", "bulk edit must send a canonical mode");
 }
-function test_mode_meta_handles_polish_selling() {
+function test_mode_meta_handles_english_selling() {
   assertEqual((new DeyeEnergyCard()).modeMeta("Selling").cls, "selling", "Selling metadata must be selling");
 }
-function test_mode_meta_handles_polish_charging() {
+function test_mode_meta_handles_english_charging() {
   assertEqual((new DeyeEnergyCard()).modeMeta("Charging").cls, "charge", "Charging metadata must be charge");
 }
-function test_mode_meta_handles_polish_normal() {
+function test_mode_meta_handles_english_normal() {
   assertEqual((new DeyeEnergyCard()).modeMeta("Normal Operation").cls, "normal", "Normal Operation metadata must be normal");
 }
 function test_legacy_selling_first_is_normalized_to_sprzedaz() {
@@ -339,7 +339,7 @@ function test_legacy_charge_is_normalized_to_ladowanie() {
 function test_legacy_normal_is_normalized_to_normalna_praca() {
   assertEqual(makeCard({ slot: { mode: "normal" } }).card._slotEditDraft.values.mode, "Normal Operation", "legacy normal mode must normalize");
 }
-async function test_legacy_mode_is_saved_back_as_canonical_polish_value() {
+async function test_legacy_mode_is_saved_back_as_canonical_english_value() {
   const { card, calls } = makeCard({ slot: { mode: "Charge" } });
   change(card, "sell_power", 4100);
   await card.saveScheduleSlotDraft();
@@ -385,13 +385,13 @@ const tests = [
   test_charge_slot_draft_keeps_grid_charge_independent, test_charge_slot_mode_change_does_not_force_grid_charge_off,
   test_charge_slot_explicit_grid_charge_value_is_preserved_on_save, test_normal_slot_draft_preserves_physical_work_mode,
   test_normal_slot_save_uses_canonical_physical_work_mode, test_normal_slot_cancel_restores_original_physical_work_mode,
-  test_card_uses_polish_manager_modes, test_card_does_not_offer_selling_first_as_current_mode,
+  test_card_uses_english_manager_modes, test_card_does_not_offer_selling_first_as_current_mode,
   test_card_does_not_offer_charge_as_current_mode, test_schedule_slot_backend_selling_mode_round_trip,
   test_schedule_slot_backend_charging_mode_round_trip, test_schedule_slot_backend_normal_mode_round_trip,
-  test_bulk_edit_uses_polish_manager_modes, test_mode_meta_handles_polish_selling,
-  test_mode_meta_handles_polish_charging, test_mode_meta_handles_polish_normal,
+  test_bulk_edit_uses_english_manager_modes, test_mode_meta_handles_english_selling,
+  test_mode_meta_handles_english_charging, test_mode_meta_handles_english_normal,
   test_legacy_selling_first_is_normalized_to_sprzedaz, test_legacy_charge_is_normalized_to_ladowanie,
-  test_legacy_normal_is_normalized_to_normalna_praca, test_legacy_mode_is_saved_back_as_canonical_polish_value,
+  test_legacy_normal_is_normalized_to_normalna_praca, test_legacy_mode_is_saved_back_as_canonical_english_value,
   test_card_mapping_does_not_depend_on_legacy_schedule_function,
   test_schedule_slot_dialog_does_not_call_number_set_value_during_edit,
   test_schedule_slot_dialog_does_not_call_select_select_option_during_edit,

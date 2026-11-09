@@ -270,12 +270,12 @@ def normal_profile_mode_metadata(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def normal_profile_mode_options(data: dict[str, Any]) -> list[str]:
-    """Return Polish labels for the normal-profile mode select options."""
+    """Return English labels for the normal-profile mode select options."""
     return [row["label"] for row in normal_profile_mode_metadata(data) if row["available"]]
 
 
 def normal_profile_mode_label_to_key(data: dict[str, Any], label: str) -> str | None:
-    """Map a Polish select label to the internal physical-mode key."""
+    """Map a English select label to the internal physical-mode key."""
     for row in normal_profile_mode_metadata(data):
         if row["available"] and row["label"] == label:
             return str(row["value"])

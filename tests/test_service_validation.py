@@ -285,7 +285,7 @@ class ConfigFlowRequiredEntitiesTests(unittest.TestCase):
             entity_id="sensor.market_sell_price",
             attributes={
                 "friendly_name": "Cena sprzedaży energii",
-                "unit_of_measurement": "PLN/kWh",
+                "unit_of_measurement": "GBP/kWh",
             },
         )
         self.assertEqual(
@@ -302,7 +302,7 @@ class ConfigFlowRequiredEntitiesTests(unittest.TestCase):
     def test_issue_3_optional_pv3_and_soh_require_compatible_semantics(self):
         pv_bad = types.SimpleNamespace(
             entity_id="sensor.deye_pv3_power_cost",
-            attributes={"friendly_name": "PV3 power", "unit_of_measurement": "PLN"},
+            attributes={"friendly_name": "PV3 power", "unit_of_measurement": "GBP"},
         )
         pv_good = types.SimpleNamespace(
             entity_id="sensor.deye3fm2lr_pv3_power",
@@ -420,7 +420,7 @@ class ServiceJsonValidationTests(unittest.TestCase):
 
     def test_tariff_settings_schema_rejects_non_string(self):
         with self.assertRaises(Exception):
-            init.TARIFF_SETTINGS_SCHEMA({"data": {"provider": "pge"}})
+            init.TARIFF_SETTINGS_SCHEMA({"data": {"provider": "dso_a"}})
 
     def test_plan_execution_schema_is_optional_and_length_limited(self):
         self.assertEqual({}, init.PLAN_EXECUTION_SCHEMA({}))
@@ -752,12 +752,12 @@ class PriceContractMigrationTests(unittest.IsolatedAsyncioTestCase):
             "source_adapter": "pstryk", "today_entity": rce_today, "tomorrow_entity": "",
             "resolved_adapter_today": "pstryk", "semantic_scope": "all_in_variable",
             "includes_distribution_variable": True, "includes_excise": True,
-            "includes_service_margin": True, "price_basis": "gross", "unit": "PLN/kWh",
+            "includes_service_margin": True, "price_basis": "gross", "unit": "GBP/kWh",
         }
         custom = {
             "source_adapter": "custom", "today_entity": custom_today, "tomorrow_entity": "",
             "resolved_adapter_today": "custom", "semantic_scope": "energy_only",
-            "includes_distribution_variable": False, "price_basis": "gross", "unit": "PLN/kWh",
+            "includes_distribution_variable": False, "price_basis": "gross", "unit": "GBP/kWh",
             "list_attribute": "hourly", "value_field": "amount",
         }
         entry = types.SimpleNamespace(
@@ -829,7 +829,7 @@ class PriceContractMigrationTests(unittest.IsolatedAsyncioTestCase):
                     "semantic_scope": "energy_only",
                     "includes_distribution_variable": False,
                     "price_basis": "gross",
-                    "unit": "PLN/kWh",
+                    "unit": "GBP/kWh",
                     "list_attribute": "hourly",
                     "value_field": "amount",
                 },
@@ -1027,7 +1027,7 @@ class PriceMappingConfigFlowTests(unittest.TestCase):
         }
         state = _SimpleState("unknown", {"prices": [{
             "period": "00:00 - 00:15", "dtime": "2026-08-23 00:15:00",
-            "business_date": "2026-08-23", "rce_pln": 0.8,
+            "business_date": "2026-08-23", "rce_price": 0.8,
         }]})
         wizard = self._wizard(
             {
@@ -1114,7 +1114,7 @@ class ServicesYamlContractTests(unittest.TestCase):
     def _mode_options(self, service_name):
         return self.SERVICES[service_name]["fields"]["mode"]["selector"]["select"]["options"]
 
-    def test_services_yaml_exposes_only_polish_manager_modes(self):
+    def test_services_yaml_exposes_only_english_manager_modes(self):
         options = self._mode_options("apply_settings")
         self.assertIn(const.MODE_NORMAL_OPERATION, options)
         self.assertIn(const.MODE_SELLING_FIRST, options)

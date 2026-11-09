@@ -112,10 +112,10 @@ Enter your own values in the card under **Settings → Tariff and distribution**
   a whole hour (the default window is 23:00–05:00);
 - there is no manual flat export rate (for example a fixed 12 p/kWh): export
   value comes from the sell-price entity or the price source you map;
-- `tariff_catalog.json` is bundled **Polish** reference data (PGE products,
-  amounts in PLN). It is only used in automatic tariff mode and is not relevant
-  for a UK installation. Provider adapters for Pstryk and PSE/RCE likewise use
-  PLN values; generic custom price mappings accept both `GBP/kWh` and `PLN/kWh`.
+- `tariff_catalog.json` is **illustrative sample data only** (placeholder DSOs,
+  suppliers and rates, not real tariffs). It is used only in automatic tariff
+  mode; keep the default manual mode and enter your own rates. Price mappings
+  use `GBP/kWh` or `GBP/MWh`.
 
 ## Safety
 

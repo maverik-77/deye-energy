@@ -13,7 +13,7 @@ const rows = (direction, todayValue, tomorrowValue) => Array.from({ length: 48 }
   hour: index % 24,
   direction,
   quality: "ready",
-  final_price_pln_kwh: index < 24 ? todayValue : tomorrowValue,
+  final_price_gbp_kwh: index < 24 ? todayValue : tomorrowValue,
 }));
 const resolver = (mapped, resolved, adapter, schema, listAttribute) => ({
   mapped_entity: mapped,
@@ -22,7 +22,7 @@ const resolver = (mapped, resolved, adapter, schema, listAttribute) => ({
   detected_adapter: adapter,
   resolved_schema: schema,
   list_attribute: listAttribute,
-  value_field: adapter === "rce_pse" ? "rce_pln" : "price",
+  value_field: adapter === "rce_pse" ? "rce_price" : "price",
   unit: "GBP/kWh",
   semantic_scope: adapter === "pstryk" ? "all_in_variable" : "energy_only",
   coverage_hours: 24,

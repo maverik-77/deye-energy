@@ -51,7 +51,7 @@ const empty = {
 const staleSnapshot = {
   buy: {
     contract: known("pstryk"),
-    rows: [{ day: "tomorrow", hour: 23, quality: "ready", final_price_pln_kwh: 1.16 }],
+    rows: [{ day: "tomorrow", hour: 23, quality: "ready", final_price_gbp_kwh: 1.16 }],
     diagnostics: { resolver: {
       today: { mapped_entity: "sensor.old_pstryk_today", resolved_entity: "sensor.old_pstryk_today" },
       tomorrow: { mapped_entity: "sensor.old_pstryk_tomorrow", resolved_entity: "sensor.old_pstryk_tomorrow" },
@@ -65,7 +65,7 @@ check(!diagnostics.includes("sensor.old_pstryk"), "empty diagnostics must not re
 check(diagnostics.includes("not configured"), "empty diagnostics must show unconfigured status");
 
 card.tariffData = () => ({
-  mode: "automatic", provider: "pge", plan: "g11", providers: [], tariffs: [], hourly_profile: [],
+  mode: "automatic", provider: "dso_a", plan: "g11", providers: [], tariffs: [], hourly_profile: [],
   price_source: "pse_rce", price_contracts: { buy: known("rce_pse"), sell: empty },
 });
 const tariff = card.renderTariffTab();

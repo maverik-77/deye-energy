@@ -32,16 +32,16 @@ function known(adapter, direction) {
   };
 }
 
-function tariffData(provider = "pge", plan = "g11", contracts = null) {
+function tariffData(provider = "dso_a", plan = "g11", contracts = null) {
   return {
     mode: provider === "other" || plan === "custom" ? "manual" : "automatic",
     provider,
     plan,
-    provider_name: provider === "other" ? "Other operator" : "PGE Distribution",
+    provider_name: provider === "other" ? "Other operator" : "DSO A",
     plan_name: plan.toUpperCase(),
     configured: true,
     providers: [
-      { id: "pge", name: "PGE Distribution", tariffs: [{ id: "g11", name: "G11" }] },
+      { id: "dso_a", name: "DSO A", tariffs: [{ id: "g11", name: "G11" }] },
       { id: "other", name: "Other operator", tariffs: [{ id: "custom", name: "Manual profile" }] },
     ],
     tariffs: provider === "other" ? [{ id: "custom", name: "Manual profile" }] : [{ id: "g11", name: "G11" }],
@@ -89,7 +89,7 @@ const customBuy = {
   price_basis: "gross",
   unit: "GBP/kWh",
 };
-card.tariffData = () => tariffData("pge", "g11", { buy: customBuy, sell: known("pstryk", "sell") });
+card.tariffData = () => tariffData("dso_a", "g11", { buy: customBuy, sell: known("pstryk", "sell") });
 const custom = card.renderTariffTab();
 check(count(custom, "custom-price-contract") === 1, "only the actual Custom direction must expose advanced source settings");
 check(custom.includes('data-contract-field="economic_role"'), "Custom must expose explicit economic role");

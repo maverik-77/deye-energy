@@ -29,7 +29,7 @@ def test_pstryk_to_rce_discards_all_auto_metadata_from_old_mapping() -> None:
     assert switched["resolved_schema_today"] == {}
     assert switched["semantic_scope"] == "energy_only"
     assert switched["includes_distribution_variable"] is False
-    assert switched["value_field"] == "rce_pln"
+    assert switched["value_field"] == "rce_price"
     assert switched["today_list_attribute"] != "today_prices"
     assert switched["mapping_fingerprint"] != saved["mapping_fingerprint"]
 
@@ -39,7 +39,7 @@ def test_rce_to_pstryk_discards_rce_schema_and_rebuilds_pstryk() -> None:
         {}, "buy", "sensor.rce", "sensor.rce_tomorrow", "rce_pse", "rce_pse"
     )
     saved["resolved_schema_today"] = {
-        "schema_id": "rce_interval_v1", "list_attribute": "prices", "value_field": "rce_pln",
+        "schema_id": "rce_interval_v1", "list_attribute": "prices", "value_field": "rce_price",
     }
     switched = price_sources.rebuild_price_contract(
         saved, "buy", "sensor.pstryk", "sensor.pstryk_tomorrow", "pstryk", "pstryk"
@@ -72,7 +72,7 @@ def test_custom_overrides_survive_same_mapping_but_not_entity_switch() -> None:
             "source_adapter": "custom", "today_entity": "sensor.custom",
             "tomorrow_entity": "", "semantic_scope": "energy_only",
             "includes_distribution_variable": False, "price_basis": "gross",
-            "unit": "PLN/kWh", "list_attribute": "hourly", "value_field": "amount",
+            "unit": "GBP/kWh", "list_attribute": "hourly", "value_field": "amount",
         },
         "buy", "sensor.custom", "", "custom", "generic",
     )

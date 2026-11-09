@@ -48,7 +48,7 @@ class ProfileHelperEntityContractTests(unittest.TestCase):
         self.assertIn("async_forward_entry_setups(entry, PLATFORMS)", INIT_SOURCE)
         self.assertIn("async_unload_platforms(entry, PLATFORMS)", INIT_SOURCE)
 
-    def test_planned_and_executed_sensors_have_polish_names(self):
+    def test_planned_and_executed_sensors_have_english_names(self):
         self.assertIn('"planned_manager_action",\n                "Planned Manager decision"', SENSOR_SOURCE)
         self.assertIn('"executed_manager_action",\n                "Executed Manager decision"', SENSOR_SOURCE)
 
@@ -141,7 +141,7 @@ class ProfileHelperEntityContractTests(unittest.TestCase):
     def test_normal_profile_number_edit_calls_save_normal_profile(self):
         self.assertIn("await self.runtime.async_save_normal_profile(values)", NUMBER_SOURCE)
 
-    def test_normal_profile_select_options_use_polish_labels(self):
+    def test_normal_profile_select_options_use_english_labels(self):
         body = SELECT_SOURCE.split("class DeyeNormalProfileModeSelect")[1].split("class DeyeSlotModeSelect")[0]
         self.assertIn("normal_profile_mode_options", body)
         self.assertNotIn("return list(PHYSICAL_NORMAL_MODES)", body)

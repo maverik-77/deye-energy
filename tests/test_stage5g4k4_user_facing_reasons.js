@@ -22,7 +22,7 @@ function check(condition, message) {
 
 const card = new sandbox.Card();
 card.setConfig({});
-card._hass = { states: {}, config: { time_zone: "Europe/Warsaw" } };
+card._hass = { states: {}, config: { time_zone: "Europe/London" } };
 
 const required = {
   higher_priority_profile_reserve: "Energy preserved for a higher-priority profile",
@@ -93,7 +93,7 @@ const evidence = "Candidates are available for preview; the profile does not hav
 check(
   card.aiUiText(evidence)
     === "Candidates are available for preview; the profile does not have enough historical data yet.",
-  "mixed Polish/English evidence sentence must be fully English",
+  "mixed-language evidence sentence must be fully English",
 );
 
 const socFreshnessSources = {

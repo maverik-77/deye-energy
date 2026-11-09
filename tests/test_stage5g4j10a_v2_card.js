@@ -25,8 +25,8 @@ const settingsHtml = card.renderAiGeneralSettings();
 
 check(defaults.minimumAutoSellPowerW === 1000, "minimum automatic Sell defaults to 1000 W");
 check(defaults.priceEquivalenceBand === 0.05, "price equivalence band defaults to 0.05 GBP/kWh");
-check(settingsHtml.includes("Minimum automatic sell power"), "minimum setting is visible in Polish");
-check(settingsHtml.includes("Price difference considered close"), "price band setting is visible in Polish");
+check(settingsHtml.includes("Minimum automatic sell power"), "minimum setting is visible");
+check(settingsHtml.includes("Price difference considered close"), "price band setting is visible");
 check(settingsHtml.includes("does not restrict manual control"), "minimum description preserves manual control");
 check(card.aiUiText("higher_value_slot_reserved").includes("more expensive hour"), "future reserve reason is localized");
 check(card.aiUiText("near_equal_price_group").includes("similar prices"), "equivalence reason is localized");

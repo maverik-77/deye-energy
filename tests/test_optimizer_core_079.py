@@ -20,7 +20,7 @@ def base_inputs() -> dict:
     return {
         "date": date(2026, 7, 29).isoformat(),
         "generated_at": "2026-07-29T00:00:00+02:00",
-        "timezone": "Europe/Warsaw",
+        "timezone": "Europe/London",
         "current_hour": 0,
         "current_hour_remaining_minutes": 60,
         "soc": 70,
@@ -411,26 +411,26 @@ class OptimizerCore079Tests(unittest.TestCase):
         spring = base_inputs()
         spring.update({
             "date": "2026-03-29",
-            "generated_at": "2026-03-29T01:05:00+01:00",
-            "current_hour": 1,
+            "generated_at": "2026-03-29T00:05:00+00:00",
+            "current_hour": 0,
         })
         spring_plan = optimizer.build_energy_plan(spring, "balanced")
         spring_two = next(
             row for row in spring_plan["rows"]
-            if row["day"] == "today" and row["hour"] == 2
+            if row["day"] == "today" and row["hour"] == 1
         )
         self.assertEqual(0, spring_two["duration_minutes"])
 
         autumn = base_inputs()
         autumn.update({
             "date": "2026-10-25",
-            "generated_at": "2026-10-25T01:05:00+02:00",
-            "current_hour": 1,
+            "generated_at": "2026-10-25T00:05:00+01:00",
+            "current_hour": 0,
         })
         autumn_plan = optimizer.build_energy_plan(autumn, "balanced")
         autumn_two = next(
             row for row in autumn_plan["rows"]
-            if row["day"] == "today" and row["hour"] == 2
+            if row["day"] == "today" and row["hour"] == 1
         )
         self.assertEqual(120, autumn_two["duration_minutes"])
 

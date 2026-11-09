@@ -137,7 +137,7 @@ class AiAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('"entity_id"', raw)
         self.assertFalse(payload["privacy"]["entity_names_included"])
 
-    def test_private_payload_contains_only_safe_polish_review_context(self):
+    def test_private_payload_contains_only_safe_english_review_context(self):
         payload = assistant.build_private_payload(
             plan(),
             {"current_soc_pct": 50},
@@ -155,13 +155,13 @@ class AiAssistantTests(unittest.IsolatedAsyncioTestCase):
                     },
                 },
             },
-            tariff={"provider_name": "PGE Distribution", "plan_name": "G12w"},
+            tariff={"provider_name": "DSO A", "plan_name": "G12w"},
         )
         self.assertEqual("en-GB", payload["locale"])
         self.assertEqual("review", payload["requested_role"])
         self.assertEqual(3000, payload["user_profiles"]["morning_sale"]["preferred_power_w"])
         self.assertNotIn("note", payload["user_profiles"]["morning_sale"])
-        self.assertEqual("PGE Distribution", payload["tariff"]["provider_name"])
+        self.assertEqual("DSO A", payload["tariff"]["provider_name"])
         self.assertTrue(payload["privacy"]["protection_enforced"])
 
     def test_material_fingerprint_ignores_small_noise_but_tracks_actions(self):

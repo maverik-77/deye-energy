@@ -680,8 +680,8 @@ class OptimizerCoreTests(unittest.TestCase):
 
     def test_missing_tomorrow_prices_after_publication_are_reported(self):
         values = inputs()
-        values["generated_at"] = "2026-07-29T15:00:00+02:00"
-        values["timezone"] = "Europe/Warsaw"
+        values["generated_at"] = "2026-07-29T15:00:00+01:00"
+        values["timezone"] = "Europe/London"
         values["sell_prices"][1] = {}
         values["buy_prices"][1] = {}
         plan = optimizer.build_energy_plan(values, "balanced")
@@ -713,15 +713,15 @@ class OptimizerCoreTests(unittest.TestCase):
             for hour in range(24):
                 canonical["buy"]["rows"].append({
                     "day": day_name, "date": local_date, "hour": hour, "quality": "ready",
-                    "source_adapter": "pstryk", "source_unit": "PLN/kWh", "source_basis": "gross",
-                    "source_semantic_scope": "all_in_variable", "source_price_pln_kwh": 0.23,
+                    "source_adapter": "pstryk", "source_unit": "GBP/kWh", "source_basis": "gross",
+                    "source_semantic_scope": "all_in_variable", "source_price_gbp_kwh": 0.23,
                     "energy_component": 0.23, "added_distribution": 0.0, "added_vat": 0.0,
-                    "added_other_variable": 0.0, "final_price_pln_kwh": 0.23,
+                    "added_other_variable": 0.0, "final_price_gbp_kwh": 0.23,
                 })
                 canonical["sell"]["rows"].append({
                     "day": day_name, "date": local_date, "hour": hour, "quality": "ready",
-                    "source_adapter": "custom", "source_price_pln_kwh": 1.0,
-                    "final_price_pln_kwh": 1.0,
+                    "source_adapter": "custom", "source_price_gbp_kwh": 1.0,
+                    "final_price_gbp_kwh": 1.0,
                 })
         values["canonical_prices"] = canonical
         # Conflicting legacy arrays prove that the canonical contract wins.

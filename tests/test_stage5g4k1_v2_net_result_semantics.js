@@ -66,7 +66,7 @@ const planner = {
   benefit: 1.75,
   neutrality_threshold: 0.2,
   rows: [sellLower, negativeMarket, normalHigher],
-  days: [{ day: "today", balance_pln: 16.75, sold_kwh: 2, bought_kwh: 0, financial_data_complete: true }],
+  days: [{ day: "today", balance_gbp: 16.75, sold_kwh: 2, bought_kwh: 0, financial_data_complete: true }],
   checkpoints: {},
   data_quality: { learning_stage: "ready" },
   profile_impacts: [],
@@ -112,7 +112,7 @@ const unavailableBuyPlanner = {
   baseline_result: null,
   benefit: null,
   rows: [row(14, "normal", null, { proposed: false, financial_data_complete: false })],
-  days: [{ day: "today", balance_pln: null, financial_data_complete: false }],
+  days: [{ day: "today", balance_gbp: null, financial_data_complete: false }],
   recommended_write: false,
   recommended_write_by_day: { today: { allowed: false, reason: "financial_data_incomplete" } },
 };

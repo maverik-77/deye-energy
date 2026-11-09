@@ -45,7 +45,7 @@ const rceRows = Array.from({ length: 48 }, (_, index) => ({
   day: index < 24 ? "today" : "tomorrow",
   hour: index % 24,
   quality: "ready",
-  final_price_pln_kwh: 0.8,
+  final_price_gbp_kwh: 0.8,
 }));
 const canonical = {
   schema_version: 1,

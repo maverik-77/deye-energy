@@ -616,9 +616,9 @@ def _prices(inputs: dict[str, Any]) -> dict[str, Any]:
                     maps[day][hour] = value
             return maps
 
-        source_buys = canonical_row_maps(buy_rows, "source_price_pln_kwh")
-        final_buys = canonical_row_maps(buy_rows, "final_price_pln_kwh")
-        final_sells = canonical_row_maps(sell_rows, "final_price_pln_kwh")
+        source_buys = canonical_row_maps(buy_rows, "source_price_gbp_kwh")
+        final_buys = canonical_row_maps(buy_rows, "final_price_gbp_kwh")
+        final_sells = canonical_row_maps(sell_rows, "final_price_gbp_kwh")
         canonical_distribution = [0.0] * 48
         canonical_buy_rows: dict[int, dict[str, Any]] = {}
         canonical_sell_rows: dict[int, dict[str, Any]] = {}
@@ -702,7 +702,7 @@ def _ui_insights(
                 "hour": hour,
                 "label": f"{hour:02d}:00–{(hour + 1) % 24:02d}:00",
                 "energy_price": round(_finite(canonical_row.get("energy_component"), energy_price), 5),
-                "source_price": round(_finite(canonical_row.get("source_price_pln_kwh"), energy_price), 5),
+                "source_price": round(_finite(canonical_row.get("source_price_gbp_kwh"), energy_price), 5),
                 "distribution_price": round(distribution if prices.get("canonical") else 0.0 if included else distribution, 5),
                 "added_vat": round(_finite(canonical_row.get("added_vat")), 5),
                 "added_other_variable": round(_finite(canonical_row.get("added_other_variable")), 5),
@@ -1016,8 +1016,8 @@ def _ui_insights(
         "comparison": {
             "assessment": assessment,
             "decision_title": decision_title,
-            "benefit_vs_baseline_pln": round(benefit, 5),
-            "neutrality_threshold_pln": round(neutrality_threshold, 5),
+            "benefit_vs_baseline_gbp": round(benefit, 5),
+            "neutrality_threshold_gbp": round(neutrality_threshold, 5),
         },
         "tomorrow_plan_status": (
             "blocked"
@@ -3063,7 +3063,7 @@ def _simulate(
             "battery_cycle_cost": round(cycle_cost, 5),
             "terminal_value": 0.0,
             "net_result": round(net, 5),
-            "balance_pln": round(net, 2),
+            "balance_gbp": round(net, 2),
             "benefit": 0.0,
             "raw_confidence": confidence,
             "effective_confidence": effective_confidence,
@@ -3126,7 +3126,7 @@ def _simulate(
                 "end_soc": round(soc, 1),
                 "sold_kwh": round(sum(_finite(item.get("expected_export_kwh")) for item in day_rows), 3),
                 "bought_kwh": round(sum(_finite(item.get("expected_import_kwh")) for item in day_rows), 3),
-                "balance_pln": round(sum(item["net_result"] for item in day_rows), 2),
+                "balance_gbp": round(sum(item["net_result"] for item in day_rows), 2),
                 "confidence": confidence,
                 "prices_available": bool(prices["sell"][day_index] or prices["buy"][day_index]),
                 "financial_data_complete": all(
@@ -3565,8 +3565,8 @@ def build_energy_plan(
             "daily_target_energy_kwh": configured_daily_target,
             "days": deepcopy(fulfillment_days),
             "incomplete_dates": incomplete_days,
-            "profile_net_result_pln": incremental,
-            "counterfactual_plan_result_pln": counterfactual_result,
+            "profile_net_result_gbp": incremental,
+            "counterfactual_plan_result_gbp": counterfactual_result,
             "block_reason": block_reason,
         }
         if block_reason:
@@ -3675,8 +3675,8 @@ def build_energy_plan(
             _finite(inputs.get("battery_capacity_kwh"), 10) * optimized["end_soc"] / 100,
             5,
         ),
-        "terminal_energy_value_pln": optimized["financials"]["terminal_value"],
-        "terminal_value_delta_pln": round(
+        "terminal_energy_value_gbp": optimized["financials"]["terminal_value"],
+        "terminal_value_delta_gbp": round(
             optimized["financials"]["terminal_value"] - baseline["financials"]["terminal_value"],
             5,
         ),
@@ -3702,7 +3702,7 @@ def build_energy_plan(
             baseline["financials"]["battery_cycle_cost"] - optimized["financials"]["battery_cycle_cost"],
             5,
         ),
-        "terminal_value_delta": terminal["terminal_value_delta_pln"],
+        "terminal_value_delta": terminal["terminal_value_delta_gbp"],
     }
     financial_delta["other_rounding_delta"] = round(benefit - sum(financial_delta.values()), 5)
     profile_impacts = []
@@ -3851,9 +3851,9 @@ def build_energy_plan(
             "soc_before": profile_rows[0]["soc_start_pct"] if profile_rows else None,
             "soc_after": profile_rows[-1]["soc_end_pct"] if profile_rows else None,
             "expected_soc_after": profile_rows[-1]["soc_end_pct"] if profile_rows else None,
-            "actual_net_result_pln": None,
-            "expected_net_result_pln": round(sum(row["net_result"] for row in profile_rows), 5),
-            "profile_net_result_pln": round(_finite(preflight.get("profile_net_result_pln")), 5),
+            "actual_net_result_gbp": None,
+            "expected_net_result_gbp": round(sum(row["net_result"] for row in profile_rows), 5),
+            "profile_net_result_gbp": round(_finite(preflight.get("profile_net_result_gbp")), 5),
             "block_reason": block_reason,
             "partial_execution": bool(enabled and requested > 0 and planned + 1e-6 < requested),
             "status": status,
@@ -3900,7 +3900,7 @@ def build_energy_plan(
         day_rows = [row for row in optimized["rows"] if row.get("day") == day_name]
         day_summary = next((item for item in optimized["days"] if item.get("day") == day_name), {})
         baseline_summary = next((item for item in baseline["days"] if item.get("day") == day_name), {})
-        day_benefit = _finite(day_summary.get("balance_pln")) - _finite(baseline_summary.get("balance_pln"))
+        day_benefit = _finite(day_summary.get("balance_gbp")) - _finite(baseline_summary.get("balance_gbp"))
         deployable_rows = [
             row
             for row in day_rows
@@ -3952,7 +3952,7 @@ def build_energy_plan(
         recommended_write_by_day[day_name] = {
             "allowed": allowed,
             "financial_data_complete": complete,
-            "benefit_vs_baseline_pln": round(day_benefit, 5),
+            "benefit_vs_baseline_gbp": round(day_benefit, 5),
             "proposal_block_reason": proposal_block_reason,
             "deployment_block_reason": deployment_block_reason,
             "execution_readiness": readiness_status,

@@ -166,7 +166,7 @@ def test_t7_core_input_contains_kwh_forecasts_and_historical_accuracy_only(monke
     now = datetime(2026, 8, 29, 12, 0, tzinfo=UTC)
     monkeypatch.setattr(manager, "ha_now", lambda: now)
     runtime = make_runtime()
-    runtime.hass.config = SimpleNamespace(time_zone="Europe/Warsaw")
+    runtime.hass.config = SimpleNamespace(time_zone="Europe/London")
     _set_solcast_states(runtime, today=33.10, actual=31.10, remaining=0.13, tomorrow=50.08)
     base_learning = runtime.learning_summary()
     runtime.learning_summary = lambda: {
@@ -271,9 +271,9 @@ def test_t11_remaining_forecast_is_not_the_full_day_denominator(monkeypatch):
 
 
 def test_t12_dst_fallback_keeps_the_same_local_day(monkeypatch):
-    warsaw = ZoneInfo("Europe/Warsaw")
-    first_0230 = datetime(2026, 10, 25, 0, 30, tzinfo=UTC).astimezone(warsaw)
-    second_0230 = datetime(2026, 10, 25, 1, 30, tzinfo=UTC).astimezone(warsaw)
+    london = ZoneInfo("Europe/London")
+    first_0230 = datetime(2026, 10, 25, 0, 30, tzinfo=UTC).astimezone(london)
+    second_0230 = datetime(2026, 10, 25, 1, 30, tzinfo=UTC).astimezone(london)
     runtime = make_runtime()
 
     monkeypatch.setattr(manager, "ha_now", lambda: first_0230)

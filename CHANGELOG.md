@@ -22,13 +22,13 @@ and are not repeated here.
 - Deye Time Of Use options in `H:MM` format are parsed; the battery current cap is
   raised from 240 A to 320 A.
 - Canonical manager modes are `Selling`, `Charging` and `Normal Operation`.
-- Weekdays use `mon` … `sun`; legacy Polish values are still accepted.
+- Weekdays use `mon` … `sun`; legacy values are still accepted.
 
 ### Removed
 
-- Polish documentation, screenshots and the Polish translation file.
+- previous-language documentation, screenshots and the previous translation file.
 
 ### Known limitations
 
 - No standing charge, hourly-only tariff resolution, no manual flat export rate.
-- Bundled `tariff_catalog.json` is Polish PGE reference data.
+- Bundled `tariff_catalog.json` is illustrative sample data, not real tariffs.

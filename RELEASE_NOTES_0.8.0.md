@@ -11,14 +11,13 @@ Deye Energy 0.8.0 is the English-language edition of the
 
 - The whole integration, card, services and tests are in English. Canonical
   manager modes are `Selling`, `Charging` and `Normal Operation`; the former
-  Polish values are still accepted as legacy aliases when restoring old data.
+  English values are still accepted as legacy aliases when restoring old data.
 - The default inverter profile is **Sunsynk** (MQTT) with the entity names of
   the Sunsynk / Deye add-on pre-filled.
 - Deye Time Of Use options in `H:MM` format are supported, and battery current
   limits up to 320 A are accepted.
 - Prices and units are shown in pounds (£). The default tariff mode is manual
-  with a UK tariff; custom price mappings accept `GBP/kWh` and `GBP/MWh` as well
-  as `PLN/kWh` and `PLN/MWh`.
+  with a UK tariff; price mappings use `GBP/kWh` and `GBP/MWh`.
 - Numbers and dates use the `en-GB` locale.
 
 ## Carried over from the upstream 0.8.0 contract
@@ -40,8 +39,8 @@ Deye Energy 0.8.0 is the English-language edition of the
 
 - The tariff engine does not model the daily standing charge, works on hourly
   slots and has no manual flat export rate.
-- `tariff_catalog.json` is Polish reference data (PLN) and is not used by the
-  default manual tariff.
+- `tariff_catalog.json` is illustrative sample data (not real tariffs) and is
+  not used by the default manual tariff.
 - This edition was verified with unit tests and static checks. It has **not**
   been run against a live inverter: the inverter was disconnected while the
   adaptation was made. Test with **Deye control** switched off first.

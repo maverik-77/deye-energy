@@ -1,4 +1,4 @@
-"""Polish distribution tariff catalog and hourly profile engine."""
+"""Distribution tariff catalog and hourly profile engine."""
 
 from __future__ import annotations
 
@@ -24,8 +24,8 @@ def validate_catalog(catalog: Any) -> dict[str, Any]:
         raise ValueError("Unsupported tariff catalog schema")
     if not isinstance(catalog.get("catalog_version"), str):
         raise ValueError("Missing tariff catalog version")
-    if catalog.get("currency") != "PLN" or catalog.get("vat_included") is not True:
-        raise ValueError("Tariff catalog must contain gross PLN rates")
+    if catalog.get("currency") != "GBP" or catalog.get("vat_included") is not True:
+        raise ValueError("Tariff catalog must contain gross GBP rates")
     try:
         effective_from = date.fromisoformat(str(catalog.get("effective_from")))
         valid_to = date.fromisoformat(str(catalog.get("valid_to")))
@@ -143,7 +143,7 @@ def validate_catalog(catalog: Any) -> dict[str, Any]:
                 raise ValueError(f"Duplicate seller tariff id {tariff_id}")
             if entry.get("seller_id") != seller_id or entry.get("seller_name") != seller.get("seller_name"):
                 raise ValueError(f"Seller identity mismatch in {location}")
-            if entry.get("currency") != "PLN" or entry.get("unit") != "PLN/kWh":
+            if entry.get("currency") != "GBP" or entry.get("unit") != "GBP/kWh":
                 raise ValueError(f"Unsupported seller price unit in {location}")
             if entry.get("price_basis") != "gross" or entry.get("includes_vat") is not True or entry.get("includes_excise") is not True:
                 raise ValueError(f"Seller tariff {location} must contain gross prices with VAT and excise")
@@ -283,24 +283,47 @@ def _easter_sunday(year: int) -> date:
     return date(year, month, day)
 
 
-def polish_holidays(year: int) -> set[date]:
+def _first_weekday(year: int, month: int, weekday: int) -> date:
+    day = date(year, month, 1)
+    return day + timedelta(days=(weekday - day.weekday()) % 7)
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    nxt = date(year + (month == 12), (month % 12) + 1, 1)
+    day = nxt - timedelta(days=1)
+    return day - timedelta(days=(day.weekday() - weekday) % 7)
+
+
+def _substitute(day: date, taken: set[date]) -> date:
+    while day.weekday() >= 5 or day in taken:
+        day += timedelta(days=1)
+    return day
+
+
+def public_holidays(year: int) -> set[date]:
+    """England and Wales bank holidays, including substitute days."""
     easter = _easter_sunday(year)
-    fixed = {
-        date(year, 1, 1), date(year, 1, 6), date(year, 5, 1),
-        date(year, 5, 3), date(year, 8, 15), date(year, 11, 1),
-        date(year, 11, 11), date(year, 12, 24), date(year, 12, 25),
-        date(year, 12, 26),
-    }
-    return fixed | {
-        easter,
+    holidays = {
+        easter - timedelta(days=2),
         easter + timedelta(days=1),
-        easter + timedelta(days=49),
-        easter + timedelta(days=60),
+        _first_weekday(year, 5, 0),
+        _last_weekday(year, 5, 0),
+        _last_weekday(year, 8, 0),
     }
+    new_year = _substitute(date(year, 1, 1), set()) if date(year, 1, 1).weekday() >= 5 else date(year, 1, 1)
+    holidays.add(new_year)
+    christmas = date(year, 12, 25)
+    boxing = date(year, 12, 26)
+    holidays.add(_substitute(christmas, holidays) if christmas.weekday() >= 5 else christmas)
+    if boxing.weekday() >= 5 or boxing in holidays:
+        holidays.add(_substitute(boxing, holidays))
+    else:
+        holidays.add(boxing)
+    return holidays
 
 
-def is_polish_holiday(day: date) -> bool:
-    return day in polish_holidays(day.year)
+def is_public_holiday(day: date) -> bool:
+    return day in public_holidays(day.year)
 
 
 def tariff_season(day: date) -> str:
@@ -308,7 +331,7 @@ def tariff_season(day: date) -> str:
 
 
 def day_type(moment: datetime) -> str:
-    if is_polish_holiday(moment.date()):
+    if is_public_holiday(moment.date()):
         return "holiday"
     if moment.weekday() >= 5:
         return "weekend"
@@ -562,14 +585,14 @@ def seller_catalog_canonical_buy(
             "hour": moment.hour,
             "direction": "buy",
             "source_adapter": "seller_catalog",
-            "source_price_pln_kwh": round(source_price, 10),
+            "source_price_gbp_kwh": round(source_price, 10),
             "energy_component": round(source_price, 10),
             "added_distribution": round(distribution, 10),
             "added_vat": 0.0,
             "added_other_variable": 0.0,
-            "final_price_pln_kwh": round(source_price + distribution, 10),
+            "final_price_gbp_kwh": round(source_price + distribution, 10),
             "coverage_minutes": 60.0,
-            "source_unit": "PLN/kWh",
+            "source_unit": "GBP/kWh",
             "source_basis": "gross",
             "source_semantic_scope": "energy_only",
             "source_economic_role": "energy_only",
@@ -602,7 +625,7 @@ def seller_catalog_canonical_buy(
             "detected_adapter": "seller_catalog",
             "list_attribute": "",
             "value_field": "",
-            "unit": "PLN/kWh",
+            "unit": "GBP/kWh",
             "economic_role": "energy_only",
             "semantic_scope": "energy_only",
             "coverage_hours": 24 if ready else 0,
@@ -624,7 +647,7 @@ def seller_catalog_canonical_buy(
             "seller_tariff_id": seller_tariff_id,
             "resolved_seller_tariff_ids": sorted(resolved_ids),
             "price_basis": "gross",
-            "unit": "PLN/kWh",
+            "unit": "GBP/kWh",
             "economic_role": "energy_only",
             "semantic_scope": "energy_only",
             "includes_distribution_variable": False,
@@ -714,7 +737,7 @@ def catalog_tariff_row(
         "total_distribution_rate": round(max(0.0, rate + common_rate), 5),
         "day_type": kind,
         "weekend": moment.weekday() >= 5,
-        "holiday": is_polish_holiday(moment.date()),
+        "holiday": is_public_holiday(moment.date()),
         "season": season,
     }
 
@@ -745,7 +768,7 @@ def tariff_zone(
         return catalog_tariff_row(moment, catalog, provider, plan)["zone"]
     if normalized_plan == "g11":
         return "all_day"
-    if normalized_plan == "g12w" and (moment.weekday() >= 5 or is_polish_holiday(moment.date())):
+    if normalized_plan == "g12w" and (moment.weekday() >= 5 or is_public_holiday(moment.date())):
         return "offpeak"
     return "offpeak" if hour_in_windows(moment.hour, parse_windows(custom_windows)) else "peak"
 
@@ -773,7 +796,7 @@ def hourly_tariff_profile(
             "rate": round(max(0.0, float(rate)), 4),
             "day_type": day_type(current),
             "weekend": current.weekday() >= 5,
-            "holiday": is_polish_holiday(current.date()),
+            "holiday": is_public_holiday(current.date()),
             "season": tariff_season(current.date()),
         })
     return profile

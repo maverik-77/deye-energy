@@ -34,7 +34,7 @@ def rce_rows(day: datetime, price: float = 0.8) -> list[dict]:
             "period": f"{start:%H:%M} - {'24:00' if index == 95 else end.strftime('%H:%M')}",
             "dtime": end.strftime("%Y-%m-%d %H:%M:%S"),
             "business_date": day.date().isoformat(),
-            "rce_pln": price,
+            "rce_price": price,
         })
     return rows
 
@@ -102,7 +102,7 @@ def test_stale_pstryk_contract_rebuilds_clean_rce_and_aggregates_96_to_24() -> N
     assert contract["includes_distribution_variable"] is False
     assert contract["includes_excise"] is False
     assert contract["includes_service_margin"] is False
-    assert contract["value_field"] == "rce_pln"
+    assert contract["value_field"] == "rce_price"
     assert contract["period_field"] == "period"
     assert contract["timestamp_field"] == "dtime"
     assert contract["business_date_field"] == "business_date"

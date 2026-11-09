@@ -329,7 +329,7 @@ def build_private_payload(
             "load_kwh": _clean_number(row.get("home_load_kwh", row.get("load_kwh"))),
             "sell_price": _clean_number(row.get("sell_price")),
             "effective_buy_price": _clean_number(row.get("effective_buy_price")),
-            "net_result": _clean_number(row.get("net_result", row.get("balance_pln"))),
+            "net_result": _clean_number(row.get("net_result", row.get("balance_gbp"))),
             "confidence": _clean_number(row.get("confidence"), 1),
             "warnings": [
                 str(value)

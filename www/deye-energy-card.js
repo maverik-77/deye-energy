@@ -554,8 +554,8 @@ class DeyeEnergyCard extends HTMLElement {
 
     this.setText("[data-live='inverter-temp']", detailed("inverter_ac_temperature") === null ? "—" : `${Math.round(detailed("inverter_ac_temperature"))}`);
     const soldKwh = this.asNumber(this.state(this.entity("sensor", "sold_energy_today")), null);
-    const soldPln = this.asNumber(this.state(this.entity("sensor", "sold_value_today")), null);
-    this.setText("[data-live='sold-today-line']", `${fmtNum(soldKwh, 2)} kWh / ${fmtNum(soldPln, 2)} GBP`);
+    const soldGbp = this.asNumber(this.state(this.entity("sensor", "sold_value_today")), null);
+    this.setText("[data-live='sold-today-line']", `${fmtNum(soldKwh, 2)} kWh / ${fmtNum(soldGbp, 2)} GBP`);
 
     this.setText("[data-live='active-slot']", activeSlotLabel);
     this.setText("[data-live='manager-mode']", modeText);
@@ -807,8 +807,8 @@ class DeyeEnergyCard extends HTMLElement {
     if (!item || typeof item !== "object") return null;
     const keys = [
       "price", "value", "state", "amount", "total", "net_price", "gross_price",
-      "energy_price", "unit_price", "price_with_tax", "pln_kwh", "pln_per_kwh",
-      "sell_price", "buy_price", "sprzedaz", "zakup", "cena", "pln", "gbp", "rce"
+      "energy_price", "unit_price", "price_with_tax", "gbp_kwh", "gbp_per_kwh",
+      "sell_price", "buy_price", "sprzedaz", "zakup", "cena", "gbp", "gbp", "rce"
     ];
     for (const key of keys) {
       if (item[key] !== undefined) {
@@ -1607,7 +1607,7 @@ class DeyeEnergyCard extends HTMLElement {
       if (field === "tou_soc" && draft[field] === null) return;
       patch[field] = draft[field];
     });
-    // Every real save reasserts the canonical Polish mode.  This migrates a
+    // Every real save reasserts the canonical mode.  This migrates a
     // legacy card snapshot on the user's next edit without a separate write.
     if (Object.keys(patch).length > 1) patch.mode = draft.mode;
     return patch;
@@ -2717,7 +2717,7 @@ class DeyeEnergyCard extends HTMLElement {
       ai_settings: this.aiSettings(),
       tariff_settings: {
         tariff_mode: tariff.mode || "automatic",
-        osd_provider: tariff.provider || "pge",
+        osd_provider: tariff.provider || "other",
         tariff_plan: tariff.plan || "g11",
         distribution_peak_rate: tariff.peak_rate ?? 0,
         distribution_offpeak_rate: tariff.offpeak_rate ?? 0,
@@ -2898,7 +2898,7 @@ class DeyeEnergyCard extends HTMLElement {
       : [];
   }
 
-  canonicalPriceMaps(direction, field = "final_price_pln_kwh", planner = null) {
+  canonicalPriceMaps(direction, field = "final_price_gbp_kwh", planner = null) {
     const maps = [new Map(), new Map()];
     this.canonicalPriceRows(direction, planner).forEach((row) => {
       const day = row.day === "today" ? 0 : row.day === "tomorrow" ? 1 : -1;
@@ -3059,7 +3059,7 @@ class DeyeEnergyCard extends HTMLElement {
       const now = rows.find((row) => row.day === "today" && Number(row.hour) === (this.localDateTimeParts()?.hour ?? new Date().getHours()));
       const addedOsd = rows.some((row) => Math.abs(this.asNumber(row.added_distribution) || 0) > 1e-12);
       const aggregation = contract.granularity === "15m" ? "15m→60m weighted" : `${contract.granularity || "per-day"}→60m`;
-      return `<tr><td>${direction.toUpperCase()}</td><td>${this.escapeHtml(contract.adapter_summary || contract.source_adapter || "missing")}</td><td>${this.escapeHtml(contract.economic_role || "missing role")} / ${this.escapeHtml(contract.semantic_scope || "per-day")}</td><td>${this.escapeHtml(contract.unit || "per-day")} / ${this.escapeHtml(contract.price_basis || "per-day")}</td><td>${this.escapeHtml(aggregation)}</td><td>${diag.coverage_today || 0}/24 · ${diag.coverage_tomorrow || 0}/24</td><td>${addedOsd ? "yes" : "no"}</td><td>${this.escapeHtml(resolverLabel(diag.status || "waiting_data"))}</td><td>${now ? `${this.formatPrice(now.final_price_pln_kwh)} GBP/kWh` : "missing"}</td></tr>`;
+      return `<tr><td>${direction.toUpperCase()}</td><td>${this.escapeHtml(contract.adapter_summary || contract.source_adapter || "missing")}</td><td>${this.escapeHtml(contract.economic_role || "missing role")} / ${this.escapeHtml(contract.semantic_scope || "per-day")}</td><td>${this.escapeHtml(contract.unit || "per-day")} / ${this.escapeHtml(contract.price_basis || "per-day")}</td><td>${this.escapeHtml(aggregation)}</td><td>${diag.coverage_today || 0}/24 · ${diag.coverage_tomorrow || 0}/24</td><td>${addedOsd ? "yes" : "no"}</td><td>${this.escapeHtml(resolverLabel(diag.status || "waiting_data"))}</td><td>${now ? `${this.formatPrice(now.final_price_gbp_kwh)} GBP/kWh` : "missing"}</td></tr>`;
     };
     const resolverLine = (direction, day) => {
       const hasAuthoritative = Boolean(tariff.price_contracts && Object.prototype.hasOwnProperty.call(tariff.price_contracts, direction));
@@ -3096,7 +3096,7 @@ class DeyeEnergyCard extends HTMLElement {
     const tariff = this.tariffData();
     const draft = {
       tariff_mode: tariff.mode || "automatic",
-      osd_provider: tariff.provider || "pge",
+      osd_provider: tariff.provider || "other",
       tariff_plan: tariff.plan || "g11",
       price_includes_distribution: Boolean(tariff.price_includes_distribution),
       buy_price_contract: { ...(tariff.price_contracts?.buy || {}) },
@@ -4116,7 +4116,7 @@ class DeyeEnergyCard extends HTMLElement {
     const loadL3Power = st("load_l3_power");
     const inverterTemp = st("inverter_ac_temperature");
     const soldTodayKwh = this.asNumber(this.state(this.entity("sensor", "sold_energy_today")), 0) || 0;
-    const soldTodayPln = this.asNumber(this.state(this.entity("sensor", "sold_value_today")), 0) || 0;
+    const soldTodayGbp = this.asNumber(this.state(this.entity("sensor", "sold_value_today")), 0) || 0;
 
     const active = {
       pv: pvPower > 1,
@@ -4339,7 +4339,7 @@ class DeyeEnergyCard extends HTMLElement {
                     <div class="flow-sold-icon" style="color:#7ee22d">${this.iconSvg("money")}</div>
                     <div class="flow-sold-copy">
                       <span>Sold today</span>
-                      <strong class="flow-sold-value" data-live="sold-today-line">${fmtNumber(soldTodayKwh, 2)} kWh / ${fmtNumber(soldTodayPln, 2)} GBP</strong>
+                      <strong class="flow-sold-value" data-live="sold-today-line">${fmtNumber(soldTodayKwh, 2)} kWh / ${fmtNumber(soldTodayGbp, 2)} GBP</strong>
                     </div>
                   </div>
                 </div>
@@ -5040,7 +5040,7 @@ class DeyeEnergyCard extends HTMLElement {
 
   aiSlotEconomics(row) {
     return {
-      slotResult: this.asNumber(row?.net_result ?? row?.balance_pln),
+      slotResult: this.asNumber(row?.net_result ?? row?.balance_gbp),
       baselineSlotDelta: this.asNumber(row?.benefit),
       terminalValue: this.asNumber(row?.terminal_value),
       marginalDecisionBenefit: null,
@@ -5244,7 +5244,7 @@ class DeyeEnergyCard extends HTMLElement {
           possible_energy_kwh: profile.possible_energy_kwh ?? row.planned_energy_kwh ?? 0,
           remaining_target_kwh: profile.remaining_energy_kwh ?? profile.requested_energy_kwh ?? 0,
           min_net_result: profile.min_net_result ?? 0,
-          profile_net_result_pln: profile.profile_net_result_pln ?? 0,
+          profile_net_result_gbp: profile.profile_net_result_gbp ?? 0,
           deadline,
           deadline_next_day: deadlineHour !== null && deadlineHour <= startHour,
           charge_source: profile.source || row.charge_source || null,
@@ -5571,7 +5571,7 @@ class DeyeEnergyCard extends HTMLElement {
   aiSaleInsights(planner) {
     const backend = planner?.ui_insights?.sale_profiles;
     const profiles = this.aiProfiles().profiles || {};
-    const maps = this.canonicalPriceMaps("sell", "final_price_pln_kwh", planner);
+    const maps = this.canonicalPriceMaps("sell", "final_price_gbp_kwh", planner);
     const result = {};
     ["morning_sale", "evening_sale"].forEach((profileId) => {
       const configured = profiles[profileId] || {};
@@ -5687,9 +5687,9 @@ class DeyeEnergyCard extends HTMLElement {
     const rows = this.canonicalPriceRows("buy", planner);
     const days = {};
     ["today", "tomorrow"].forEach((day) => {
-      days[day] = rows.filter((row) => row.day === day && this.asNumber(row.final_price_pln_kwh) !== null).map((row) => ({
-        ...row, energy_price: row.energy_component, source_price: row.source_price_pln_kwh,
-        distribution_price: row.added_distribution, effective_price: row.final_price_pln_kwh,
+      days[day] = rows.filter((row) => row.day === day && this.asNumber(row.final_price_gbp_kwh) !== null).map((row) => ({
+        ...row, energy_price: row.energy_component, source_price: row.source_price_gbp_kwh,
+        distribution_price: row.added_distribution, effective_price: row.final_price_gbp_kwh,
         price_includes_distribution: row.source_semantic_scope === "all_in_variable",
       })).sort((a, b) => (this.asNumber(a.effective_price) || 0) - (this.asNumber(b.effective_price) || 0) || a.hour - b.hour);
     });
@@ -5946,7 +5946,7 @@ class DeyeEnergyCard extends HTMLElement {
       const actualRow = actual[index];
       const weather = weatherMap.get(`${row.date}-${row.hour}`) || {};
       const [, weatherLabel] = this.aiWeatherMeta(weather.condition);
-      return `<div class="ai-chart-tip-source" data-ai-tip-source="${chartId}-${index}"><strong>${this.escapeHtml(String(row.date || ""))} · ${this.escapeHtml(String(row.label || this.hourLabel(row.hour)))}</strong><div><span>Actual production</span><b>${actualRow?.pvSamples ? display(actualRow.pv, 2, " kWh") : "no data"}</b><span>Solcast forecast</span><b>${display(row.solcast_kwh, 2, " kWh")}</b><span>Corrected forecast</span><b>${display(row.corrected_pv_kwh, 2, " kWh")}</b><span>Forecast range</span><b>${display(row.forecast_low_kwh, 2)}–${display(row.forecast_high_kwh, 2, " kWh")}</b><span>Consumption</span><b>${actualRow?.loadSamples ? display(actualRow.load, 2, " kWh") : display(row.load_kwh, 2, " kWh")}</b><span>SOC after</span><b>${display(row.soc_after, 1, "%")}</b><span>Action</span><b>${row.action === "sell" ? "selling" : row.action === "charge" ? "charging" : "no change"}</b><span>Balance</span><b>${display(row.balance_pln, 2, " GBP")}</b><span>Weather</span><b>${this.escapeHtml(weatherLabel)} · ${display(weather.temperature, 1, "°C")}</b><span>Confidence</span><b>${display(row.confidence, 0, "%")}</b></div></div>`;
+      return `<div class="ai-chart-tip-source" data-ai-tip-source="${chartId}-${index}"><strong>${this.escapeHtml(String(row.date || ""))} · ${this.escapeHtml(String(row.label || this.hourLabel(row.hour)))}</strong><div><span>Actual production</span><b>${actualRow?.pvSamples ? display(actualRow.pv, 2, " kWh") : "no data"}</b><span>Solcast forecast</span><b>${display(row.solcast_kwh, 2, " kWh")}</b><span>Corrected forecast</span><b>${display(row.corrected_pv_kwh, 2, " kWh")}</b><span>Forecast range</span><b>${display(row.forecast_low_kwh, 2)}–${display(row.forecast_high_kwh, 2, " kWh")}</b><span>Consumption</span><b>${actualRow?.loadSamples ? display(actualRow.load, 2, " kWh") : display(row.load_kwh, 2, " kWh")}</b><span>SOC after</span><b>${display(row.soc_after, 1, "%")}</b><span>Action</span><b>${row.action === "sell" ? "selling" : row.action === "charge" ? "charging" : "no change"}</b><span>Balance</span><b>${display(row.balance_gbp, 2, " GBP")}</b><span>Weather</span><b>${this.escapeHtml(weatherLabel)} · ${display(weather.temperature, 1, "°C")}</b><span>Confidence</span><b>${display(row.confidence, 0, "%")}</b></div></div>`;
     }).join("");
     const overlays = values.map((row, index) => `<rect x="${(left + index * step).toFixed(1)}" y="${top - 10}" width="${Math.max(1, step).toFixed(1)}" height="${socTop + socHeight - top + 10}" class="ai-chart-hit" data-ai-chart-point="${chartId}" data-ai-chart-index="${index}"/>`).join("");
     return `<section class="ai-chart-card ai-chart-v2" data-ai-chart="${chartId}"><h3>${this.escapeHtml(title)}</h3><div class="ai-chart-legend"><span class="load">Consumption</span><span class="actual">Actual production</span><span class="solcast">Solcast forecast</span><span class="corrected">Corrected forecast</span><span class="band">Forecast range</span><span class="soc">SOC</span><span class="sell">Selling</span><span class="charge">Charging</span><span class="tariff">Cheap tariff</span></div><div class="ai-chart-scroll"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${this.escapeHtml(title)}"><text x="15" y="${top + 6}" class="ai-chart-axis">kWh</text>${cheapZones}${grid}${band}${bars}<polyline points="${linePoints("corrected_pv_kwh")}" class="ai-line-corrected"/><line x1="${left}" y1="${top + topHeight}" x2="${width - right}" y2="${top + topHeight}" class="ai-chart-baseline"/><text x="15" y="${socTop + 10}" class="ai-chart-axis">SOC</text><line x1="${left}" y1="${socTop}" x2="${width - right}" y2="${socTop}" class="ai-chart-grid"/><line x1="${left}" y1="${socTop + socHeight}" x2="${width - right}" y2="${socTop + socHeight}" class="ai-chart-baseline"/>${minSocLine}<polyline points="${socLine}" class="ai-line-soc"/>${actions}${weatherIcons}${labels}${daySeparator}${currentLine}<line class="ai-chart-crosshair-x" x1="0" x2="0" y1="${top}" y2="${socTop + socHeight}"/><line class="ai-chart-crosshair-y" x1="${left}" x2="${width - right}" y1="0" y2="0"/>${overlays}</svg></div><div class="ai-chart-tooltip" data-ai-chart-tooltip></div>${tipSources}<small class="ai-chart-help">Hover over or tap an hour to see details. Missing data is marked as "no data".</small></section>`;
@@ -6065,7 +6065,7 @@ class DeyeEnergyCard extends HTMLElement {
       const actualRow = actual[index];
       const forecast = weatherMap.get(`${row.date}-${row.hour}`) || {};
       const [, condition] = this.aiWeatherMeta(forecast.condition);
-      return `<div class="ai-chart-tip-source" data-ai-tip-source="${chartId}-${index}"><strong>${this.escapeHtml(String(row.date || ""))} · ${this.escapeHtml(String(row.label || this.hourLabel(row.hour)))}</strong><div><span>Actual production</span><b>${actualRow?.pvSamples ? display(actualRow.pv, 2, " kWh") : "no data"}</b><span>Consumption</span><b>${actualRow?.loadSamples ? display(actualRow.load, 2, " kWh") : display(row.load_kwh, 2, " kWh")}</b><span>Solcast forecast</span><b>${display(row.solcast_kwh, 2, " kWh")}</b><span>Corrected forecast</span><b>${display(row.corrected_pv_kwh, 2, " kWh")}</b><span>Forecast range</span><b>${display(row.forecast_low_kwh, 2)}–${display(row.forecast_high_kwh, 2, " kWh")}</b><span>SOC</span><b>${display(row.soc_after, 1, "%")}</b><span>Status</span><b>${row.action === "sell" ? "selling" : row.action === "charge" ? "charging" : "no change"}</b><span>Distribution</span><b>${display(row.distribution, 4, " GBP/kWh")}</b><span>Weather</span><b>${forecast.condition ? `${this.escapeHtml(condition)} · ${display(forecast.temperature, 1, "°C")}` : "no data"}</b><span>Precipitation</span><b>${display(forecast.precipitation_probability, 0, "%")}</b><span>Balance</span><b>${display(row.balance_pln, 2, " GBP")}</b></div></div>`;
+      return `<div class="ai-chart-tip-source" data-ai-tip-source="${chartId}-${index}"><strong>${this.escapeHtml(String(row.date || ""))} · ${this.escapeHtml(String(row.label || this.hourLabel(row.hour)))}</strong><div><span>Actual production</span><b>${actualRow?.pvSamples ? display(actualRow.pv, 2, " kWh") : "no data"}</b><span>Consumption</span><b>${actualRow?.loadSamples ? display(actualRow.load, 2, " kWh") : display(row.load_kwh, 2, " kWh")}</b><span>Solcast forecast</span><b>${display(row.solcast_kwh, 2, " kWh")}</b><span>Corrected forecast</span><b>${display(row.corrected_pv_kwh, 2, " kWh")}</b><span>Forecast range</span><b>${display(row.forecast_low_kwh, 2)}–${display(row.forecast_high_kwh, 2, " kWh")}</b><span>SOC</span><b>${display(row.soc_after, 1, "%")}</b><span>Status</span><b>${row.action === "sell" ? "selling" : row.action === "charge" ? "charging" : "no change"}</b><span>Distribution</span><b>${display(row.distribution, 4, " GBP/kWh")}</b><span>Weather</span><b>${forecast.condition ? `${this.escapeHtml(condition)} · ${display(forecast.temperature, 1, "°C")}` : "no data"}</b><span>Precipitation</span><b>${display(forecast.precipitation_probability, 0, "%")}</b><span>Balance</span><b>${display(row.balance_gbp, 2, " GBP")}</b></div></div>`;
     }).join("");
     const hits = values.map((row, index) => `<rect x="${(left + index * step).toFixed(1)}" y="${top}" width="${Math.max(1, step).toFixed(1)}" height="${statusTop + statusRowHeight * 3 - top}" class="ai-chart-hit" data-ai-chart-point="${chartId}" data-ai-chart-index="${index}"/>`).join("");
     const legend = [
@@ -6193,7 +6193,7 @@ class DeyeEnergyCard extends HTMLElement {
       const actualRow = actual[index];
       const forecast = weatherMap.get(`${row.date}-${row.hour}`) || {};
       const [, condition] = this.aiWeatherMeta(forecast.condition);
-      return `<div class="ai-chart-tip-source" data-ai-tip-source="${chartId}-${index}"><strong>${this.aiFormatDate(row.date)} · ${this.escapeHtml(String(row.label || this.hourLabel(row.hour)))}</strong><div><span>Actual production</span><b>${actualRow?.pvSamples ? display(actualRow.pv, 2, " kWh") : "no data"}</b><span>Point source</span><b>${this.escapeHtml(actualSource(row, actualRow))}</b><span>Consumption</span><b>${actualRow?.loadSamples ? display(actualRow.load, 2, " kWh") : display(row.load_kwh, 2, " kWh")}</b><span>Solcast forecast</span><b>${display(row.solcast_kwh, 2, " kWh")}</b><span>Corrected forecast</span><b>${display(row.corrected_pv_kwh, 2, " kWh")}</b><span>Forecast range</span><b>${display(row.forecast_low_kwh, 2)}–${display(row.forecast_high_kwh, 2, " kWh")}</b><span>SOC</span><b>${display(row.soc_after, 1, "%")}</b><span>User min. SOC</span><b>${display(minSoc, 1, "%")}</b><span>Effective plan minimum</span><b title="The plan stopped discharge earlier to preserve additional energy reserve.">${display(effectiveMinSoc, 1, "%")}</b><span>Status</span><b>${this.escapeHtml(this.aiActionLabel(row.action))}</b><span>Weather</span><b>${forecast.condition ? `${this.escapeHtml(condition)} · ${display(forecast.temperature, 1, "°C")}` : "no data"}</b><span>Balance</span><b>${display(row.balance_pln, 2, " £")}</b></div></div>`;
+      return `<div class="ai-chart-tip-source" data-ai-tip-source="${chartId}-${index}"><strong>${this.aiFormatDate(row.date)} · ${this.escapeHtml(String(row.label || this.hourLabel(row.hour)))}</strong><div><span>Actual production</span><b>${actualRow?.pvSamples ? display(actualRow.pv, 2, " kWh") : "no data"}</b><span>Point source</span><b>${this.escapeHtml(actualSource(row, actualRow))}</b><span>Consumption</span><b>${actualRow?.loadSamples ? display(actualRow.load, 2, " kWh") : display(row.load_kwh, 2, " kWh")}</b><span>Solcast forecast</span><b>${display(row.solcast_kwh, 2, " kWh")}</b><span>Corrected forecast</span><b>${display(row.corrected_pv_kwh, 2, " kWh")}</b><span>Forecast range</span><b>${display(row.forecast_low_kwh, 2)}–${display(row.forecast_high_kwh, 2, " kWh")}</b><span>SOC</span><b>${display(row.soc_after, 1, "%")}</b><span>User min. SOC</span><b>${display(minSoc, 1, "%")}</b><span>Effective plan minimum</span><b title="The plan stopped discharge earlier to preserve additional energy reserve.">${display(effectiveMinSoc, 1, "%")}</b><span>Status</span><b>${this.escapeHtml(this.aiActionLabel(row.action))}</b><span>Weather</span><b>${forecast.condition ? `${this.escapeHtml(condition)} · ${display(forecast.temperature, 1, "°C")}` : "no data"}</b><span>Balance</span><b>${display(row.balance_gbp, 2, " £")}</b></div></div>`;
     }).join("");
     const hits = values.map((row, index) => `<rect x="${(index * step).toFixed(1)}" y="${top}" width="${Math.max(1, step).toFixed(1)}" height="${plotHeight}" class="ai-chart-hit ai-crisp-hit" data-ai-chart-point="${chartId}" data-ai-chart-index="${index}"/>`).join("");
     const minimumLabel = sameMinimum
@@ -6414,7 +6414,7 @@ class DeyeEnergyCard extends HTMLElement {
     const dayFinancial = (day, label) => {
       const summary = summaries.get(day) || {};
       const complete = summary.financial_data_complete !== false;
-      return `${label}: ${this.formatEnergy(summary.sold_kwh || 0)} exported / ${complete ? this.formatSignedMoney(summary.balance_pln) : "partial result — missing prices"}`;
+      return `${label}: ${this.formatEnergy(summary.sold_kwh || 0)} exported / ${complete ? this.formatSignedMoney(summary.balance_gbp) : "partial result — missing prices"}`;
     };
     const checkpoints = planner.checkpoints || {};
     const future = this._hass?.states?.[this.entity("sensor", "ai_state")]?.attributes?.future_plan || {};
@@ -6505,7 +6505,7 @@ class DeyeEnergyCard extends HTMLElement {
     const variants = planner.variants || {};
     const variantSummary = (key, label) => {
       const summary = variants[key]?.days?.find((item) => item.day === day);
-      return `<button class="${planner.selected_strategy === key ? "active" : ""}" disabled><strong>${label}</strong><span>${summary ? `SOC ${this.formatNumber(summary.end_soc, 1)}% · ${this.formatNumber(summary.balance_pln, 2)} GBP` : "no data"}</span></button>`;
+      return `<button class="${planner.selected_strategy === key ? "active" : ""}" disabled><strong>${label}</strong><span>${summary ? `SOC ${this.formatNumber(summary.end_soc, 1)}% · ${this.formatNumber(summary.balance_gbp, 2)} GBP` : "no data"}</span></button>`;
     };
     const quality = planner.data_quality || {};
     const dayRecommendation = planner.recommended_write_by_day?.[day];
@@ -6682,7 +6682,7 @@ class DeyeEnergyCard extends HTMLElement {
   renderAiPlanDay(planner, day) {
     const rows = this.aiRowsForDay(planner, day);
     const summary = (planner.days || []).find((item) => item.day === day) || {};
-    return `<div class="ai-day-plan"><div class="ai-kpis"><div><span>SOC start</span><strong>${this.formatNumber(summary.start_soc, 1)}%</strong></div><div><span>SOC end</span><strong>${this.formatNumber(summary.end_soc, 1)}%</strong></div><div><span>Export</span><strong>${this.formatEnergy(summary.sold_kwh || 0)}</strong></div><div><span>Import</span><strong>${this.formatEnergy(summary.bought_kwh || 0)}</strong></div><div title="Full economic result of the modelled day plan taking energy flows and prices into account."><span>Modelled day result</span><strong>${this.formatSignedMoney(summary.balance_pln)}</strong></div></div>${this.aiReadableEnergyChart(rows, day === "today" ? "Plan for today" : "Plan for tomorrow")}${this.aiWeatherCard(planner, day)}</div>`;
+    return `<div class="ai-day-plan"><div class="ai-kpis"><div><span>SOC start</span><strong>${this.formatNumber(summary.start_soc, 1)}%</strong></div><div><span>SOC end</span><strong>${this.formatNumber(summary.end_soc, 1)}%</strong></div><div><span>Export</span><strong>${this.formatEnergy(summary.sold_kwh || 0)}</strong></div><div><span>Import</span><strong>${this.formatEnergy(summary.bought_kwh || 0)}</strong></div><div title="Full economic result of the modelled day plan taking energy flows and prices into account."><span>Modelled day result</span><strong>${this.formatSignedMoney(summary.balance_gbp)}</strong></div></div>${this.aiReadableEnergyChart(rows, day === "today" ? "Plan for today" : "Plan for tomorrow")}${this.aiWeatherCard(planner, day)}</div>`;
   }
 
   aiExecutionFallback(planner, day) {
@@ -6707,7 +6707,7 @@ class DeyeEnergyCard extends HTMLElement {
       expected_export_kwh: row.expected_export_kwh,
       sell_price: row.sell_price,
       effective_buy_price: row.effective_buy_price,
-      net_result_pln: row.net_result ?? row.balance_pln,
+      net_result_gbp: row.net_result ?? row.balance_gbp,
       confidence: row.confidence,
       reason_codes: row.reason_codes || [],
     }));
@@ -6879,13 +6879,13 @@ class DeyeEnergyCard extends HTMLElement {
   _renderAiExecutionTip(item, formatMoney, formatEnergy, formatSoc) {
     if (!item) return "";
     const { index, row, actual, status, statusClass, action } = item;
-    const hasActual = [actual.pv_kwh, actual.load_kwh, actual.soc_end_pct, actual.grid_import_kwh, actual.grid_export_kwh, actual.net_result_pln]
+    const hasActual = [actual.pv_kwh, actual.load_kwh, actual.soc_end_pct, actual.grid_import_kwh, actual.grid_export_kwh, actual.net_result_gbp]
       .some((value) => this.asNumber(value) !== null);
     const profile = row.profile_id ? this.aiUiText(`profile:${row.profile_id}`) : this.aiUiText(row.decision_source || "optimizer");
     const pairRow = (label, planText, actualText) => hasActual
       ? `<span>${label} plan / act.</span><b>${planText} / ${actualText}</b>`
       : `<span>${label} plan</span><b>${planText}</b>`;
-    return `<div class="ai-chart-tip-source" data-ai-tip-source="execution-${index}"><strong>${this.escapeHtml(row.label || this.hourLabel(row.hour))} · <span class="${statusClass}">${status}</span></strong><div><span>Action</span><b>${action}</b><span>Profile</span><b>${this.escapeHtml(profile)}</b><span>Slot power</span><b>${this.aiExecutionNumber(row.planned_power_w, 0, " W")}</b></div><div class="ai-exec-tip-sep"></div><div>${pairRow("PV", formatEnergy(row.corrected_pv_kwh), formatEnergy(actual.pv_kwh))}${pairRow("House", formatEnergy(row.load_kwh), formatEnergy(actual.load_kwh))}${pairRow("SOC", formatSoc(row.soc_end_pct), formatSoc(actual.soc_end_pct))}${pairRow("Import", formatEnergy(row.expected_import_kwh), formatEnergy(actual.grid_import_kwh))}${pairRow("Export", formatEnergy(row.expected_export_kwh), formatEnergy(actual.grid_export_kwh))}</div><div class="ai-exec-tip-sep"></div><div><span>Buy price</span><b>${this.aiExecutionNumber(row.effective_buy_price, 2, " £/kWh")}</b><span>Sell price</span><b>${this.aiExecutionNumber(row.sell_price, 2, " £/kWh")}</b>${pairRow("Full economic result", formatMoney(row.net_result_pln), formatMoney(actual.net_result_pln))}</div></div>`;
+    return `<div class="ai-chart-tip-source" data-ai-tip-source="execution-${index}"><strong>${this.escapeHtml(row.label || this.hourLabel(row.hour))} · <span class="${statusClass}">${status}</span></strong><div><span>Action</span><b>${action}</b><span>Profile</span><b>${this.escapeHtml(profile)}</b><span>Slot power</span><b>${this.aiExecutionNumber(row.planned_power_w, 0, " W")}</b></div><div class="ai-exec-tip-sep"></div><div>${pairRow("PV", formatEnergy(row.corrected_pv_kwh), formatEnergy(actual.pv_kwh))}${pairRow("House", formatEnergy(row.load_kwh), formatEnergy(actual.load_kwh))}${pairRow("SOC", formatSoc(row.soc_end_pct), formatSoc(actual.soc_end_pct))}${pairRow("Import", formatEnergy(row.expected_import_kwh), formatEnergy(actual.grid_import_kwh))}${pairRow("Export", formatEnergy(row.expected_export_kwh), formatEnergy(actual.grid_export_kwh))}</div><div class="ai-exec-tip-sep"></div><div><span>Buy price</span><b>${this.aiExecutionNumber(row.effective_buy_price, 2, " £/kWh")}</b><span>Sell price</span><b>${this.aiExecutionNumber(row.sell_price, 2, " £/kWh")}</b>${pairRow("Full economic result", formatMoney(row.net_result_gbp), formatMoney(actual.net_result_gbp))}</div></div>`;
   }
 
   renderAiExecutionNowLine(left, right, bottom, top, width = 1400) {
@@ -6911,7 +6911,7 @@ class DeyeEnergyCard extends HTMLElement {
       const diff = Math.abs(p - w);
       return diff > p * 0.2 + 0.05 ? " ai-exec-wykonanie-diverge" : diff > p * 0.08 + 0.02 ? " ai-exec-wykonanie-off" : " ai-exec-wykonanie-match";
     };
-    const footer = planOnly ? "" : `<tfoot><tr class="ai-exec-summary"><td class="ai-exec-col-hour"><strong>TOTAL</strong></td><td class="ai-exec-col-status"></td><td class="ai-exec-col-action"></td><td class="ai-exec-col-power"></td>${emptyCell}${emptyCell}${numberCell(sum("corrected_pv_kwh"), 2, "")}${numberCell(sum("actual", "pv_kwh"), 2, "")}${numberCell(sum("load_kwh"), 2, "")}${numberCell(sum("actual", "load_kwh"), 2, "")}${numberCell(sum("expected_import_kwh"), 2, "")}${numberCell(sum("actual", "grid_import_kwh"), 2, "")}${numberCell(sum("expected_export_kwh"), 2, "")}${numberCell(sum("actual", "grid_export_kwh"), 2, "")}${emptyCell}${numberCell(sum("net_result_pln"), 2, "")}${numberCell(sum("actual", "net_result_pln"), 2, "")}${emptyCell}${emptyCell}</tr></tfoot>`;
+    const footer = planOnly ? "" : `<tfoot><tr class="ai-exec-summary"><td class="ai-exec-col-hour"><strong>TOTAL</strong></td><td class="ai-exec-col-status"></td><td class="ai-exec-col-action"></td><td class="ai-exec-col-power"></td>${emptyCell}${emptyCell}${numberCell(sum("corrected_pv_kwh"), 2, "")}${numberCell(sum("actual", "pv_kwh"), 2, "")}${numberCell(sum("load_kwh"), 2, "")}${numberCell(sum("actual", "load_kwh"), 2, "")}${numberCell(sum("expected_import_kwh"), 2, "")}${numberCell(sum("actual", "grid_import_kwh"), 2, "")}${numberCell(sum("expected_export_kwh"), 2, "")}${numberCell(sum("actual", "grid_export_kwh"), 2, "")}${emptyCell}${numberCell(sum("net_result_gbp"), 2, "")}${numberCell(sum("actual", "net_result_gbp"), 2, "")}${emptyCell}${emptyCell}</tr></tfoot>`;
     const body = rows.map((row, idx) => {
       const [status, statusClass] = this.aiExecutionStatus(row);
       const actual = row.actual || {};
@@ -6927,7 +6927,7 @@ class DeyeEnergyCard extends HTMLElement {
       const expPlan = this.aiExecutionNumber(row.expected_export_kwh, 2);
       const expWyk = this.aiExecutionNumber(actual.grid_export_kwh, 2);
       const pricePlan = `<span class="ai-exec-price-buy">${this.aiExecutionNumber(row.effective_buy_price, 2)}</span><span class="ai-exec-price-sep">/</span><span class="ai-exec-price-sell">${this.aiExecutionNumber(row.sell_price, 2)}</span>`;
-      return `<tr class="${idx % 2 === 0 ? "" : "ai-exec-odd"}"><td class="ai-exec-col-hour"><strong>${this.escapeHtml(row.label || this.hourLabel(row.hour))}</strong></td><td class="ai-exec-col-status"><span class="ai-exec-badge ${statusClass}" title="${this.escapeHtml(this.aiUiText(row.deployment_reason || ""))}">${status}</span></td><td class="ai-exec-col-action"><span class="ai-exec-action">${action}</span><span class="ai-exec-source">${this.escapeHtml(source)}</span></td><td class="ai-exec-col-power">${this.aiExecutionNumber(row.planned_power_w, 0, " W")}</td>${numberCell(row.soc_end_pct, 1, "%")}${numberCell(actual.soc_end_pct, 1, "%", "ai-exec-wykonanie" + wykonanieClass(row.soc_end_pct, actual.soc_end_pct))}<td>${pvPlan}</td><td class="ai-exec-wykonanie${wykonanieClass(row.corrected_pv_kwh, actual.pv_kwh)}">${pvWyk}</td><td>${domPlan}</td><td class="ai-exec-wykonanie${wykonanieClass(row.load_kwh, actual.load_kwh)}">${domWyk}</td><td>${impPlan}</td><td class="ai-exec-wykonanie${wykonanieClass(row.expected_import_kwh, actual.grid_import_kwh)}">${impWyk}</td><td>${expPlan}</td><td class="ai-exec-wykonanie${wykonanieClass(row.expected_export_kwh, actual.grid_export_kwh)}">${expWyk}</td><td>${pricePlan}</td><td>${this.aiExecutionNumber(row.net_result_pln, 2)}</td><td class="ai-exec-wykonanie${wykonanieClass(row.net_result_pln, actual.net_result_pln)}">${this.aiExecutionNumber(actual.net_result_pln, 2)}</td><td colspan="2" class="ai-exec-col-error">${this.aiExecutionNumber(errors.pv_percent, 1, "%")}<span class="ai-exec-error-sep">/</span>${this.aiExecutionNumber(errors.load_percent, 1, "%")}</td></tr>`;
+      return `<tr class="${idx % 2 === 0 ? "" : "ai-exec-odd"}"><td class="ai-exec-col-hour"><strong>${this.escapeHtml(row.label || this.hourLabel(row.hour))}</strong></td><td class="ai-exec-col-status"><span class="ai-exec-badge ${statusClass}" title="${this.escapeHtml(this.aiUiText(row.deployment_reason || ""))}">${status}</span></td><td class="ai-exec-col-action"><span class="ai-exec-action">${action}</span><span class="ai-exec-source">${this.escapeHtml(source)}</span></td><td class="ai-exec-col-power">${this.aiExecutionNumber(row.planned_power_w, 0, " W")}</td>${numberCell(row.soc_end_pct, 1, "%")}${numberCell(actual.soc_end_pct, 1, "%", "ai-exec-wykonanie" + wykonanieClass(row.soc_end_pct, actual.soc_end_pct))}<td>${pvPlan}</td><td class="ai-exec-wykonanie${wykonanieClass(row.corrected_pv_kwh, actual.pv_kwh)}">${pvWyk}</td><td>${domPlan}</td><td class="ai-exec-wykonanie${wykonanieClass(row.load_kwh, actual.load_kwh)}">${domWyk}</td><td>${impPlan}</td><td class="ai-exec-wykonanie${wykonanieClass(row.expected_import_kwh, actual.grid_import_kwh)}">${impWyk}</td><td>${expPlan}</td><td class="ai-exec-wykonanie${wykonanieClass(row.expected_export_kwh, actual.grid_export_kwh)}">${expWyk}</td><td>${pricePlan}</td><td>${this.aiExecutionNumber(row.net_result_gbp, 2)}</td><td class="ai-exec-wykonanie${wykonanieClass(row.net_result_gbp, actual.net_result_gbp)}">${this.aiExecutionNumber(actual.net_result_gbp, 2)}</td><td colspan="2" class="ai-exec-col-error">${this.aiExecutionNumber(errors.pv_percent, 1, "%")}<span class="ai-exec-error-sep">/</span>${this.aiExecutionNumber(errors.load_percent, 1, "%")}</td></tr>`;
     }).join("");
     return `<div class="ai-plan-table-wrap ai-execution-table-wrap"><table class="ai-plan-table ai-execution-table"><thead><tr class="ai-exec-head-main"><th rowspan="2" class="ai-exec-col-hour">Hour</th><th rowspan="2" class="ai-exec-col-status">Status</th><th rowspan="2" class="ai-exec-col-action">Action / profile</th><th rowspan="2" class="ai-exec-col-power">Power</th><th colspan="2">SOC (%)</th><th colspan="2" class="ai-exec-group-pv">PV (kWh)</th><th colspan="2" class="ai-exec-group-dom">House (kWh)</th><th colspan="2" class="ai-exec-group-imp">Import (kWh)</th><th colspan="2" class="ai-exec-group-exp">Export (kWh)</th><th>Price (£/kWh)</th><th colspan="2" title="Full economic result of the slot taking energy flows and prices into account.">Economic result (£)</th><th colspan="2" class="ai-exec-col-error">Forecast error (%)</th></tr><tr class="ai-exec-head-sub"><th>Plan</th><th>Actual</th><th>Plan</th><th>Actual</th><th>Plan</th><th>Actual</th><th>Plan</th><th>Actual</th><th>Plan</th><th>Actual</th><th>Plan: buy / selling</th><th>Plan</th><th>Actual</th><th>PV</th><th>House</th></tr></thead><tbody>${body}</tbody>${footer}</table></div>`;
   }
@@ -6969,7 +6969,7 @@ class DeyeEnergyCard extends HTMLElement {
       const wykText = this.aiExecutionNumber(wykonanie, 2);
       return `<div class="ai-exec-kpi ${cls}"><div class="ai-exec-kpi-icon">${icon}</div><div class="ai-exec-kpi-body"><span class="ai-exec-kpi-title">${title}</span><div class="ai-exec-kpi-row">${isPlanOnly ? `<div class="ai-exec-kpi-pair"><small>Plan</small><b class="ai-exec-kpi-plan">${planText} <span class="ai-exec-kpi-unit">${unit}</span></b></div>` : `<div class="ai-exec-kpi-pair"><small>Plan</small><b class="ai-exec-kpi-plan">${planText} <span class="ai-exec-kpi-unit">${unit}</span></b></div><div class="ai-exec-kpi-pair"><small>Actual</small><b class="ai-exec-kpi-wykonanie">${wykText} <span class="ai-exec-kpi-unit">${unit}</span></b></div>`}</div></div></div>`;
     };
-    const summaryCards = `<div class="ai-execution-kpis">${kpi("☀", "PV", summary.planned_pv_kwh, summary.actual_pv_kwh, "kWh", "ai-exec-kpi-pv")}${kpi("🏠", "House", summary.planned_load_kwh, summary.actual_load_kwh, "kWh", "ai-exec-kpi-dom")}${kpi("↗", "Export", summary.planned_export_kwh, summary.actual_export_kwh, "kWh", "ai-exec-kpi-exp")}${kpi("↘", "Import", planned_import_kwh, actual_import_kwh, "kWh", "ai-exec-kpi-imp")}${kpi("£", "Economic result", summary.planned_result_pln, summary.actual_result_pln, "£", "ai-exec-kpi-wynik")}</div>`;
+    const summaryCards = `<div class="ai-execution-kpis">${kpi("☀", "PV", summary.planned_pv_kwh, summary.actual_pv_kwh, "kWh", "ai-exec-kpi-pv")}${kpi("🏠", "House", summary.planned_load_kwh, summary.actual_load_kwh, "kWh", "ai-exec-kpi-dom")}${kpi("↗", "Export", summary.planned_export_kwh, summary.actual_export_kwh, "kWh", "ai-exec-kpi-exp")}${kpi("↘", "Import", planned_import_kwh, actual_import_kwh, "kWh", "ai-exec-kpi-imp")}${kpi("£", "Economic result", summary.planned_result_gbp, summary.actual_result_gbp, "£", "ai-exec-kpi-wynik")}</div>`;
     const explainer = `<details class="ai-execution-info"><summary>ℹ What do the data mean?</summary><p>The plan is a frozen Optimizer Core proposal. Execution comes from completed hourly measurements. The economic result is the full balance of energy flows and prices for the plan or execution, not the profit of the decision itself. This view alone writes nothing to the schedule or Deye.</p></details>`;
     return `<div class="ai-plan-execution"><div class="ai-execution-toolbar"><div class="ai-day-tabs">${buttons}</div>${explainer}</div>${summaryCards}${this.renderAiExecutionChart(data, title, !isPlanOnly)}${this.renderAiExecutionTable(data, isPlanOnly)}</div>`;
   }

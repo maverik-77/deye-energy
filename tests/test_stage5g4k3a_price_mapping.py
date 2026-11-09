@@ -50,7 +50,7 @@ def explicit_contract(direction: str, adapter: str = "generic", **extra) -> dict
         "semantic_scope": "energy_only" if direction == "buy" else "partial",
         "includes_distribution_variable": False,
         "price_basis": "gross",
-        "unit": "PLN/kWh",
+        "unit": "GBP/kWh",
         **extra,
     }
     return price_sources.normalize_price_contract(value, direction, adapter, today, tomorrow)
@@ -85,7 +85,7 @@ def test_pstryk_schema_is_independent_of_entity_id(entity_id: str, attribute: st
     )
     assert len(result["rows"]) == 24
     assert {row["day"] for row in result["rows"]} == {"today" if day_offset == 0 else "tomorrow"}
-    assert all(row["source_price_pln_kwh"] == pytest.approx(0.51) for row in result["rows"])
+    assert all(row["source_price_gbp_kwh"] == pytest.approx(0.51) for row in result["rows"])
     assert all(row["added_distribution"] == 0 for row in result["rows"])
 
 
@@ -109,8 +109,8 @@ def test_real_pstryk_four_mapped_entities_have_24_plus_24_independent_buy_sell()
     assert buy["diagnostics"]["coverage_today"] == buy["diagnostics"]["coverage_tomorrow"] == 24
     assert sell["diagnostics"]["coverage_today"] == sell["diagnostics"]["coverage_tomorrow"] == 24
     assert all(row["added_distribution"] == 0 for row in buy["rows"])
-    assert {row["source_price_pln_kwh"] for row in buy["rows"]} == {0.31, 0.32}
-    assert {row["source_price_pln_kwh"] for row in sell["rows"]} == {0.81, 0.82}
+    assert {row["source_price_gbp_kwh"] for row in buy["rows"]} == {0.31, 0.32}
+    assert {row["source_price_gbp_kwh"] for row in sell["rows"]} == {0.81, 0.82}
 
 
 def test_provider_name_is_never_adapter_identity() -> None:
@@ -148,7 +148,7 @@ def test_generic_time_price_and_start_value_schemas() -> None:
             State("sensor.today", attributes={attribute: rows}), None, NOW, {},
         )
         assert len(result["rows"]) == 24
-        assert all(row["source_price_pln_kwh"] == pytest.approx(expected) for row in result["rows"])
+        assert all(row["source_price_gbp_kwh"] == pytest.approx(expected) for row in result["rows"])
 
 
 def test_custom_explicit_fields_are_resolved_once_and_preserved_on_reload() -> None:
@@ -167,7 +167,7 @@ def test_custom_explicit_fields_are_resolved_once_and_preserved_on_reload() -> N
 
 
 def test_numeric_state_is_allowed_only_for_explicit_current_price_contract() -> None:
-    state = State("sensor.today", state="0.62", attributes={"unit_of_measurement": "PLN/kWh"})
+    state = State("sensor.today", state="0.62", attributes={"unit_of_measurement": "GBP/kWh"})
     series = explicit_contract("sell", current_price_only=False)
     current = explicit_contract("sell", current_price_only=True, allow_state_fallback=True)
     assert price_sources.build_canonical_direction(series, state, None, NOW, {})["rows"] == []

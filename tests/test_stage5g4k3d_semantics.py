@@ -45,7 +45,7 @@ def rce_rows(day: datetime, price: float) -> list[dict]:
             "period": f"{start:%H:%M} - {'24:00' if index == 95 else end.strftime('%H:%M')}",
             "dtime": end.strftime("%Y-%m-%d %H:%M:%S"),
             "business_date": day.date().isoformat(),
-            "rce_pln": price,
+            "rce_price": price,
         })
     return rows
 
@@ -105,7 +105,7 @@ def custom_contract(role: str) -> dict:
             "includes_excise": False,
             "includes_service_margin": False,
             "price_basis": "gross",
-            "unit": "PLN/kWh",
+            "unit": "GBP/kWh",
             "granularity": "60m",
             "list_attribute": "prices",
             "value_field": "price",

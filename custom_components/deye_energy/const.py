@@ -180,7 +180,7 @@ DEFAULT_LOAD_L3_POWER_SENSOR = "sensor.deye_inverter_load_l3_power"
 DEFAULT_INVERTER_AC_TEMPERATURE_SENSOR = "sensor.deye_inverter_ac_temperature"
 
 PRICE_SOURCES = ["pstryk", "pse_rce", "other", "none"]
-OSD_PROVIDERS = ["pge", "tauron", "enea", "energa", "stoen", "other"]
+OSD_PROVIDERS = ["dso_a", "dso_b", "dso_c", "dso_d", "dso_e", "other"]
 TARIFF_PLANS = ["g11", "g11f", "g11p", "g11pewna", "g12", "g12w", "g12e", "g12n", "g12r", "g12p", "g12as", "g12sezon", "g12eko", "g13", "g13s", "g13active", "g14dynamic", "custom"]
 
 MODE_SELLING_FIRST = "Selling"
@@ -209,7 +209,7 @@ SLOT_MODES = list(MANAGER_MODES)
 
 # Legacy values accepted during restore and external service calls.  They are
 # normalised to the canonical manager mode values at runtime.  The historical
-# Polish mode names are still accepted so existing automations keep working.
+# Legacy mode names are still accepted so existing automations keep working.
 LEGACY_MANAGER_MODE_MAP: dict[str, str] = {
     "Selling First": MODE_SELLING_FIRST,
     "Sell": MODE_SELLING_FIRST,

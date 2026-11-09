@@ -15,7 +15,7 @@ from typing import Any, Iterable
 
 
 PRICE_CONTRACT_VERSION = 1
-SUPPORTED_UNITS = {"GBP/kWh", "GBP/MWh", "PLN/kWh", "PLN/MWh"}
+SUPPORTED_UNITS = {"GBP/kWh", "GBP/MWh"}
 SUPPORTED_BASES = {"gross", "net"}
 SUPPORTED_SCOPES = {"all_in_variable", "energy_only", "partial"}
 SUPPORTED_ADAPTERS = {"pstryk", "rce_pse", "generic", "custom"}
@@ -58,7 +58,7 @@ _DAY_SOURCE_FIELDS = (
 class PriceInterval:
     start: datetime
     end: datetime
-    price_pln_kwh: float
+    price_gbp_kwh: float
     entity_id: str
     source_index: int
 
@@ -156,7 +156,7 @@ def default_price_contract(
             "price_basis": "gross",
             "includes_excise": True,
             "includes_service_margin": True,
-            "unit": "PLN/kWh",
+            "unit": "GBP/kWh",
             "granularity": "60m",
             "today_list_attribute": "today_prices",
             "tomorrow_list_attribute": "tomorrow_prices",
@@ -172,12 +172,12 @@ def default_price_contract(
             "includes_distribution_variable": False,
             "includes_excise": False,
             "includes_service_margin": False,
-            # rce_pln is the provider's ready-to-use PLN/kWh energy component.
+            # rce_price is the provider's ready-to-use GBP/kWh energy component.
             # This is adapter-owned metadata, never inherited from Pstryk.
             "price_basis": "gross",
-            "unit": "PLN/kWh",
+            "unit": "GBP/kWh",
             "granularity": "15m",
-            "value_field": "rce_pln",
+            "value_field": "rce_price",
             "period_field": "period",
             "timestamp_field": "dtime",
             "timestamp_role": "end",
@@ -270,7 +270,7 @@ def normalize_price_contract(
             "price_basis": "gross",
             "includes_excise": True,
             "includes_service_margin": True,
-            "unit": "PLN/kWh",
+            "unit": "GBP/kWh",
             "granularity": "60m",
             "today_list_attribute": "today_prices",
             "tomorrow_list_attribute": "tomorrow_prices",
@@ -288,8 +288,8 @@ def normalize_price_contract(
             "includes_excise": False,
             "includes_service_margin": False,
             "price_basis": "gross",
-            "unit": "PLN/kWh",
-            "value_field": "rce_pln",
+            "unit": "GBP/kWh",
+            "value_field": "rce_price",
             "period_field": "period",
             "timestamp_field": "dtime",
             "timestamp_role": "end",
@@ -598,11 +598,11 @@ def resolve_price_schema(
                     "granularity": "60m",
                 }, "empty_series"
             continue
-        if "rce_pln" in sample and any(key in sample for key in ("period", "dtime", "business_date")):
+        if "rce_price" in sample and any(key in sample for key in ("period", "dtime", "business_date")):
             return {
                 "schema_id": "rce_interval_v1",
                 "list_attribute": attribute,
-                "value_field": "rce_pln",
+                "value_field": "rce_price",
                 "period_field": "period",
                 "timestamp_field": "dtime",
                 "timestamp_role": "end",
@@ -679,9 +679,9 @@ def _unit_from_state(contract: dict[str, Any], state: Any) -> str:
 
 
 def _normalize_unit(value: float, unit: str) -> float | None:
-    if unit in ("GBP/kWh", "PLN/kWh"):
+    if unit == "GBP/kWh":
         return value
-    if unit in ("GBP/MWh", "PLN/MWh"):
+    if unit == "GBP/MWh":
         return value / 1000.0
     return None
 
@@ -855,7 +855,7 @@ def _split_by_hour(interval: PriceInterval) -> Iterable[tuple[tuple[date, int], 
         segment_end = min(interval.end, boundary)
         if segment_end <= cursor:
             break
-        yield (cursor.date(), cursor.hour), cursor, segment_end, interval.price_pln_kwh
+        yield (cursor.date(), cursor.hour), cursor, segment_end, interval.price_gbp_kwh
         cursor = segment_end
 
 
@@ -881,7 +881,7 @@ def aggregate_hourly(intervals: Iterable[PriceInterval]) -> tuple[dict[tuple[dat
             continue
         weighted = sum(price * ((end - start).total_seconds() / 60.0) for start, end, price in ordered)
         complete[key] = {
-            "source_price_pln_kwh": weighted / coverage,
+            "source_price_gbp_kwh": weighted / coverage,
             "coverage_minutes": round(coverage, 6),
             "interval_count": len(ordered),
         }
@@ -990,7 +990,7 @@ def build_canonical_direction(
         if offset not in (0, 1):
             continue
         day_contract = day_contracts[offset]
-        source_price = float(aggregated["source_price_pln_kwh"])
+        source_price = float(aggregated["source_price_gbp_kwh"])
         added_vat = source_price * float(day_contract.get("vat_rate") or 0.0) if day_contract["price_basis"] == "net" else 0.0
         energy_component = source_price + added_vat
         distribution = max(0.0, float(distribution_by_slot.get((local_date, hour), 0.0)))
@@ -1008,12 +1008,12 @@ def build_canonical_direction(
             "hour": hour,
             "direction": direction,
             "source_adapter": day_contract["source_adapter"],
-            "source_price_pln_kwh": round(source_price, 10),
+            "source_price_gbp_kwh": round(source_price, 10),
             "energy_component": round(energy_component, 10),
             "added_distribution": round(added_distribution, 10),
             "added_vat": round(added_vat, 10),
             "added_other_variable": 0.0,
-            "final_price_pln_kwh": round(final_price, 10),
+            "final_price_gbp_kwh": round(final_price, 10),
             "coverage_minutes": aggregated["coverage_minutes"],
             "source_unit": day_contract["unit"] if day_contract["unit"] != "unknown" else _unit_from_state(day_contract, today_state if offset == 0 else tomorrow_state),
             "source_basis": day_contract["price_basis"],
@@ -1058,7 +1058,7 @@ def canonical_maps(result: dict[str, Any]) -> list[dict[int, float]]:
             continue
         day = 0 if row.get("day") == "today" else 1 if row.get("day") == "tomorrow" else -1
         hour = row.get("hour")
-        price = _finite(row.get("final_price_pln_kwh"))
+        price = _finite(row.get("final_price_gbp_kwh"))
         if day in (0, 1) and isinstance(hour, int) and 0 <= hour <= 23 and price is not None:
             maps[day][hour] = price
     return maps

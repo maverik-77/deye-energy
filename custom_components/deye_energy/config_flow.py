@@ -381,7 +381,7 @@ def _mapping_semantics_match(key: str | None, state: Any) -> bool:
             "temperature", "frequency", "signal_strength",
         }:
             return False
-        return not unit or any(token in unit for token in ("/kwh", "/mwh", "pln", "eur", "usd", "gbp", "£"))
+        return not unit or any(token in unit for token in ("/kwh", "/mwh", "gbp", "eur", "usd", "gbp", "£"))
 
     semantic_units: tuple[set[str], ...] = ()
     if "power" in key:

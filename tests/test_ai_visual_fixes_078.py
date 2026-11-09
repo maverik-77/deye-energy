@@ -17,7 +17,7 @@ SPEC.loader.exec_module(optimizer)
 
 def tariff_rows(
     *,
-    provider: str = "pge",
+    provider: str = "dso_a",
     plan: str = "g12w",
     first_rate: float = 0.8,
     second_rate: float = 0.1,
@@ -127,8 +127,8 @@ def base_inputs() -> dict:
         "price_includes_distribution": False,
         "osd_data_complete": True,
         "tariff_context": {
-            "provider": "pge",
-            "provider_name": "PGE Distribution",
+            "provider": "dso_a",
+            "provider_name": "DSO A",
             "plan": "g12w",
             "plan_name": "G12w",
             "configured": True,
@@ -430,7 +430,7 @@ class AiVisualSourceTests(unittest.TestCase):
         method = self.source[start:end]
         for field in (
             "slot_validations", "minimum_price", "minimum_soc", "allow_partial",
-            "remaining_target_kwh", "min_net_result", "profile_net_result_pln",
+            "remaining_target_kwh", "min_net_result", "profile_net_result_gbp",
             "max_soc_before_pv_pct", "deadline_next_day",
         ):
             self.assertIn(field, method)

@@ -13,7 +13,7 @@ eval(source + "\nglobal.DeyeEnergyCard = DeyeEnergyCard;");
 const card = new global.DeyeEnergyCard();
 card.setConfig({});
 card._hass = {
-  config: { time_zone: "Europe/Warsaw" },
+  config: { time_zone: "Europe/London" },
   states: {},
 };
 
@@ -27,9 +27,9 @@ const equal = (actual, expected, message) => {
 [
   "2026-08-24T18:00:00Z",
   "2026-08-24T18:00:00+00:00",
-  "2026-08-24T20:00:00+02:00",
+  "2026-08-24T19:00:00+01:00",
 ].forEach((stamp) => {
-  equal(card.priceSlotFromValue(stamp), { date: "2026-08-24", hour: 20 }, `aware conversion ${stamp}`);
+  equal(card.priceSlotFromValue(stamp), { date: "2026-08-24", hour: 19 }, `aware conversion ${stamp}`);
 });
 
 equal(
@@ -48,21 +48,21 @@ let maps = card.readPriceMaps(
   "sensor.tomorrow",
   new Date("2026-08-24T10:00:00Z"),
 );
-equal([...maps[0]], [[20, 1.1]], "today bucket");
-equal([...maps[1]], [[1, 2.2]], "tomorrow bucket after UTC midnight crossing");
+equal([...maps[0]], [[19, 1.1]], "today bucket");
+equal([...maps[1]], [[0, 2.2]], "tomorrow bucket after UTC midnight crossing");
 
 card._hass.states["sensor.spring"] = entity([
   { datetime: "2026-03-29T00:00:00Z", price: 0 },
   { datetime: "2026-03-29T01:00:00Z", price: -0.25 },
 ]);
 maps = card.readPriceMaps("sensor.spring", null, new Date("2026-03-29T10:00:00Z"));
-equal([...maps[0]], [[1, 0], [3, -0.25]], "spring DST skips nonexistent 02:00 and keeps non-positive prices");
+equal([...maps[0]], [[0, 0], [2, -0.25]], "spring DST skips nonexistent 01:00 and keeps non-positive prices");
 
 card._hass.states["sensor.fall"] = entity([
   { datetime: "2026-10-25T00:00:00Z", price: 1.0 },
   { datetime: "2026-10-25T01:00:00Z", price: 2.0 },
 ]);
 maps = card.readPriceMaps("sensor.fall", null, new Date("2026-10-25T10:00:00Z"));
-equal([...maps[0]], [[2, 1.0]], "autumn duplicate local hour keeps first provider value");
+equal([...maps[0]], [[1, 1.0]], "autumn duplicate local hour keeps first provider value");
 
 console.log("Stage 5G.4J.10B timezone price card tests passed");

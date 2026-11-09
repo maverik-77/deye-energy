@@ -49,7 +49,7 @@ def rce_rows(day: str, base: float = 0.4) -> list[dict]:
         rows.append({
             "dtime": dtime_day.strftime("%Y-%m-%d %H:%M:%S"),
             "period": f"{sh:02d}:{sm:02d} - {period_end}",
-            "rce_pln": base + quarter / 1000,
+            "rce_price": base + quarter / 1000,
             "business_date": day,
         })
     return rows
@@ -59,7 +59,7 @@ def rce_contract(direction: str = "buy", **overrides) -> dict:
     value = {
         "source_adapter": "rce_pse",
         "price_basis": "gross",
-        "unit": "PLN/kWh",
+        "unit": "GBP/kWh",
         "list_attribute": "value_json",
         **overrides,
     }
@@ -81,7 +81,7 @@ def test_pstryk_contract_is_forced_all_in_gross_and_never_adds_osd() -> None:
     )
     assert contract["semantic_scope"] == "all_in_variable"
     assert contract["price_basis"] == "gross"
-    assert contract["unit"] == "PLN/kWh"
+    assert contract["unit"] == "GBP/kWh"
     assert contract["includes_distribution_variable"] is True
     state = State("sensor.pstryk_buy", attributes={"prices": [
         {"datetime": f"2026-08-23T{hour:02d}:00:00+02:00", "price_gross": 0.23}
@@ -90,7 +90,7 @@ def test_pstryk_contract_is_forced_all_in_gross_and_never_adds_osd() -> None:
     result = build_canonical_direction(contract, state, None, NOW, {(NOW.date(), hour): 0.55 for hour in range(24)})
     assert len(result["rows"]) == 24
     assert all(row["added_distribution"] == 0 for row in result["rows"])
-    assert all(row["final_price_pln_kwh"] == pytest.approx(0.23) for row in result["rows"])
+    assert all(row["final_price_gbp_kwh"] == pytest.approx(0.23) for row in result["rows"])
 
 
 def test_rce_96_quarters_aggregate_to_24_duration_weighted_hours() -> None:
@@ -104,9 +104,9 @@ def test_rce_96_quarters_aggregate_to_24_duration_weighted_hours() -> None:
     assert result["diagnostics"]["status"] == "ready"
     assert len(result["rows"]) == 48
     first = result["rows"][0]
-    assert first["source_price_pln_kwh"] == pytest.approx(sum(0.4 + i / 1000 for i in range(4)) / 4)
+    assert first["source_price_gbp_kwh"] == pytest.approx(sum(0.4 + i / 1000 for i in range(4)) / 4)
     assert first["added_distribution"] == pytest.approx(0.2)
-    assert first["final_price_pln_kwh"] == pytest.approx(first["source_price_pln_kwh"] + 0.2)
+    assert first["final_price_gbp_kwh"] == pytest.approx(first["source_price_gbp_kwh"] + 0.2)
     assert first["coverage_minutes"] == 60
 
 
@@ -141,7 +141,7 @@ def test_units_net_vat_negative_prices_and_unknown_contracts() -> None:
     contract = normalize_price_contract({
         "source_adapter": "custom", "economic_role": "energy_only", "semantic_scope": "energy_only",
         "includes_distribution_variable": False, "price_basis": "net", "vat_rate": 0.23,
-        "unit": "PLN/MWh", "list_attribute": "rows", "value_field": "amount",
+        "unit": "GBP/MWh", "list_attribute": "rows", "value_field": "amount",
         "timestamp_field": "start", "granularity": "60m",
     }, "buy", "custom", "sensor.custom", "")
     state = State("sensor.custom", attributes={"rows": [
@@ -149,9 +149,9 @@ def test_units_net_vat_negative_prices_and_unknown_contracts() -> None:
         for hour in range(24)
     ]})
     result = build_canonical_direction(contract, state, None, NOW, {(NOW.date(), hour): 0.2 for hour in range(24)})
-    assert result["rows"][0]["source_price_pln_kwh"] == pytest.approx(-0.1)
+    assert result["rows"][0]["source_price_gbp_kwh"] == pytest.approx(-0.1)
     assert result["rows"][0]["added_vat"] == pytest.approx(-0.023)
-    assert result["rows"][0]["final_price_pln_kwh"] == pytest.approx(0.077)
+    assert result["rows"][0]["final_price_gbp_kwh"] == pytest.approx(0.077)
     unknown = default_price_contract("buy", "custom", "sensor.x", "")
     assert build_canonical_direction(unknown, state, None, NOW)["diagnostics"]["status"] == "unknown_price_basis"
 

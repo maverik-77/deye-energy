@@ -12,10 +12,10 @@ card._hass = { states: {
   "sensor.deye_energy_ai_state": { attributes: { planner_48h: { canonical_prices: {
     schema_version: 1,
     buy: { rows: [
-      { day: "today", hour: 3, quality: "ready", final_price_pln_kwh: 0.23, source_price_pln_kwh: 0.23, source_semantic_scope: "all_in_variable" },
-      { day: "tomorrow", hour: 4, quality: "ready", final_price_pln_kwh: -0.10 },
+      { day: "today", hour: 3, quality: "ready", final_price_gbp_kwh: 0.23, source_price_gbp_kwh: 0.23, source_semantic_scope: "all_in_variable" },
+      { day: "tomorrow", hour: 4, quality: "ready", final_price_gbp_kwh: -0.10 },
     ] },
-    sell: { rows: [{ day: "today", hour: 5, quality: "ready", final_price_pln_kwh: 1.25 }] },
+    sell: { rows: [{ day: "today", hour: 5, quality: "ready", final_price_gbp_kwh: 1.25 }] },
   } } } },
 } };
 

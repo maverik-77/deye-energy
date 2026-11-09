@@ -2077,8 +2077,8 @@ class DeyeEnergyRuntime:
             return None
         for key in (
             "price", "value", "state", "amount", "total", "net_price", "gross_price",
-            "energy_price", "unit_price", "price_with_tax", "pln_kwh", "pln_per_kwh",
-            "sell_price", "buy_price", "sprzedaz", "zakup", "cena", "pln", "gbp", "rce",
+            "energy_price", "unit_price", "price_with_tax", "gbp_kwh", "gbp_per_kwh",
+            "sell_price", "buy_price", "sprzedaz", "zakup", "cena", "gbp", "gbp", "rce",
         ):
             if key not in item:
                 continue
@@ -2196,7 +2196,7 @@ class DeyeEnergyRuntime:
         return result
 
     def price_map(self, entity_id: str | None, allow_state_fallback: bool = True) -> dict[int, float]:
-        """Read common hourly-price attribute layouts used by Polish integrations."""
+        """Read common hourly-price attribute layouts used by price integrations."""
         result: dict[int, float] = {}
         for _local_date, hour, value in self._price_entries(entity_id, allow_state_fallback):
             result.setdefault(hour, value)
@@ -5324,7 +5324,7 @@ class DeyeEnergyRuntime:
             "0", "1", "2", "3", "4", "5", "6",
             "mon", "tue", "wed", "thu", "fri", "sat", "sun",
             "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-            # Legacy Polish abbreviations are still accepted so schedules
+            # Legacy English abbreviations are still accepted so schedules
             # written by earlier versions keep validating.
             "pon", "wt", "śr", "czw", "pt", "sob", "niedz",
         }
@@ -6303,7 +6303,7 @@ class DeyeEnergyRuntime:
             "effective_buy_price": row.get("effective_buy_price"),
             "sell_price": row.get("sell_price"),
             "distribution": row.get("distribution"),
-            "net_result_pln": row.get("net_result", row.get("balance_pln")),
+            "net_result_gbp": row.get("net_result", row.get("balance_gbp")),
             "confidence": row.get("confidence"),
             "confidence_components": deepcopy(row.get("confidence_components") or {}),
             "reason_codes": [str(value) for value in row.get("reason_codes", [])][:12],
@@ -6512,9 +6512,9 @@ class DeyeEnergyRuntime:
                 else None
             ),
             "soc_end_pct": actual_soc,
-            "sell_price_pln_kwh": round(sell_price, 5) if sell_price is not None else None,
-            "buy_price_pln_kwh": round(buy_price, 5) if buy_price is not None else None,
-            "net_result_pln": round(net_result, 5) if net_result is not None else None,
+            "sell_price_gbp_kwh": round(sell_price, 5) if sell_price is not None else None,
+            "buy_price_gbp_kwh": round(buy_price, 5) if buy_price is not None else None,
+            "net_result_gbp": round(net_result, 5) if net_result is not None else None,
             "complete": bool(completed.get("complete")),
             "completeness_percent": completed.get("completeness_percent"),
             "source_quality": deepcopy(completed.get("source_quality") or {}),
@@ -6601,8 +6601,8 @@ class DeyeEnergyRuntime:
                 "actual_import_kwh": sum_field(actual_values, "grid_import_kwh") if actual_rows else None,
                 "planned_export_kwh": sum_field(rows, "expected_export_kwh") if rows else None,
                 "actual_export_kwh": sum_field(actual_values, "grid_export_kwh") if actual_rows else None,
-                "planned_result_pln": sum_field(rows, "net_result_pln") if rows else None,
-                "actual_result_pln": sum_field(actual_values, "net_result_pln") if actual_rows else None,
+                "planned_result_gbp": sum_field(rows, "net_result_gbp") if rows else None,
+                "actual_result_gbp": sum_field(actual_values, "net_result_gbp") if actual_rows else None,
                 "pv_mean_absolute_percent_error": (
                     round(sum(error_values) / len(error_values), 1)
                     if error_values
@@ -6989,7 +6989,7 @@ class DeyeEnergyRuntime:
                     and row.get("quality") == "ready"
                 ), None)
                 effective_buy_price = finite_float(
-                    price_row.get("final_price_pln_kwh") if price_row else None
+                    price_row.get("final_price_gbp_kwh") if price_row else None
                 )
                 maximum_effective_price = self.safe_float(
                     validation.get("maximum_effective_price"),
@@ -7045,7 +7045,7 @@ class DeyeEnergyRuntime:
             )
             planned_price = self.safe_float(validation.get("planned_price"), 0)
             revalidated_result = self.safe_float(
-                validation.get("profile_net_result_pln"),
+                validation.get("profile_net_result_gbp"),
                 0,
             )
             if selling and current_price is not None:
@@ -8410,14 +8410,14 @@ class DeyeEnergyRuntime:
                 max(0.0, self.safe_float(previous.get("actual_export_kwh"), 0)),
                 5,
             ),
-            "planned_result_pln": round(
+            "planned_result_gbp": round(
                 sum(self.safe_float(row.get("net_result"), 0) for row in planned_rows)
                 if planned_rows
-                else self.safe_float(previous.get("planned_result_pln"), 0),
+                else self.safe_float(previous.get("planned_result_gbp"), 0),
                 5,
             ),
-            "actual_result_pln": round(
-                self.safe_float(previous.get("actual_result_pln"), 0),
+            "actual_result_gbp": round(
+                self.safe_float(previous.get("actual_result_gbp"), 0),
                 5,
             ),
             "status": status,
@@ -8703,8 +8703,8 @@ class DeyeEnergyRuntime:
             "actual_import_kwh": round(actual_import, 5),
             "planned_export_kwh": round(sum(self.safe_float(row.get("expected_export_kwh"), 0) for row in planned_rows), 5),
             "actual_export_kwh": round(actual_export, 5),
-            "planned_result_pln": round(sum(self.safe_float(row.get("net_result"), 0) for row in planned_rows), 5),
-            "actual_result_pln": round(actual_export * actual_average_price - actual_import * actual_average_price, 5),
+            "planned_result_gbp": round(sum(self.safe_float(row.get("net_result"), 0) for row in planned_rows), 5),
+            "actual_result_gbp": round(actual_export * actual_average_price - actual_import * actual_average_price, 5),
             "status": status,
             "failure_reason": (
                 "Manual mode change during profile execution"
@@ -9655,7 +9655,7 @@ class DeyeEnergyRuntime:
         if self.control_mode == "Manual Sell":
             return MODE_SELLING_FIRST
         if self.control_mode in ("Stop Sell", "Protect Battery", "Charge Battery"):
-            # Polish manager model: these override actions fall back to normal
+            # Legacy manager model: these override actions fall back to normal
             # operation.  The physical topology is resolved separately.
             return MODE_NORMAL_OPERATION
         if (
@@ -9763,7 +9763,7 @@ class DeyeEnergyRuntime:
         return self.default_charge_current
 
     def _planned_manager_action_text(self) -> str:
-        """Describe the existing decision path in stable, user-facing Polish."""
+        """Describe the existing decision path in stable, user-facing English."""
 
         if self.emergency_stop:
             action = "Emergency stop"

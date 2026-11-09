@@ -67,7 +67,7 @@ class DeyeNormalProfileModeSelect(DeyeEnergyEntity, SelectEntity, RestoreEntity)
 
     @property
     def options(self):
-        # Show Polish labels; the technical provider option is translated only
+        # Show English labels; the technical provider option is translated only
         # when writing to the inverter.
         return normal_profile_mode_options(self.runtime.data)
 
@@ -87,7 +87,7 @@ class DeyeNormalProfileModeSelect(DeyeEnergyEntity, SelectEntity, RestoreEntity)
     async def async_added_to_hass(self):
         if (last_state := await self.async_get_last_state()) is not None:
             state = str(last_state.state)
-            # Accept either the new Polish label or the legacy technical option.
+            # Accept either the new English label or the legacy technical option.
             key = normal_profile_mode_label_to_key(self.runtime.data, state)
             if key is None:
                 key = physical_normal_option_to_key(self.runtime.data, state)

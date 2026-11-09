@@ -709,7 +709,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertEqual(dialog.count("${socField}"), 1)
         self.assertNotIn("this.callService(", dialog)
 
-    def test_card_uses_polish_manager_modes(self):
+    def test_card_uses_english_manager_modes(self):
         source = self.sources[0]
         start = source.index("  slotWorkModes() {")
         method = source[start : source.index("\n  }", start) + 4]
@@ -732,7 +732,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertIn('subtitle: "Normal operation mode"', mode_meta)
         self.assertIn('subtitle: "Slot inactive"', mode_meta)
 
-    def test_slot_mode_selectors_use_canonical_polish_values(self):
+    def test_slot_mode_selectors_use_canonical_english_values(self):
         source = self.sources[0]
         self.assertIn("slotModeLabel(mode)", source)
         self.assertIn("slotModeOptions()", source)
@@ -763,7 +763,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertNotIn('["Zero Export To Load", "Export disabled — Load measurement"]', dialog)
         self.assertNotIn('["Zero Export To CT", "Export disabled — CT measurement"]', dialog)
 
-    def test_card_uses_polish_charge_profile_label(self):
+    def test_card_uses_english_charge_profile_label(self):
         self.assertIn("Charging profile target SOC", self.sources[0])
         self.assertNotIn("Docelowy SOC profilu Charge", self.sources[0])
 
@@ -1010,8 +1010,8 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertNotIn("Wykonanie: kupno / selling", method)
         self.assertIn("row.effective_buy_price", method)
         self.assertIn("row.sell_price", method)
-        self.assertNotIn("actual.buy_price_pln_kwh", method)
-        self.assertNotIn("actual.sell_price_pln_kwh", method)
+        self.assertNotIn("actual.buy_price_gbp_kwh", method)
+        self.assertNotIn("actual.sell_price_gbp_kwh", method)
         self.assertIn('colspan="2" class="ai-exec-col-error"', method)
         self.assertNotIn("callService", method)
 
@@ -1081,7 +1081,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertIn('[data-control-toggle]', binding)
         self.assertIn("this.toggleControl()", binding)
 
-    def test_disabled_schedule_save_has_explicit_polish_monitoring_message(self):
+    def test_disabled_schedule_save_has_explicit_english_monitoring_message(self):
         method = extract_method(self.sources[0], "async applySchedulePatch(updates, options = null)")
         self.assertIn("this.slotControlEnabled()", method)
         self.assertNotIn('this.entity("switch", "control")', method)

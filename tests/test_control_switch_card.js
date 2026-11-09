@@ -168,7 +168,7 @@ async function test_card_control_toggle_reports_missing_entity() {
   const { card, calls } = makeCard({ entityId: null, entityState: null });
   assertTrue(!(await card.toggleControl()), "missing entity must fail");
   assertEqual(calls, [], "missing entity must not call a service");
-  assertEqual(card._saveMessage, MISSING_MESSAGE, "card must show the required Polish error");
+  assertEqual(card._saveMessage, MISSING_MESSAGE, "card must show the required error");
   assertEqual(card._saveStatus, "error", "missing entity must be visible as an error");
 }
 
