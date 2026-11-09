@@ -77,7 +77,7 @@ class AiPlannerTests(unittest.TestCase):
         result_expensive = planner.build_energy_plan(expensive, "balanced")
         self.assertFalse(any(row["action"] == "charge" for row in result_expensive["rows"]))
 
-    def test_missing_tomorrow_prices_creates_no_fake_tomorrow_trade(self):
+    def test_missing_rates_creates_no_fake_tomorrow_trade(self):
         values = base_inputs()
         values["sell_prices"][1] = {}
         values["buy_prices"][1] = {}

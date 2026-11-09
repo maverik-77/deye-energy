@@ -13,15 +13,15 @@ card._config = {};
 card._hass = { states: {} };
 
 const known = {
-  source_adapter: "rce_pse", adapter_summary: "rce_pse",
-  resolved_adapter_today: "rce_pse", resolved_adapter_tomorrow: "rce_pse",
-  today_entity: "sensor.rce_pse_cena", tomorrow_entity: "sensor.rce_pse_cena_tomorrow",
+  source_adapter: "octopus_energy", adapter_summary: "octopus_energy",
+  resolved_adapter_today: "octopus_energy", resolved_adapter_tomorrow: "octopus_energy",
+  today_entity: "sensor.octopus_energy_rates", tomorrow_entity: "sensor.octopus_energy_rates_tomorrow",
   semantic_scope: "energy_only", includes_distribution_variable: false,
   price_basis: "gross", unit: "GBP/kWh",
 };
 const knownEditor = card.renderPriceContract("buy", known);
 check(knownEditor.includes("automatic / read-only"), "known adapter must be read-only");
-check(knownEditor.includes("sensor.rce_pse_cena"), "current central mapping must be displayed");
+check(knownEditor.includes("sensor.octopus_energy_rates"), "current central mapping must be displayed");
 check(!knownEditor.includes("data-price-contract"), "known adapter must not submit technical contract fields");
 check(!knownEditor.includes('data-contract-field="today_entity"'), "tariff editor must never edit mapped entities");
 
@@ -38,8 +38,8 @@ check(customEditor.includes('data-contract-field="value_field"'), "custom schema
 check(!customEditor.includes('data-contract-field="today_entity"'), "custom mapping still belongs to Options Flow");
 
 card.tariffData = () => ({
-  mode: "automatic", provider: "dso_a", plan: "g11", providers: [], tariffs: [],
-  price_source: "pstryk", price_contracts: { buy: known, sell: known }, hourly_profile: [],
+  mode: "automatic", provider: "octopus", plan: "intelligent_go", providers: [], tariffs: [],
+  price_source: "octopus_energy", price_contracts: { buy: known, sell: known }, hourly_profile: [],
 });
 const tariffHtml = card.renderTariffTab();
 check(!tariffHtml.includes('data-tariff-field="price_source"'), "legacy price source selector must not be runtime authority");

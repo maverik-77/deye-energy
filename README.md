@@ -27,7 +27,7 @@ tariff. The original copyright notice is kept in [LICENSE](LICENSE).
 - an editor for the physical Deye Time Of Use with actual / expected / status;
 - a master **Deye control** switch that blocks every physical write when off;
 - transactional, diff-only writes with confirmation and rollback;
-- price sources (Pstryk, PSE/RCE, any entity) plus a tariff catalogue and a
+- price sources (Octopus Energy, any entity) plus an Octopus tariff catalogue and a
   fully manual tariff mode;
 - Optimizer Core, FuturePlan for today / tomorrow and safe just-in-time (JIT)
   execution;
@@ -93,29 +93,40 @@ lovelace:
 
 See [INSTALL.md](INSTALL.md) for the full procedure.
 
-## Tariff and currency
+## Octopus Energy, tariff and currency
 
-Prices are shown in pounds (£). The default tariff mode is **manual** with the
-UK tariff pre-filled:
+Prices are shown in pounds (£). The integration is set up for **Octopus Energy**
+through the Octopus Energy Home Assistant integration:
 
-| Item | Value |
+| Item | Default |
 |---|---|
-| Standard rate | 34.56 p/kWh (`0.3456`) |
+| Tariff | Intelligent Octopus Go (`intelligent_go`) |
+| Peak rate | 32.81 p/kWh (`0.3281`, the price-capped rate shown by the integration) |
 | Off-peak rate | 6.60 p/kWh (`0.066`), 23:30–05:30 |
+| Import price entity | `sensor.electricity_<serial>_<mpan>_current_rate` |
+| Export price entity | `sensor.octopus_energy_electricity_<serial>_<mpan>_export_current_rate` |
 
-Enter your own values in the card under **Settings → Tariff and distribution**.
+The **Octopus Energy** price adapter understands two kinds of entity:
+
+- the Octopus Energy `current_day_rates` / `next_day_rates` event entities, whose
+  `rates` list holds half-hourly `value_inc_vat` prices (averaged into hours,
+  so Agile works when those events are enabled);
+- the `current_rate` sensors, whose `start`/`end` attributes define a validity
+  window (a flat export rate such as Outgoing covers today and tomorrow).
+
+The bundled `tariff_catalog.json` lists Octopus Energy products. Intelligent
+Octopus Go carries your account's rates; Agile needs the rates events, and
+Flexible needs your own unit rate (enter it in manual mode). Change the plan or
+enter your own values in the card under **Settings → Tariff and distribution**.
 
 ### Known limitations of the tariff engine
 
-- the daily **standing charge** is not modelled;
-- the engine works on hourly slots, so the 23:30 off-peak start is rounded to
-  a whole hour (the default window is 23:00–05:00);
+- the daily **standing charge** (56.61 p/day) is not modelled;
+- the engine works on hourly slots, so the 23:30 and 05:30 half-hour edges of the
+  off-peak window are rounded to whole hours (23:00–05:00);
 - there is no manual flat export rate (for example a fixed 12 p/kWh): export
-  value comes from the sell-price entity or the price source you map;
-- `tariff_catalog.json` is **illustrative sample data only** (placeholder DSOs,
-  suppliers and rates, not real tariffs). It is used only in automatic tariff
-  mode; keep the default manual mode and enter your own rates. Price mappings
-  use `GBP/kWh` or `GBP/MWh`.
+  value comes from the export price entity you map;
+- Intelligent Octopus Go dispatch slots are not used for pricing.
 
 ## Safety
 

@@ -59,19 +59,19 @@ def explicit_contract(direction: str, adapter: str = "generic", **extra) -> dict
 @pytest.mark.parametrize(
     ("entity_id", "attribute"),
     [
-        ("sensor.foo", "today_prices"),
-        ("sensor.bar", "tomorrow_prices"),
-        ("sensor.buy_tomorrow_custom_name", "today_prices"),
-        ("sensor.sprzedaz_x", "tomorrow_prices"),
+        ("sensor.foo", "rates"),
+        ("sensor.bar", "rates"),
+        ("sensor.buy_tomorrow_custom_name", "rates"),
+        ("sensor.sell_x", "rates"),
     ],
 )
-def test_pstryk_schema_is_independent_of_entity_id(entity_id: str, attribute: str) -> None:
-    day_offset = 0 if attribute == "today_prices" else 1
+def test_octopus_energy_schema_is_independent_of_entity_id(entity_id: str, attribute: str) -> None:
+    day_offset = 0 if attribute == "rates" else 1
     day = NOW + timedelta(days=day_offset)
     contract = price_sources.normalize_price_contract(
-        {"source_adapter": "pstryk"},
+        {"source_adapter": "octopus_energy"},
         "buy",
-        "pstryk",
+        "octopus_energy",
         entity_id if day_offset == 0 else "",
         entity_id if day_offset == 1 else "",
     )
@@ -89,21 +89,21 @@ def test_pstryk_schema_is_independent_of_entity_id(entity_id: str, attribute: st
     assert all(row["added_distribution"] == 0 for row in result["rows"])
 
 
-def test_real_pstryk_four_mapped_entities_have_24_plus_24_independent_buy_sell() -> None:
+def test_real_octopus_energy_four_mapped_entities_have_24_plus_24_independent_buy_sell() -> None:
     today, tomorrow = NOW, NOW + timedelta(days=1)
     states = {
-        "buy_today": State("sensor.foo", attributes={"today_prices": interval_rows(today, 0.31)}),
-        "buy_tomorrow": State("sensor.bar", attributes={"tomorrow_prices": interval_rows(tomorrow, 0.32)}),
-        "sell_today": State("sensor.sprzedaz_x", attributes={"today_prices": interval_rows(today, 0.81)}),
-        "sell_tomorrow": State("sensor.sell_future", attributes={"tomorrow_prices": interval_rows(tomorrow, 0.82)}),
+        "buy_today": State("sensor.foo", attributes={"rates": interval_rows(today, 0.31)}),
+        "buy_tomorrow": State("sensor.bar", attributes={"rates": interval_rows(tomorrow, 0.32)}),
+        "sell_today": State("sensor.sell_x", attributes={"rates": interval_rows(today, 0.81)}),
+        "sell_tomorrow": State("sensor.sell_future", attributes={"rates": interval_rows(tomorrow, 0.82)}),
     }
     buy = price_sources.build_canonical_direction(
-        price_sources.normalize_price_contract({"source_adapter": "pstryk"}, "buy", "pstryk", "sensor.foo", "sensor.bar"),
+        price_sources.normalize_price_contract({"source_adapter": "octopus_energy"}, "buy", "octopus_energy", "sensor.foo", "sensor.bar"),
         states["buy_today"], states["buy_tomorrow"], NOW,
         {(NOW.date() + timedelta(days=day), hour): 0.55 for day in (0, 1) for hour in range(24)},
     )
     sell = price_sources.build_canonical_direction(
-        price_sources.normalize_price_contract({"source_adapter": "pstryk"}, "sell", "pstryk", "sensor.sprzedaz_x", "sensor.sell_future"),
+        price_sources.normalize_price_contract({"source_adapter": "octopus_energy"}, "sell", "octopus_energy", "sensor.sell_x", "sensor.sell_future"),
         states["sell_today"], states["sell_tomorrow"], NOW, {},
     )
     assert buy["diagnostics"]["coverage_today"] == buy["diagnostics"]["coverage_tomorrow"] == 24
@@ -114,7 +114,7 @@ def test_real_pstryk_four_mapped_entities_have_24_plus_24_independent_buy_sell()
 
 
 def test_provider_name_is_never_adapter_identity() -> None:
-    misleading = "sensor.pstryk_aio_obecna_cena_zakupu_pradu"
+    misleading = "sensor.octopus_import_current_rate"
     assert price_sources.detect_source_adapter(misleading) == "generic"
     assert price_sources.detect_source_adapter(misleading, platform="custom_prices") == "generic"
     assert price_sources.detect_source_adapter(misleading, explicit="custom") == "custom"
@@ -124,7 +124,7 @@ def test_provider_name_is_never_adapter_identity() -> None:
     ("today_attr", "tomorrow_attr"),
     [("today_prices", "tomorrow_prices"), ("prices", "prices")],
 )
-def test_generic_supported_list_schemas_do_not_gain_pstryk_semantics(today_attr: str, tomorrow_attr: str) -> None:
+def test_generic_supported_list_schemas_do_not_gain_octopus_energy_semantics(today_attr: str, tomorrow_attr: str) -> None:
     contract = explicit_contract("buy")
     result = price_sources.build_canonical_direction(
         contract,
@@ -142,7 +142,7 @@ def test_generic_supported_list_schemas_do_not_gain_pstryk_semantics(today_attr:
 def test_generic_time_price_and_start_value_schemas() -> None:
     time_rows = [{"time": f"{hour:02d}:00", "price": 0.7} for hour in range(24)]
     start_rows = [{"start": f"{hour:02d}:00", "value": 0.8} for hour in range(24)]
-    for rows, attribute, expected in ((time_rows, "today_prices", 0.7), (start_rows, "prices", 0.8)):
+    for rows, attribute, expected in ((time_rows, "rates", 0.7), (start_rows, "prices", 0.8)):
         result = price_sources.build_canonical_direction(
             explicit_contract("sell", list_attribute=attribute),
             State("sensor.today", attributes={attribute: rows}), None, NOW, {},
@@ -183,18 +183,6 @@ def test_unsupported_series_fails_closed_instead_of_using_numeric_state() -> Non
     assert result["diagnostics"]["resolver"]["today"]["status"] == "unsupported_price_schema"
 
 
-def test_migration_maps_pse_rce_alias_and_preserves_selected_entities() -> None:
-    source = {
-        "price_source": "pse_rce",
-        "buy_price_today_sensor": "sensor.my_rce",
-        "buy_price_tomorrow_sensor": "sensor.my_rce_tomorrow",
-        "price_sensor": "sensor.my_sell",
-        "sell_price_tomorrow_sensor": "sensor.my_sell_tomorrow",
-    }
-    migrated = price_sources.migrate_legacy_price_contracts(source)
-    assert migrated["buy_price_contract"]["source_adapter"] == "rce_pse"
-    assert migrated["buy_price_contract"]["today_entity"] == "sensor.my_rce"
-    assert migrated["sell_price_contract"]["tomorrow_entity"] == "sensor.my_sell_tomorrow"
 
 
 def test_config_and_frontend_contracts_expose_validation_and_backend_only_diagnostics() -> None:

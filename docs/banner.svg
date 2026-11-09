@@ -29,8 +29,8 @@
     <path d="M104 18 L80 92 L118 92 L88 160 L158 68 L118 68 Z" fill="url(#bolt)"/>
   </g>
   <text class="title" x="300" y="158">Deye Energy Manager</text>
-  <text class="sub" x="304" y="205">Home Assistant / HACS dla sterowania sprzedaza energii i magazynem</text>
-  <text class="small" x="304" y="246">harmonogram 24h · ceny Pstryk · Deye Grid Charge · sugestie AI</text>
+  <text class="sub" x="304" y="205">Home Assistant / HACS for controlling energy selling and storage</text>
+  <text class="small" x="304" y="246">24 h schedule · Octopus Energy prices · Deye Grid Charge · AI suggestions</text>
   <g transform="translate(304 292)">
     <rect class="badge" x="0" y="0" width="130" height="36" rx="18"/>
     <text class="badgeText" x="65" y="24" text-anchor="middle">HACS Custom</text>

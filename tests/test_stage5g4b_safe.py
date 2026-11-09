@@ -186,7 +186,7 @@ def test_cross_midnight_profile_uses_window_anchor_day():
     ("start_date", "active_day"),
     [
         ("2026-08-12", "wednesday"),
-        ("2026-08-15", "sob"),
+        ("2026-08-15", "sat"),
         ("2026-08-16", "6"),
     ],
 )

@@ -11,7 +11,7 @@ and are not repeated here.
 
 - English-language integration, card, services and tests.
 - Sunsynk (MQTT) inverter profile as the default, with pre-filled entity names.
-- UK tariff defaults (manual tariff mode, £).
+- Octopus Energy price adapter and tariff catalogue (Intelligent Octopus Go, Agile, Flexible); defaults match an Intelligent Octopus Go account with Outgoing export.
 - `GBP/kWh` and `GBP/MWh` accepted as price units.
 
 ### Changed
@@ -30,5 +30,5 @@ and are not repeated here.
 
 ### Known limitations
 
-- No standing charge, hourly-only tariff resolution, no manual flat export rate.
-- Bundled `tariff_catalog.json` is illustrative sample data, not real tariffs.
+- No standing charge, hourly-only tariff resolution, no manual flat export rate, no dispatch-slot pricing.
+- Octopus unit rates in the catalogue were read from the account on 2026-11-09 and must be kept current by the user.

@@ -110,10 +110,10 @@ function test_default_settings_card_does_not_offer_zero_export_as_logical_mode()
   const modes = makeCard().card.defaultWorkModes();
   assertTrue(!modes.includes("Zero Export To Load") && !modes.includes("Zero Export To CT"), "physical values must not be logical modes");
 }
-async function test_default_settings_card_sends_normalna_praca() {
+async function test_default_settings_card_sends_normal_operation() {
   assertEqual((await saveDefaultPayload("Normal Operation")).mode, "Normal Operation", "card must send Normal Operation");
 }
-async function test_default_settings_card_sends_sprzedaz() {
+async function test_default_settings_card_sends_selling() {
   assertEqual((await saveDefaultPayload("Selling")).mode, "Selling", "card must send Selling");
 }
 async function test_default_settings_card_keeps_physical_normal_variant_separate() {
@@ -145,8 +145,8 @@ const tests = [
   test_default_settings_card_uses_logical_manager_modes,
   test_default_settings_card_does_not_offer_selling_first,
   test_default_settings_card_does_not_offer_zero_export_as_logical_mode,
-  test_default_settings_card_sends_normalna_praca,
-  test_default_settings_card_sends_sprzedaz,
+  test_default_settings_card_sends_normal_operation,
+  test_default_settings_card_sends_selling,
   test_default_settings_card_keeps_physical_normal_variant_separate,
   test_normal_profile_card_uses_backend_provider_options,
   test_normal_profile_card_lewa_reka_uses_load_ct_labels,

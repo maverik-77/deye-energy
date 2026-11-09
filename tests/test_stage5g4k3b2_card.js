@@ -17,20 +17,20 @@ const known = (adapter) => ({
   resolved_adapter_today: adapter, resolved_adapter_tomorrow: adapter,
   today_entity: `sensor.${adapter}_today`, tomorrow_entity: `sensor.${adapter}_tomorrow`,
   resolved_source_today: {
-    semantic_scope: adapter === "rce_pse" ? "energy_only" : "all_in_variable",
-    includes_distribution_variable: adapter !== "rce_pse",
-    includes_excise: adapter !== "rce_pse",
-    includes_service_margin: adapter !== "rce_pse",
+    semantic_scope: adapter === "octopus_energy" ? "energy_only" : "all_in_variable",
+    includes_distribution_variable: adapter !== "octopus_energy",
+    includes_excise: adapter !== "octopus_energy",
+    includes_service_margin: adapter !== "octopus_energy",
   },
   resolved_source_tomorrow: {
-    semantic_scope: adapter === "rce_pse" ? "energy_only" : "all_in_variable",
-    includes_distribution_variable: adapter !== "rce_pse",
-    includes_excise: adapter !== "rce_pse",
-    includes_service_margin: adapter !== "rce_pse",
+    semantic_scope: adapter === "octopus_energy" ? "energy_only" : "all_in_variable",
+    includes_distribution_variable: adapter !== "octopus_energy",
+    includes_excise: adapter !== "octopus_energy",
+    includes_service_margin: adapter !== "octopus_energy",
   },
 });
 
-for (const adapter of ["pstryk", "rce_pse"]) {
+for (const adapter of ["octopus_energy"]) {
   const html = card.renderPriceContract("buy", known(adapter));
   check(html.includes("automatic / read-only"), `${adapter} must be explicitly read-only`);
   check(html.includes("automatic contract"), `${adapter} must render diagnostics as text`);
@@ -50,26 +50,26 @@ const empty = {
 };
 const staleSnapshot = {
   buy: {
-    contract: known("pstryk"),
+    contract: known("octopus_energy"),
     rows: [{ day: "tomorrow", hour: 23, quality: "ready", final_price_gbp_kwh: 1.16 }],
     diagnostics: { resolver: {
-      today: { mapped_entity: "sensor.old_pstryk_today", resolved_entity: "sensor.old_pstryk_today" },
-      tomorrow: { mapped_entity: "sensor.old_pstryk_tomorrow", resolved_entity: "sensor.old_pstryk_tomorrow" },
+      today: { mapped_entity: "sensor.old_octopus_energy_today", resolved_entity: "sensor.old_octopus_energy_today" },
+      tomorrow: { mapped_entity: "sensor.old_octopus_energy_tomorrow", resolved_entity: "sensor.old_octopus_energy_tomorrow" },
     } },
   },
 };
 const diagnostics = card.renderPriceDiagnostics({
   price_contracts: { buy: empty, sell: empty }, price_diagnostics: staleSnapshot,
 });
-check(!diagnostics.includes("sensor.old_pstryk"), "empty diagnostics must not render stale entity names");
+check(!diagnostics.includes("sensor.old_octopus_energy"), "empty diagnostics must not render stale entity names");
 check(diagnostics.includes("not configured"), "empty diagnostics must show unconfigured status");
 
 card.tariffData = () => ({
-  mode: "automatic", provider: "dso_a", plan: "g11", providers: [], tariffs: [], hourly_profile: [],
-  price_source: "pse_rce", price_contracts: { buy: known("rce_pse"), sell: empty },
+  mode: "automatic", provider: "octopus", plan: "intelligent_go", providers: [], tariffs: [], hourly_profile: [],
+  price_source: "octopus_energy", price_contracts: { buy: known("octopus_energy"), sell: empty },
 });
 const tariff = card.renderTariffTab();
 check(!tariff.includes('data-tariff-field="price_source"'), "legacy source must not be an active dropdown");
-check(tariff.includes("Detected source: rce_pse"), "derived source must be rendered as read-only text");
+check(tariff.includes("Detected source: octopus_energy"), "derived source must be rendered as read-only text");
 check(source.startsWith("// Resource revision: v=0.8.0.44"), "resource revision must be .44");
 console.log("stage5g4k3b2 real HA cleanup card OK");

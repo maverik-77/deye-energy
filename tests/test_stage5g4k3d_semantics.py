@@ -25,7 +25,7 @@ class State:
     state: str = "unknown"
 
 
-def pstryk_rows(day: datetime, price: float) -> list[dict]:
+def octopus_energy_rows(day: datetime, price: float) -> list[dict]:
     return [
         {
             "start": (day + timedelta(hours=hour)).isoformat(),
@@ -36,7 +36,7 @@ def pstryk_rows(day: datetime, price: float) -> list[dict]:
     ]
 
 
-def rce_rows(day: datetime, price: float) -> list[dict]:
+def octopus_rows(day: datetime, price: float) -> list[dict]:
     rows = []
     for index in range(96):
         start = day + timedelta(minutes=index * 15)
@@ -45,7 +45,7 @@ def rce_rows(day: datetime, price: float) -> list[dict]:
             "period": f"{start:%H:%M} - {'24:00' if index == 95 else end.strftime('%H:%M')}",
             "dtime": end.strftime("%Y-%m-%d %H:%M:%S"),
             "business_date": day.date().isoformat(),
-            "rce_price": price,
+            "value_inc_vat": price,
         })
     return rows
 
@@ -63,18 +63,18 @@ def build_known(direction: str, adapter: str) -> dict:
         {}, direction, f"sensor.{adapter}_{direction}_today",
         f"sensor.{adapter}_{direction}_tomorrow", adapter, adapter,
     )
-    if adapter == "pstryk":
-        today = State(contract["today_entity"], {"today_prices": pstryk_rows(NOW, 0.7)})
-        tomorrow = State(contract["tomorrow_entity"], {"tomorrow_prices": pstryk_rows(NOW + timedelta(days=1), 0.8)})
+    if adapter == "octopus_energy":
+        today = State(contract["today_entity"], {"rates": octopus_energy_rows(NOW, 0.7)})
+        tomorrow = State(contract["tomorrow_entity"], {"rates": octopus_energy_rows(NOW + timedelta(days=1), 0.8)})
     else:
-        today = State(contract["today_entity"], {"prices": rce_rows(NOW, 0.7)})
-        tomorrow = State(contract["tomorrow_entity"], {"prices": rce_rows(NOW + timedelta(days=1), 0.8)})
+        today = State(contract["today_entity"], {"prices": octopus_rows(NOW, 0.7)})
+        tomorrow = State(contract["tomorrow_entity"], {"prices": octopus_rows(NOW + timedelta(days=1), 0.8)})
     return price_sources.build_canonical_direction(contract, today, tomorrow, NOW, distribution())
 
 
-def test_pstryk_roles_are_directional_and_buy_never_double_adds_osd() -> None:
-    buy = build_known("buy", "pstryk")
-    sell = build_known("sell", "pstryk")
+def test_octopus_energy_roles_are_directional_and_buy_never_double_adds_dso() -> None:
+    buy = build_known("buy", "octopus_energy")
+    sell = build_known("sell", "octopus_energy")
 
     assert len(buy["rows"]) == 48
     assert {row["source_economic_role"] for row in buy["rows"]} == {"retail_buy_all_in"}
@@ -83,16 +83,6 @@ def test_pstryk_roles_are_directional_and_buy_never_double_adds_osd() -> None:
     assert {row["added_distribution"] for row in sell["rows"]} == {0.0}
 
 
-def test_rce_roles_are_directional_and_only_buy_may_add_osd() -> None:
-    buy = build_known("buy", "rce_pse")
-    sell = build_known("sell", "rce_pse")
-
-    assert len(buy["rows"]) == 48
-    assert {row["source_economic_role"] for row in buy["rows"]} == {"energy_only"}
-    assert {row["added_distribution"] for row in buy["rows"]} == {0.25}
-    assert {row["source_economic_role"] for row in sell["rows"]} == {"market_reference"}
-    assert "prosumer_sell" not in {row["source_economic_role"] for row in sell["rows"]}
-    assert {row["added_distribution"] for row in sell["rows"]} == {0.0}
 
 
 def custom_contract(role: str) -> dict:
@@ -119,7 +109,7 @@ def custom_contract(role: str) -> dict:
 
 
 def test_custom_requires_explicit_valid_economic_role() -> None:
-    state = State("sensor.custom_today", {"prices": pstryk_rows(NOW, 0.5)})
+    state = State("sensor.custom_today", {"prices": octopus_energy_rows(NOW, 0.5)})
     valid = price_sources.build_canonical_direction(
         custom_contract("energy_only"), state, None, NOW, distribution(0.2)
     )
@@ -152,9 +142,9 @@ def test_runtime_source_authority_has_no_legacy_fallbacks() -> None:
 
 
 def test_migration_defaults_are_presence_aware_and_custom_role_is_not_guessed() -> None:
-    absent = price_sources.migrate_legacy_price_contracts({"price_source": "pstryk"})
+    absent = price_sources.migrate_legacy_price_contracts({"price_source": "octopus_energy"})
     explicit_empty = price_sources.migrate_legacy_price_contracts({
-        "price_source": "pstryk",
+        "price_source": "octopus_energy",
         "buy_price_today_sensor": "",
         "buy_price_tomorrow_sensor": None,
         "price_sensor": "",
@@ -165,7 +155,7 @@ def test_migration_defaults_are_presence_aware_and_custom_role_is_not_guessed() 
         "sell", "custom", "sensor.custom_sell", "",
     )
 
-    assert absent["buy_price_today_sensor"].startswith("sensor.pstryk_aio_")
+    assert absent["buy_price_today_sensor"] == ""
     assert explicit_empty["buy_price_today_sensor"] == ""
     assert explicit_empty["buy_price_tomorrow_sensor"] == ""
     assert explicit_empty["price_sensor"] == ""

@@ -29,7 +29,7 @@ def valid_analysis():
             "enabled": True,
             "hours": [{"index": 20, "action": "sell", "power_w": 4000}],
         },
-        "reasons": ["Wysoka cena selling"],
+        "reasons": ["High sell price"],
         "risks": ["Short history"],
     }
 
@@ -155,13 +155,13 @@ class AiAssistantTests(unittest.IsolatedAsyncioTestCase):
                     },
                 },
             },
-            tariff={"provider_name": "DSO A", "plan_name": "G12w"},
+            tariff={"provider_name": "Octopus Energy", "plan_name": "Intelligent Octopus Go"},
         )
         self.assertEqual("en-GB", payload["locale"])
         self.assertEqual("review", payload["requested_role"])
         self.assertEqual(3000, payload["user_profiles"]["morning_sale"]["preferred_power_w"])
         self.assertNotIn("note", payload["user_profiles"]["morning_sale"])
-        self.assertEqual("DSO A", payload["tariff"]["provider_name"])
+        self.assertEqual("Octopus Energy", payload["tariff"]["provider_name"])
         self.assertTrue(payload["privacy"]["protection_enforced"])
 
     def test_material_fingerprint_ignores_small_noise_but_tracks_actions(self):

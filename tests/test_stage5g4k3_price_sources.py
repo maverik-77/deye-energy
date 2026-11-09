@@ -37,7 +37,7 @@ class State:
 NOW = datetime(2026, 8, 23, 12, 0, tzinfo=timezone(timedelta(hours=2)))
 
 
-def rce_rows(day: str, base: float = 0.4) -> list[dict]:
+def octopus_rows(day: str, base: float = 0.4) -> list[dict]:
     rows = []
     for quarter in range(96):
         start_minute = quarter * 15
@@ -49,41 +49,41 @@ def rce_rows(day: str, base: float = 0.4) -> list[dict]:
         rows.append({
             "dtime": dtime_day.strftime("%Y-%m-%d %H:%M:%S"),
             "period": f"{sh:02d}:{sm:02d} - {period_end}",
-            "rce_price": base + quarter / 1000,
+            "value_inc_vat": base + quarter / 1000,
             "business_date": day,
         })
     return rows
 
 
-def rce_contract(direction: str = "buy", **overrides) -> dict:
+def octopus_contract(direction: str = "buy", **overrides) -> dict:
     value = {
-        "source_adapter": "rce_pse",
+        "source_adapter": "octopus_energy",
         "price_basis": "gross",
         "unit": "GBP/kWh",
         "list_attribute": "value_json",
         **overrides,
     }
-    return normalize_price_contract(value, direction, "rce_pse", "sensor.rce_today", "sensor.rce_tomorrow")
+    return normalize_price_contract(value, direction, "octopus_energy", "sensor.octopus_today", "sensor.octopus_tomorrow")
 
 
 def test_adapter_detection_prefers_metadata_and_explicit_override() -> None:
-    assert detect_source_adapter("sensor.renamed", platform="pstryk") == "pstryk"
-    assert detect_source_adapter("sensor.renamed", config_entry_domain="rce_pse") == "rce_pse"
-    assert detect_source_adapter("sensor.renamed", device_metadata="Pstryk energy service") == "pstryk"
-    assert detect_source_adapter("sensor.pstryk_name", explicit="custom") == "custom"
+    assert detect_source_adapter("sensor.renamed", platform="octopus_energy") == "octopus_energy"
+    assert detect_source_adapter("sensor.renamed", config_entry_domain="octopus_energy") == "octopus_energy"
+    assert detect_source_adapter("sensor.renamed", device_metadata="Octopus Energy energy service") == "octopus_energy"
+    assert detect_source_adapter("sensor.octopus_energy_name", explicit="custom") == "custom"
     assert detect_source_adapter("sensor.unknown") == "generic"
 
 
-def test_pstryk_contract_is_forced_all_in_gross_and_never_adds_osd() -> None:
+def test_octopus_energy_contract_is_forced_all_in_gross_and_never_adds_dso() -> None:
     contract = normalize_price_contract(
-        {"source_adapter": "pstryk", "price_basis": "net", "includes_distribution_variable": False},
-        "buy", "pstryk", "sensor.pstryk_buy", "sensor.pstryk_buy_tomorrow",
+        {"source_adapter": "octopus_energy", "price_basis": "net", "includes_distribution_variable": False},
+        "buy", "octopus_energy", "sensor.octopus_energy_buy", "sensor.octopus_energy_buy_tomorrow",
     )
     assert contract["semantic_scope"] == "all_in_variable"
     assert contract["price_basis"] == "gross"
     assert contract["unit"] == "GBP/kWh"
     assert contract["includes_distribution_variable"] is True
-    state = State("sensor.pstryk_buy", attributes={"prices": [
+    state = State("sensor.octopus_energy_buy", attributes={"prices": [
         {"datetime": f"2026-08-23T{hour:02d}:00:00+02:00", "price_gross": 0.23}
         for hour in range(24)
     ]})
@@ -93,33 +93,8 @@ def test_pstryk_contract_is_forced_all_in_gross_and_never_adds_osd() -> None:
     assert all(row["final_price_gbp_kwh"] == pytest.approx(0.23) for row in result["rows"])
 
 
-def test_rce_96_quarters_aggregate_to_24_duration_weighted_hours() -> None:
-    today = State("sensor.rce_today", attributes={"value_json": rce_rows("2026-08-23")})
-    tomorrow = State("sensor.rce_tomorrow", attributes={"value_json": rce_rows("2026-08-24", 0.8)})
-    distribution = {
-        (NOW.date() + timedelta(days=day), hour): 0.2
-        for day in (0, 1) for hour in range(24)
-    }
-    result = build_canonical_direction(rce_contract(), today, tomorrow, NOW, distribution)
-    assert result["diagnostics"]["status"] == "ready"
-    assert len(result["rows"]) == 48
-    first = result["rows"][0]
-    assert first["source_price_gbp_kwh"] == pytest.approx(sum(0.4 + i / 1000 for i in range(4)) / 4)
-    assert first["added_distribution"] == pytest.approx(0.2)
-    assert first["final_price_gbp_kwh"] == pytest.approx(first["source_price_gbp_kwh"] + 0.2)
-    assert first["coverage_minutes"] == 60
 
 
-def test_rce_order_is_irrelevant_and_business_date_owns_24_00_boundary() -> None:
-    rows = rce_rows("2026-08-23")
-    random.Random(42).shuffle(rows)
-    result = build_canonical_direction(
-        rce_contract(), State("sensor.rce_today", attributes={"value_json": rows}), None, NOW, {}
-    )
-    assert len(result["rows"]) == 24
-    assert result["rows"][-1]["date"] == "2026-08-23"
-    assert result["rows"][-1]["hour"] == 23
-    assert result["rows"][-1]["source_metadata"]["interval_count"] == 4
 
 
 def test_partial_and_overlap_hours_fail_closed() -> None:
@@ -156,19 +131,11 @@ def test_units_net_vat_negative_prices_and_unknown_contracts() -> None:
     assert build_canonical_direction(unknown, state, None, NOW)["diagnostics"]["status"] == "unknown_price_basis"
 
 
-def test_rce_sell_current_sensor_never_becomes_forecast() -> None:
-    result = build_canonical_direction(
-        rce_contract("sell", semantic_scope="partial", includes_distribution_variable="unknown"),
-        State("sensor.rce_sell", state="0.75"), None, NOW, {},
-    )
-    assert result["rows"] == []
-    assert result["diagnostics"]["status"] == "missing_sell_forecast"
-    assert result["diagnostics"]["current_value_available"] is True
 
 
 def test_legacy_migration_preserves_entities_and_separates_directions() -> None:
     legacy = {
-        "price_source": "pstryk", "price_includes_distribution": False,
+        "price_source": "octopus_energy", "price_includes_distribution": False,
         "price_sensor": "sensor.renamed_sell", "buy_price_today_sensor": "sensor.renamed_buy",
     }
     migrated = migrate_legacy_price_contracts(legacy)
@@ -176,3 +143,54 @@ def test_legacy_migration_preserves_entities_and_separates_directions() -> None:
     assert migrated["buy_price_contract"]["today_entity"] == "sensor.renamed_buy"
     assert migrated["sell_price_contract"]["today_entity"] == "sensor.renamed_sell"
     assert migrated["buy_price_contract"] is not migrated["sell_price_contract"]
+
+
+LONDON_NOON = datetime(2026, 11, 9, 12, 0, tzinfo=timezone.utc)
+
+
+def test_octopus_rates_event_half_hours_average_into_hours() -> None:
+    midnight = datetime(2026, 11, 9, tzinfo=timezone.utc)
+    rows = []
+    for slot in range(48):
+        start = midnight + timedelta(minutes=30 * slot)
+        rows.append({
+            "start": start.isoformat(),
+            "end": (start + timedelta(minutes=30)).isoformat(),
+            "value_inc_vat": 0.066 if slot < 11 else 0.3281,
+        })
+    contract = normalize_price_contract(
+        {"source_adapter": "octopus_energy"}, "buy", "octopus_energy", "event.import_today_rates", ""
+    )
+    result = build_canonical_direction(
+        contract, State("event.import_today_rates", "unknown", {"rates": rows}), None, LONDON_NOON, {}
+    )
+    hours = {row["hour"]: row for row in result["rows"] if row["day"] == "today"}
+    assert len(hours) == 24
+    assert hours[2]["final_price_gbp_kwh"] == pytest.approx(0.066)
+    assert hours[5]["final_price_gbp_kwh"] == pytest.approx((0.066 + 0.3281) / 2)
+    assert hours[12]["final_price_gbp_kwh"] == pytest.approx(0.3281)
+    assert result["contract"]["economic_role"] == "retail_buy_all_in"
+    assert all(row["added_distribution"] == 0 for row in result["rows"])
+
+
+def test_octopus_export_rate_sensor_window_covers_today_and_tomorrow() -> None:
+    attributes = {
+        "start": datetime(2026, 11, 8, tzinfo=timezone.utc).isoformat(),
+        "end": datetime(2026, 11, 11, tzinfo=timezone.utc).isoformat(),
+        "unit_of_measurement": "GBP/kWh",
+    }
+    contract = normalize_price_contract(
+        {"source_adapter": "octopus_energy"}, "sell", "octopus_energy", "sensor.export_current_rate", ""
+    )
+    result = build_canonical_direction(
+        contract, State("sensor.export_current_rate", "0.12", attributes), None, LONDON_NOON, {}
+    )
+    assert len(result["rows"]) == 48
+    assert all(row["final_price_gbp_kwh"] == pytest.approx(0.12) for row in result["rows"])
+    assert result["contract"]["economic_role"] == "prosumer_sell"
+    assert result["contract"]["resolved_schema_today"]["schema_id"] == "octopus_rate_window_v1"
+
+
+def test_octopus_adapter_is_detected_from_the_integration_domain() -> None:
+    assert detect_source_adapter("sensor.any_name", config_entry_domain="octopus_energy") == "octopus_energy"
+    assert detect_source_adapter("sensor.octopus_energy_lookalike") == "generic"

@@ -17,8 +17,8 @@ SPEC.loader.exec_module(optimizer)
 
 def tariff_rows(
     *,
-    provider: str = "dso_a",
-    plan: str = "g12w",
+    provider: str = "octopus",
+    plan: str = "intelligent_go",
     first_rate: float = 0.8,
     second_rate: float = 0.1,
 ) -> list[dict]:
@@ -125,16 +125,16 @@ def base_inputs() -> dict:
             row["total_distribution_rate"] for row in tariff_rows()
         ],
         "price_includes_distribution": False,
-        "osd_data_complete": True,
+        "dso_data_complete": True,
         "tariff_context": {
-            "provider": "dso_a",
-            "provider_name": "DSO A",
-            "plan": "g12w",
-            "plan_name": "G12w",
+            "provider": "octopus",
+            "provider_name": "Octopus Energy",
+            "plan": "intelligent_go",
+            "plan_name": "Intelligent Octopus Go",
             "configured": True,
             "hourly_profile": tariff_rows(),
         },
-        "buy_price_source": "sensor.pstryk_buy_price",
+        "buy_price_source": "sensor.octopus_energy_buy_price",
         "pv_forecast": [0, 0],
         "pv_forecast_full": [0, 0],
         "pv_forecast_available": [True, True],
@@ -254,14 +254,14 @@ class AiVisualPayloadTests(unittest.TestCase):
             {row["hour"]: row["price_rank"] for row in second_rows},
         )
 
-    def test_missing_osd_warns_and_blocks_optimizer_grid_charge(self):
+    def test_missing_dso_warns_and_blocks_optimizer_grid_charge(self):
         values = base_inputs()
-        values["osd_data_complete"] = False
+        values["dso_data_complete"] = False
         values["tariff_context"]["configured"] = False
         plan = optimizer.build_energy_plan(values, "balanced")
         ranking = plan["ui_insights"]["purchase_ranking"]
-        self.assertEqual("missing_osd_data", ranking["warning"])
-        self.assertFalse(ranking["osd_complete"])
+        self.assertEqual("missing_dso_data", ranking["warning"])
+        self.assertFalse(ranking["dso_complete"])
         self.assertFalse(any(
             row["action"] == "charge" and row["decision_source"] == "optimizer"
             for row in plan["rows"]
@@ -552,7 +552,7 @@ class AiVisualSourceTests(unittest.TestCase):
         method = self.source[start:end]
         for key in (
             "prices", "solcast", "learning", "load_profile",
-            "pv_profile", "entities", "soc", "tariff_osd",
+            "pv_profile", "entities", "soc", "tariff_dso",
         ):
             self.assertIn(f'{key}:', method)
         self.assertIn("Final plan confidence", method)
@@ -561,7 +561,7 @@ class AiVisualSourceTests(unittest.TestCase):
         self.assertIn("aiFormatPercent", method)
         self.assertIn("aiQualityCoverage", method)
         self.assertNotIn("quality.today_sell_prices || 0", method)
-        self.assertNotIn("quality.osd_hours || 0", method)
+        self.assertNotIn("quality.dso_hours || 0", method)
         self.assertNotIn('`${this.aiFormatNumber(confidenceComponents[key], 0)}%`', method)
         self.assertNotIn("Plan status / wykonania", method)
         self.assertIn("Proposal status", method)

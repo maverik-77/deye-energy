@@ -110,7 +110,7 @@ def validate_catalog(catalog: Any) -> dict[str, Any]:
         "SUPPORTED_TARIFF_BUY",
         "SUPPORTED_SPECIAL_PRICE_LIST",
         "DYNAMIC_EXTERNAL_SIGNAL_REQUIRED",
-        "OSD_ONLY_NO_STANDARD_SELLER_TARIFF",
+        "DSO_ONLY_NO_STANDARD_SELLER_TARIFF",
         "UNKNOWN_REQUIRES_RESEARCH",
     }
     seller_tariffs = catalog.get("seller_tariffs")
@@ -149,7 +149,7 @@ def validate_catalog(catalog: Any) -> dict[str, Any]:
                 raise ValueError(f"Seller tariff {location} must contain gross prices with VAT and excise")
             if entry.get("includes_distribution") is not False or entry.get("economic_role") != "energy_only":
                 raise ValueError(f"Seller tariff {location} must be energy-only")
-            if entry.get("schedule_source") not in {"osd_same_tariff", "own_schedule"}:
+            if entry.get("schedule_source") not in {"dso_same_tariff", "own_schedule"}:
                 raise ValueError(f"Unknown seller schedule source in {location}")
             if not str(entry.get("source_url") or "").startswith("https://"):
                 raise ValueError(f"Seller tariff {location} has no official source")
@@ -174,9 +174,9 @@ def validate_catalog(catalog: Any) -> dict[str, Any]:
             for rate in rates.values():
                 if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not 0 < float(rate) <= 10:
                     raise ValueError(f"Invalid seller rate in {location}")
-            applicable = entry.get("applicable_osd")
+            applicable = entry.get("applicable_dso")
             if not isinstance(applicable, list) or not applicable or any(item not in providers for item in applicable):
-                raise ValueError(f"Invalid OSD scope in {location}")
+                raise ValueError(f"Invalid DSO scope in {location}")
             if entry.get("schedule_source") == "own_schedule":
                 if "all_day_zone" in entry and entry["all_day_zone"] not in rates:
                     raise ValueError(f"Unknown all-day seller zone in {location}")
@@ -184,13 +184,13 @@ def validate_catalog(catalog: Any) -> dict[str, Any]:
                     validate_zones(entry["zones"], location, rates)
             else:
                 for provider_id in applicable:
-                    osd_plan = providers.get(provider_id, {}).get("tariffs", {}).get(entry.get("tariff_group"))
-                    if not isinstance(osd_plan, dict):
-                        raise ValueError(f"Seller tariff {location} has no matching OSD tariff")
-                    missing_zones = set(osd_plan.get("rates", {})) - set(rates)
+                    dso_plan = providers.get(provider_id, {}).get("tariffs", {}).get(entry.get("tariff_group"))
+                    if not isinstance(dso_plan, dict):
+                        raise ValueError(f"Seller tariff {location} has no matching DSO tariff")
+                    missing_zones = set(dso_plan.get("rates", {})) - set(rates)
                     if missing_zones:
                         raise ValueError(
-                            f"Seller tariff {location} misses OSD schedule zones: {sorted(missing_zones)}"
+                            f"Seller tariff {location} misses DSO schedule zones: {sorted(missing_zones)}"
                         )
             indexed_seller_tariffs[tariff_id] = (seller_id, entry)
             for provider_id in applicable:
@@ -208,7 +208,7 @@ def validate_catalog(catalog: Any) -> dict[str, Any]:
     if not isinstance(matrix, dict):
         raise ValueError("Tariff catalog has no seller support matrix")
     if set(matrix) != set(providers):
-        raise ValueError("Seller support matrix does not cover every OSD")
+        raise ValueError("Seller support matrix does not cover every DSO")
     for provider_id, provider in providers.items():
         rows = matrix.get(provider_id)
         tariffs = provider.get("tariffs", {})
@@ -229,7 +229,7 @@ def validate_catalog(catalog: Any) -> dict[str, Any]:
                 if indexed is None:
                     raise ValueError(f"Unknown seller tariff {tariff_id} for {location}")
                 indexed_seller, entry = indexed
-                if indexed_seller != seller_id or provider_id not in entry.get("applicable_osd", []):
+                if indexed_seller != seller_id or provider_id not in entry.get("applicable_dso", []):
                     raise ValueError(f"Seller tariff scope mismatch for {location}")
                 if str(entry.get("tariff_group")) != plan_id:
                     raise ValueError(f"Seller tariff group mismatch for {location}")
@@ -406,7 +406,7 @@ def seller_support_entry(
     provider: str,
     plan: str,
 ) -> dict[str, Any]:
-    """Return the audited OSD/seller relation without inferring a selection."""
+    """Return the audited DSO/seller relation without inferring a selection."""
     row = catalog.get("seller_support_matrix", {}).get(provider, {}).get(plan)
     if not isinstance(row, dict):
         return {
@@ -451,7 +451,7 @@ def seller_tariff_options(
             continue
         if str(entry.get("tariff_group") or "") != plan:
             continue
-        if provider not in entry.get("applicable_osd", []):
+        if provider not in entry.get("applicable_dso", []):
             continue
         if not _seller_entry_valid_on(entry, on_date):
             continue
@@ -485,7 +485,7 @@ def resolve_seller_tariff(
         for tariff_id, entry in tariffs.items()
         if isinstance(entry, dict)
         and str(entry.get("tariff_group") or "") == plan
-        and provider in entry.get("applicable_osd", [])
+        and provider in entry.get("applicable_dso", [])
     }
     valid = {
         tariff_id: entry
@@ -497,7 +497,7 @@ def resolve_seller_tariff(
         return seller_tariff_id, selected, "ready"
     if selected is not None:
         # A catalog update may replace a dated price list. Transition is safe only
-        # within the exact same seller/product/group/OSD tuple and only when unique.
+        # within the exact same seller/product/group/DSO tuple and only when unique.
         variant = str(selected.get("product_variant") or "")
         replacements = [
             (tariff_id, entry)
@@ -521,10 +521,10 @@ def resolve_seller_tariff(
 def _seller_price_for_zone(
     entry: dict[str, Any],
     moment: datetime,
-    osd_zone: str,
+    dso_zone: str,
 ) -> tuple[str, float | None]:
-    if entry.get("schedule_source") == "osd_same_tariff":
-        zone = osd_zone
+    if entry.get("schedule_source") == "dso_same_tariff":
+        zone = dso_zone
     else:
         rule = _active_rule(entry, moment)
         zone = str(rule.get("all_day_zone") or rule.get("default_zone") or "")
@@ -553,7 +553,7 @@ def seller_catalog_canonical_buy(
     plan: str,
     distribution_by_slot: dict[tuple[date, int], float],
 ) -> dict[str, Any]:
-    """Build 24+24 gross BUY rows from a selected seller plus OSD exactly once."""
+    """Build 24+24 gross BUY rows from a selected seller plus DSO exactly once."""
     rows: list[dict[str, Any]] = []
     start = reference.replace(hour=0, minute=0, second=0, microsecond=0)
     resolved_ids: set[str] = set()
@@ -572,8 +572,8 @@ def seller_catalog_canonical_buy(
         if slot_key not in distribution_by_slot:
             failure = "distribution_slot_unavailable"
             break
-        osd_row = catalog_tariff_row(moment, catalog, provider, plan)
-        seller_zone, source_price = _seller_price_for_zone(entry, moment, str(osd_row.get("zone") or ""))
+        dso_row = catalog_tariff_row(moment, catalog, provider, plan)
+        seller_zone, source_price = _seller_price_for_zone(entry, moment, str(dso_row.get("zone") or ""))
         if source_price is None:
             failure = f"seller_rate_unavailable:{seller_zone or 'unknown'}"
             break
@@ -600,9 +600,9 @@ def seller_catalog_canonical_buy(
                 "seller_id": seller_id,
                 "seller_tariff_id": tariff_id,
                 "seller_zone": seller_zone,
-                "osd_provider": provider,
-                "osd_tariff": plan,
-                "osd_zone": osd_row.get("zone"),
+                "dso_provider": provider,
+                "dso_tariff": plan,
+                "dso_zone": dso_row.get("zone"),
             },
             "quality": "ready",
             "status": "ready",
@@ -766,10 +766,8 @@ def tariff_zone(
     catalog = bundled_catalog_cached()
     if get_tariff(catalog, provider, plan):
         return catalog_tariff_row(moment, catalog, provider, plan)["zone"]
-    if normalized_plan == "g11":
+    if normalized_plan in ("agile", "flexible"):
         return "all_day"
-    if normalized_plan == "g12w" and (moment.weekday() >= 5 or is_public_holiday(moment.date())):
-        return "offpeak"
     return "offpeak" if hour_in_windows(moment.hour, parse_windows(custom_windows)) else "peak"
 
 

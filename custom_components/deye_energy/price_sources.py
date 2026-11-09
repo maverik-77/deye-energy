@@ -18,7 +18,7 @@ PRICE_CONTRACT_VERSION = 1
 SUPPORTED_UNITS = {"GBP/kWh", "GBP/MWh"}
 SUPPORTED_BASES = {"gross", "net"}
 SUPPORTED_SCOPES = {"all_in_variable", "energy_only", "partial"}
-SUPPORTED_ADAPTERS = {"pstryk", "rce_pse", "generic", "custom"}
+SUPPORTED_ADAPTERS = {"octopus_energy", "generic", "custom"}
 SUPPORTED_ECONOMIC_ROLES = {
     "retail_buy_all_in",
     "energy_only",
@@ -91,10 +91,8 @@ def detect_source_adapter(
         str(value or "").lower()
         for value in (platform, config_entry_domain, device_metadata)
     )
-    if "pstryk" in metadata:
-        return "pstryk"
-    if "rce_pse" in metadata or "ha-rce-pse" in metadata or "lewa_reka_rce" in metadata:
-        return "rce_pse"
+    if "octopus_energy" in metadata or "octopus" in metadata:
+        return "octopus_energy"
     # An entity_id may be renamed or deliberately mimic another integration.
     # It is diagnostic-only and never binds a provider adapter.
     return "generic"
@@ -148,7 +146,7 @@ def default_price_contract(
         "vat_rate": None,
         "allow_state_fallback": direction == "buy",
     }
-    if adapter == "pstryk":
+    if adapter == "octopus_energy":
         contract.update({
             "economic_role": "retail_buy_all_in" if direction == "buy" else "prosumer_sell",
             "semantic_scope": "all_in_variable",
@@ -157,31 +155,13 @@ def default_price_contract(
             "includes_excise": True,
             "includes_service_margin": True,
             "unit": "GBP/kWh",
-            "granularity": "60m",
-            "today_list_attribute": "today_prices",
-            "tomorrow_list_attribute": "tomorrow_prices",
-            "value_field": "price",
+            "granularity": "30m",
+            "current_price_only": True,
+            "today_list_attribute": "rates",
+            "tomorrow_list_attribute": "rates",
+            "value_field": "value_inc_vat",
             "start_field": "start",
             "end_field": "end",
-            "allow_state_fallback": False,
-        })
-    elif adapter == "rce_pse":
-        contract.update({
-            "economic_role": "energy_only" if direction == "buy" else "market_reference",
-            "semantic_scope": "energy_only",
-            "includes_distribution_variable": False,
-            "includes_excise": False,
-            "includes_service_margin": False,
-            # rce_price is the provider's ready-to-use GBP/kWh energy component.
-            # This is adapter-owned metadata, never inherited from Pstryk.
-            "price_basis": "gross",
-            "unit": "GBP/kWh",
-            "granularity": "15m",
-            "value_field": "rce_price",
-            "period_field": "period",
-            "timestamp_field": "dtime",
-            "timestamp_role": "end",
-            "business_date_field": "business_date",
             "allow_state_fallback": False,
         })
     elif direction == "buy" and legacy_includes_distribution is not None:
@@ -224,7 +204,7 @@ def normalize_price_contract(
     result["price_basis"] = _text_choice(result.get("price_basis"), SUPPORTED_BASES, "unknown")
     result["unit"] = _text_choice(result.get("unit"), SUPPORTED_UNITS, "unknown")
     result["granularity"] = _text_choice(
-        result.get("granularity"), {"15m", "60m", "timestamp_series"}, "unknown"
+        result.get("granularity"), {"15m", "30m", "60m", "timestamp_series"}, "unknown"
     )
     result["timestamp_role"] = _text_choice(result.get("timestamp_role"), {"start", "end"}, "start")
     result["includes_distribution_variable"] = _tri_state(result.get("includes_distribution_variable"))
@@ -260,9 +240,9 @@ def normalize_price_contract(
     if result["vat_rate"] is not None and not 0 <= result["vat_rate"] <= 1:
         result["vat_rate"] = None
     # Known adapters own their non-negotiable source semantics.  User options
-    # may select entities and the RCE tax basis/unit, but cannot reintroduce a
+    # may select entities and the tax basis/unit, but cannot reintroduce a
     # double-count or turn a current-only prosumer sensor into a forecast.
-    if result["source_adapter"] == "pstryk":
+    if result["source_adapter"] == "octopus_energy":
         result.update({
             "economic_role": "retail_buy_all_in" if result["direction"] == "buy" else "prosumer_sell",
             "semantic_scope": "all_in_variable",
@@ -271,31 +251,14 @@ def normalize_price_contract(
             "includes_excise": True,
             "includes_service_margin": True,
             "unit": "GBP/kWh",
-            "granularity": "60m",
-            "today_list_attribute": "today_prices",
-            "tomorrow_list_attribute": "tomorrow_prices",
-            "value_field": "price",
+            "granularity": "30m",
+            "today_list_attribute": "rates",
+            "tomorrow_list_attribute": "rates",
+            "value_field": "value_inc_vat",
             "start_field": "start",
             "end_field": "end",
             "allow_state_fallback": False,
-            "current_price_only": False,
-        })
-    elif result["source_adapter"] == "rce_pse":
-        result.update({
-            "economic_role": "energy_only" if result["direction"] == "buy" else "market_reference",
-            "semantic_scope": "energy_only",
-            "includes_distribution_variable": False,
-            "includes_excise": False,
-            "includes_service_margin": False,
-            "price_basis": "gross",
-            "unit": "GBP/kWh",
-            "value_field": "rce_price",
-            "period_field": "period",
-            "timestamp_field": "dtime",
-            "timestamp_role": "end",
-            "business_date_field": "business_date",
-            "granularity": "15m",
-            "allow_state_fallback": False,
+            "current_price_only": True,
         })
     # Runtime-resolved per-day metadata is an extension of the v1 contract.
     # Keep it across normalization so mixed Today/Tomorrow adapters cannot be
@@ -488,8 +451,8 @@ def effective_contract_for_day(contract: dict[str, Any], source_day: int) -> dic
 def migrate_legacy_price_contracts(data: dict[str, Any]) -> dict[str, Any]:
     """Create independent BUY/SELL contracts without changing entity mapping."""
     migrated = dict(data)
-    source = str(migrated.get("price_source") or "pstryk").lower()
-    adapter = {"pstryk": "pstryk", "pse_rce": "rce_pse", "rce_pse": "rce_pse"}.get(
+    source = str(migrated.get("price_source") or "octopus_energy").lower()
+    adapter = {"octopus_energy": "octopus_energy", "octopus": "octopus_energy"}.get(
         source, "generic"
     )
     legacy = bool(migrated.get("price_includes_distribution", False))
@@ -498,15 +461,15 @@ def migrate_legacy_price_contracts(data: dict[str, Any]) -> dict[str, Any]:
             "buy",
             "buy_price_today_sensor",
             "buy_price_tomorrow_sensor",
-            "sensor.pstryk_aio_obecna_cena_zakupu_pradu",
-            "sensor.pstryk_aio_cena_zakupu_pradu_jutro",
+            "",
+            "",
         ),
         "sell_price_contract": (
             "sell",
             "price_sensor",
             "sell_price_tomorrow_sensor",
-            "sensor.pstryk_aio_obecna_cena_sprzedazy_pradu",
-            "sensor.pstryk_aio_cena_sprzedazy_pradu_jutro",
+            "",
+            "",
         ),
     }
     for contract_key, (direction, today_key, tomorrow_key, default_today, default_tomorrow) in definitions.items():
@@ -566,14 +529,8 @@ def resolve_price_schema(
     )
     if adapter == "custom":
         attributes = [explicit_attribute] if explicit_attribute else []
-    elif adapter == "pstryk":
-        attributes = [
-            explicit_attribute,
-            "today_prices" if source_day == 0 else "tomorrow_prices",
-            "prices",
-        ]
-    elif adapter == "rce_pse":
-        attributes = [explicit_attribute, "prices", "value_json"]
+    elif adapter == "octopus_energy":
+        attributes = [explicit_attribute, "rates", "prices"]
     else:
         attributes = [
             explicit_attribute,
@@ -588,29 +545,18 @@ def resolve_price_schema(
         rows = list(raw.values()) if isinstance(raw, dict) else raw
         sample = next((row for row in rows if isinstance(row, dict)), None)
         if sample is None:
-            if adapter == "pstryk" and attribute in {"today_prices", "tomorrow_prices"}:
+            if adapter == "octopus_energy" and attribute == "rates":
                 return {
-                    "schema_id": "pstryk_aio_interval_v1",
+                    "schema_id": "octopus_rates_v1",
                     "list_attribute": attribute,
-                    "value_field": "price",
+                    "value_field": "value_inc_vat",
                     "start_field": "start",
                     "end_field": "end",
-                    "granularity": "60m",
+                    "granularity": "30m",
                 }, "empty_series"
             continue
-        if "rce_price" in sample and any(key in sample for key in ("period", "dtime", "business_date")):
-            return {
-                "schema_id": "rce_interval_v1",
-                "list_attribute": attribute,
-                "value_field": "rce_price",
-                "period_field": "period",
-                "timestamp_field": "dtime",
-                "timestamp_role": "end",
-                "business_date_field": "business_date",
-                "granularity": "15m",
-            }, "ready"
         value_field = next(
-            (key for key in (str(contract.get("value_field") or ""), "price", "value", "price_gross", "price_prosumer_gross") if key and key in sample),
+            (key for key in (str(contract.get("value_field") or ""), "value_inc_vat", "price", "value", "price_gross", "price_prosumer_gross") if key and key in sample),
             None,
         )
         if value_field is None:
@@ -618,14 +564,14 @@ def resolve_price_schema(
         start_field = str(contract.get("start_field") or "start")
         end_field = str(contract.get("end_field") or "end")
         if start_field in sample and end_field in sample:
-            schema_id = "pstryk_aio_interval_v1" if adapter == "pstryk" and value_field == "price" else "start_end_price_v1"
+            schema_id = "octopus_rates_v1" if adapter == "octopus_energy" and value_field == "value_inc_vat" else "start_end_price_v1"
             return {
                 "schema_id": schema_id,
                 "list_attribute": attribute,
                 "value_field": value_field,
                 "start_field": start_field,
                 "end_field": end_field,
-                "granularity": str(contract.get("granularity") if contract.get("granularity") in {"15m", "60m"} else "60m"),
+                "granularity": str(contract.get("granularity") if contract.get("granularity") in {"15m", "30m", "60m"} else "60m"),
             }, "ready"
         timestamp_field = next(
             (key for key in (str(contract.get("timestamp_field") or ""), "time", "start", "datetime", "timestamp", "hour") if key and key in sample),
@@ -638,7 +584,22 @@ def resolve_price_schema(
                 "value_field": value_field,
                 "timestamp_field": timestamp_field,
                 "timestamp_role": str(contract.get("timestamp_role") or "start"),
-                "granularity": str(contract.get("granularity") if contract.get("granularity") in {"15m", "60m"} else "60m"),
+                "granularity": str(contract.get("granularity") if contract.get("granularity") in {"15m", "30m", "60m"} else "60m"),
+            }, "ready"
+    if adapter == "octopus_energy":
+        attrs = getattr(state, "attributes", {}) or {}
+        if (
+            _finite(getattr(state, "state", None)) is not None
+            and attrs.get("start") is not None
+            and attrs.get("end") is not None
+        ):
+            return {
+                "schema_id": "octopus_rate_window_v1",
+                "list_attribute": "",
+                "value_field": "state",
+                "start_field": "start",
+                "end_field": "end",
+                "granularity": "30m",
             }, "ready"
     return {}, "unsupported_price_schema"
 
@@ -837,6 +798,14 @@ def _intervals_for_state(
         normalized = _normalize_unit(value, unit) if value is not None else None
         if interval is not None and normalized is not None:
             intervals.append(PriceInterval(interval[0], interval[1], normalized, entity_id, index))
+    if not intervals and schema.get("schema_id") == "octopus_rate_window_v1":
+        attrs = getattr(state, "attributes", {}) or {}
+        value = _finite(getattr(state, "state", None))
+        window_start = _parse_iso(attrs.get("start"), reference)
+        window_end = _parse_iso(attrs.get("end"), reference)
+        normalized = _normalize_unit(value, unit) if value is not None else None
+        if normalized is not None and window_start is not None and window_end is not None and window_end > window_start:
+            intervals.append(PriceInterval(window_start, window_end, normalized, entity_id, -2))
     if not intervals and source_day == 0 and bool(effective.get("current_price_only")):
         value = _finite(getattr(state, "state", None))
         normalized = _normalize_unit(value, unit) if value is not None else None
@@ -958,21 +927,6 @@ def build_canonical_direction(
         if day_contract["price_basis"] == "net" and day_contract.get("vat_rate") is None:
             diagnostics["status"] = "unknown_price_basis"
             return {"schema_version": 1, "direction": direction, "contract": contract, "rows": [], "diagnostics": diagnostics}
-    if (
-        direction == "sell"
-        and any(
-            str(contract.get(f"resolved_adapter_{day_name}") or contract.get("source_adapter") or "") == "rce_pse"
-            and str(contract.get(f"{day_name}_entity") or "")
-            for day_name in ("today", "tomorrow")
-        )
-        and not any(
-            item.get("status") in {"ready", "empty_series"}
-            for item in schema_diagnostics.values()
-        )
-    ):
-        diagnostics["status"] = "missing_sell_forecast"
-        diagnostics["current_value_available"] = _finite(getattr(today_state, "state", None)) is not None
-        return {"schema_version": 1, "direction": direction, "contract": contract, "rows": [], "diagnostics": diagnostics}
     intervals: list[PriceInterval] = []
     source_statuses: list[str] = []
     for source_day, state in enumerate((today_state, tomorrow_state)):

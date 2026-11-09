@@ -342,13 +342,13 @@ class OptimizerCoreTests(unittest.TestCase):
         self.assertEqual(0, plan["data_quality"]["today_buy_prices"])
         self.assertEqual(0, plan["rows"][0]["confidence_components"]["prices"])
 
-    def test_osd_quality_reports_partial_coverage(self):
+    def test_dso_quality_reports_partial_coverage(self):
         values = inputs()
-        values["osd_available_hours"] = 24
-        values["osd_data_complete"] = False
+        values["dso_available_hours"] = 24
+        values["dso_data_complete"] = False
         plan = optimizer.build_energy_plan(values, "balanced")
-        self.assertEqual(24, plan["data_quality"]["osd_hours"])
-        self.assertEqual(50, plan["rows"][0]["confidence_components"]["tariff_osd"])
+        self.assertEqual(24, plan["data_quality"]["dso_hours"])
+        self.assertEqual(50, plan["rows"][0]["confidence_components"]["tariff_dso"])
 
     def test_charge_energy_target_crosses_midnight_and_respects_grid_cap(self):
         values = inputs()
@@ -656,7 +656,7 @@ class OptimizerCoreTests(unittest.TestCase):
             self.assertIsNotNone(row["power_limit_w"])
             self.assertTrue(row["power_basis"])
 
-    def test_today_write_is_independent_from_missing_tomorrow_prices(self):
+    def test_today_write_is_independent_from_missing_rates(self):
         values = inputs()
         values["generated_at"] = "2026-07-29T12:00:00+02:00"
         values["soc"] = 100
@@ -678,7 +678,7 @@ class OptimizerCoreTests(unittest.TestCase):
         self.assertFalse(plan["recommended_write_by_day"]["tomorrow"]["allowed"])
         self.assertEqual("awaiting_publication", plan["ui_insights"]["price_publication"]["tomorrow_status"])
 
-    def test_missing_tomorrow_prices_after_publication_are_reported(self):
+    def test_missing_rates_after_publication_are_reported(self):
         values = inputs()
         values["generated_at"] = "2026-07-29T15:00:00+01:00"
         values["timezone"] = "Europe/London"
@@ -713,7 +713,7 @@ class OptimizerCoreTests(unittest.TestCase):
             for hour in range(24):
                 canonical["buy"]["rows"].append({
                     "day": day_name, "date": local_date, "hour": hour, "quality": "ready",
-                    "source_adapter": "pstryk", "source_unit": "GBP/kWh", "source_basis": "gross",
+                    "source_adapter": "octopus_energy", "source_unit": "GBP/kWh", "source_basis": "gross",
                     "source_semantic_scope": "all_in_variable", "source_price_gbp_kwh": 0.23,
                     "energy_component": 0.23, "added_distribution": 0.0, "added_vat": 0.0,
                     "added_other_variable": 0.0, "final_price_gbp_kwh": 0.23,
@@ -733,7 +733,7 @@ class OptimizerCoreTests(unittest.TestCase):
         self.assertEqual(1.0, plan["rows"][0]["sell_price"])
         self.assertEqual(canonical, plan["canonical_prices"])
         purchase = plan["ui_insights"]["purchase_ranking"]["days"]["today"][0]
-        self.assertEqual("pstryk", purchase["source_adapter"])
+        self.assertEqual("octopus_energy", purchase["source_adapter"])
         self.assertTrue(purchase["price_includes_distribution"])
 
 

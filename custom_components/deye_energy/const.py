@@ -29,7 +29,7 @@ CONF_SOLCAST_PEAK_TIME_TODAY_SENSOR = "solcast_peak_time_today_sensor"
 CONF_DAILY_PV_PRODUCTION_SENSOR = "daily_pv_production_sensor"
 CONF_WEATHER_ENTITY = "weather_entity"
 CONF_PRICE_SOURCE = "price_source"
-CONF_OSD_PROVIDER = "osd_provider"
+CONF_DSO_PROVIDER = "dso_provider"
 CONF_TARIFF_PLAN = "tariff_plan"
 CONF_DISTRIBUTION_PEAK_RATE = "distribution_peak_rate"
 CONF_DISTRIBUTION_OFFPEAK_RATE = "distribution_offpeak_rate"
@@ -112,9 +112,9 @@ DEFAULT_DISCHARGE_CURRENT = "number.deye_battery_max_discharge_current"
 DEFAULT_CHARGE_CURRENT = "number.deye_battery_max_charge_current"
 DEFAULT_GRID_CHARGE_CURRENT = "number.deye_grid_charge_battery_current"
 DEFAULT_BATTERY_SOC = "sensor.deye_battery_soc"
-DEFAULT_PRICE_SENSOR = ""
+DEFAULT_PRICE_SENSOR = "sensor.octopus_energy_electricity_17m0034926_1470001581693_export_current_rate"
 DEFAULT_SELL_PRICE_TOMORROW_SENSOR = ""
-DEFAULT_BUY_PRICE_TODAY_SENSOR = ""
+DEFAULT_BUY_PRICE_TODAY_SENSOR = "sensor.electricity_17m0034926_1415291530000_current_rate"
 DEFAULT_BUY_PRICE_TOMORROW_SENSOR = ""
 DEFAULT_GRID_POWER_SENSOR = "sensor.deye_grid_power"
 DEFAULT_PV_POWER_SENSOR = "sensor.deye_pv_power"
@@ -133,13 +133,13 @@ DEFAULT_SOLCAST_PEAK_POWER_TODAY_SENSOR = "sensor.solcast_pv_forecast_peak_forec
 DEFAULT_SOLCAST_PEAK_TIME_TODAY_SENSOR = "sensor.solcast_pv_forecast_peak_time_today"
 DEFAULT_DAILY_PV_PRODUCTION_SENSOR = "sensor.deye_day_pv_energy"
 DEFAULT_WEATHER_ENTITY = "weather.home"
-DEFAULT_PRICE_SOURCE = "none"
-DEFAULT_OSD_PROVIDER = "other"
-DEFAULT_TARIFF_PLAN = "custom"
-DEFAULT_DISTRIBUTION_PEAK_RATE = 0.3456
+DEFAULT_PRICE_SOURCE = "octopus_energy"
+DEFAULT_DSO_PROVIDER = "octopus"
+DEFAULT_TARIFF_PLAN = "intelligent_go"
+DEFAULT_DISTRIBUTION_PEAK_RATE = 0.3281
 DEFAULT_DISTRIBUTION_OFFPEAK_RATE = 0.066
 DEFAULT_CUSTOM_OFFPEAK_WINDOWS = "23:00-05:00"
-DEFAULT_TARIFF_MODE = "manual"
+DEFAULT_TARIFF_MODE = "automatic"
 DEFAULT_PRICE_INCLUDES_DISTRIBUTION = False
 DEFAULT_TARIFF_CATALOG_URL = "https://raw.githubusercontent.com/maverik-77/deye-energy/main/custom_components/deye_energy/tariff_catalog.json"
 DEFAULT_BUY_SELLER_ID = ""
@@ -179,9 +179,9 @@ DEFAULT_LOAD_L2_POWER_SENSOR = "sensor.deye_load_l2_power"
 DEFAULT_LOAD_L3_POWER_SENSOR = "sensor.deye_inverter_load_l3_power"
 DEFAULT_INVERTER_AC_TEMPERATURE_SENSOR = "sensor.deye_inverter_ac_temperature"
 
-PRICE_SOURCES = ["pstryk", "pse_rce", "other", "none"]
-OSD_PROVIDERS = ["dso_a", "dso_b", "dso_c", "dso_d", "dso_e", "other"]
-TARIFF_PLANS = ["g11", "g11f", "g11p", "g11pewna", "g12", "g12w", "g12e", "g12n", "g12r", "g12p", "g12as", "g12sezon", "g12eko", "g13", "g13s", "g13active", "g14dynamic", "custom"]
+PRICE_SOURCES = ["octopus_energy", "other", "none"]
+DSO_PROVIDERS = ["octopus", "other"]
+TARIFF_PLANS = ["intelligent_go", "agile", "flexible", "custom"]
 
 MODE_SELLING_FIRST = "Selling"
 MODE_ZERO_EXPORT = "Zero Export To Load"
@@ -208,18 +208,14 @@ WORK_MODES = [MODE_NORMAL_OPERATION, MODE_SELLING_FIRST]
 SLOT_MODES = list(MANAGER_MODES)
 
 # Legacy values accepted during restore and external service calls.  They are
-# normalised to the canonical manager mode values at runtime.  The historical
-# Legacy mode names are still accepted so existing automations keep working.
+# normalised to the canonical manager mode values at runtime.
 LEGACY_MANAGER_MODE_MAP: dict[str, str] = {
     "Selling First": MODE_SELLING_FIRST,
     "Sell": MODE_SELLING_FIRST,
     "Selling": MODE_SELLING_FIRST,
-    "Selling": MODE_SELLING_FIRST,
     "Charge": MODE_CHARGE,
     "Charging": MODE_CHARGE,
-    "Charging": MODE_CHARGE,
     "normal": MODE_NORMAL_OPERATION,
-    "Normal Operation": MODE_NORMAL_OPERATION,
     "Normal Operation": MODE_NORMAL_OPERATION,
     "Zero Export To Load": MODE_NORMAL_OPERATION,
     "Zero Export To CT": MODE_NORMAL_OPERATION,

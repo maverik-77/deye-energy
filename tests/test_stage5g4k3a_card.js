@@ -22,9 +22,9 @@ const resolver = (mapped, resolved, adapter, schema, listAttribute) => ({
   detected_adapter: adapter,
   resolved_schema: schema,
   list_attribute: listAttribute,
-  value_field: adapter === "rce_pse" ? "rce_price" : "price",
+  value_field: adapter === "octopus_energy" ? "value_inc_vat" : "price",
   unit: "GBP/kWh",
-  semantic_scope: adapter === "pstryk" ? "all_in_variable" : "energy_only",
+  semantic_scope: adapter === "octopus_energy" ? "all_in_variable" : "energy_only",
   coverage_hours: 24,
   status: "ready",
   reason: mapped === resolved ? "" : "resolved_by_stable_identity",
@@ -33,24 +33,24 @@ const resolver = (mapped, resolved, adapter, schema, listAttribute) => ({
 const canonical = {
   schema_version: 1,
   buy: {
-    contract: { source_adapter: "pstryk", semantic_scope: "all_in_variable", unit: "GBP/kWh", price_basis: "gross", granularity: "60m" },
+    contract: { source_adapter: "octopus_energy", semantic_scope: "all_in_variable", unit: "GBP/kWh", price_basis: "gross", granularity: "60m" },
     rows: rows("buy", 0.31, 0.32),
     diagnostics: {
       status: "ready", coverage_today: 24, coverage_tomorrow: 24,
       resolver: {
-        today: resolver("sensor.old_buy", "sensor.moja_cena", "pstryk", "pstryk_aio_interval_v1", "today_prices"),
-        tomorrow: resolver("sensor.buy_tomorrow", "sensor.buy_tomorrow", "pstryk", "pstryk_aio_interval_v1", "tomorrow_prices"),
+        today: resolver("sensor.old_buy", "sensor.moja_cena", "octopus_energy", "octopus_rates_v1", "rates"),
+        tomorrow: resolver("sensor.buy_tomorrow", "sensor.buy_tomorrow", "octopus_energy", "octopus_rates_v1", "rates"),
       },
     },
   },
   sell: {
-    contract: { source_adapter: "rce_pse", semantic_scope: "energy_only", unit: "GBP/kWh", price_basis: "gross", granularity: "15m" },
+    contract: { source_adapter: "octopus_energy", semantic_scope: "energy_only", unit: "GBP/kWh", price_basis: "gross", granularity: "15m" },
     rows: rows("sell", 0.81, 0.82),
     diagnostics: {
       status: "ready", coverage_today: 24, coverage_tomorrow: 24,
       resolver: {
-        today: resolver("sensor.sell_today", "sensor.sell_today", "rce_pse", "rce_interval_v1", "prices"),
-        tomorrow: resolver("sensor.sell_tomorrow", "sensor.sell_tomorrow", "rce_pse", "rce_interval_v1", "prices"),
+        today: resolver("sensor.sell_today", "sensor.sell_today", "octopus_energy", "octopus_rates_v1", "prices"),
+        tomorrow: resolver("sensor.sell_tomorrow", "sensor.sell_tomorrow", "octopus_energy", "octopus_rates_v1", "prices"),
       },
     },
   },
@@ -64,16 +64,16 @@ card._hass = { states: {
 
 const buy = card.canonicalPriceMaps("buy");
 const sell = card.canonicalPriceMaps("sell");
-check(buy[0].size === 24 && buy[1].size === 24, "Pstryk canonical Today/Tomorrow must render 24/24");
-check(sell[0].size === 24 && sell[1].size === 24, "RCE canonical Today/Tomorrow must render 24/24");
+check(buy[0].size === 24 && buy[1].size === 24, "Octopus Energy canonical Today/Tomorrow must render 24/24");
+check(sell[0].size === 24 && sell[1].size === 24, "Octopus canonical Today/Tomorrow must render 24/24");
 check(buy[0].get(7) === 0.31 && buy[1].get(7) === 0.32, "BUY days must remain independent");
 check(sell[0].get(7) === 0.81 && sell[1].get(7) === 0.82, "SELL must remain independent from BUY");
 
 const html = card.renderPriceDiagnostics({ price_diagnostics: canonical, price_contracts: {} });
 check(html.includes("Resolver for mapped entities"), "resolver diagnostics heading missing");
 check(html.includes("sensor.old_buy") && html.includes("sensor.moja_cena"), "mapped/resolved rename status must be visible");
-check(html.includes("pstryk_aio_interval_v1") && html.includes("rce_interval_v1"), "resolved schemas must be visible");
-check(html.includes("today_prices") && html.includes("tomorrow_prices"), "Pstryk list attributes must be visible");
+check(html.includes("octopus_rates_v1") && html.includes("octopus_rates_v1"), "resolved schemas must be visible");
+check(html.includes("rates") && html.includes("rates"), "Octopus Energy list attributes must be visible");
 check(html.includes("24/24"), "coverage must be visible");
 check(!html.includes("stable-entry") && !html.includes("config_entry_id"), "technical registry IDs must stay hidden");
 check(source.includes("The frontend does not read or guess the schema"), "backend-only parsing contract missing");

@@ -96,7 +96,7 @@ from .const import (
     CONF_WORK_MODE_AUX_ENTITY,
     CONF_WEATHER_ENTITY,
     CONF_PRICE_SOURCE,
-    CONF_OSD_PROVIDER,
+    CONF_DSO_PROVIDER,
     CONF_TARIFF_PLAN,
     CONF_DISTRIBUTION_PEAK_RATE,
     CONF_DISTRIBUTION_OFFPEAK_RATE,
@@ -169,7 +169,7 @@ from .const import (
     DEFAULT_SOLCAST_PEAK_TIME_TODAY_SENSOR,
     DEFAULT_SOLCAST_REMAINING_TODAY_SENSOR,
     DEFAULT_WEATHER_ENTITY,
-    DEFAULT_OSD_PROVIDER,
+    DEFAULT_DSO_PROVIDER,
     DEFAULT_TARIFF_PLAN,
     DEFAULT_DISTRIBUTION_PEAK_RATE,
     DEFAULT_DISTRIBUTION_OFFPEAK_RATE,
@@ -1448,7 +1448,7 @@ class DeyeEnergyRuntime:
                 saved_adapter
                 if detected_adapter == "generic"
                 and slot_identity_matches[day_name]
-                and saved_adapter in ("pstryk", "rce_pse", "generic", "custom")
+                and saved_adapter in ("octopus_energy", "generic", "custom")
                 else detected_adapter
             )
         contract = rebuild_price_contract(
@@ -1649,8 +1649,8 @@ class DeyeEnergyRuntime:
         return self.data.get(CONF_WEATHER_ENTITY) or DEFAULT_WEATHER_ENTITY
 
     @property
-    def osd_provider(self) -> str:
-        return str(self.data.get(CONF_OSD_PROVIDER, DEFAULT_OSD_PROVIDER)).lower()
+    def dso_provider(self) -> str:
+        return str(self.data.get(CONF_DSO_PROVIDER, DEFAULT_DSO_PROVIDER)).lower()
 
     @property
     def tariff_plan(self) -> str:
@@ -1694,11 +1694,11 @@ class DeyeEnergyRuntime:
     def tariff_context(self, moment: datetime | None = None) -> dict[str, Any]:
         current = moment or ha_now()
         catalog = self.tariff_catalog
-        tariff = get_tariff(catalog, self.osd_provider, self.tariff_plan)
+        tariff = get_tariff(catalog, self.dso_provider, self.tariff_plan)
         tariff_available, tariff_error = tariff_availability(tariff, current.date()) if tariff else (False, "missing tariff in the catalog")
         automatic = self.tariff_mode == "automatic" and tariff is not None and tariff_available
         if automatic:
-            profile = catalog_hourly_profile(current, catalog, self.osd_provider, self.tariff_plan, 48)
+            profile = catalog_hourly_profile(current, catalog, self.dso_provider, self.tariff_plan, 48)
         elif self.tariff_mode == "manual":
             today = hourly_tariff_profile(
                 current,
@@ -1740,7 +1740,7 @@ class DeyeEnergyRuntime:
         buy_entities_empty = not str(buy_contract.get("today_entity") or "") and not str(
             buy_contract.get("tomorrow_entity") or ""
         )
-        support = seller_support_entry(catalog, self.osd_provider, self.tariff_plan)
+        support = seller_support_entry(catalog, self.dso_provider, self.tariff_plan)
         seller_options = seller_catalog_options(catalog)
         selected_seller = self.buy_seller_id
         selected_tariff = self.buy_seller_tariff_id
@@ -1748,7 +1748,7 @@ class DeyeEnergyRuntime:
             seller_tariff_options(
                 catalog,
                 selected_seller,
-                self.osd_provider,
+                self.dso_provider,
                 self.tariff_plan,
                 current.date(),
             )
@@ -1783,10 +1783,10 @@ class DeyeEnergyRuntime:
             fallback_status = str(support.get("status") or "no_valid_standard_tariff")
             fallback_reason = str(support.get("reason") or "No valid matching retailer tariff.")
         context = {
-            "provider": self.osd_provider,
+            "provider": self.dso_provider,
             "provider_name": str(
-                catalog.get("providers", {}).get(self.osd_provider, {}).get("name")
-                or self.osd_provider
+                catalog.get("providers", {}).get(self.dso_provider, {}).get("name")
+                or self.dso_provider
             ),
             "plan": self.tariff_plan,
             "plan_name": str(tariff.get("name")) if tariff else self.tariff_plan.upper(),
@@ -1825,7 +1825,7 @@ class DeyeEnergyRuntime:
             "grid_positive_is_import": bool(self.data.get(CONF_GRID_POSITIVE_IS_IMPORT, DEFAULT_GRID_POSITIVE_IS_IMPORT)),
             "battery_positive_is_discharge": bool(self.data.get(CONF_BATTERY_POSITIVE_IS_DISCHARGE, DEFAULT_BATTERY_POSITIVE_IS_DISCHARGE)),
             "providers": providers,
-            "tariffs": available_tariffs(catalog, self.osd_provider),
+            "tariffs": available_tariffs(catalog, self.dso_provider),
             "hourly_profile": profile,
         }
         if self._tariff_catalog_manager is not None:
@@ -1874,7 +1874,7 @@ class DeyeEnergyRuntime:
         mode = str(settings.get(CONF_TARIFF_MODE, self.tariff_mode)).lower()
         if mode not in ("automatic", "manual"):
             raise ValueError("Unknown tariff mode")
-        provider = str(settings.get(CONF_OSD_PROVIDER, self.osd_provider)).lower()
+        provider = str(settings.get(CONF_DSO_PROVIDER, self.dso_provider)).lower()
         plan = str(settings.get(CONF_TARIFF_PLAN, self.tariff_plan)).lower()
         selected_tariff = get_tariff(self.tariff_catalog, provider, plan)
         if mode == "automatic" and selected_tariff is None:
@@ -1921,7 +1921,7 @@ class DeyeEnergyRuntime:
             # editor may only author a Custom contract for generic/custom
             # mappings; mapped entity fields always come from Options Flow.
             if requested_adapter != "custom" or any(
-                adapter in {"pstryk", "rce_pse"} for adapter in current_adapters
+                adapter == "octopus_energy" for adapter in current_adapters
             ):
                 return current
             candidate = dict(current)
@@ -1988,13 +1988,12 @@ class DeyeEnergyRuntime:
         }
         price_source = (
             "none" if not mapped_adapters
-            else "pstryk" if mapped_adapters == {"pstryk"}
-            else "pse_rce" if mapped_adapters == {"rce_pse"}
+            else "octopus_energy" if mapped_adapters == {"octopus_energy"}
             else "other"
         )
         return {
             CONF_TARIFF_MODE: mode,
-            CONF_OSD_PROVIDER: provider,
+            CONF_DSO_PROVIDER: provider,
             CONF_TARIFF_PLAN: plan,
             CONF_DISTRIBUTION_PEAK_RATE: round(peak, 5),
             CONF_DISTRIBUTION_OFFPEAK_RATE: round(offpeak, 5),
@@ -2025,7 +2024,7 @@ class DeyeEnergyRuntime:
             "type": "tariff_configuration",
             "status": "saved",
             "previous": {"provider": previous.get("provider"), "plan": previous.get("plan"), "catalog_version": previous.get("catalog_version")},
-            "current": {"provider": self.osd_provider, "plan": self.tariff_plan, "catalog_version": self.tariff_context().get("catalog_version")},
+            "current": {"provider": self.dso_provider, "plan": self.tariff_plan, "catalog_version": self.tariff_context().get("catalog_version")},
         })
         self.mark_config_saved()
         return normalized
@@ -2078,7 +2077,7 @@ class DeyeEnergyRuntime:
         for key in (
             "price", "value", "state", "amount", "total", "net_price", "gross_price",
             "energy_price", "unit_price", "price_with_tax", "gbp_kwh", "gbp_per_kwh",
-            "sell_price", "buy_price", "sprzedaz", "zakup", "cena", "gbp", "gbp", "rce",
+            "sell_price", "buy_price", "gbp", "rate", "rates",
         ):
             if key not in item:
                 continue
@@ -2386,7 +2385,7 @@ class DeyeEnergyRuntime:
                     self.tariff_catalog,
                     self.buy_seller_id,
                     self.buy_seller_tariff_id,
-                    self.osd_provider,
+                    self.dso_provider,
                     self.tariff_plan,
                     distribution_by_slot,
                 )
@@ -2748,12 +2747,12 @@ class DeyeEnergyRuntime:
             for row in tariff_rows
         ]
         distribution.extend([0.0] * (48 - len(distribution)))
-        osd_data_complete = bool(tariff.get("configured")) and len(tariff_rows) == 48 and all(
+        dso_data_complete = bool(tariff.get("configured")) and len(tariff_rows) == 48 and all(
             row.get("available", True) is not False
             and row.get("total_distribution_rate", row.get("rate")) is not None
             for row in tariff_rows
         )
-        osd_available_hours = (
+        dso_available_hours = (
             48
             if buy_contract.get("includes_distribution_variable") is True
             else 0
@@ -2873,8 +2872,8 @@ class DeyeEnergyRuntime:
             "price_contracts": {"buy": buy_contract, "sell": sell_contract},
             "price_diagnostics": deepcopy(canonical_prices),
             "canonical_prices": deepcopy(canonical_prices),
-            "osd_data_complete": osd_data_complete,
-            "osd_available_hours": osd_available_hours,
+            "dso_data_complete": dso_data_complete,
+            "dso_available_hours": dso_available_hours,
             "tariff_context": {
                 key: tariff.get(key)
                 for key in (
@@ -5324,9 +5323,6 @@ class DeyeEnergyRuntime:
             "0", "1", "2", "3", "4", "5", "6",
             "mon", "tue", "wed", "thu", "fri", "sat", "sun",
             "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-            # Legacy English abbreviations are still accepted so schedules
-            # written by earlier versions keep validating.
-            "pon", "wt", "śr", "czw", "pt", "sob", "niedz",
         }
         for profile_id in ("morning_sale", "evening_sale", "charging"):
             raw = source.get(profile_id)
@@ -9267,9 +9263,9 @@ class DeyeEnergyRuntime:
             searchable = f"{entity_id} {friendly_name}"
             if "solcast" not in searchable:
                 continue
-            if not any(token in searchable for token in ("prognoza_na_dzis", "prognoza na dziś", "forecast_today", "forecast today")):
+            if not any(token in searchable for token in ("forecast_today", "forecast today")):
                 continue
-            if any(token in searchable for token in ("pozostal", "remaining", "aktualna_moc", "current_power", "szczyt", "peak")):
+            if any(token in searchable for token in ("remaining", "current_power", "peak")):
                 continue
             candidate = self._measurement(
                 state.entity_id,

@@ -38,8 +38,8 @@ def test_release_notes_cover_final_rc_contract_without_overclaiming():
     required = (
         "automatically",
         "PriceSourceContract",
-        "Pstryk",
-        "PSE/RCE",
+        "Octopus Energy",
+        "Octopus Energy",
         "seller",
         "DSO",
         "FuturePlan",

@@ -13,7 +13,7 @@ card._config = {};
 card._hass = { states: {} };
 
 const emptyContract = {
-  source_adapter: "pstryk",
+  source_adapter: "octopus_energy",
   today_entity: "",
   tomorrow_entity: "",
   semantic_scope: "all_in_variable",
@@ -24,13 +24,13 @@ const editor = card.renderPriceContract("buy", emptyContract);
 check(editor.includes("Today — authoritative mapping") && editor.includes("missing"), "BUY Today must render empty read-only mapping");
 check(!editor.includes('data-contract-field="today_entity"'), "tariff editor must not edit BUY Today mapping");
 check(!editor.includes('data-contract-field="tomorrow_entity"'), "tariff editor must not edit BUY Tomorrow mapping");
-check(!editor.includes("sensor.pstryk_aio_"), "editor must not inject a Pstryk entity default");
+check(!editor.includes("sensor.octopus_energy_aio_"), "editor must not inject a Octopus Energy entity default");
 
 const unmapped = (day) => ({
   mapped_entity: "",
   resolved_entity: "",
   stable_identity_status: "unmapped",
-  detected_adapter: "pstryk",
+  detected_adapter: "octopus_energy",
   resolved_schema: "unknown",
   list_attribute: "",
   value_field: "",
@@ -58,7 +58,7 @@ const canonical = {
     },
   },
   sell: {
-    contract: { source_adapter: "rce_pse", semantic_scope: "energy_only", price_basis: "gross", unit: "GBP/kWh", granularity: "15m" },
+    contract: { source_adapter: "octopus_energy", semantic_scope: "energy_only", price_basis: "gross", unit: "GBP/kWh", granularity: "15m" },
     rows: rceRows,
     diagnostics: {
       status: "ready", coverage_today: 24, coverage_tomorrow: 24,
@@ -70,12 +70,12 @@ card._hass = { states: {
   "sensor.deye_energy_ai_state": { attributes: { planner_48h: { canonical_prices: canonical } } },
 } };
 check(card.canonicalPriceMaps("buy")[0].size === 0, "unmapped BUY must have no canonical rows");
-check(card.canonicalPriceMaps("sell")[0].size === 24, "independent RCE SELL Today must remain available");
-check(card.canonicalPriceMaps("sell")[1].size === 24, "independent RCE SELL Tomorrow must remain available");
+check(card.canonicalPriceMaps("sell")[0].size === 24, "independent Octopus SELL Today must remain available");
+check(card.canonicalPriceMaps("sell")[1].size === 24, "independent Octopus SELL Tomorrow must remain available");
 const diagnostics = card.renderPriceDiagnostics({ price_diagnostics: canonical, price_contracts: { buy: emptyContract } });
 check(diagnostics.includes("price source not configured"), "missing direction status must be readable");
 check(diagnostics.includes("not configured") && diagnostics.includes("removed in mapping"), "explicit empty reason must be readable");
 check(diagnostics.includes("missing"), "empty mapped entity must be displayed as missing");
-check(!diagnostics.includes("sensor.pstryk_aio_"), "diagnostics must not display a provider fallback");
+check(!diagnostics.includes("sensor.octopus_energy_aio_"), "diagnostics must not display a provider fallback");
 check(source.startsWith("// Resource revision: v=0.8.0.44"), "resource revision must be v=0.8.0.44");
 console.log("stage5g4k3b explicit-empty card contract OK");

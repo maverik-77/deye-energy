@@ -57,7 +57,7 @@ def three_profile_inputs() -> dict:
             "type": "charging",
             "start": "10:00",
             "end": "16:00",
-            "active_days": ["śr"],
+            "active_days": ["wed"],
             "priority": "normal",
             "goal_character": "preferred",
             "allow_partial": True,
@@ -408,7 +408,7 @@ def test_realistic_exhausted_charge_path_hits_default_budget_under_five_seconds(
         charge_kwh_per_hour=0,
         allow_grid_charge=True,
         price_includes_distribution=True,
-        osd_data_complete=True,
+        dso_data_complete=True,
     )
     started = time.perf_counter()
     result = core.build_plan_bundle(values, "safe")

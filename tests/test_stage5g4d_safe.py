@@ -150,7 +150,7 @@ def test_new_maturity_is_proportional_and_legacy_day_cap_no_longer_applies():
         "pv_profile_rejected_count": 366,
         "pv_profile_covered_cells": 75,
         "pv_profile_total_cells": 288,
-        "osd_available_hours": 48,
+        "dso_available_hours": 48,
     })
     result = optimizer.build_energy_plan(values, "balanced")
     assert result["plan_confidence"] > 35
@@ -162,7 +162,7 @@ def test_low_confidence_candidate_remains_preview_with_explicit_reason(monkeypat
     values = _profile_plan_inputs(50)
     monkeypatch.setattr(optimizer, "_confidence", lambda *_args, **_kwargs: (35.0, {
         "prices": 100, "solcast": 100, "learning": 70, "load_profile": 100,
-        "pv_profile": 30, "entities": 100, "soc": 100, "tariff_osd": 100,
+        "pv_profile": 30, "entities": 100, "soc": 100, "tariff_dso": 100,
     }))
     result = optimizer.build_energy_plan(values, "balanced")
     row = result["rows"][6]
@@ -179,7 +179,7 @@ def test_confidence_above_profile_minimum_is_confirmable_but_not_auto_applied(mo
     values = _profile_plan_inputs(50)
     monkeypatch.setattr(optimizer, "_confidence", lambda *_args, **_kwargs: (70.0, {
         "prices": 100, "solcast": 100, "learning": 70, "load_profile": 100,
-        "pv_profile": 50, "entities": 100, "soc": 100, "tariff_osd": 100,
+        "pv_profile": 50, "entities": 100, "soc": 100, "tariff_dso": 100,
     }))
     result = optimizer.build_energy_plan(values, "balanced")
     row = result["rows"][6]

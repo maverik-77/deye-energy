@@ -61,7 +61,7 @@ def sale_profile(
         "enabled": True,
         "start": start,
         "end": end,
-        "active_days": ["śr"],
+        "active_days": ["wed"],
         "priority": "high",
         "goal_character": "required",
         "allow_partial": True,

@@ -248,7 +248,7 @@ def make_runtime(soc="50", price="0.50", default_mode=None):
     if soc is not None:
         states[const.DEFAULT_BATTERY_SOC] = FakeState(soc)
     if price is not None:
-        states["sensor.pstryk_aio_obecna_cena_sprzedazy_pradu"] = FakeState(price)
+        states["sensor.octopus_export_current_rate"] = FakeState(price)
     runtime = manager.DeyeEnergyRuntime(
         hass=FakeHass(states),
         entry_id="test",
@@ -260,7 +260,7 @@ def make_runtime(soc="50", price="0.50", default_mode=None):
             const.CONF_CHARGE_CURRENT_NUMBER: const.DEFAULT_CHARGE_CURRENT,
             const.CONF_GRID_CHARGE_CURRENT_NUMBER: const.DEFAULT_GRID_CHARGE_CURRENT,
             const.CONF_BATTERY_SOC_SENSOR: const.DEFAULT_BATTERY_SOC,
-            const.CONF_PRICE_SENSOR: "sensor.pstryk_aio_obecna_cena_sprzedazy_pradu",
+            const.CONF_PRICE_SENSOR: "sensor.octopus_export_current_rate",
             **{
                 const.conf_tou_entity(idx, kind): entity_id
                 for idx in range(1, 7)
@@ -3360,37 +3360,37 @@ class ProviderProfileValidationTests(unittest.TestCase):
             "tou_soc": 20,
         }
 
-    def test_save_default_settings_normalna_praca_lewa_reka_with_real_select_options(self):
+    def test_save_default_settings_normal_operation_lewa_reka_with_real_select_options(self):
         runtime = self._lewa_reka_runtime()
         asyncio.run(runtime.async_save_default_settings(self._default_values(const.MODE_NORMAL_OPERATION)))
         self.assertEqual(runtime.default_work_mode, const.MODE_NORMAL_OPERATION)
 
-    def test_save_default_settings_sprzedaz_lewa_reka_with_real_select_options(self):
+    def test_save_default_settings_selling_lewa_reka_with_real_select_options(self):
         runtime = self._lewa_reka_runtime()
         asyncio.run(runtime.async_save_default_settings(self._default_values(const.MODE_SELLING_FIRST)))
         self.assertEqual(runtime.default_work_mode, const.MODE_SELLING_FIRST)
 
-    def test_save_default_settings_normalna_praca_solarman_with_real_select_options(self):
+    def test_save_default_settings_normal_operation_solarman_with_real_select_options(self):
         runtime = self._solarman_runtime()
         asyncio.run(runtime.async_save_default_settings(self._default_values(const.MODE_NORMAL_OPERATION)))
         self.assertEqual(runtime.default_physical_work_mode, const.MODE_ZERO_EXPORT)
 
-    def test_save_default_settings_sprzedaz_solarman_with_real_select_options(self):
+    def test_save_default_settings_selling_solarman_with_real_select_options(self):
         runtime = self._solarman_runtime()
         asyncio.run(runtime.async_save_default_settings(self._default_values(const.MODE_SELLING_FIRST)))
         self.assertEqual(runtime.default_work_mode, const.MODE_SELLING_FIRST)
 
-    def test_save_default_settings_normalna_praca_sunsynk_with_real_select_options(self):
+    def test_save_default_settings_normal_operation_sunsynk_with_real_select_options(self):
         runtime = self._sunsynk_runtime()
         asyncio.run(runtime.async_save_default_settings(self._default_values(const.MODE_NORMAL_OPERATION)))
         self.assertEqual(runtime.default_physical_work_mode, const.MODE_ZERO_EXPORT)
 
-    def test_save_default_settings_sprzedaz_sunsynk_with_real_select_options(self):
+    def test_save_default_settings_selling_sunsynk_with_real_select_options(self):
         runtime = self._sunsynk_runtime()
         asyncio.run(runtime.async_save_default_settings(self._default_values(const.MODE_SELLING_FIRST)))
         self.assertEqual(runtime.default_work_mode, const.MODE_SELLING_FIRST)
 
-    def test_save_default_settings_normalna_praca_custom_with_real_select_options(self):
+    def test_save_default_settings_normal_operation_custom_with_real_select_options(self):
         runtime = self._custom_runtime()
         asyncio.run(runtime.async_save_default_settings(self._default_values(const.MODE_NORMAL_OPERATION)))
         self.assertEqual(runtime.default_physical_work_mode, const.MODE_ZERO_EXPORT)
@@ -3883,12 +3883,12 @@ class FuturePlanTests(unittest.TestCase):
     def test_future_charge_slot_revalidates_effective_buy_price(self):
         runtime = make_runtime()
         runtime._ai_store = self.MemoryStore()
-        runtime.hass.states.values["sensor.pstryk_aio_obecna_cena_zakupu_pradu"] = FakeState("1.20")
+        runtime.hass.states.values["sensor.octopus_import_current_rate"] = FakeState("1.20")
         runtime.data[const.CONF_PRICE_INCLUDES_DISTRIBUTION] = True
-        runtime.data[const.CONF_BUY_PRICE_TODAY_SENSOR] = "sensor.pstryk_aio_obecna_cena_zakupu_pradu"
+        runtime.data[const.CONF_BUY_PRICE_TODAY_SENSOR] = "sensor.octopus_import_current_rate"
         runtime.data[const.CONF_BUY_PRICE_CONTRACT] = {
             "source_adapter": "generic",
-            "today_entity": "sensor.pstryk_aio_obecna_cena_zakupu_pradu",
+            "today_entity": "sensor.octopus_import_current_rate",
             "economic_role": "retail_buy_all_in",
             "semantic_scope": "all_in_variable",
             "includes_distribution_variable": True,
@@ -4037,11 +4037,6 @@ class StatisticsTests(unittest.TestCase):
         self.assertEqual(summary["solcast_correction_factor"], 1.013)
         self.assertEqual(summary["current_forecast_progress"], 10.0)
 
-    def test_g12w_weekend_is_offpeak_all_day(self):
-        saturday = datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
-        profile = manager.hourly_tariff_profile(saturday, "g12w", 0.5, 0.2)
-        self.assertTrue(all(row["zone"] == "offpeak" for row in profile))
-        self.assertTrue(all(row["rate"] == 0.2 for row in profile))
 
     def test_flow_signs_are_configurable(self):
         runtime = make_runtime()
@@ -7476,10 +7471,10 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
         ):
             runtime.data[key] = ""
         runtime.hass.states.values.update({
-            "sensor.pstryk_aio_obecna_cena_zakupu_pradu": FakeState("0.20"),
-            "sensor.pstryk_aio_cena_zakupu_pradu_jutro": FakeState("0.21"),
-            "sensor.pstryk_aio_obecna_cena_sprzedazy_pradu": FakeState("0.80"),
-            "sensor.pstryk_aio_cena_sprzedazy_pradu_jutro": FakeState("0.81"),
+            "sensor.octopus_import_current_rate": FakeState("0.20"),
+            "sensor.octopus_import_next_day_rates": FakeState("0.21"),
+            "sensor.octopus_export_current_rate": FakeState("0.80"),
+            "sensor.octopus_export_next_day_rates": FakeState("0.81"),
         })
         self.assertIsNone(runtime.buy_price_today_sensor)
         self.assertIsNone(runtime.buy_price_tomorrow_sensor)
@@ -7506,17 +7501,17 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
         })
         runtime._tariff_catalog_manager = types.SimpleNamespace(catalog={
             "providers": {
-                const.DEFAULT_OSD_PROVIDER: {
+                const.DEFAULT_DSO_PROVIDER: {
                     "tariffs": {const.DEFAULT_TARIFF_PLAN: {}},
                 },
             },
         })
         normalized = runtime.validate_tariff_settings({
             const.CONF_BUY_PRICE_CONTRACT: {
-                "source_adapter": "pstryk", "today_entity": "sensor.stale_buy", "tomorrow_entity": "sensor.stale_buy_tomorrow",
+                "source_adapter": "octopus_energy", "today_entity": "sensor.stale_buy", "tomorrow_entity": "sensor.stale_buy_tomorrow",
             },
             const.CONF_SELL_PRICE_CONTRACT: {
-                "source_adapter": "pstryk", "today_entity": "sensor.stale_sell", "tomorrow_entity": "sensor.stale_sell_tomorrow",
+                "source_adapter": "octopus_energy", "today_entity": "sensor.stale_sell", "tomorrow_entity": "sensor.stale_sell_tomorrow",
             },
         })
         self.assertEqual(normalized[const.CONF_BUY_PRICE_TODAY_SENSOR], "")
@@ -7529,46 +7524,8 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
         self.assertEqual(runtime.price_contract("buy")["stable_identity_today_status"], "unmapped")
         self.assertEqual(runtime.price_contract("sell")["stable_identity_today_reason"], "user_unmapped")
 
-    def test_mixed_sell_rce_and_buy_empty_keeps_directions_independent(self):
-        runtime = make_runtime()
-        now = manager.ha_now()
-        sell_today = "sensor.rce_sell_today"
-        sell_tomorrow = "sensor.rce_sell_tomorrow"
 
-        def quarters(day):
-            rows = []
-            for index in range(96):
-                start = day.replace(hour=0, minute=0) + timedelta(minutes=index * 15)
-                end = start + timedelta(minutes=15)
-                rows.append({
-                    "period": f"{start:%H:%M} - {'24:00' if end.date() != start.date() else end.strftime('%H:%M')}",
-                    "dtime": end.strftime("%Y-%m-%d %H:%M:%S"),
-                    "business_date": start.date().isoformat(),
-                    "rce_price": 0.8,
-                })
-            return rows
-
-        runtime.data.update({
-            const.CONF_BUY_PRICE_TODAY_SENSOR: "",
-            const.CONF_BUY_PRICE_TOMORROW_SENSOR: "",
-            const.CONF_PRICE_SENSOR: sell_today,
-            const.CONF_SELL_PRICE_TOMORROW_SENSOR: sell_tomorrow,
-            const.CONF_SELL_PRICE_CONTRACT: {
-                "source_adapter": "rce_pse", "semantic_scope": "energy_only",
-                "includes_distribution_variable": False, "price_basis": "gross",
-                "unit": "GBP/kWh", "list_attribute": "prices",
-                "today_entity": sell_today, "tomorrow_entity": sell_tomorrow,
-            },
-        })
-        runtime.hass.states.values[sell_today] = FakeState("unknown", {"prices": quarters(now)}, sell_today)
-        runtime.hass.states.values[sell_tomorrow] = FakeState("unknown", {"prices": quarters(now + timedelta(days=1))}, sell_tomorrow)
-        canonical = runtime.canonical_price_context(now, [])
-        self.assertEqual(canonical["buy"]["rows"], [])
-        self.assertEqual(canonical["buy"]["diagnostics"]["status"], "price_source_not_configured")
-        self.assertEqual(len(canonical["sell"]["rows"]), 48)
-        self.assertEqual(canonical["sell"]["contract"]["source_adapter"], "rce_pse")
-
-    def test_mixed_buy_pstryk_and_sell_empty_keeps_directions_independent(self):
+    def test_mixed_buy_octopus_energy_and_sell_empty_keeps_directions_independent(self):
         runtime = make_runtime()
         now = manager.ha_now()
         buy_today = "sensor.buy_today_selected"
@@ -7579,15 +7536,15 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
             const.CONF_BUY_PRICE_TODAY_SENSOR: buy_today,
             const.CONF_BUY_PRICE_TOMORROW_SENSOR: buy_tomorrow,
             const.CONF_BUY_PRICE_CONTRACT: {
-                "source_adapter": "pstryk", "today_entity": buy_today, "tomorrow_entity": buy_tomorrow,
+                "source_adapter": "octopus_energy", "today_entity": buy_today, "tomorrow_entity": buy_tomorrow,
             },
         })
-        runtime.hass.states.values[buy_today] = FakeState("unknown", {"today_prices": [
+        runtime.hass.states.values[buy_today] = FakeState("unknown", {"rates": [
             {"start": now.replace(hour=hour).isoformat(), "end": (now.replace(hour=hour) + timedelta(hours=1)).isoformat(), "price": 0.3}
             for hour in range(24)
         ]}, buy_today)
         tomorrow = now + timedelta(days=1)
-        runtime.hass.states.values[buy_tomorrow] = FakeState("unknown", {"tomorrow_prices": [
+        runtime.hass.states.values[buy_tomorrow] = FakeState("unknown", {"rates": [
             {"start": tomorrow.replace(hour=hour).isoformat(), "end": (tomorrow.replace(hour=hour) + timedelta(hours=1)).isoformat(), "price": 0.4}
             for hour in range(24)
         ]}, buy_tomorrow)
@@ -7599,15 +7556,15 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
     def test_user_mapping_is_absolute_and_missing_mapping_never_falls_back_to_provider_default(self):
         runtime = make_runtime()
         runtime.data[const.CONF_BUY_PRICE_TODAY_SENSOR] = "sensor.user_selected_missing"
-        runtime.hass.states.values["sensor.pstryk_aio_obecna_cena_zakupu_pradu"] = FakeState(
+        runtime.hass.states.values["sensor.octopus_import_current_rate"] = FakeState(
             "unknown",
-            {"today_prices": [
+            {"rates": [
                 {"start": manager.ha_now().replace(hour=hour).isoformat(),
                  "end": (manager.ha_now().replace(hour=hour) + timedelta(hours=1)).isoformat(),
                  "price": 0.11}
                 for hour in range(24)
             ]},
-            "sensor.pstryk_aio_obecna_cena_zakupu_pradu",
+            "sensor.octopus_import_current_rate",
         )
         contract = runtime.price_contract("buy")
         self.assertEqual(contract["today_entity"], "sensor.user_selected_missing")
@@ -7626,7 +7583,7 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
         now = manager.ha_now()
         runtime.hass.states.values[new_entity] = FakeState(
             "unknown",
-            {"today_prices": [
+            {"rates": [
                 {"start": now.replace(hour=hour).isoformat(),
                  "end": (now.replace(hour=hour) + timedelta(hours=1)).isoformat(),
                  "price": 0.44}
@@ -7635,17 +7592,17 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
             new_entity,
         )
         registry_entry = types.SimpleNamespace(
-            id="stable-entry", entity_id=new_entity, platform="pstryk",
-            config_entry_id="pstryk-config", unique_id="stable-price", device_id="device-1",
+            id="stable-entry", entity_id=new_entity, platform="octopus_energy",
+            config_entry_id="octopus_energy-config", unique_id="stable-price", device_id="device-1",
         )
         registry = types.SimpleNamespace(entities={new_entity: registry_entry}, async_get=lambda entity_id: registry.entities.get(entity_id))
         runtime.data[const.CONF_BUY_PRICE_TODAY_SENSOR] = old_entity
         runtime.data[const.CONF_BUY_PRICE_CONTRACT] = {
-            "source_adapter": "pstryk",
+            "source_adapter": "octopus_energy",
             "today_entity": old_entity,
             "today_binding": {
                 "entity_id": old_entity, "registry_entry_id": "stable-entry",
-                "platform": "pstryk", "config_entry_id": "pstryk-config",
+                "platform": "octopus_energy", "config_entry_id": "octopus_energy-config",
                 "unique_id": "stable-price", "device_id": "device-1",
             },
         }
@@ -7654,7 +7611,7 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
             contract = runtime.price_contract("buy")
             self.assertEqual(contract["resolved_today_entity"], new_entity)
             self.assertEqual(contract["stable_identity_today_status"], "renamed_resolved")
-            self.assertEqual(contract["source_adapter"], "pstryk")
+            self.assertEqual(contract["source_adapter"], "octopus_energy")
             canonical = runtime.canonical_price_context(now, [])
         self.assertEqual(len(canonical["buy"]["rows"]), 24)
         self.assertEqual(canonical["buy"]["diagnostics"]["resolver"]["today"]["mapped_entity"], old_entity)
@@ -7664,15 +7621,15 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
         runtime = make_runtime()
         old_entity = "sensor.old_price_name"
         new_entity = "sensor.same_source_after_rename"
-        runtime.hass.states.values[old_entity] = FakeState("unknown", {"today_prices": []}, old_entity)
-        runtime.hass.states.values[new_entity] = FakeState("unknown", {"today_prices": []}, new_entity)
+        runtime.hass.states.values[old_entity] = FakeState("unknown", {"rates": []}, old_entity)
+        runtime.hass.states.values[new_entity] = FakeState("unknown", {"rates": []}, new_entity)
         wrong_entry = types.SimpleNamespace(id="other-entry", entity_id=old_entity, platform="other", config_entry_id="other", unique_id="other", device_id="other")
-        right_entry = types.SimpleNamespace(id="stable-entry", entity_id=new_entity, platform="pstryk", config_entry_id="pstryk", unique_id="price", device_id="device")
+        right_entry = types.SimpleNamespace(id="stable-entry", entity_id=new_entity, platform="octopus_energy", config_entry_id="octopus_energy", unique_id="price", device_id="device")
         registry = types.SimpleNamespace(
             entities={old_entity: wrong_entry, new_entity: right_entry},
             async_get=lambda entity_id: registry.entities.get(entity_id),
         )
-        binding = {"entity_id": old_entity, "registry_entry_id": "stable-entry", "platform": "pstryk", "config_entry_id": "pstryk", "unique_id": "price"}
+        binding = {"entity_id": old_entity, "registry_entry_id": "stable-entry", "platform": "octopus_energy", "config_entry_id": "octopus_energy", "unique_id": "price"}
         entity_registry = sys.modules["homeassistant.helpers.entity_registry"]
         with mock.patch.object(entity_registry, "async_get", return_value=registry):
             resolved, status, _reason = runtime.resolve_price_binding(old_entity, binding)
@@ -7692,38 +7649,38 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported_price_schema"):
             runtime.validate_and_bind_price_contract(contract, strict=True)
 
-    def test_manager_builds_one_shared_pstryk_price_truth_without_double_osd(self):
+    def test_manager_builds_one_shared_octopus_energy_price_truth_without_double_dso(self):
         runtime = make_runtime()
         today = manager.ha_now()
         tomorrow = today + timedelta(days=1)
         runtime.data.update({
-            const.CONF_BUY_PRICE_TODAY_SENSOR: "sensor.pstryk_aio_obecna_cena_zakupu_pradu",
-            const.CONF_BUY_PRICE_TOMORROW_SENSOR: "sensor.pstryk_aio_cena_zakupu_pradu_jutro",
+            const.CONF_BUY_PRICE_TODAY_SENSOR: "sensor.octopus_import_current_rate",
+            const.CONF_BUY_PRICE_TOMORROW_SENSOR: "sensor.octopus_import_next_day_rates",
             const.CONF_BUY_PRICE_CONTRACT: {
-                "source_adapter": "pstryk",
-                "today_entity": "sensor.pstryk_aio_obecna_cena_zakupu_pradu",
-                "tomorrow_entity": "sensor.pstryk_aio_cena_zakupu_pradu_jutro",
+                "source_adapter": "octopus_energy",
+                "today_entity": "sensor.octopus_import_current_rate",
+                "tomorrow_entity": "sensor.octopus_import_next_day_rates",
             },
         })
-        runtime.hass.states.values["sensor.pstryk_aio_obecna_cena_zakupu_pradu"] = FakeState(
+        runtime.hass.states.values["sensor.octopus_import_current_rate"] = FakeState(
             "0.23",
-            {"today_prices": [
+            {"rates": [
                 {"start": today.replace(hour=hour).isoformat(),
                  "end": (today.replace(hour=hour) + timedelta(hours=1)).isoformat(),
                  "price": 0.23}
                 for hour in range(24)
             ]},
-            "sensor.pstryk_aio_obecna_cena_zakupu_pradu",
+            "sensor.octopus_import_current_rate",
         )
-        runtime.hass.states.values["sensor.pstryk_aio_cena_zakupu_pradu_jutro"] = FakeState(
+        runtime.hass.states.values["sensor.octopus_import_next_day_rates"] = FakeState(
             "unknown",
-            {"tomorrow_prices": [
+            {"rates": [
                 {"start": tomorrow.replace(hour=hour).isoformat(),
                  "end": (tomorrow.replace(hour=hour) + timedelta(hours=1)).isoformat(),
                  "price": 0.24}
                 for hour in range(24)
             ]},
-            "sensor.pstryk_aio_cena_zakupu_pradu_jutro",
+            "sensor.octopus_import_next_day_rates",
         )
         tariff_rows = [
             {"date": (today + timedelta(days=day)).date().isoformat(), "hour": hour,
@@ -7736,118 +7693,7 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
         self.assertTrue(all(row["added_distribution"] == 0 for row in canonical["buy"]["rows"]))
         self.assertEqual(canonical, runtime._canonical_price_snapshot)
 
-    def test_pstryk_to_rce_rebuilds_contract_without_stale_pstryk_semantics(self):
-        runtime = make_runtime()
-        now = manager.ha_now().replace(hour=0, minute=0, second=0, microsecond=0)
-        pstryk_today, pstryk_tomorrow = "sensor.pstryk_buy", "sensor.pstryk_buy_tomorrow"
-        rce_today, rce_tomorrow = "sensor.rce_pse_cena", "sensor.rce_pse_cena_tomorrow"
-        runtime.data.update({
-            const.CONF_BUY_PRICE_TODAY_SENSOR: pstryk_today,
-            const.CONF_BUY_PRICE_TOMORROW_SENSOR: pstryk_tomorrow,
-            const.CONF_BUY_PRICE_CONTRACT: {
-                "source_adapter": "pstryk", "today_entity": pstryk_today,
-                "tomorrow_entity": pstryk_tomorrow,
-            },
-        })
-        runtime.hass.states.values[pstryk_today] = FakeState("unknown", {"today_prices": [
-            {"start": now.replace(hour=hour).isoformat(), "end": (now.replace(hour=hour) + timedelta(hours=1)).isoformat(), "price": 0.5}
-            for hour in range(24)
-        ]}, pstryk_today)
-        runtime.hass.states.values[pstryk_tomorrow] = FakeState("unknown", {"tomorrow_prices": [
-            {"start": (now + timedelta(days=1)).replace(hour=hour).isoformat(), "end": ((now + timedelta(days=1)).replace(hour=hour) + timedelta(hours=1)).isoformat(), "price": 0.6}
-            for hour in range(24)
-        ]}, pstryk_tomorrow)
 
-        def rce_rows(day):
-            return [
-                {
-                    "period": f"{(day + timedelta(minutes=index * 15)):%H:%M} - {('24:00' if index == 95 else (day + timedelta(minutes=(index + 1) * 15)).strftime('%H:%M'))}",
-                    "dtime": (day + timedelta(minutes=(index + 1) * 15)).strftime("%Y-%m-%d %H:%M:%S"),
-                    "business_date": day.date().isoformat(), "rce_price": 0.7,
-                }
-                for index in range(96)
-            ]
-
-        runtime.hass.states.values[rce_today] = FakeState("unknown", {"prices": rce_rows(now)}, rce_today)
-        runtime.hass.states.values[rce_tomorrow] = FakeState("unknown", {"prices": rce_rows(now + timedelta(days=1))}, rce_tomorrow)
-        entries = {
-            entity_id: types.SimpleNamespace(
-                id=f"id-{index}", entity_id=entity_id, platform=platform,
-                config_entry_id=platform, unique_id=f"u-{index}", device_id=None,
-            )
-            for index, (entity_id, platform) in enumerate((
-                (pstryk_today, "pstryk"), (pstryk_tomorrow, "pstryk"),
-                (rce_today, "rce_pse"), (rce_tomorrow, "rce_pse"),
-            ))
-        }
-        registry = types.SimpleNamespace(entities=entries, async_get=lambda entity_id: entries.get(entity_id))
-        entity_registry = sys.modules["homeassistant.helpers.entity_registry"]
-        with mock.patch.object(entity_registry, "async_get", return_value=registry):
-            initial = runtime.price_contract("buy")
-            self.assertEqual(initial["source_adapter"], "pstryk")
-            runtime.data[const.CONF_BUY_PRICE_TODAY_SENSOR] = rce_today
-            runtime.data[const.CONF_BUY_PRICE_TOMORROW_SENSOR] = rce_tomorrow
-            switched = runtime.price_contract("buy")
-            canonical = runtime.canonical_price_context(now, [])
-        self.assertEqual(switched["source_adapter"], "rce_pse")
-        self.assertEqual(switched["resolved_adapter_today"], "rce_pse")
-        self.assertEqual(switched["resolved_schema_today"]["schema_id"], "rce_interval_v1")
-        self.assertFalse(switched["includes_distribution_variable"])
-        self.assertEqual(switched["semantic_scope"], "energy_only")
-        self.assertNotEqual(switched.get("today_list_attribute"), "today_prices")
-        self.assertEqual(len(canonical["buy"]["rows"]), 48)
-        self.assertTrue(all(row["source_adapter"] == "rce_pse" for row in canonical["buy"]["rows"]))
-
-    def test_rce_to_pstryk_and_mixed_days_use_current_per_day_adapters(self):
-        runtime = make_runtime()
-        now = manager.ha_now().replace(hour=0, minute=0, second=0, microsecond=0)
-        pstryk_today, pstryk_tomorrow = "sensor.pstryk_today", "sensor.pstryk_tomorrow"
-        rce_today, rce_tomorrow = "sensor.rce_today", "sensor.rce_tomorrow"
-        runtime.hass.states.values[pstryk_today] = FakeState("unknown", {"today_prices": [
-            {"start": now.replace(hour=hour).isoformat(), "end": (now.replace(hour=hour) + timedelta(hours=1)).isoformat(), "price": 0.4}
-            for hour in range(24)
-        ]}, pstryk_today)
-        runtime.hass.states.values[pstryk_tomorrow] = FakeState("unknown", {"tomorrow_prices": [
-            {"start": (now + timedelta(days=1)).replace(hour=hour).isoformat(), "end": ((now + timedelta(days=1)).replace(hour=hour) + timedelta(hours=1)).isoformat(), "price": 0.45}
-            for hour in range(24)
-        ]}, pstryk_tomorrow)
-
-        def rce_rows(day):
-            return [{
-                "period": f"{(day + timedelta(minutes=index * 15)):%H:%M} - {('24:00' if index == 95 else (day + timedelta(minutes=(index + 1) * 15)).strftime('%H:%M'))}",
-                "dtime": (day + timedelta(minutes=(index + 1) * 15)).strftime("%Y-%m-%d %H:%M:%S"),
-                "business_date": day.date().isoformat(), "rce_price": 0.8,
-            } for index in range(96)]
-
-        runtime.hass.states.values[rce_today] = FakeState("unknown", {"prices": rce_rows(now)}, rce_today)
-        runtime.hass.states.values[rce_tomorrow] = FakeState("unknown", {"prices": rce_rows(now + timedelta(days=1))}, rce_tomorrow)
-        entries = {
-            entity_id: types.SimpleNamespace(id=f"id-{index}", entity_id=entity_id, platform=platform, config_entry_id=platform, unique_id=f"u-{index}", device_id=None)
-            for index, (entity_id, platform) in enumerate(((pstryk_today, "pstryk"), (pstryk_tomorrow, "pstryk"), (rce_today, "rce_pse"), (rce_tomorrow, "rce_pse")))
-        }
-        registry = types.SimpleNamespace(entities=entries, async_get=lambda entity_id: entries.get(entity_id))
-        entity_registry = sys.modules["homeassistant.helpers.entity_registry"]
-        runtime.data.update({
-            const.CONF_BUY_PRICE_TODAY_SENSOR: rce_today,
-            const.CONF_BUY_PRICE_TOMORROW_SENSOR: rce_tomorrow,
-            const.CONF_BUY_PRICE_CONTRACT: {"source_adapter": "rce_pse", "today_entity": rce_today, "tomorrow_entity": rce_tomorrow},
-        })
-        with mock.patch.object(entity_registry, "async_get", return_value=registry):
-            self.assertEqual(runtime.price_contract("buy")["source_adapter"], "rce_pse")
-            runtime.data[const.CONF_BUY_PRICE_TODAY_SENSOR] = pstryk_today
-            runtime.data[const.CONF_BUY_PRICE_TOMORROW_SENSOR] = pstryk_tomorrow
-            pstryk = runtime.price_contract("buy")
-            self.assertEqual(pstryk["source_adapter"], "pstryk")
-            self.assertEqual(pstryk["resolved_schema_today"]["schema_id"], "pstryk_aio_interval_v1")
-            runtime.data[const.CONF_BUY_PRICE_TOMORROW_SENSOR] = rce_tomorrow
-            mixed = runtime.price_contract("buy")
-            canonical = runtime.canonical_price_context(now, [])
-        self.assertEqual(mixed["adapter_summary"], "mixed")
-        self.assertEqual(mixed["resolved_adapter_today"], "pstryk")
-        self.assertEqual(mixed["resolved_adapter_tomorrow"], "rce_pse")
-        self.assertEqual(len(canonical["buy"]["rows"]), 48)
-        self.assertTrue(all(row["source_adapter"] == "pstryk" for row in canonical["buy"]["rows"] if row["day"] == "today"))
-        self.assertTrue(all(row["source_adapter"] == "rce_pse" for row in canonical["buy"]["rows"] if row["day"] == "tomorrow"))
 
     def test_stale_persisted_buy_row_is_removed_without_touching_sell(self):
         runtime = make_runtime()
@@ -7855,20 +7701,20 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
             const.CONF_BUY_PRICE_TODAY_SENSOR: "",
             const.CONF_BUY_PRICE_TOMORROW_SENSOR: "",
             const.CONF_BUY_PRICE_CONTRACT: {
-                "source_adapter": "pstryk",
-                "today_entity": "sensor.old_pstryk_buy",
-                "tomorrow_entity": "sensor.old_pstryk_buy_tomorrow",
+                "source_adapter": "octopus_energy",
+                "today_entity": "sensor.old_octopus_energy_buy",
+                "tomorrow_entity": "sensor.old_octopus_energy_buy_tomorrow",
                 "semantic_scope": "all_in_variable",
                 "includes_distribution_variable": True,
             },
-            const.CONF_PRICE_SOURCE: "pstryk",
+            const.CONF_PRICE_SOURCE: "octopus_energy",
         })
         sell_contract = runtime.price_contract("sell")
         sell_adapter = sell_contract.get("resolved_adapter_today") or sell_contract.get("source_adapter")
         sell_semantic = manager.effective_contract_for_day(sell_contract, 0).get("semantic_scope")
         stale_buy_row = {
             "day": "tomorrow", "hour": 23, "quality": "ready",
-            "source_adapter": "pstryk", "source_semantic_scope": "all_in_variable",
+            "source_adapter": "octopus_energy", "source_semantic_scope": "all_in_variable",
             "final_price_gbp_kwh": 1.16,
         }
         valid_sell_row = {

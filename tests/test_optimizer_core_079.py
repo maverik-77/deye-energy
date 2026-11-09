@@ -48,7 +48,7 @@ def base_inputs() -> dict:
         ],
         "distribution": [0.2] * 48,
         "price_includes_distribution": False,
-        "osd_data_complete": True,
+        "dso_data_complete": True,
         "pv_forecast": [20, 20],
         "pv_forecast_full": [24, 24],
         "pv_forecast_available": [True, True],
@@ -378,7 +378,7 @@ class OptimizerCore079Tests(unittest.TestCase):
         self.assertLess(degraded_confidence, good_confidence)
         self.assertLess(degraded_plan["rows"][0]["confidence_components"]["entities"], 100)
 
-    def test_positive_energy_price_with_high_osd_uses_effective_cost(self):
+    def test_positive_energy_price_with_high_dso_uses_effective_cost(self):
         values = base_inputs()
         values["buy_prices"][0][2] = 0.05
         values["distribution"][2] = 1.25

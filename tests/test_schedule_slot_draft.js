@@ -330,13 +330,13 @@ function test_mode_meta_handles_english_charging() {
 function test_mode_meta_handles_english_normal() {
   assertEqual((new DeyeEnergyCard()).modeMeta("Normal Operation").cls, "normal", "Normal Operation metadata must be normal");
 }
-function test_legacy_selling_first_is_normalized_to_sprzedaz() {
+function test_legacy_selling_first_is_normalized_to_selling() {
   assertEqual(makeCard({ slot: { mode: "Selling First" } }).card._slotEditDraft.values.mode, "Selling", "legacy selling mode must normalize");
 }
-function test_legacy_charge_is_normalized_to_ladowanie() {
+function test_legacy_charge_is_normalized_to_charging() {
   assertEqual(makeCard({ slot: { mode: "Charge" } }).card._slotEditDraft.values.mode, "Charging", "legacy charging mode must normalize");
 }
-function test_legacy_normal_is_normalized_to_normalna_praca() {
+function test_legacy_normal_is_normalized_to_normal_operation() {
   assertEqual(makeCard({ slot: { mode: "normal" } }).card._slotEditDraft.values.mode, "Normal Operation", "legacy normal mode must normalize");
 }
 async function test_legacy_mode_is_saved_back_as_canonical_english_value() {
@@ -390,8 +390,8 @@ const tests = [
   test_schedule_slot_backend_charging_mode_round_trip, test_schedule_slot_backend_normal_mode_round_trip,
   test_bulk_edit_uses_english_manager_modes, test_mode_meta_handles_english_selling,
   test_mode_meta_handles_english_charging, test_mode_meta_handles_english_normal,
-  test_legacy_selling_first_is_normalized_to_sprzedaz, test_legacy_charge_is_normalized_to_ladowanie,
-  test_legacy_normal_is_normalized_to_normalna_praca, test_legacy_mode_is_saved_back_as_canonical_english_value,
+  test_legacy_selling_first_is_normalized_to_selling, test_legacy_charge_is_normalized_to_charging,
+  test_legacy_normal_is_normalized_to_normal_operation, test_legacy_mode_is_saved_back_as_canonical_english_value,
   test_card_mapping_does_not_depend_on_legacy_schedule_function,
   test_schedule_slot_dialog_does_not_call_number_set_value_during_edit,
   test_schedule_slot_dialog_does_not_call_select_select_option_during_edit,

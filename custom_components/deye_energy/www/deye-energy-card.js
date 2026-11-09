@@ -808,7 +808,7 @@ class DeyeEnergyCard extends HTMLElement {
     const keys = [
       "price", "value", "state", "amount", "total", "net_price", "gross_price",
       "energy_price", "unit_price", "price_with_tax", "gbp_kwh", "gbp_per_kwh",
-      "sell_price", "buy_price", "sprzedaz", "zakup", "cena", "gbp", "gbp", "rce"
+      "sell_price", "buy_price", "gbp", "rate", "rates"
     ];
     for (const key of keys) {
       if (item[key] !== undefined) {
@@ -2717,8 +2717,8 @@ class DeyeEnergyCard extends HTMLElement {
       ai_settings: this.aiSettings(),
       tariff_settings: {
         tariff_mode: tariff.mode || "automatic",
-        osd_provider: tariff.provider || "other",
-        tariff_plan: tariff.plan || "g11",
+        dso_provider: tariff.provider || "other",
+        tariff_plan: tariff.plan || "intelligent_go",
         distribution_peak_rate: tariff.peak_rate ?? 0,
         distribution_offpeak_rate: tariff.offpeak_rate ?? 0,
         custom_offpeak_windows: tariff.custom_offpeak_windows || "13:00-15:00,22:00-06:00",
@@ -2948,8 +2948,8 @@ class DeyeEnergyCard extends HTMLElement {
       contract[key] = value;
       draft[targetKey] = contract;
     });
-    if (draft.osd_provider) {
-      draft.tariff_mode = draft.osd_provider === "other" || draft.tariff_plan === "custom"
+    if (draft.dso_provider) {
+      draft.tariff_mode = draft.dso_provider === "other" || draft.tariff_plan === "custom"
         ? "manual"
         : "automatic";
     }
@@ -2981,16 +2981,16 @@ class DeyeEnergyCard extends HTMLElement {
     }
     const buy = tariff.price_contracts?.buy || {};
     const buyProfiles = [buy.resolved_source_today || buy, buy.resolved_source_tomorrow || buy];
-    const osdIncluded = buyProfiles.some((profile) => profile.economic_role === "retail_buy_all_in" || profile.includes_distribution_variable === true);
+    const dsoIncluded = buyProfiles.some((profile) => profile.economic_role === "retail_buy_all_in" || profile.includes_distribution_variable === true);
     const detected = [tariff.price_contracts?.buy?.adapter_summary, tariff.price_contracts?.sell?.adapter_summary]
       .filter((value) => value && value !== "unmapped").join(" / ") || "missing";
-    return `<section class="diagnostic-section price-mapping-summary"><h3>Price sources</h3><p><strong>Detected source: ${this.escapeHtml(detected)}</strong> · ${osdIncluded ? "DSO included" : "DSO added according to tariff"}</p><div class="diagnostic-summary">${rows.join("")}</div><p class="hint">BUY/SELL price entities are configured in the integration settings.</p></section>`;
+    return `<section class="diagnostic-section price-mapping-summary"><h3>Price sources</h3><p><strong>Detected source: ${this.escapeHtml(detected)}</strong> · ${dsoIncluded ? "DSO included" : "DSO added according to tariff"}</p><div class="diagnostic-summary">${rows.join("")}</div><p class="hint">BUY/SELL price entities are configured in the integration settings.</p></section>`;
   }
 
   renderPriceContract(direction, contract = {}) {
     const label = direction === "buy" ? "BUY — purchase" : "SELL — selling";
     const dayAdapters = [contract.resolved_adapter_today, contract.resolved_adapter_tomorrow].filter((value) => value && value !== "unmapped");
-    const known = dayAdapters.some((value) => ["pstryk", "rce_pse"].includes(value));
+    const known = dayAdapters.some((value) => ["octopus_energy"].includes(value));
     const unmapped = !contract.today_entity && !contract.tomorrow_entity;
     const adapterLabel = contract.adapter_summary || contract.source_adapter || (unmapped ? "unmapped" : "generic");
     const mappingSummary = `<div class="diagnostic-summary"><div><span>Today — authoritative mapping</span><strong>${this.escapeHtml(contract.today_entity || "missing")}</strong></div><div><span>Tomorrow — authoritative mapping</span><strong>${this.escapeHtml(contract.tomorrow_entity || "missing")}</strong></div><div><span>Adapter</span><strong>${this.escapeHtml(adapterLabel)}</strong></div><div><span>Metadata source</span><strong>automatic from mapping</strong></div></div>`;
@@ -3057,9 +3057,9 @@ class DeyeEnergyCard extends HTMLElement {
       const diag = unmapped ? { status: "price_source_not_configured", coverage_today: 0, coverage_tomorrow: 0 } : branch.diagnostics || {};
       const rows = unmapped ? [] : Array.isArray(branch.rows) ? branch.rows : [];
       const now = rows.find((row) => row.day === "today" && Number(row.hour) === (this.localDateTimeParts()?.hour ?? new Date().getHours()));
-      const addedOsd = rows.some((row) => Math.abs(this.asNumber(row.added_distribution) || 0) > 1e-12);
+      const addedDso = rows.some((row) => Math.abs(this.asNumber(row.added_distribution) || 0) > 1e-12);
       const aggregation = contract.granularity === "15m" ? "15m→60m weighted" : `${contract.granularity || "per-day"}→60m`;
-      return `<tr><td>${direction.toUpperCase()}</td><td>${this.escapeHtml(contract.adapter_summary || contract.source_adapter || "missing")}</td><td>${this.escapeHtml(contract.economic_role || "missing role")} / ${this.escapeHtml(contract.semantic_scope || "per-day")}</td><td>${this.escapeHtml(contract.unit || "per-day")} / ${this.escapeHtml(contract.price_basis || "per-day")}</td><td>${this.escapeHtml(aggregation)}</td><td>${diag.coverage_today || 0}/24 · ${diag.coverage_tomorrow || 0}/24</td><td>${addedOsd ? "yes" : "no"}</td><td>${this.escapeHtml(resolverLabel(diag.status || "waiting_data"))}</td><td>${now ? `${this.formatPrice(now.final_price_gbp_kwh)} GBP/kWh` : "missing"}</td></tr>`;
+      return `<tr><td>${direction.toUpperCase()}</td><td>${this.escapeHtml(contract.adapter_summary || contract.source_adapter || "missing")}</td><td>${this.escapeHtml(contract.economic_role || "missing role")} / ${this.escapeHtml(contract.semantic_scope || "per-day")}</td><td>${this.escapeHtml(contract.unit || "per-day")} / ${this.escapeHtml(contract.price_basis || "per-day")}</td><td>${this.escapeHtml(aggregation)}</td><td>${diag.coverage_today || 0}/24 · ${diag.coverage_tomorrow || 0}/24</td><td>${addedDso ? "yes" : "no"}</td><td>${this.escapeHtml(resolverLabel(diag.status || "waiting_data"))}</td><td>${now ? `${this.formatPrice(now.final_price_gbp_kwh)} GBP/kWh` : "missing"}</td></tr>`;
     };
     const resolverLine = (direction, day) => {
       const hasAuthoritative = Boolean(tariff.price_contracts && Object.prototype.hasOwnProperty.call(tariff.price_contracts, direction));
@@ -3096,8 +3096,8 @@ class DeyeEnergyCard extends HTMLElement {
     const tariff = this.tariffData();
     const draft = {
       tariff_mode: tariff.mode || "automatic",
-      osd_provider: tariff.provider || "other",
-      tariff_plan: tariff.plan || "g11",
+      dso_provider: tariff.provider || "other",
+      tariff_plan: tariff.plan || "intelligent_go",
       price_includes_distribution: Boolean(tariff.price_includes_distribution),
       buy_price_contract: { ...(tariff.price_contracts?.buy || {}) },
       sell_price_contract: { ...(tariff.price_contracts?.sell || {}) },
@@ -3111,7 +3111,7 @@ class DeyeEnergyCard extends HTMLElement {
       ...(this._tariffDraft || {}),
     };
     const providers = Array.isArray(tariff.providers) ? tariff.providers : [];
-    const selectedProvider = providers.find((item) => item.id === draft.osd_provider);
+    const selectedProvider = providers.find((item) => item.id === draft.dso_provider);
     const tariffs = selectedProvider?.tariffs || (Array.isArray(tariff.tariffs) ? tariff.tariffs : []);
     if (tariffs.length && !tariffs.some((item) => item.id === draft.tariff_plan)) draft.tariff_plan = tariffs[0].id;
     const options = (rows, selected) => rows.map((item) => {
@@ -3127,7 +3127,7 @@ class DeyeEnergyCard extends HTMLElement {
       <td>${row.holiday ? "holiday" : row.weekend ? "weekend" : "weekday"}</td>
     </tr>`).join("");
     const statusClass = tariff.catalog_error ? "bad" : tariff.configured ? "good" : "warn";
-    const manual = draft.osd_provider === "other" || draft.tariff_plan === "custom";
+    const manual = draft.dso_provider === "other" || draft.tariff_plan === "custom";
     draft.tariff_mode = manual ? "manual" : "automatic";
     const isCustom = (contract) => {
       const mapped = Boolean(contract?.today_entity || contract?.tomorrow_entity);
@@ -3138,10 +3138,10 @@ class DeyeEnergyCard extends HTMLElement {
     };
     const buyMapped = Boolean(draft.buy_price_contract?.today_entity || draft.buy_price_contract?.tomorrow_entity);
     const fallback = tariff.seller_fallback || {};
-    const support = fallback.support_matrix?.[draft.osd_provider]?.[draft.tariff_plan] || {};
+    const support = fallback.support_matrix?.[draft.dso_provider]?.[draft.tariff_plan] || {};
     const sellerOptions = Array.isArray(fallback.seller_options) ? fallback.seller_options : [];
     const sellerName = (id) => sellerOptions.find((item) => item.id === id)?.name || id || "missing";
-    const scopeKey = `${draft.osd_provider}/${draft.tariff_plan}/${draft.buy_seller_id || ""}`;
+    const scopeKey = `${draft.dso_provider}/${draft.tariff_plan}/${draft.buy_seller_id || ""}`;
     const sellerTariffs = Array.isArray(fallback.tariff_options_by_scope?.[scopeKey])
       ? fallback.tariff_options_by_scope[scopeKey]
       : [];
@@ -3165,9 +3165,9 @@ class DeyeEnergyCard extends HTMLElement {
     return `<div class="hint">The operator, tariff and rates are only saved with the <b>Save settings</b>. The profile covers today and tomorrow; weekends, holidays and seasons are calculated automatically.</div>
       <div class="diagnostic-summary"><div><span>DSO operator</span><strong>${this.escapeHtml(tariff.provider_name || "missing")}</strong></div><div><span>Tariff / season</span><strong>${this.escapeHtml(tariff.plan_name || "missing")} · ${tariff.season === "summer" ? "summer" : tariff.season === "winter" ? "winter" : "missing"}</strong></div><div><span>Current zone</span><strong>${this.escapeHtml(this.tariffZoneLabel(tariff.zone))} · ${this.formatNumber(tariff.total_distribution_rate ?? tariff.distribution_rate, 4)} GBP/kWh</strong></div><div><span>Catalog</span><strong class="${statusClass}">${this.escapeHtml(tariff.catalog_version || "bundled")} · ${this.escapeHtml(tariff.catalog_source || "missing")}</strong></div></div>
       <section class="diagnostic-section"><h3>Operator and tariff settings</h3>
-        <div class="settings-row"><span>DSO operator</span><select data-tariff-field="osd_provider">${options(providers, draft.osd_provider)}</select></div>
+        <div class="settings-row"><span>DSO operator</span><select data-tariff-field="dso_provider">${options(providers, draft.dso_provider)}</select></div>
         <div class="settings-row"><span>Tariff</span><select data-tariff-field="tariff_plan">${options(tariffs, draft.tariff_plan)}</select></div>
-        ${manual ? `<div class="manual-osd-profile"><h4>Manual DSO profile</h4><div class="settings-row"><span>Peak rate [GBP/kWh]</span><input data-tariff-field="distribution_peak_rate" type="text" inputmode="decimal" value="${this.escapeHtml(draft.distribution_peak_rate)}"></div><div class="settings-row"><span>Cheap rate [GBP/kWh]</span><input data-tariff-field="distribution_offpeak_rate" type="text" inputmode="decimal" value="${this.escapeHtml(draft.distribution_offpeak_rate)}"></div><div class="settings-row"><span>Custom cheap hours</span><input data-tariff-field="custom_offpeak_windows" type="text" value="${this.escapeHtml(draft.custom_offpeak_windows)}"></div></div>` : ""}
+        ${manual ? `<div class="manual-dso-profile"><h4>Manual DSO profile</h4><div class="settings-row"><span>Peak rate [GBP/kWh]</span><input data-tariff-field="distribution_peak_rate" type="text" inputmode="decimal" value="${this.escapeHtml(draft.distribution_peak_rate)}"></div><div class="settings-row"><span>Cheap rate [GBP/kWh]</span><input data-tariff-field="distribution_offpeak_rate" type="text" inputmode="decimal" value="${this.escapeHtml(draft.distribution_offpeak_rate)}"></div><div class="settings-row"><span>Custom cheap hours</span><input data-tariff-field="custom_offpeak_windows" type="text" value="${this.escapeHtml(draft.custom_offpeak_windows)}"></div></div>` : ""}
         ${sellerFallbackUi}
         <div class="diagnostic-actions"><button class="wide-action" data-save-tariff="1">Save settings</button><button data-refresh-tariff="1">Check catalog update</button></div>
         <p class="hint">Local catalog: <b>${this.escapeHtml(tariff.catalog_local_version || tariff.catalog_version || "missing")}</b> · remote: <b>${this.escapeHtml(tariff.catalog_remote_version || "not checked")}</b> · checked: <b>${this.escapeHtml(tariff.catalog_last_checked || "never")}</b> · result: <b>${this.escapeHtml(tariff.catalog_update_result || "not checked")}</b> · validity: <b>${this.escapeHtml(catalogValidity)} (${this.escapeHtml(tariff.catalog_effective_from || "?")}–${this.escapeHtml(tariff.catalog_valid_to || "?")})</b></p>
@@ -4648,10 +4648,10 @@ class DeyeEnergyCard extends HTMLElement {
 
   modeTextClass(text) {
     const normalized = this.norm(text);
-    if (normalized.includes("sprzeda") || normalized.includes("selling")) return "selling";
+    if (normalized.includes("selling")) return "selling";
     if (normalized.includes("normal") || normalized.includes("zeroexport") || normalized.includes("ct") || normalized.includes("load")) return "normal";
     if (normalized.includes("adowan") || normalized.includes("charge")) return "charge";
-    if (normalized.includes("wylacz") || normalized.includes("disabled") || normalized.includes("idle") || normalized.includes("no data")) return "disabled";
+    if (normalized.includes("disabled") || normalized.includes("idle") || normalized.includes("no data")) return "disabled";
     return "";
   }
 
@@ -4894,7 +4894,7 @@ class DeyeEnergyCard extends HTMLElement {
     tomorrowDate.setDate(tomorrowDate.getDate() + 1);
     const tomorrowKey = this.localDateKey(tomorrowDate);
     // Backend rows already contain the final effective BUY price.  Never add
-    // OSD again in the browser (notably for Pstryk all-in gross prices).
+    // DSO again in the browser (notably for Octopus all-in gross prices).
     const totalBuyPrices = new Map(buyPrices);
     const totalBuyPricesTomorrow = new Map(buyPricesTomorrow);
     const minSell = this.asNumber(settings.minSellPrice) ?? 0;
@@ -5696,7 +5696,7 @@ class DeyeEnergyCard extends HTMLElement {
     return {
       days, provider_name: tariff.provider_name, plan_name: tariff.plan_name,
       price_includes_distribution: tariff.price_includes_distribution,
-      osd_complete: tariff.configured !== false,
+      dso_complete: tariff.configured !== false,
       coverage_today: days.today.length, coverage_tomorrow: days.tomorrow.length,
       energy_source: this.entity("sensor", "buy_price_today"),
     };
@@ -5713,14 +5713,14 @@ class DeyeEnergyCard extends HTMLElement {
         const allIn = row.source_semantic_scope === "all_in_variable";
         const sourceLabel = allIn ? "Full source" : "Source price";
         const extras = [
-          !allIn && this.asNumber(row.distribution_price) ? `<span>Distribution OSD <b>${this.aiFormatNumber(row.distribution_price, 2)} £/kWh</b></span>` : "",
+          !allIn && this.asNumber(row.distribution_price) ? `<span>Distribution DSO <b>${this.aiFormatNumber(row.distribution_price, 2)} £/kWh</b></span>` : "",
           this.asNumber(row.added_vat) ? `<span>Dodany VAT <b>${this.aiFormatNumber(row.added_vat, 2)} £/kWh</b></span>` : "",
           this.asNumber(row.added_other_variable) ? `<span>Other variable components <b>${this.aiFormatNumber(row.added_other_variable, 2)} £/kWh</b></span>` : "",
         ].join("");
         return `<details class="ai-rank-row"><summary><span>${this.escapeHtml(row.label || this.hourLabel(row.hour))}</span><strong>Total: ${this.aiFormatNumber(row.effective_price, 2)} £/kWh</strong><em>Price no. ${this.asNumber(row.price_rank) || priceRanks.get(Number(row.hour))} · ${this.escapeHtml(this.tariffZoneLabel(row.zone))}</em></summary><div><span>${sourceLabel} <b>${this.aiFormatNumber(row.source_price ?? row.energy_price, 2)} £/kWh</b></span>${extras}<span>Total <b>${this.aiFormatNumber(row.effective_price, 2)} £/kWh</b></span><span>Adapter <b>${this.escapeHtml(row.source_adapter || "legacy")}</b> · ${this.escapeHtml(row.source_basis || "missing")} · ${this.escapeHtml(row.source_unit || "missing")}</span><span>${this.escapeHtml(row.provider_name || ranking.provider_name || "No operator")} · ${this.escapeHtml(row.plan_name || ranking.plan_name || "missing tariff")} · ${this.escapeHtml(this.aiUiText(row.day_type || "missing day type"))}</span></div></details>`;
       }).join("") : '<p class="ai-empty">No price data.</p>'}</section>`;
     };
-    return `<div class="ai-purchase-ranking">${ranking.osd_complete ? "" : '<p class="ai-warning">No full DSO data — the purchase ranking is indicative. Grid charging is not presented as a certain profitable decision.</p>'}<div class="ai-tariff-summary"><span>Operator / tariff <b>${this.escapeHtml(ranking.provider_name || "missing")} · ${this.escapeHtml(ranking.plan_name || "missing")}</b></span><span>Energy price source <b>${this.escapeHtml(ranking.energy_source || "missing")}</b></span><span>Distribution <b>${ranking.price_includes_distribution ? "included in the price" : "added by the DSO"}</b></span><span>Coverage <b>today ${ranking.coverage_today || 0}/24 · tomorrow ${ranking.coverage_tomorrow || 0}/24</b></span></div><div class="ai-price-columns">${renderDay("today", "Today")}${renderDay("tomorrow", "Tomorrow")}</div></div>`;
+    return `<div class="ai-purchase-ranking">${ranking.dso_complete ? "" : '<p class="ai-warning">No full DSO data — the purchase ranking is indicative. Grid charging is not presented as a certain profitable decision.</p>'}<div class="ai-tariff-summary"><span>Operator / tariff <b>${this.escapeHtml(ranking.provider_name || "missing")} · ${this.escapeHtml(ranking.plan_name || "missing")}</b></span><span>Energy price source <b>${this.escapeHtml(ranking.energy_source || "missing")}</b></span><span>Distribution <b>${ranking.price_includes_distribution ? "included in the price" : "added by the DSO"}</b></span><span>Coverage <b>today ${ranking.coverage_today || 0}/24 · tomorrow ${ranking.coverage_tomorrow || 0}/24</b></span></div><div class="ai-price-columns">${renderDay("today", "Today")}${renderDay("tomorrow", "Tomorrow")}</div></div>`;
   }
 
   aiLegacyWeatherCard(planner, day) {
@@ -6220,7 +6220,7 @@ class DeyeEnergyCard extends HTMLElement {
   aiApiPresentation(planner = null) {
     const api = this.aiApiContext() || {};
     const error = String(api.last_error || api.error || "");
-    const authError = /(?:401|invalid token|unauthori[sz]ed|autoryzac)/i.test(error);
+    const authError = /(?:401|invalid token|unauthori[sz]ed|authori[sz]ation)/i.test(error);
     if (authError) return {
       status: "AI assistant: authorisation error",
       message: "Check the provider API key.",
@@ -6438,7 +6438,7 @@ class DeyeEnergyCard extends HTMLElement {
     const purchase = this.aiPurchaseInsights(planner);
     const warnings = [
       planner.plan_status === "blocked" ? "No SOC data — the plan was safely blocked." : "",
-      purchase.osd_complete ? "" : "No full DSO data — the purchase ranking is indicative.",
+      purchase.dso_complete ? "" : "No full DSO data — the purchase ranking is indicative.",
       api.external ? "" : `${api.status}. ${api.message}`,
     ].filter(Boolean);
     return `<div class="ai-overview-grid">
@@ -6598,7 +6598,7 @@ class DeyeEnergyCard extends HTMLElement {
       pv_profile: "PV production profile",
       entities: "Entity availability",
       soc: "SOC reading",
-      tariff_osd: "Tariff and DSO",
+      tariff_dso: "Tariff and DSO",
     };
     const confidenceRows = rows.filter((row) => row?.confidence_components);
     const confidenceComponents = Object.fromEntries(
@@ -6619,7 +6619,7 @@ class DeyeEnergyCard extends HTMLElement {
       [quality.today_buy_prices, 24],
       [quality.tomorrow_sell_prices, 24],
       [quality.tomorrow_buy_prices, 24],
-      [quality.osd_hours, 48],
+      [quality.dso_hours, 48],
     ];
     const incompleteInputs = requiredCoverage.some(([value, expected]) => {
       const number = this.asNumber(value);
@@ -6664,7 +6664,7 @@ class DeyeEnergyCard extends HTMLElement {
       <li><span>Today's price coverage</span><strong>selling ${this.aiQualityCoverage(quality.today_sell_prices, 24)} · buy ${this.aiQualityCoverage(quality.today_buy_prices, 24)}</strong></li>
       <li><span>Tomorrow price coverage</span><strong>selling ${this.aiQualityCoverage(quality.tomorrow_sell_prices, 24)} · buy ${this.aiQualityCoverage(quality.tomorrow_buy_prices, 24)}</strong></li>
       <li><span>Tomorrow's price publication status</span><strong>${this.escapeHtml(this.aiUiText(publication.tomorrow_status || "no data"))}</strong></li>
-      <li><span>Coverage OSD</span><strong>${this.aiQualityCoverage(quality.osd_hours, 48, "hours")}</strong></li>
+      <li><span>Coverage DSO</span><strong>${this.aiQualityCoverage(quality.dso_hours, 48, "hours")}</strong></li>
       <li><span>Weather source</span><strong>${this.escapeHtml(weather.entity_id || "no entity")}</strong></li>
       <li><span>Weather coverage</span><strong>${this.aiQualityCoverage(weather.hourly_count, 48, "hours")} · ${this.aiQualityCoverage(weather.daily_count, 7, "days")}</strong></li>
       <li><span>Last weather update</span><strong>${this.formatTimeShort(weather.last_updated)} · ${weather.available ? "data available" : "incomplete data"}</strong></li>
@@ -7882,13 +7882,13 @@ class DeyeEnergyCard extends HTMLElement {
     root.querySelectorAll("[data-save-ai-api]").forEach((el) => el.addEventListener("click", () => this.saveAiApiSettings()));
     root.querySelectorAll("[data-test-ai-api]").forEach((el) => el.addEventListener("click", () => this.runAiApiService("test_ai_api")));
     root.querySelectorAll("[data-analyze-ai-api]").forEach((el) => el.addEventListener("click", () => this.runAiApiService("analyze_ai_api")));
-    root.querySelectorAll("[data-tariff-field='osd_provider'],[data-tariff-field='tariff_plan'],[data-tariff-field='buy_seller_id'],[data-tariff-field='buy_seller_tariff_id']").forEach((el) => el.addEventListener("change", () => {
+    root.querySelectorAll("[data-tariff-field='dso_provider'],[data-tariff-field='tariff_plan'],[data-tariff-field='buy_seller_id'],[data-tariff-field='buy_seller_tariff_id']").forEach((el) => el.addEventListener("change", () => {
       const draft = this.collectTariffDraft();
-      if (el.dataset.tariffField === "osd_provider") {
-        const provider = this.tariffData().providers?.find((item) => item.id === draft.osd_provider);
+      if (el.dataset.tariffField === "dso_provider") {
+        const provider = this.tariffData().providers?.find((item) => item.id === draft.dso_provider);
         if (provider?.tariffs?.length) draft.tariff_plan = provider.tariffs[0].id;
       }
-      if (["osd_provider", "tariff_plan", "buy_seller_id"].includes(el.dataset.tariffField)) {
+      if (["dso_provider", "tariff_plan", "buy_seller_id"].includes(el.dataset.tariffField)) {
         draft.buy_seller_tariff_id = "";
       }
       this._tariffDraft = draft;

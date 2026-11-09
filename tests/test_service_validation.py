@@ -254,7 +254,7 @@ class ConfigFlowRequiredEntitiesTests(unittest.TestCase):
                 [wifi],
                 "sensor",
                 "",
-                ("current electricity market price", "cena sprzedaży"),
+                ("current electricity market price", "sell price"),
                 semantic_key=const.CONF_PRICE_SENSOR,
             ),
             "",
@@ -262,9 +262,9 @@ class ConfigFlowRequiredEntitiesTests(unittest.TestCase):
 
     def test_issue_6_price_discovery_rejects_impossible_signal_metadata(self):
         wifi_named_price = types.SimpleNamespace(
-            entity_id="sensor.deye_cena_sprzedazy_wifi",
+            entity_id="sensor.deye_sell_price_wifi",
             attributes={
-                "friendly_name": "Deye cena selling",
+                "friendly_name": "Deye sell price wifi",
                 "device_class": "signal_strength",
                 "unit_of_measurement": "dBm",
             },
@@ -274,7 +274,7 @@ class ConfigFlowRequiredEntitiesTests(unittest.TestCase):
                 [wifi_named_price],
                 "sensor",
                 "",
-                ("cena sprzedaży",),
+                ("sell price",),
                 semantic_key=const.CONF_PRICE_SENSOR,
             ),
             "",
@@ -284,7 +284,7 @@ class ConfigFlowRequiredEntitiesTests(unittest.TestCase):
         price = types.SimpleNamespace(
             entity_id="sensor.market_sell_price",
             attributes={
-                "friendly_name": "Cena sprzedaży energii",
+                "friendly_name": "Sell price",
                 "unit_of_measurement": "GBP/kWh",
             },
         )
@@ -293,7 +293,7 @@ class ConfigFlowRequiredEntitiesTests(unittest.TestCase):
                 [price],
                 "sensor",
                 "",
-                ("cena sprzedaży",),
+                ("sell price",),
                 semantic_key=const.CONF_PRICE_SENSOR,
             ),
             price.entity_id,
@@ -420,7 +420,7 @@ class ServiceJsonValidationTests(unittest.TestCase):
 
     def test_tariff_settings_schema_rejects_non_string(self):
         with self.assertRaises(Exception):
-            init.TARIFF_SETTINGS_SCHEMA({"data": {"provider": "dso_a"}})
+            init.TARIFF_SETTINGS_SCHEMA({"data": {"provider": "octopus"}})
 
     def test_plan_execution_schema_is_optional_and_length_limited(self):
         self.assertEqual({}, init.PLAN_EXECUTION_SCHEMA({}))
@@ -670,144 +670,11 @@ class EntityRegistrySafetyTests(unittest.TestCase):
 class PriceContractMigrationTests(unittest.IsolatedAsyncioTestCase):
     """Exercise durable source-contract migrations against central mappings."""
 
-    async def test_minor_20_rebuilds_stale_adapter_and_preserves_explicit_empty(self):
-        rce_today = "sensor.rce_buy_today"
-        rce_tomorrow = "sensor.rce_buy_tomorrow"
-        stale_pstryk = {
-            "source_adapter": "pstryk",
-            "today_entity": "sensor.old_pstryk_today",
-            "tomorrow_entity": "sensor.old_pstryk_tomorrow",
-            "resolved_adapter_today": "pstryk",
-            "resolved_adapter_tomorrow": "pstryk",
-            "resolved_schema_today": {"schema_id": "pstryk_aio_interval_v1"},
-            "resolved_schema_tomorrow": {"schema_id": "pstryk_aio_interval_v1"},
-        }
-        entry = types.SimpleNamespace(
-            version=1,
-            minor_version=20,
-            data={
-                const.CONF_BUY_PRICE_TODAY_SENSOR: rce_today,
-                const.CONF_BUY_PRICE_TOMORROW_SENSOR: rce_tomorrow,
-                const.CONF_BUY_PRICE_CONTRACT: stale_pstryk,
-                const.CONF_PRICE_SENSOR: "",
-                const.CONF_SELL_PRICE_TOMORROW_SENSOR: "",
-                const.CONF_SELL_PRICE_CONTRACT: stale_pstryk,
-            },
-            options={},
-        )
-        registry_entries = {
-            rce_today: types.SimpleNamespace(
-                id="rce-today-id", platform="rce_pse", config_entry_id="rce-entry",
-                unique_id="rce-buy-today", device_id="rce-device",
-            ),
-            rce_tomorrow: types.SimpleNamespace(
-                id="rce-tomorrow-id", platform="rce_pse", config_entry_id="rce-entry",
-                unique_id="rce-buy-tomorrow", device_id="rce-device",
-            ),
-        }
-        registry = types.SimpleNamespace(
-            entities=registry_entries,
-            async_get=lambda entity_id: registry_entries.get(entity_id),
-        )
-        er_module = sys.modules["homeassistant.helpers.entity_registry"]
-        old_async_get = er_module.async_get
-        er_module.async_get = lambda _hass: registry
-        updates = []
-        hass = types.SimpleNamespace(
-            states=types.SimpleNamespace(get=lambda _entity_id: None),
-            config_entries=types.SimpleNamespace(
-                async_update_entry=lambda migrated_entry, **kwargs: updates.append((migrated_entry, kwargs))
-            ),
-        )
-        try:
-            self.assertTrue(await init.async_migrate_entry(hass, entry))
-        finally:
-            er_module.async_get = old_async_get
 
-        self.assertEqual(len(updates), 1)
-        migrated_entry, payload = updates[0]
-        self.assertIs(migrated_entry, entry)
-        self.assertEqual(payload["minor_version"], 24)
-        buy = payload["data"][const.CONF_BUY_PRICE_CONTRACT]
-        self.assertEqual(buy["source_adapter"], "rce_pse")
-        self.assertEqual(buy["economic_role"], "energy_only")
-        self.assertEqual(buy["resolved_adapter_today"], "rce_pse")
-        self.assertEqual(buy["resolved_adapter_tomorrow"], "rce_pse")
-        self.assertEqual(buy["today_entity"], rce_today)
-        self.assertEqual(buy["tomorrow_entity"], rce_tomorrow)
-        self.assertEqual(buy["today_binding"]["registry_entry_id"], "rce-today-id")
-        self.assertNotEqual(buy["resolved_schema_today"].get("schema_id"), "pstryk_aio_interval_v1")
-        sell = payload["data"][const.CONF_SELL_PRICE_CONTRACT]
-        self.assertEqual(sell["today_entity"], "")
-        self.assertEqual(sell["tomorrow_entity"], "")
-        self.assertEqual(sell["today_binding"], {})
-        self.assertEqual(sell["tomorrow_binding"], {})
-        self.assertEqual(sell["resolved_schema_today"], {})
-        self.assertEqual(sell["resolved_schema_tomorrow"], {})
-
-    async def test_minor_21_to_22_sanitizes_known_adapter_and_keeps_custom(self):
-        rce_today = "sensor.rce_today"
-        custom_today = "sensor.custom_sell"
-        stale_pstryk = {
-            "source_adapter": "pstryk", "today_entity": rce_today, "tomorrow_entity": "",
-            "resolved_adapter_today": "pstryk", "semantic_scope": "all_in_variable",
-            "includes_distribution_variable": True, "includes_excise": True,
-            "includes_service_margin": True, "price_basis": "gross", "unit": "GBP/kWh",
-        }
-        custom = {
-            "source_adapter": "custom", "today_entity": custom_today, "tomorrow_entity": "",
-            "resolved_adapter_today": "custom", "semantic_scope": "energy_only",
-            "includes_distribution_variable": False, "price_basis": "gross", "unit": "GBP/kWh",
-            "list_attribute": "hourly", "value_field": "amount",
-        }
-        entry = types.SimpleNamespace(
-            version=1, minor_version=21,
-            data={
-                const.CONF_BUY_PRICE_TODAY_SENSOR: rce_today,
-                const.CONF_BUY_PRICE_TOMORROW_SENSOR: "",
-                const.CONF_BUY_PRICE_CONTRACT: stale_pstryk,
-                const.CONF_PRICE_SENSOR: custom_today,
-                const.CONF_SELL_PRICE_TOMORROW_SENSOR: "",
-                const.CONF_SELL_PRICE_CONTRACT: custom,
-            },
-            options={},
-        )
-        registry_entries = {
-            rce_today: types.SimpleNamespace(id="rce-id", platform="rce_pse", config_entry_id="rce", unique_id="rce", device_id=None),
-            custom_today: types.SimpleNamespace(id="custom-id", platform="other_prices", config_entry_id="custom", unique_id="custom", device_id=None),
-        }
-        registry = types.SimpleNamespace(entities=registry_entries, async_get=lambda entity_id: registry_entries.get(entity_id))
-        er_module = sys.modules["homeassistant.helpers.entity_registry"]
-        old_async_get = er_module.async_get
-        er_module.async_get = lambda _hass: registry
-        updates = []
-        hass = types.SimpleNamespace(
-            states=types.SimpleNamespace(get=lambda _entity_id: None),
-            config_entries=types.SimpleNamespace(async_update_entry=lambda migrated_entry, **kwargs: updates.append(kwargs)),
-        )
-        try:
-            self.assertTrue(await init.async_migrate_entry(hass, entry))
-        finally:
-            er_module.async_get = old_async_get
-
-        payload = updates[0]
-        self.assertEqual(payload["minor_version"], 24)
-        buy = payload["data"][const.CONF_BUY_PRICE_CONTRACT]
-        self.assertEqual(buy["source_adapter"], "rce_pse")
-        self.assertEqual(buy["economic_role"], "energy_only")
-        self.assertEqual(buy["semantic_scope"], "energy_only")
-        self.assertFalse(buy["includes_distribution_variable"])
-        self.assertFalse(buy["includes_excise"])
-        self.assertFalse(buy["includes_service_margin"])
-        sell = payload["data"][const.CONF_SELL_PRICE_CONTRACT]
-        self.assertEqual(sell["source_adapter"], "custom")
-        self.assertEqual(sell["economic_role"], "")
-        self.assertEqual(sell["list_attribute"], "hourly")
-        self.assertEqual(sell["value_field"], "amount")
 
     async def test_minor_22_to_23_adds_known_roles_without_guessing_custom(self):
-        buy_today = "sensor.pstryk_buy_today"
-        buy_tomorrow = "sensor.pstryk_buy_tomorrow"
+        buy_today = "sensor.octopus_energy_buy_today"
+        buy_tomorrow = "sensor.octopus_energy_buy_tomorrow"
         custom_sell = "sensor.custom_sell"
         entry = types.SimpleNamespace(
             version=1,
@@ -816,7 +683,7 @@ class PriceContractMigrationTests(unittest.IsolatedAsyncioTestCase):
                 const.CONF_BUY_PRICE_TODAY_SENSOR: buy_today,
                 const.CONF_BUY_PRICE_TOMORROW_SENSOR: buy_tomorrow,
                 const.CONF_BUY_PRICE_CONTRACT: {
-                    "source_adapter": "pstryk",
+                    "source_adapter": "octopus_energy",
                     "today_entity": buy_today,
                     "tomorrow_entity": buy_tomorrow,
                 },
@@ -837,8 +704,8 @@ class PriceContractMigrationTests(unittest.IsolatedAsyncioTestCase):
             options={},
         )
         registry_entries = {
-            buy_today: types.SimpleNamespace(id="pstryk-today", platform="pstryk", config_entry_id="p", unique_id="bt", device_id=None),
-            buy_tomorrow: types.SimpleNamespace(id="pstryk-tomorrow", platform="pstryk", config_entry_id="p", unique_id="bm", device_id=None),
+            buy_today: types.SimpleNamespace(id="octopus_energy-today", platform="octopus_energy", config_entry_id="p", unique_id="bt", device_id=None),
+            buy_tomorrow: types.SimpleNamespace(id="octopus_energy-tomorrow", platform="octopus_energy", config_entry_id="p", unique_id="bm", device_id=None),
             custom_sell: types.SimpleNamespace(id="custom-sell", platform="other_prices", config_entry_id="c", unique_id="cs", device_id=None),
         }
         registry = types.SimpleNamespace(entities=registry_entries, async_get=lambda entity_id: registry_entries.get(entity_id))
@@ -864,7 +731,7 @@ class PriceContractMigrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["data"][const.CONF_SELL_PRICE_TOMORROW_SENSOR], "")
 
     async def test_minor_23_to_24_adds_explicit_empty_seller_without_touching_mappings(self):
-        buy_today = "sensor.pstryk_buy_today"
+        buy_today = "sensor.octopus_energy_buy_today"
         entry = types.SimpleNamespace(
             version=1,
             minor_version=23,
@@ -872,7 +739,7 @@ class PriceContractMigrationTests(unittest.IsolatedAsyncioTestCase):
                 const.CONF_BUY_PRICE_TODAY_SENSOR: buy_today,
                 const.CONF_BUY_PRICE_TOMORROW_SENSOR: "",
                 const.CONF_BUY_PRICE_CONTRACT: {
-                    "source_adapter": "pstryk",
+                    "source_adapter": "octopus_energy",
                     "today_entity": buy_today,
                     "tomorrow_entity": "",
                 },
@@ -976,19 +843,19 @@ class PriceMappingConfigFlowTests(unittest.TestCase):
         wizard.hass = types.SimpleNamespace(
             states=types.SimpleNamespace(get=lambda entity_id: states.get(entity_id)),
             config_entries=types.SimpleNamespace(
-                async_get_entry=lambda entry_id: types.SimpleNamespace(domain="pstryk")
+                async_get_entry=lambda entry_id: types.SimpleNamespace(domain="octopus_energy")
                 if entry_id == "prices-entry" else None
             ),
         )
         return wizard
 
-    def test_pstryk_metadata_binds_entity_and_resolves_real_today_schema(self):
+    def test_octopus_energy_metadata_binds_entity_and_resolves_real_today_schema(self):
         entity_id = "sensor.any_user_name"
-        state = _SimpleState("unknown", {"today_prices": [
-            {"start": "2026-08-23T00:00:00+02:00", "end": "2026-08-23T01:00:00+02:00", "price": 0.4}
+        state = _SimpleState("unknown", {"rates": [
+            {"start": "2026-08-23T00:00:00+02:00", "end": "2026-08-23T01:00:00+02:00", "value_inc_vat": 0.4}
         ]})
         entry = types.SimpleNamespace(
-            id="registry-price", platform="pstryk", config_entry_id="prices-entry",
+            id="registry-price", platform="octopus_energy", config_entry_id="prices-entry",
             unique_id="buy-today", device_id="price-device",
         )
         wizard = self._wizard(
@@ -999,10 +866,10 @@ class PriceMappingConfigFlowTests(unittest.TestCase):
         contracts, errors = wizard._resolve_price_mapping_contracts()
         buy = contracts["buy"]
         self.assertEqual(errors, {})
-        self.assertEqual(buy["source_adapter"], "pstryk")
+        self.assertEqual(buy["source_adapter"], "octopus_energy")
         self.assertEqual(buy["today_binding"]["registry_entry_id"], "registry-price")
-        self.assertEqual(buy["resolved_schema_today"]["schema_id"], "pstryk_aio_interval_v1")
-        self.assertEqual(buy["resolved_schema_today"]["list_attribute"], "today_prices")
+        self.assertEqual(buy["resolved_schema_today"]["schema_id"], "octopus_rates_v1")
+        self.assertEqual(buy["resolved_schema_today"]["list_attribute"], "rates")
 
     def test_unsupported_mapped_series_is_rejected_on_the_selected_field(self):
         entity_id = "sensor.unsupported_user_price"
@@ -1019,15 +886,15 @@ class PriceMappingConfigFlowTests(unittest.TestCase):
         self.assertEqual(errors[const.CONF_BUY_PRICE_TODAY_SENSOR], "unsupported_price_schema")
 
     def test_price_step_persists_omitted_cleared_fields_and_reload_stays_empty(self):
-        sell_today = "sensor.rce_sell_today"
-        sell_tomorrow = "sensor.rce_sell_tomorrow"
+        sell_today = "sensor.octopus_sell_today"
+        sell_tomorrow = "sensor.octopus_sell_tomorrow"
         entries = {
-            sell_today: types.SimpleNamespace(id="sell-today", platform="rce_pse", config_entry_id="rce", unique_id="st", device_id=None),
-            sell_tomorrow: types.SimpleNamespace(id="sell-tomorrow", platform="rce_pse", config_entry_id="rce", unique_id="stm", device_id=None),
+            sell_today: types.SimpleNamespace(id="sell-today", platform="octopus_energy", config_entry_id="octopus", unique_id="st", device_id=None),
+            sell_tomorrow: types.SimpleNamespace(id="sell-tomorrow", platform="octopus_energy", config_entry_id="octopus", unique_id="stm", device_id=None),
         }
-        state = _SimpleState("unknown", {"prices": [{
-            "period": "00:00 - 00:15", "dtime": "2026-08-23 00:15:00",
-            "business_date": "2026-08-23", "rce_price": 0.8,
+        state = _SimpleState("unknown", {"rates": [{
+            "start": "2026-08-23T00:00:00+01:00", "end": "2026-08-23T00:30:00+01:00",
+            "value_inc_vat": 0.8,
         }]})
         wizard = self._wizard(
             {
@@ -1093,7 +960,7 @@ class PriceMappingConfigFlowTests(unittest.TestCase):
             data={},
             options={
                 const.CONF_BUY_PRICE_CONTRACT: {
-                    "source_adapter": "pstryk", "today_entity": "", "tomorrow_entity": "",
+                    "source_adapter": "octopus_energy", "today_entity": "", "tomorrow_entity": "",
                 },
             },
         )

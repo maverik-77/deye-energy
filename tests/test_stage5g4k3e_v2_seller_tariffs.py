@@ -17,23 +17,15 @@ assert SPEC and SPEC.loader
 tariffs = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(tariffs)
 
-NOW = datetime(2026, 8, 27, 12, tzinfo=timezone(timedelta(hours=2)))
+NOW = datetime(2026, 11, 9, 12, tzinfo=timezone.utc)
 
 EXPECTED_GROUPS = {
-    "dso_a": {"g11", "g12", "g12w", "g12n", "g12as", "g12e"},
-    "dso_b": {"g11", "g12", "g12w", "g12as", "g13", "g13s", "g14dynamic"},
-    "dso_c": {"g11", "g11pewna", "g12", "g12w", "g12as", "g12sezon", "g13active", "g11p", "g12p"},
-    "dso_d": {"g11", "g11f", "g12", "g12w", "g12r", "g12as"},
-    "dso_e": {"g11", "g12", "g12w", "g12as", "g12eko"},
+    "octopus": {"intelligent_go", "agile", "flexible"},
     "other": {"custom"},
 }
 
 SUPPORTED = {
-    "dso_a": {"g11", "g12", "g12w", "g12n"},
-    "dso_b": {"g11", "g12", "g12w", "g13"},
-    "dso_c": {"g11", "g12", "g12w", "g11p", "g12p"},
-    "dso_d": {"g11", "g12", "g12w", "g12r"},
-    "dso_e": {"g11", "g12", "g12w", "g12as"},
+    "octopus": {"intelligent_go"},
 }
 
 
@@ -41,7 +33,7 @@ def catalog():
     return tariffs.load_bundled_catalog()
 
 
-def distribution_profile(cat, provider="dso_a", plan="g12w", value=None):
+def distribution_profile(cat, provider="octopus", plan="intelligent_go", value=None):
     if value is not None:
         return {
             ((NOW + timedelta(days=offset)).date(), hour): value
@@ -55,7 +47,7 @@ def distribution_profile(cat, provider="dso_a", plan="g12w", value=None):
     }
 
 
-def test_every_osd_tariff_has_an_explicit_seller_support_classification():
+def test_every_dso_tariff_has_an_explicit_seller_support_classification():
     cat = catalog()
     actual = {
         provider: set(payload["tariffs"])
@@ -64,10 +56,10 @@ def test_every_osd_tariff_has_an_explicit_seller_support_classification():
     matrix = {provider: set(rows) for provider, rows in cat["seller_support_matrix"].items()}
     assert actual == EXPECTED_GROUPS
     assert matrix == actual
-    assert sum(len(groups) for provider, groups in actual.items() if provider != "other") == 33
+    assert sum(len(groups) for provider, groups in actual.items() if provider != "other") == 3
 
 
-def test_only_the_21_audited_ordinary_contracts_are_supported():
+def test_only_the_1_audited_ordinary_contracts_are_supported():
     cat = catalog()
     for provider, groups in EXPECTED_GROUPS.items():
         for group in groups:
@@ -78,13 +70,13 @@ def test_only_the_21_audited_ordinary_contracts_are_supported():
             else:
                 assert row["status"] != "SUPPORTED_TARIFF_BUY"
                 assert not row.get("seller_tariff_id")
-    assert sum(len(seller["tariffs"]) for seller in cat["seller_tariffs"].values()) == 21
+    assert sum(len(seller["tariffs"]) for seller in cat["seller_tariffs"].values()) == 1
 
 
-def test_pge_g12w_generates_complete_canonical_buy_and_counts_components_once():
+def test_intelligent_go_generates_complete_canonical_buy_and_counts_components_once():
     cat = catalog()
     result = tariffs.seller_catalog_canonical_buy(
-        NOW, cat, "supplier_a", "", "dso_a", "g12w", distribution_profile(cat)
+        NOW, cat, "octopus", "", "octopus", "intelligent_go", distribution_profile(cat)
     )
     assert result["diagnostics"]["status"] == "ready"
     assert result["diagnostics"]["coverage_today"] == 24
@@ -102,10 +94,10 @@ def test_pge_g12w_generates_complete_canonical_buy_and_counts_components_once():
 def test_explicit_seller_is_required_and_unsupported_special_is_fail_closed():
     cat = catalog()
     no_seller = tariffs.seller_catalog_canonical_buy(
-        NOW, cat, "", "", "dso_a", "g12w", distribution_profile(cat)
+        NOW, cat, "", "", "octopus", "intelligent_go", distribution_profile(cat)
     )
     special = tariffs.seller_catalog_canonical_buy(
-        NOW, cat, "supplier_a", "", "dso_a", "g12as", distribution_profile(cat, "dso_a", "g12as")
+        NOW, cat, "octopus", "", "octopus", "flexible", distribution_profile(cat, "octopus", "flexible")
     )
     assert no_seller["rows"] == []
     assert no_seller["diagnostics"]["status"] == "seller_not_selected"
@@ -118,7 +110,7 @@ def test_missing_distribution_slot_is_fail_closed_instead_of_assuming_zero():
     distribution = distribution_profile(cat)
     distribution.pop(next(iter(distribution)))
     result = tariffs.seller_catalog_canonical_buy(
-        NOW, cat, "supplier_a", "", "dso_a", "g12w", distribution
+        NOW, cat, "octopus", "", "octopus", "intelligent_go", distribution
     )
     assert result["rows"] == []
     assert result["diagnostics"]["status"] == "distribution_slot_unavailable"
@@ -126,42 +118,42 @@ def test_missing_distribution_slot_is_fail_closed_instead_of_assuming_zero():
 
 def dated_catalog(old_end: str, new_start: str, new_end: str):
     cat = deepcopy(catalog())
-    original = deepcopy(cat["seller_tariffs"]["supplier_a"]["tariffs"]["supplier_a_g11_2026"])
+    original = deepcopy(cat["seller_tariffs"]["octopus"]["tariffs"]["intelligent_go_2026"])
     old = deepcopy(original)
-    old.update({"valid_from": "2026-01-01", "valid_to": old_end, "rates": {"all_day": 0.61}})
+    old.update({"valid_from": "2026-09-28", "valid_to": old_end, "rates": {"peak": 0.61, "offpeak": 0.05}})
     new = deepcopy(original)
-    new.update({"valid_from": new_start, "valid_to": new_end, "rates": {"all_day": 0.71}, "revision": "test-new"})
-    seller_tariffs = cat["seller_tariffs"]["supplier_a"]["tariffs"]
-    del seller_tariffs["supplier_a_g11_2026"]
-    seller_tariffs.update({"supplier_a_g11_old": old, "supplier_a_g11_new": new})
-    cat["seller_support_matrix"]["dso_a"]["g11"]["seller_tariff_id"] = "supplier_a_g11_old"
-    cat["valid_to"] = max("2026-12-31", new_end)
+    new.update({"valid_from": new_start, "valid_to": new_end, "rates": {"peak": 0.71, "offpeak": 0.06}, "revision": "test-new"})
+    seller_tariffs = cat["seller_tariffs"]["octopus"]["tariffs"]
+    del seller_tariffs["intelligent_go_2026"]
+    seller_tariffs.update({"intelligent_go_old": old, "intelligent_go_new": new})
+    cat["seller_support_matrix"]["octopus"]["intelligent_go"]["seller_tariff_id"] = "intelligent_go_old"
+    cat["valid_to"] = max("2027-09-27", new_end)
     return cat
 
 
 @pytest.mark.parametrize(
     ("old_end", "new_start", "new_end", "target"),
     [
-        ("2026-06-30", "2026-07-01", "2026-12-31", date(2026, 7, 1)),
-        ("2026-12-31", "2027-01-01", "2027-12-31", date(2027, 1, 1)),
+        ("2026-11-30", "2026-12-01", "2027-09-27", date(2026, 12, 1)),
+        ("2026-12-31", "2027-01-01", "2027-09-27", date(2027, 1, 1)),
     ],
 )
 def test_validity_first_transitions_mid_year_and_new_year(old_end, new_start, new_end, target):
     cat = dated_catalog(old_end, new_start, new_end)
     tariffs.validate_catalog(cat)
     tariff_id, entry, status = tariffs.resolve_seller_tariff(
-        cat, "supplier_a", "supplier_a_g11_old", "dso_a", "g11", target
+        cat, "octopus", "intelligent_go_old", "octopus", "intelligent_go", target
     )
-    assert tariff_id == "supplier_a_g11_new"
-    assert entry["rates"]["all_day"] == 0.71
+    assert tariff_id == "intelligent_go_new"
+    assert entry["rates"]["peak"] == 0.71
     assert status == "validity_transition"
 
 
 def test_expired_price_is_never_used_as_fallback():
-    cat = dated_catalog("2026-06-30", "2026-07-01", "2026-12-31")
-    del cat["seller_tariffs"]["supplier_a"]["tariffs"]["supplier_a_g11_new"]
+    cat = dated_catalog("2026-11-30", "2026-12-01", "2027-09-27")
+    del cat["seller_tariffs"]["octopus"]["tariffs"]["intelligent_go_new"]
     tariff_id, entry, status = tariffs.resolve_seller_tariff(
-        cat, "supplier_a", "supplier_a_g11_old", "dso_a", "g11", date(2026, 7, 1)
+        cat, "octopus", "intelligent_go_old", "octopus", "intelligent_go", date(2026, 12, 1)
     )
     assert tariff_id == ""
     assert entry is None
@@ -169,7 +161,7 @@ def test_expired_price_is_never_used_as_fallback():
 
 
 def test_catalog_validator_rejects_overlap_unit_basis_and_missing_matrix():
-    overlapping = dated_catalog("2026-07-01", "2026-07-01", "2026-12-31")
+    overlapping = dated_catalog("2026-12-01", "2026-12-01", "2027-09-27")
     with pytest.raises(ValueError, match="Overlapping"):
         tariffs.validate_catalog(overlapping)
     for field, value, message in (
@@ -178,16 +170,16 @@ def test_catalog_validator_rejects_overlap_unit_basis_and_missing_matrix():
         ("includes_distribution", True, "energy-only"),
     ):
         malformed = deepcopy(catalog())
-        malformed["seller_tariffs"]["supplier_a"]["tariffs"]["supplier_a_g11_2026"][field] = value
+        malformed["seller_tariffs"]["octopus"]["tariffs"]["intelligent_go_2026"][field] = value
         with pytest.raises(ValueError, match=message):
             tariffs.validate_catalog(malformed)
     incomplete = deepcopy(catalog())
-    del incomplete["seller_support_matrix"]["dso_a"]["g12e"]
+    del incomplete["seller_support_matrix"]["octopus"]["flexible"]
     with pytest.raises(ValueError, match="incomplete"):
         tariffs.validate_catalog(incomplete)
 
 
-def test_manager_precedence_has_no_osd_to_seller_or_sell_to_buy_guess():
+def test_manager_precedence_has_no_dso_to_seller_or_sell_to_buy_guess():
     source = (ROOT / "custom_components" / "deye_energy" / "manager.py").read_text(encoding="utf-8")
     canonical = source.split("def canonical_price_context(", 1)[1].split("def _weather_factors_48h", 1)[0]
     migration = (ROOT / "custom_components" / "deye_energy" / "__init__.py").read_text(encoding="utf-8")
@@ -256,15 +248,15 @@ def test_updater_activation_is_atomic_and_keeps_last_known_good():
     manager.source = "bundled"
 
     invalid = deepcopy(active)
-    invalid["catalog_version"] = "2026.08.27.2"
-    invalid["seller_tariffs"]["supplier_a"]["tariffs"]["supplier_a_g11_2026"]["unit"] = "GBP/MWh"
+    invalid["catalog_version"] = "2026.11.09.2"
+    invalid["seller_tariffs"]["octopus"]["tariffs"]["intelligent_go_2026"]["unit"] = "GBP/MWh"
     with pytest.raises(ValueError):
         manager._activate_if_newer(invalid, "online")
     assert manager.catalog is active
     assert manager.source == "bundled"
 
     valid = deepcopy(active)
-    valid["catalog_version"] = "2026.08.27.2"
+    valid["catalog_version"] = "2026.11.09.2"
     assert manager._activate_if_newer(valid, "online") is True
     assert manager.catalog is valid
     assert manager.source == "online"

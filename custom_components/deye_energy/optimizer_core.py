@@ -400,14 +400,14 @@ def _profile_confidence(
     )
 
 
-def _osd_available_hours(inputs: dict[str, Any]) -> int:
-    """Return the real 48-hour OSD coverage instead of a binary flag."""
+def _dso_available_hours(inputs: dict[str, Any]) -> int:
+    """Return the real 48-hour DSO coverage instead of a binary flag."""
     if bool(inputs.get("price_includes_distribution")):
         return 48
-    if inputs.get("osd_available_hours") is not None:
-        return max(0, min(48, int(_finite(inputs.get("osd_available_hours")))))
-    if "osd_data_complete" in inputs:
-        return 48 if bool(inputs.get("osd_data_complete")) else 0
+    if inputs.get("dso_available_hours") is not None:
+        return max(0, min(48, int(_finite(inputs.get("dso_available_hours")))))
+    if "dso_data_complete" in inputs:
+        return 48 if bool(inputs.get("dso_data_complete")) else 0
     distribution = inputs.get("distribution")
     if isinstance(distribution, list):
         return min(48, sum(value is not None for value in distribution[:48]))
@@ -458,7 +458,7 @@ def _confidence(inputs: dict[str, Any], day_index: int, pv_learned: bool) -> tup
     )
     soc_source = sources.get("battery_soc") if isinstance(sources.get("battery_soc"), dict) else {}
     soc_score = score_map.get(str(soc_source.get("quality") or "").lower(), 100.0 if inputs.get("soc") is not None else 0.0)
-    tariff_score = _osd_available_hours(inputs) / 48 * 100
+    tariff_score = _dso_available_hours(inputs) / 48 * 100
     load_profile = _profile_confidence(
         inputs,
         "load",
@@ -483,7 +483,7 @@ def _confidence(inputs: dict[str, Any], day_index: int, pv_learned: bool) -> tup
         "pv_profile": round(pv_profile, 1),
         "entities": round(entity_score, 1),
         "soc": round(soc_score, 1),
-        "tariff_osd": round(tariff_score, 1),
+        "tariff_dso": round(tariff_score, 1),
     }
     # Preserve the established material-component weights. Maturity contributes
     # proportionally through the 14% learning component; it never caps the
@@ -496,7 +496,7 @@ def _confidence(inputs: dict[str, Any], day_index: int, pv_learned: bool) -> tup
         + 0.10 * components["pv_profile"]
         + 0.12 * components["entities"]
         + 0.08 * components["soc"]
-        + 0.08 * components["tariff_osd"]
+        + 0.08 * components["tariff_dso"]
     )
     # Legacy fixtures/integrations without the new maturity contract retain the
     # historical cap. Production 5G.4D payloads always supply maturity and are
@@ -523,7 +523,7 @@ def _data_quality_score(components: dict[str, float]) -> float:
         "pv_profile": 0.10,
         "entities": 0.12,
         "soc": 0.08,
-        "tariff_osd": 0.08,
+        "tariff_dso": 0.08,
     }
     total_weight = sum(weights.values())
     return round(
@@ -677,7 +677,7 @@ def _ui_insights(
     start_date, _generated = _parse_start(inputs)
     tariff = inputs.get("tariff_context") if isinstance(inputs.get("tariff_context"), dict) else {}
     tariff_rows = tariff.get("hourly_profile") if isinstance(tariff.get("hourly_profile"), list) else []
-    osd_complete = bool(inputs.get("osd_data_complete"))
+    dso_complete = bool(inputs.get("dso_data_complete"))
     included = bool(prices.get("included"))
     profiles_root = inputs.get("user_profiles") if isinstance(inputs.get("user_profiles"), dict) else {}
     profiles = profiles_root.get("profiles") if isinstance(profiles_root.get("profiles"), dict) else {}
@@ -724,7 +724,7 @@ def _ui_insights(
                 "source_semantic_scope": canonical_row.get("source_semantic_scope"),
                 "coverage_minutes": canonical_row.get("coverage_minutes"),
                 "quality": canonical_row.get("quality", "legacy"),
-                "osd_complete": bool(included or osd_complete),
+                "dso_complete": bool(included or dso_complete),
             })
         ranked = sorted(purchase_days[day_name], key=lambda item: (item["effective_price"], item["hour"]))
         for rank, item in enumerate(ranked, 1):
@@ -1007,8 +1007,8 @@ def _ui_insights(
             "plan": tariff.get("plan"),
             "plan_name": tariff.get("plan_name"),
             "price_includes_distribution": included,
-            "osd_complete": bool(included or osd_complete),
-            "warning": None if included or osd_complete else "missing_osd_data",
+            "dso_complete": bool(included or dso_complete),
+            "warning": None if included or dso_complete else "missing_dso_data",
             "coverage_today": len(purchase_days["today"]),
             "coverage_tomorrow": len(purchase_days["tomorrow"]),
             "energy_source": inputs.get("buy_price_source"),
@@ -1067,7 +1067,6 @@ def _active_today(profile: dict[str, Any], day: date) -> bool:
         day.strftime("%A").lower(),
         str(day.weekday()),
         ("mon", "tue", "wed", "thu", "fri", "sat", "sun")[day.weekday()],
-        ("pon", "wt", "śr", "czw", "pt", "sob", "niedz")[day.weekday()],
     }
     return bool(normalized & aliases)
 
@@ -1728,7 +1727,7 @@ def _strategy_actions(
     allow_sell = bool(inputs.get("allow_battery_sell", True))
     allow_charge = bool(inputs.get("allow_grid_charge", True)) and (
         bool(inputs.get("price_includes_distribution"))
-        or bool(inputs.get("osd_data_complete", True))
+        or bool(inputs.get("dso_data_complete", True))
     )
     minimum_sell = _finite(inputs.get("min_sell_price"), 0)
     maximum_buy = _finite(inputs.get("max_buy_price"), 999)
@@ -4113,7 +4112,7 @@ def build_energy_plan(
             "today_buy_prices": len(prices["buy"][0]),
             "tomorrow_sell_prices": len(prices["sell"][1]),
             "tomorrow_buy_prices": len(prices["buy"][1]),
-            "osd_hours": _osd_available_hours(inputs),
+            "dso_hours": _dso_available_hours(inputs),
             "weather_hours": sum(value is not None for value in forecast["weather"][:48]),
             "fail_closed": optimized["fail_closed"],
             "fail_closed_reason": (
@@ -4122,7 +4121,7 @@ def build_energy_plan(
                 else None
             ),
             "soc": deepcopy(inputs.get("soc_diagnostics", {})),
-            "osd_complete": _osd_available_hours(inputs) == 48,
+            "dso_complete": _dso_available_hours(inputs) == 48,
             "price_sources": deepcopy(
                 (inputs.get("canonical_prices") or {}).get("diagnostics", {})
                 if isinstance(inputs.get("canonical_prices"), dict)
@@ -4272,7 +4271,7 @@ def _build_plan_bundle_unbudgeted(
                 return candidate, deepcopy(variant_inputs)
             forced_charge_allowed = bool(variant_inputs.get("allow_grid_charge", True)) and (
                 bool(variant_inputs.get("price_includes_distribution"))
-                or bool(variant_inputs.get("osd_data_complete", True))
+                or bool(variant_inputs.get("dso_data_complete", True))
             )
             charge_candidates = [
                 index

@@ -219,7 +219,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 saved_adapter
                 if detected == "generic"
                 and contract_mapping_matches(saved_contract, entities["today"], entities["tomorrow"])
-                and saved_adapter in {"pstryk", "rce_pse", "custom"}
+                and saved_adapter in {"octopus_energy", "custom"}
                 else detected
             )
             states.append(hass.states.get(entity_id) if entity_id else None)

@@ -154,10 +154,10 @@ def test_tomorrow_priority_reserves_energy_for_later_higher_profile_same_date():
     values = daily_case(capacity_kwh=22)
     values["user_profiles"]["profiles"] = {
         "morning": profile(
-            6, 3000, start="06:00", end="08:00", priority="normal", active_days=["czw"]
+            6, 3000, start="06:00", end="08:00", priority="normal", active_days=["thu"]
         ),
         "evening": profile(
-            16, 5000, start="18:00", end="22:00", priority="high", active_days=["czw"]
+            16, 5000, start="18:00", end="22:00", priority="high", active_days=["thu"]
         ),
     }
     plan = core.build_energy_plan(values)
@@ -178,10 +178,10 @@ def test_forecast_pv_between_profiles_reduces_reserve_without_resetting_soc():
     no_pv = daily_case(capacity_kwh=22)
     profiles = {
         "morning": profile(
-            6, 3000, start="06:00", end="08:00", priority="normal", active_days=["czw"]
+            6, 3000, start="06:00", end="08:00", priority="normal", active_days=["thu"]
         ),
         "evening": profile(
-            16, 5000, start="18:00", end="22:00", priority="high", active_days=["czw"]
+            16, 5000, start="18:00", end="22:00", priority="high", active_days=["thu"]
         ),
     }
     no_pv["user_profiles"]["profiles"] = profiles
@@ -259,7 +259,7 @@ def test_started_hour_today_and_full_hour_tomorrow_keep_separate_capacities():
 def test_cross_midnight_hours_consume_their_own_calendar_date_pool():
     values = daily_case()
     values["user_profiles"]["profiles"]["sale"] = profile(
-        4, 2000, start="22:00", end="02:00", active_days=["śr"]
+        4, 2000, start="22:00", end="02:00", active_days=["wed"]
     )
     plan = core.build_energy_plan(values)
     rows = [row for row in plan["rows"] if row.get("profile_id") == "sale"]

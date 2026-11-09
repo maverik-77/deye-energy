@@ -63,7 +63,8 @@ cache) so that the new card revision is loaded.
 1. Open the card and check that **Deye control** is **off** until you have
    reviewed the schedule.
 2. Check the mapped physical TOU ranges in **Settings → Deye mapping**.
-3. Enter your tariff under **Tariff and distribution**.
+3. Check that the tariff under **Tariff and distribution** is **Octopus Energy →
+   Intelligent Octopus Go** (or enter your own rates).
 4. Switch **Deye control** on and watch the first slot change confirm in the
    status panel.
 

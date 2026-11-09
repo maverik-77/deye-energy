@@ -36,11 +36,11 @@ class State:
 
 def test_normalizer_distinguishes_absent_entity_from_explicit_empty() -> None:
     absent = price_sources.normalize_price_contract(
-        {"source_adapter": "pstryk"}, "buy", "pstryk", "sensor.default_today", "sensor.default_tomorrow"
+        {"source_adapter": "octopus_energy"}, "buy", "octopus_energy", "sensor.default_today", "sensor.default_tomorrow"
     )
     empty = price_sources.normalize_price_contract(
-        {"source_adapter": "pstryk", "today_entity": None, "tomorrow_entity": ""},
-        "buy", "pstryk", "sensor.default_today", "sensor.default_tomorrow",
+        {"source_adapter": "octopus_energy", "today_entity": None, "tomorrow_entity": ""},
+        "buy", "octopus_energy", "sensor.default_today", "sensor.default_tomorrow",
     )
     assert absent["today_entity"] == "sensor.default_today"
     assert absent["tomorrow_entity"] == "sensor.default_tomorrow"
@@ -49,15 +49,15 @@ def test_normalizer_distinguishes_absent_entity_from_explicit_empty() -> None:
 
 
 def test_absent_legacy_keys_receive_one_time_defaults() -> None:
-    migrated = price_sources.migrate_legacy_price_contracts({"price_source": "pstryk"})
+    migrated = price_sources.migrate_legacy_price_contracts({"price_source": "octopus_energy"})
     assert all(key in migrated for key in PRICE_KEYS)
-    assert migrated["buy_price_today_sensor"].startswith("sensor.pstryk_aio_")
+    assert migrated["buy_price_today_sensor"] == ""
     assert migrated["sell_price_contract"]["today_entity"] == migrated["price_sensor"]
 
 
 def test_explicit_empty_legacy_keys_are_never_migrated_to_provider_defaults() -> None:
     migrated = price_sources.migrate_legacy_price_contracts({
-        "price_source": "pstryk",
+        "price_source": "octopus_energy",
         "buy_price_today_sensor": "",
         "buy_price_tomorrow_sensor": None,
         "price_sensor": "",
@@ -72,8 +72,8 @@ def test_explicit_empty_legacy_keys_are_never_migrated_to_provider_defaults() ->
 
 def test_existing_contract_empty_is_promoted_to_central_mapping_on_upgrade() -> None:
     migrated = price_sources.migrate_legacy_price_contracts({
-        "price_source": "pstryk",
-        "buy_price_contract": {"source_adapter": "pstryk", "today_entity": "", "tomorrow_entity": ""},
+        "price_source": "octopus_energy",
+        "buy_price_contract": {"source_adapter": "octopus_energy", "today_entity": "", "tomorrow_entity": ""},
     })
     assert migrated["buy_price_today_sensor"] == ""
     assert migrated["buy_price_tomorrow_sensor"] == ""
@@ -81,11 +81,11 @@ def test_existing_contract_empty_is_promoted_to_central_mapping_on_upgrade() -> 
 
 def test_mapping_key_empty_overrides_stale_contract_entity() -> None:
     migrated = price_sources.migrate_legacy_price_contracts({
-        "price_source": "pstryk",
+        "price_source": "octopus_energy",
         "buy_price_today_sensor": "",
         "buy_price_contract": {
-            "source_adapter": "pstryk",
-            "today_entity": "sensor.previous_pstryk",
+            "source_adapter": "octopus_energy",
+            "today_entity": "sensor.previous_octopus_energy",
             "tomorrow_entity": "sensor.previous_tomorrow",
         },
     })
@@ -96,13 +96,13 @@ def test_mapping_key_empty_overrides_stale_contract_entity() -> None:
 def test_unmapped_contract_has_no_rows_no_state_fallback_and_clear_status() -> None:
     contract = price_sources.normalize_price_contract(
         {
-            "source_adapter": "pstryk",
+            "source_adapter": "octopus_energy",
             "today_entity": "",
             "tomorrow_entity": "",
             "current_price_only": True,
             "allow_state_fallback": True,
         },
-        "buy", "pstryk", "sensor.provider_default", "sensor.provider_tomorrow",
+        "buy", "octopus_energy", "sensor.provider_default", "sensor.provider_tomorrow",
     )
     result = price_sources.build_canonical_direction(contract, None, None, NOW, {})
     assert result["rows"] == []
@@ -121,11 +121,11 @@ def test_one_day_explicit_empty_does_not_remove_other_day() -> None:
         for hour in range(24)
     ]
     contract = price_sources.normalize_price_contract(
-        {"source_adapter": "pstryk", "today_entity": "", "tomorrow_entity": "sensor.only_tomorrow"},
-        "sell", "pstryk", "sensor.provider_today", "sensor.only_tomorrow",
+        {"source_adapter": "octopus_energy", "today_entity": "", "tomorrow_entity": "sensor.only_tomorrow"},
+        "sell", "octopus_energy", "sensor.provider_today", "sensor.only_tomorrow",
     )
     result = price_sources.build_canonical_direction(
-        contract, None, State("sensor.only_tomorrow", attributes={"tomorrow_prices": rows}), NOW, {}
+        contract, None, State("sensor.only_tomorrow", attributes={"rates": rows}), NOW, {}
     )
     assert len(result["rows"]) == 24
     assert {row["day"] for row in result["rows"]} == {"tomorrow"}

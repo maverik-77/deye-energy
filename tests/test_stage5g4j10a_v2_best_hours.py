@@ -42,15 +42,15 @@ def sale_case(
     step_w: float = 1,
 ) -> dict:
     values = target.physical_case(5000)
-    today_prices = {hour: 0.1 for hour in range(24)}
-    today_prices.update(prices)
+    rates = {hour: 0.1 for hour in range(24)}
+    rates.update(prices)
     values.update({
         "soc": soc,
         "battery_capacity_kwh": capacity_kwh,
         "min_soc": min_soc,
         "effective_min_soc": min_soc,
         "target_soc": 100,
-        "sell_prices": [today_prices, dict(today_prices)],
+        "sell_prices": [rates, dict(rates)],
         "price_equivalence_band": band,
         "minimum_auto_sell_power_w": minimum_w,
         "sell_power_minimum_w": 0,
@@ -66,7 +66,7 @@ def sale_case(
         end=end,
     )
     profile.update({
-        "active_days": ["śr"],
+        "active_days": ["wed"],
         "goal_character": "required" if required else "preferred",
         "min_soc_after": min_soc,
     })
