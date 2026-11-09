@@ -2078,7 +2078,7 @@ class DeyeEnergyRuntime:
         for key in (
             "price", "value", "state", "amount", "total", "net_price", "gross_price",
             "energy_price", "unit_price", "price_with_tax", "pln_kwh", "pln_per_kwh",
-            "sell_price", "buy_price", "sprzedaz", "zakup", "cena", "pln", "rce",
+            "sell_price", "buy_price", "sprzedaz", "zakup", "cena", "pln", "gbp", "rce",
         ):
             if key not in item:
                 continue
