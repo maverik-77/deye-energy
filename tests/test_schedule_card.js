@@ -100,7 +100,7 @@ function makeBulkCard() {
   card.querySelectorAll = () => [];
   card.render = () => {};
   card.captureScrollPositions = () => {};
-  card._selectedSlots = new Set(["06_07", "08_09"]);
+  card._selectedSlots = new Set(["0600_0630", "0800_0830"]);
   return card;
 }
 
@@ -157,7 +157,7 @@ function makeBulkCard() {
     card.querySelector = (selector) => selector === ".dem-v073" ? root : null;
     let called = 0;
     card.applyMultiEdit = () => { called += 1; };
-    card.bindDashboardControls([["06_07", "06:00-07:00", 2]]);
+    card.bindDashboardControls([["0600_0630", "06:00-07:00", 2]]);
     assertTrue(typeof listeners.click === "function", "dashboard bulk apply button must receive a click listener");
     listeners.click();
     assertEqual(called, 1, "dashboard bulk apply click must call applyMultiEdit once");
@@ -169,15 +169,15 @@ function makeBulkCard() {
     let captured = null;
     card.applySchedulePatch = async (updates) => { captured = updates; return true; };
     const slots = [
-      ["06_07", "06:00-07:00", 2],
-      ["07_08", "07:00-08:00", 2],
-      ["08_09", "08:00-09:00", 3],
+      ["0600_0630", "06:00-07:00", 2],
+      ["0700_0730", "07:00-08:00", 2],
+      ["0800_0830", "08:00-09:00", 3],
     ];
     const result = await card.applyMultiEdit(slots);
     assertTrue(result, "valid bulk edit must succeed");
     assertEqual(captured.length, 2, "only selected slots must be sent");
-    assertEqual(captured[0].slot_key, "06_07", "first selected slot must be sent");
-    assertEqual(captured[1].slot_key, "08_09", "second selected slot must be sent");
+    assertEqual(captured[0].slot_key, "0600_0630", "first selected slot must be sent");
+    assertEqual(captured[1].slot_key, "0800_0830", "second selected slot must be sent");
     assertEqual(captured[0].mode, "Selling", "checked mode must be sent canonically");
     assertEqual(captured[0].enabled, true, "checked active state must be sent");
     assertEqual(captured[0].minimum_sell_soc, "30", "checked SOC must be sent");
@@ -194,7 +194,7 @@ function makeBulkCard() {
       calls += 1;
       return new Promise((resolve) => { release = resolve; });
     };
-    const slots = [["06_07", "06:00-07:00", 2], ["08_09", "08:00-09:00", 3]];
+    const slots = [["0600_0630", "06:00-07:00", 2], ["0800_0830", "08:00-09:00", 3]];
     const first = card.applyMultiEdit(slots);
     const second = await card.applyMultiEdit(slots);
     assertEqual(second, false, "second bulk apply must be ignored while save is active");
@@ -205,7 +205,7 @@ function makeBulkCard() {
   {
     const card = makeBulkCard();
     card.applySchedulePatch = async () => false;
-    const slots = [["06_07", "06:00-07:00", 2], ["08_09", "08:00-09:00", 3]];
+    const slots = [["0600_0630", "06:00-07:00", 2], ["0800_0830", "08:00-09:00", 3]];
     const result = await card.applyMultiEdit(slots);
     assertEqual(result, false, "failed bulk edit must report failure");
     assertEqual(card._bulkEditDraft.mode, "Selling", "failed bulk edit must keep form values");

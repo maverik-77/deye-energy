@@ -59,7 +59,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
     def test_mapping_view_is_the_simple_24h_to_six_tou_ranges(self):
         for source in self.sources:
             self.assertIn(
-                "The 24 h schedule is arranged into six ranges and written to Deye Time Of Use",
+                "The full-day schedule is arranged into six ranges and written to Deye Time Of Use",
                 source,
             )
             self.assertIn("<th>Function</th>", source)

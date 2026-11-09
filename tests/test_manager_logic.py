@@ -141,6 +141,8 @@ sys.modules[package.__name__] = package
 const = _load_module(f"{package.__name__}.const", PACKAGE / "const.py")
 manager = _load_module(f"{package.__name__}.manager", PACKAGE / "manager.py")
 manager.ha_now = lambda: datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
+import _hour_alias  # noqa: E402
+_hour_alias.install(manager, _load_module(f"{package.__name__}.const", PACKAGE / "const.py") if False else sys.modules[f"{package.__name__}.const"])
 number = _load_module(f"{package.__name__}.number", PACKAGE / "number.py")
 select_module = _load_module(f"{package.__name__}.select", PACKAGE / "select.py")
 switch_module = _load_module(f"{package.__name__}.switch", PACKAGE / "switch.py")
@@ -291,6 +293,20 @@ CONTROL_NUMBERS = {
     const.DEFAULT_CHARGE_CURRENT: 120,
     const.DEFAULT_GRID_CHARGE_CURRENT: 60,
 }
+
+
+def hour_snapshot(runtime):
+    """Mapping snapshot with whole-hour start/end for hour-aligned schedules."""
+    return [
+        {
+            "range": item["range"],
+            "start": item["start"] // 60,
+            "end": item["end"] // 60,
+            "tou_soc": item["tou_soc"],
+            "grid_charge": item["grid_charge"],
+        }
+        for item in runtime.schedule_mapping_snapshot()
+    ]
 
 
 def configure_selling_slot(runtime):
@@ -760,7 +776,7 @@ class MappingAndTransactionTests(unittest.TestCase):
 
     def test_more_than_six_segments_is_rejected(self):
         runtime = make_runtime()
-        for index, slot in enumerate(runtime.slots.values()):
+        for index, slot in enumerate(runtime.slots.hourly()):
             slot.enabled = True
             slot.mode = const.MODE_CHARGE if index % 2 else const.MODE_SELLING_FIRST
             # After 5A.1 the physical key is (tou_soc, grid_charge).  Make Charge
@@ -777,7 +793,7 @@ class MappingAndTransactionTests(unittest.TestCase):
     def test_invalid_patch_rolls_back_and_keeps_safe_mode(self):
         runtime = make_runtime()
         updates = []
-        for index, slot_key in enumerate(list(runtime.slots)[:8]):
+        for index, slot_key in enumerate(const.HOUR_SLOT_KEYS[:8]):
             updates.append(
                 {
                     "slot_key": slot_key,
@@ -1534,7 +1550,7 @@ class GridAndSlotSafetyTests(unittest.TestCase):
         )
         physical_variants = (None, const.MODE_ZERO_EXPORT, const.MODE_ZERO_EXPORT_CT)
         protected = []
-        for slot, mode, physical in zip(runtime.slots.values(), modes, physical_variants):
+        for slot, mode, physical in zip(runtime.slots.hourly(), modes, physical_variants):
             slot.enabled = True
             slot.mode = mode
             if physical:
@@ -1597,7 +1613,7 @@ class GridAndSlotSafetyTests(unittest.TestCase):
         runtime.charge_profile_grid_charge_current = 45
         runtime.charge_profile_target_soc = 82
         runtime.charge_profile_grid_enabled = True
-        charge_slots = list(runtime.slots.values())[:2]
+        charge_slots = runtime.slots.hourly()[:2]
         for index, slot in enumerate(charge_slots):
             slot.enabled = True
             slot.mode = const.MODE_CHARGE
@@ -1617,7 +1633,7 @@ class GridAndSlotSafetyTests(unittest.TestCase):
         runtime = make_runtime()
         runtime.charge_profile_target_soc = 80
         runtime.charge_profile_grid_enabled = True
-        charge_slot = list(runtime.slots.values())[5]
+        charge_slot = runtime.slots.hourly()[5]
         charge_slot.enabled = True
         charge_slot.mode = const.MODE_CHARGE
         charge_slot.charge_enabled = True
@@ -1840,7 +1856,7 @@ class ChargeProfileSlotReloadTests(unittest.TestCase):
     def test_force_copy_charge_profile_affects_only_requested_slot(self):
         runtime = make_runtime()
         self._configure_charge_profile(runtime)
-        keys = list(runtime.slots.keys())
+        keys = list(const.HOUR_SLOT_KEYS)
         first = runtime.slots[keys[0]]
         second = runtime.slots[keys[1]]
         first.mode = const.MODE_CHARGE
@@ -1893,40 +1909,40 @@ class GridChargeIndependenceTests(unittest.TestCase):
 
     def test_switching_from_charge_to_normal_preserves_grid_charge(self):
         runtime = make_runtime()
-        slot = runtime.slots["05_06"]
+        slot = runtime.slots["0500_0530"]
         slot.mode = const.MODE_CHARGE
         slot.charge_enabled = True
-        runtime.set_work_mode_for_slot("05_06", const.MODE_NORMAL_OPERATION)
+        runtime.set_work_mode_for_slot("0500_0530", const.MODE_NORMAL_OPERATION)
         self.assertTrue(slot.charge_enabled)
 
     def test_switching_from_charge_to_selling_preserves_grid_charge(self):
         runtime = make_runtime()
-        slot = runtime.slots["05_06"]
+        slot = runtime.slots["0500_0530"]
         slot.mode = const.MODE_CHARGE
         slot.charge_enabled = True
-        runtime.set_work_mode_for_slot("05_06", const.MODE_SELLING_FIRST)
+        runtime.set_work_mode_for_slot("0500_0530", const.MODE_SELLING_FIRST)
         self.assertTrue(slot.charge_enabled)
 
     def test_explicit_grid_charge_overrides_charge_mode_default(self):
         runtime = make_runtime()
         runtime.charge_profile_grid_enabled = False
-        slot = runtime.slots["05_06"]
+        slot = runtime.slots["0500_0530"]
         slot.mode = const.MODE_NORMAL_OPERATION
         asyncio.run(
             runtime.async_apply_schedule_patch(
-                [{"slot_key": "05_06", "mode": const.MODE_CHARGE, "charge_enabled": True}]
+                [{"slot_key": "0500_0530", "mode": const.MODE_CHARGE, "charge_enabled": True}]
             )
         )
         self.assertTrue(slot.charge_enabled)
 
     def test_grid_charge_remains_independent_of_manager_mode(self):
         runtime = make_runtime()
-        slot = runtime.slots["05_06"]
+        slot = runtime.slots["0500_0530"]
         slot.mode = const.MODE_NORMAL_OPERATION
         slot.charge_enabled = True
         asyncio.run(
             runtime.async_apply_schedule_patch(
-                [{"slot_key": "05_06", "mode": const.MODE_SELLING_FIRST, "minimum_sell_soc": 20}]
+                [{"slot_key": "0500_0530", "mode": const.MODE_SELLING_FIRST, "minimum_sell_soc": 20}]
             )
         )
         self.assertTrue(slot.charge_enabled)
@@ -2021,10 +2037,10 @@ class CardBackendModeContract5FTests(unittest.TestCase):
             runtime.control_status = "Disabled"
             asyncio.run(
                 runtime.async_apply_schedule_patch(
-                    [{"slot_key": "06_07", "mode": mode}]
+                    [{"slot_key": "0600_0630", "mode": mode}]
                 )
             )
-            self.assertEqual(runtime.slots["06_07"].mode, mode)
+            self.assertEqual(runtime.slots["0600_0630"].mode, mode)
 
 
 class TouSocMappingTests(unittest.TestCase):
@@ -2037,16 +2053,17 @@ class TouSocMappingTests(unittest.TestCase):
         for item in snapshot:
             self.assertNotIn("schedule_function", item)
             self.assertEqual(
-                set(item), {"range", "start", "end", "tou_soc", "grid_charge"}
+                set(item), {"range", "start", "end", "start_time", "end_time", "tou_soc", "grid_charge"}
             )
 
     @staticmethod
     def _active_physical_segment(runtime):
-        hour = manager.ha_now().hour
+        now = manager.ha_now()
+        minute = now.hour * 60 + now.minute
         for segment in runtime._tou_mapping.slots:
             start = int(segment.start)
-            end = 24 if int(segment.end) == 0 else int(segment.end)
-            if start <= hour < end:
+            end = 1440 if int(segment.end) == 0 else int(segment.end)
+            if start <= minute < end:
                 return segment.index, segment
         raise AssertionError("Nie znaleziono fizycznego zakresu dla aktywnej godziny")
 
@@ -2220,7 +2237,7 @@ class TouSocMappingTests(unittest.TestCase):
             slot.tou_soc = 10
             slot.charge_enabled = False
 
-        for index, slot in enumerate(runtime.slots.values()):
+        for index, slot in enumerate(runtime.slots.hourly()):
             if index == 8:
                 slot.mode = const.MODE_CHARGE
                 slot.tou_soc = 100
@@ -2237,8 +2254,8 @@ class TouSocMappingTests(unittest.TestCase):
         self.assertEqual(
             [
                 (
-                    segment.start,
-                    segment.end,
+                    segment.start // 60,
+                    segment.end // 60,
                     "normal",
                     segment.soc,
                     segment.grid_charge,
@@ -2257,7 +2274,7 @@ class TouSocMappingTests(unittest.TestCase):
 
     def test_seven_ranges_report_mapping_error(self):
         runtime = make_runtime()
-        slots = list(runtime.slots.values())
+        slots = runtime.slots.hourly()
         for slot in slots:
             slot.enabled = True
             slot.mode = const.MODE_NORMAL_OPERATION
@@ -2283,7 +2300,7 @@ class TouSocMappingTests(unittest.TestCase):
 
     def test_schedule_mapping_recalculates_after_schedule_change(self):
         runtime = make_runtime()
-        slots = list(runtime.slots.values())
+        slots = runtime.slots.hourly()
         for slot in slots:
             slot.enabled = True
             slot.mode = const.MODE_NORMAL_OPERATION
@@ -2308,7 +2325,7 @@ class TouSocMappingTests(unittest.TestCase):
             slot.mode = const.MODE_CHARGE
             slot.tou_soc = 100
             slot.charge_enabled = True
-        second_mapping = runtime.schedule_mapping_snapshot()
+        second_mapping = hour_snapshot(runtime)
 
         self.assertNotEqual(first_mapping, second_mapping)
         self.assertIn(
@@ -2326,7 +2343,7 @@ class TouSocMappingTests(unittest.TestCase):
 
     def test_mapping_snapshot_covers_normal_disabled_charge_and_sale(self):
         runtime = make_runtime()
-        slots = list(runtime.slots.values())
+        slots = runtime.slots.hourly()
         for slot in slots:
             slot.enabled = True
             slot.mode = const.MODE_NORMAL_OPERATION
@@ -2346,7 +2363,7 @@ class TouSocMappingTests(unittest.TestCase):
             slot.tou_soc = 35
 
         self.assertEqual(
-            runtime.schedule_mapping_snapshot(),
+            hour_snapshot(runtime),
             [
                 {"range": 1, "start": 0, "end": 4, "tou_soc": 10.0, "grid_charge": False},
                 {"range": 2, "start": 4, "end": 8, "tou_soc": 10.0, "grid_charge": False},
@@ -2359,7 +2376,7 @@ class TouSocMappingTests(unittest.TestCase):
 
     def test_sale_soc_changes_create_exact_six_range_mapping(self):
         runtime = make_runtime()
-        slots = list(runtime.slots.values())
+        slots = runtime.slots.hourly()
         for slot in slots:
             slot.enabled = True
             slot.mode = const.MODE_NORMAL_OPERATION
@@ -2377,7 +2394,7 @@ class TouSocMappingTests(unittest.TestCase):
 
         self.assertEqual(
             [
-                (item.start, item.end, "normal", item.soc)
+                (item.start // 60, item.end // 60, "normal", item.soc)
                 for item in runtime._tou_mapping.slots
             ],
             [
@@ -2395,20 +2412,20 @@ class TouSocMappingTests(unittest.TestCase):
         before = runtime._tou_mapping.slots
         self.assertEqual({segment.soc for segment in before}, {20.0})
 
-        changed = list(runtime.slots.values())[8]
+        changed = runtime.slots.hourly()[8]
         changed.tou_soc = 33
         after = runtime._tou_mapping.slots
 
         self.assertEqual({segment.soc for segment in after}, {20.0, 33.0})
         self.assertTrue(any(
-            segment.start == 8 and segment.end == 9 and segment.soc == 33
+            segment.start == 480 and segment.end == 540 and segment.soc == 33
             for segment in after
         ))
 
     def test_migration_preserves_existing_tou_soc_beside_legacy_min_soc(self):
         runtime = make_runtime()
         normalized = runtime._validate_future_plan_updates([{
-            "slot_key": "05_06",
+            "slot_key": "0500_0530",
             "mode": const.MODE_SELLING_FIRST,
             "min_soc": 80,
             "tou_soc": 37,
@@ -2465,9 +2482,9 @@ class SellingTouSocSeparationTests(unittest.TestCase):
         active.tou_soc = 15
         # Mutate the physical mapping so the active hour has a different SOC.
         mapping = runtime._tou_mapping
-        active_hour = int(active.key[:2])
+        active_index = const.SLOT_INDEX[active.key]
         for segment in mapping.slots:
-            if active_hour in segment.source_hours:
+            if active_index in segment.source_slots:
                 segment.soc = 55
         patch = runtime.tou_mapping_to_schedule_patch(mapping)
         active_update = next(p for p in patch if p["slot_key"] == active.key)
@@ -2482,7 +2499,7 @@ class SellingTouSocSeparationTests(unittest.TestCase):
 
     def test_sale_and_normal_hours_with_same_tou_soc_and_grid_can_share_physical_range(self):
         runtime = make_runtime()
-        slots = list(runtime.slots.values())
+        slots = runtime.slots.hourly()
         for slot in slots:
             slot.enabled = True
             slot.mode = const.MODE_NORMAL_OPERATION
@@ -2503,7 +2520,7 @@ class SellingTouSocSeparationTests(unittest.TestCase):
         for slot in slots[22:24]:
             slot.tou_soc = 60
         segments = [
-            (segment.start, segment.end, segment.soc, segment.grid_charge)
+            (segment.start // 60, segment.end // 60, segment.soc, segment.grid_charge)
             for segment in runtime._tou_mapping.slots
         ]
         # Normal 04:00-08:00 and Selling 08:00-12:00 share one physical range
@@ -3699,7 +3716,7 @@ class FuturePlanTests(unittest.TestCase):
             "deployment_status": "not_deployed",
         }]
         update = {
-            "slot_key": "05_06", "enabled": True,
+            "slot_key": "0500_0530", "enabled": True,
             "mode": const.MODE_SELLING_FIRST, "sell_power": 5000,
             "discharge_current": 120, "charge_current": 0,
             "grid_charge_current": 0, "minimum_sell_soc": 20, "min_sell_price": 0.9,
@@ -3709,21 +3726,21 @@ class FuturePlanTests(unittest.TestCase):
             "labels": ["05:00–06:00"], "updates": [update],
         }))
         self.assertEqual("scheduled", runtime.future_plan["status"])
-        self.assertEqual(24, len(runtime.future_plan["updates"]))
+        self.assertEqual(const.SLOTS_PER_DAY, len(runtime.future_plan["updates"]))
         self.assertEqual({key for key, _label, _start, _end in const.SLOTS}, {
             item["slot_key"] for item in runtime.future_plan["updates"]
         })
         self.assertEqual([{
-            "slot_key": "05_06",
+            "slot_key": "0500_0530",
             "enabled": True,
             "mode": const.MODE_SELLING_FIRST,
             "sell_power": 5000,
         }], [
             item for item in runtime.future_plan["updates"]
-            if item["slot_key"] == "05_06"
+            if item["slot_key"] == "0500_0530"
         ])
         self.assertTrue(runtime.future_plan["authoritative_day"])
-        self.assertEqual(["05_06"], runtime.future_plan["selected_slot_keys"])
+        self.assertEqual(["0500_0530"], runtime.future_plan["selected_slot_keys"])
         self.assertEqual("approved", runtime.plan_execution_archive[0]["approval_status"])
         before = list(runtime.hass.services.calls)
         asyncio.run(runtime.async_process_future_plan())
@@ -3737,7 +3754,7 @@ class FuturePlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "can only be saved for tomorrow"):
             asyncio.run(runtime.async_save_future_plan({
                 "date": "2026-07-18",
-                "updates": [{"slot_key": "05_06", "mode": const.MODE_SELLING_FIRST}],
+                "updates": [{"slot_key": "0500_0530", "mode": const.MODE_SELLING_FIRST}],
             }))
 
     def test_future_plan_survives_runtime_reload_and_can_be_cancelled(self):
@@ -3748,12 +3765,12 @@ class FuturePlanTests(unittest.TestCase):
                 "plan_id": "plan-cancel",
                 "date": "2026-07-19", "status": "scheduled",
                 "updates": [{
-                    "slot_key": "05_06",
+                    "slot_key": "0500_0530",
                     "mode": const.MODE_SELLING_FIRST,
                     "sell_power": 3000,
                 }],
                 "slot_validations": {
-                    "05_06": {"profile_id": "morning_sale"},
+                    "0500_0530": {"profile_id": "morning_sale"},
                 },
             },
         }
@@ -3778,12 +3795,12 @@ class FuturePlanTests(unittest.TestCase):
         runtime.future_plan = {
             "date": "2026-07-19", "status": "scheduled",
             "updates": [{
-                "slot_key": "05_06", "enabled": True,
+                "slot_key": "0500_0530", "enabled": True,
                 "mode": const.MODE_SELLING_FIRST,
                 "sell_power": 5000, "discharge_current": 120, "min_sell_price": 0.9,
             }],
             "slot_validations": {
-                "05_06": {"profile_id": "morning_sale"},
+                "0500_0530": {"profile_id": "morning_sale"},
             },
         }
         previous_now = manager.ha_now
@@ -3795,9 +3812,9 @@ class FuturePlanTests(unittest.TestCase):
         self.assertEqual("scheduled", runtime.future_plan["status"])
         self.assertEqual(
             "waiting_data",
-            runtime.future_plan["slot_results"]["05_06"]["status"],
+            runtime.future_plan["slot_results"]["0500_0530"]["status"],
         )
-        self.assertIn("sell price", runtime.future_plan["slot_results"]["05_06"]["reason"])
+        self.assertIn("sell price", runtime.future_plan["slot_results"]["0500_0530"]["reason"])
         self.assertEqual([], runtime.profile_execution)
         self.assertEqual([], control_number_calls(runtime))
 
@@ -3816,13 +3833,13 @@ class FuturePlanTests(unittest.TestCase):
             "date": "2026-07-19",
             "status": "scheduled",
             "updates": [{
-                "slot_key": "05_06",
+                "slot_key": "0500_0530",
                 "enabled": True,
                 "mode": const.MODE_SELLING_FIRST,
                 "sell_power": 3000,
             }],
             "slot_validations": {
-                "05_06": {
+                "0500_0530": {
                     "profile_id": "morning_sale",
                     "minimum_price": 0.4,
                     "minimum_soc": 20,
@@ -3856,13 +3873,13 @@ class FuturePlanTests(unittest.TestCase):
             "date": "2026-07-19",
             "status": "scheduled",
             "updates": [{
-                "slot_key": "05_06",
+                "slot_key": "0500_0530",
                 "enabled": True,
                 "mode": const.MODE_SELLING_FIRST,
                 "sell_power": 3000,
             }],
             "slot_validations": {
-                "05_06": {
+                "0500_0530": {
                     "minimum_price": 0.4,
                     "minimum_soc": 20,
                     "allow_partial": True,
@@ -3878,7 +3895,7 @@ class FuturePlanTests(unittest.TestCase):
             manager.ha_now = previous_now
         self.assertEqual([], applied)
         self.assertEqual("partial", runtime.future_plan["status"])
-        self.assertEqual("blocked", runtime.future_plan["slot_results"]["05_06"]["status"])
+        self.assertEqual("blocked", runtime.future_plan["slot_results"]["0500_0530"]["status"])
 
     def test_future_charge_slot_revalidates_effective_buy_price(self):
         runtime = make_runtime()
@@ -3901,12 +3918,12 @@ class FuturePlanTests(unittest.TestCase):
             "date": "2026-07-19",
             "status": "scheduled",
             "updates": [{
-                "slot_key": "05_06",
+                "slot_key": "0500_0530",
                 "enabled": True,
                 "mode": "Charge",
             }],
             "slot_validations": {
-                "05_06": {
+                "0500_0530": {
                     "maximum_effective_price": 1.0,
                     "allow_partial": True,
                     "planned_energy_kwh": 1.0,
@@ -3921,8 +3938,8 @@ class FuturePlanTests(unittest.TestCase):
             asyncio.run(runtime.async_process_future_plan())
         finally:
             manager.ha_now = previous_now
-        self.assertEqual("blocked", runtime.future_plan["slot_results"]["05_06"]["status"])
-        self.assertIn("purchase cost", runtime.future_plan["slot_results"]["05_06"]["reason"])
+        self.assertEqual("blocked", runtime.future_plan["slot_results"]["0500_0530"]["status"])
+        self.assertIn("purchase cost", runtime.future_plan["slot_results"]["0500_0530"]["reason"])
 
     def test_future_sale_slot_caps_power_to_remaining_profile_target(self):
         runtime = make_runtime(price=1.2)
@@ -3945,13 +3962,13 @@ class FuturePlanTests(unittest.TestCase):
             "date": "2026-07-19",
             "status": "scheduled",
             "updates": [{
-                "slot_key": "05_06",
+                "slot_key": "0500_0530",
                 "enabled": True,
                 "mode": const.MODE_SELLING_FIRST,
                 "sell_power": 1000,
             }],
             "slot_validations": {
-                "05_06": {
+                "0500_0530": {
                     "profile_id": "morning_sale",
                     "target_energy_kwh": 1.0,
                     "remaining_target_kwh": 1.0,
@@ -3989,10 +4006,10 @@ class FuturePlanTests(unittest.TestCase):
             "date": "2026-07-19",
             "status": "scheduled",
             "updates": [
-                {"slot_key": "05_06", "enabled": True, "mode": const.MODE_SELLING_FIRST, "sell_power": 3000, "minimum_sell_soc": 20, "min_sell_price": 0.4},
-                {"slot_key": "06_07", "enabled": True, "mode": const.MODE_SELLING_FIRST, "sell_power": 2000, "minimum_sell_soc": 20, "min_sell_price": 0.4},
+                {"slot_key": "0500_0530", "enabled": True, "mode": const.MODE_SELLING_FIRST, "sell_power": 3000, "minimum_sell_soc": 20, "min_sell_price": 0.4},
+                {"slot_key": "0600_0630", "enabled": True, "mode": const.MODE_SELLING_FIRST, "sell_power": 2000, "minimum_sell_soc": 20, "min_sell_price": 0.4},
             ],
-            "slot_validations": {"05_06": {"allow_partial": True}},
+            "slot_validations": {"0500_0530": {"allow_partial": True}},
             "slot_results": {},
         }
         previous_now = manager.ha_now
@@ -4003,14 +4020,14 @@ class FuturePlanTests(unittest.TestCase):
             manager.ha_now = previous_now
         self.assertEqual([[
             {
-                "slot_key": "05_06",
+                "slot_key": "0500_0530",
                 "enabled": True,
                 "mode": const.MODE_SELLING_FIRST,
                 "sell_power": 3000,
             }
         ]], applied)
         self.assertEqual("scheduled", runtime.future_plan["status"])
-        self.assertEqual("physical_pending", runtime.future_plan["slot_results"]["05_06"]["status"])
+        self.assertEqual("physical_pending", runtime.future_plan["slot_results"]["0500_0530"]["status"])
 
 
 class StatisticsTests(unittest.TestCase):
@@ -5379,12 +5396,12 @@ class TouTransactionTests(unittest.IsolatedAsyncioTestCase):
     def _align_physical_tou_starts(self, runtime):
         for idx, segment in enumerate(runtime._tou_mapping.slots, start=1):
             runtime.hass.states.values[f"time.deye_inverter_time_of_use_{idx}_start"] = FakeState(
-                f"{int(segment.start):02d}:00:00"
+                f"{int(segment.start) // 60:02d}:{int(segment.start) % 60:02d}:00"
             )
 
     def test_tou_transaction_writes_only_changed_entities(self):
         runtime = make_runtime()
-        active = runtime.slots[runtime.active_slot_key()]
+        active = runtime.slots[const.hour_key(manager.ha_now().hour)]
         active.enabled = True
         active.mode = const.MODE_SELLING_FIRST
         active.tou_soc = 20  # matches the physical fixture, so no writes expected
@@ -5841,11 +5858,11 @@ class TouBackendContract5C1Tests(unittest.IsolatedAsyncioTestCase):
             await runtime.async_set_physical_tou_slot(2, start="05:00", end="09:00")
         self.assertEqual((runtime.hass.states.get(first).state, runtime.hass.states.get(second).state), before)
 
-    async def test_tou_rejects_non_hour_boundary(self):
+    async def test_tou_rejects_boundary_off_the_slot_grid(self):
         runtime = make_runtime()
         self._set_starts(runtime)
-        with self.assertRaisesRegex(ValueError, "full hour"):
-            await runtime.async_set_physical_tou_slot(2, start="06:30")
+        with self.assertRaisesRegex(ValueError, "30-minute boundary"):
+            await runtime.async_set_physical_tou_slot(2, start="06:15")
 
     async def test_tou_rejects_identical_start_and_end(self):
         runtime = make_runtime()
@@ -6188,8 +6205,7 @@ class TouReverseSync5C2Tests(unittest.IsolatedAsyncioTestCase):
 
     @staticmethod
     def _slot(runtime, hour):
-        key = next(key for key, _label, start, _end in const.SLOTS if int(start) == hour)
-        return runtime.slots[key]
+        return runtime.slots.hourly()[hour]
 
     @classmethod
     def _preserved_snapshot(cls, runtime):
@@ -6256,7 +6272,7 @@ class TouReverseSync5C2Tests(unittest.IsolatedAsyncioTestCase):
     def test_reverse_sync_assigns_hours_using_half_open_ranges(self):
         runtime = self._runtime()
         patch = runtime.tou_mapping_to_schedule_patch(runtime.read_physical_tou_mapping())
-        values = {int(next(start for key, _l, start, _e in const.SLOTS if key == row["slot_key"])): row["tou_soc"] for row in patch}
+        values = {int(next(start for key, _l, start, _e in const.SLOTS if key == row["slot_key"])) // 60: row["tou_soc"] for row in patch}
         self.assertEqual([values[hour] for hour in range(4, 8)], [20] * 4)
         self.assertEqual(values[8], 30)
 
@@ -6264,7 +6280,7 @@ class TouReverseSync5C2Tests(unittest.IsolatedAsyncioTestCase):
         runtime = self._runtime()
         self._set_physical(runtime, starts=(2, 6, 10, 14, 18, 22))
         patch = runtime.tou_mapping_to_schedule_patch(runtime.read_physical_tou_mapping())
-        values = {int(next(start for key, _l, start, _e in const.SLOTS if key == row["slot_key"])): row["tou_soc"] for row in patch}
+        values = {int(next(start for key, _l, start, _e in const.SLOTS if key == row["slot_key"])) // 60: row["tou_soc"] for row in patch}
         self.assertEqual([values[hour] for hour in (22, 23, 0, 1)], [60] * 4)
 
     def test_reverse_sync_start_boundary_belongs_to_new_range(self):

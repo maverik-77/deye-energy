@@ -34,11 +34,11 @@ class MemoryStore:
         return deepcopy(self.value)
 
 
-def sell(key="05_06", power=3000):
+def sell(key="0500_0530", power=3000):
     return {"slot_key": key, "enabled": True, "mode": const.MODE_SELLING_FIRST, "sell_power": power}
 
 
-def charge(key="05_06"):
+def charge(key="0500_0530"):
     return {"slot_key": key, "enabled": True, "mode": const.MODE_CHARGE, "charge_enabled": True}
 
 
@@ -72,7 +72,7 @@ def run_at(runtime, now):
 def pending_runtime(now, *, status="physical_pending"):
     runtime = manager_test.make_runtime()
     runtime._ai_store = MemoryStore()
-    key = f"{now.hour:02d}_{(now.hour + 1) % 24:02d}"
+    key = f"{now.hour:02d}00_{now.hour:02d}30"
     runtime.slots[key].enabled = True
     runtime.slots[key].mode = const.MODE_SELLING_FIRST
     runtime._claim_schedule_slots([key], "future_plan", {
@@ -98,7 +98,7 @@ def test_01_logical_apply_is_not_confirmation():
     accept(runtime, datetime(2026, 7, 18, 12, tzinfo=timezone.utc), [sell()])
     runtime.control_enabled = False
     run_at(runtime, datetime(2026, 7, 19, 5, 10, tzinfo=timezone.utc))
-    assert runtime.future_plan["slot_results"]["05_06"]["status"] == "logical_applied"
+    assert runtime.future_plan["slot_results"]["0500_0530"]["status"] == "logical_applied"
 
 
 def test_02_write_and_readback_can_confirm_exact_intent():
@@ -175,15 +175,15 @@ def test_07_master_off_elapsed_slot_is_missed_without_catchup():
     runtime.control_enabled = False
     run_at(runtime, datetime(2026, 7, 19, 5, 10, tzinfo=timezone.utc))
     run_at(runtime, datetime(2026, 7, 19, 6, 10, tzinfo=timezone.utc))
-    assert runtime.future_plan["slot_results"]["05_06"]["status"] == "missed"
+    assert runtime.future_plan["slot_results"]["0500_0530"]["status"] == "missed"
 
 
 def test_08_restart_pending_resets_local_write_correlation_only():
     runtime = manager_test.make_runtime()
     raw = {"date": "2026-07-19", "status": "scheduled", "plan_id": "p", "updates": [sell()],
-           "lifecycle_schema_version": 1, "slot_results": {"05_06": {"status": "physical_pending", "correlation": {"physical_write_count_before": 99}}}}
+           "lifecycle_schema_version": 1, "slot_results": {"0500_0530": {"status": "physical_pending", "correlation": {"physical_write_count_before": 99}}}}
     normalized, _ = runtime._normalize_stored_future_plan(raw)
-    assert normalized["slot_results"]["05_06"]["correlation"]["physical_write_count_before"] == 0
+    assert normalized["slot_results"]["0500_0530"]["correlation"]["physical_write_count_before"] == 0
 
 
 def test_09_confirmed_restore_is_terminal_and_not_rewritten():
@@ -203,7 +203,7 @@ def test_10_expired_future_sell_is_cleaned_to_normal():
 
 def test_11_expired_future_charge_is_cleaned_to_normal():
     runtime = manager_test.make_runtime()
-    key = "05_06"
+    key = "0500_0530"
     runtime.slots[key].mode = const.MODE_CHARGE
     runtime._claim_schedule_slots([key], "future_plan", {"plan_id": "p", "target_date": "2026-07-19", "intent_revision": 1})
     runtime.control_enabled = False
@@ -232,20 +232,20 @@ def test_13_cleanup_preserves_newer_apply_today_owner():
 def test_14_manual_edit_after_acceptance_wins():
     runtime = manager_test.make_runtime(price=1.2)
     accept(runtime, datetime(2026, 7, 18, 12, tzinfo=timezone.utc), [sell()])
-    runtime.slots["05_06"].sell_power = 1111
-    runtime._claim_schedule_slots(["05_06"], "manual")
+    runtime.slots["0500_0530"].sell_power = 1111
+    runtime._claim_schedule_slots(["0500_0530"], "manual")
     run_at(runtime, datetime(2026, 7, 19, 5, 10, tzinfo=timezone.utc))
-    assert runtime.future_plan["slot_results"]["05_06"]["status"] == "manual_override"
+    assert runtime.future_plan["slot_results"]["0500_0530"]["status"] == "manual_override"
 
 
 def test_15_manual_edit_before_acceptance_is_the_base():
     runtime = manager_test.make_runtime(price=1.2)
-    runtime.slots["05_06"].sell_power = 1111
-    runtime._claim_schedule_slots(["05_06"], "manual")
+    runtime.slots["0500_0530"].sell_power = 1111
+    runtime._claim_schedule_slots(["0500_0530"], "manual")
     accept(runtime, datetime(2026, 7, 18, 12, tzinfo=timezone.utc), [sell()])
     runtime.control_enabled = False
     run_at(runtime, datetime(2026, 7, 19, 5, 10, tzinfo=timezone.utc))
-    assert runtime.future_plan["slot_results"]["05_06"]["status"] == "logical_applied"
+    assert runtime.future_plan["slot_results"]["0500_0530"]["status"] == "logical_applied"
 
 
 def test_16_own_jit_claim_is_not_a_manual_conflict():
@@ -255,14 +255,14 @@ def test_16_own_jit_claim_is_not_a_manual_conflict():
     now = datetime(2026, 7, 19, 5, 10, tzinfo=timezone.utc)
     run_at(runtime, now)
     run_at(runtime, now)
-    assert runtime.future_plan["slot_results"]["05_06"]["status"] == "logical_applied"
+    assert runtime.future_plan["slot_results"]["0500_0530"]["status"] == "logical_applied"
 
 
 def test_17_reacceptance_supersedes_same_date_plan():
     runtime = manager_test.make_runtime()
     now = datetime(2026, 7, 18, 12, tzinfo=timezone.utc)
     accept(runtime, now, [sell()], "old")
-    accept(runtime, now, [sell("06_07")], "new")
+    accept(runtime, now, [sell("0600_0630")], "new")
     assert runtime.future_plan["superseded_plans"][-1]["plan_id"] == "old"
 
 
@@ -270,14 +270,14 @@ def test_18_removed_old_special_is_normal_in_new_authoritative_plan():
     runtime = manager_test.make_runtime()
     now = datetime(2026, 7, 18, 12, tzinfo=timezone.utc)
     accept(runtime, now, [sell()], "old")
-    accept(runtime, now, [sell("06_07")], "new")
-    row = next(item for item in runtime.future_plan["updates"] if item["slot_key"] == "05_06")
+    accept(runtime, now, [sell("0600_0630")], "new")
+    row = next(item for item in runtime.future_plan["updates"] if item["slot_key"] == "0500_0530")
     assert row["mode"] == const.MODE_NORMAL_OPERATION
 
 
 def test_19_23_00_is_not_cleaned_before_midnight():
     runtime = manager_test.make_runtime()
-    key = "23_00"
+    key = "2330_0000"
     runtime.slots[key].mode = const.MODE_SELLING_FIRST
     runtime._claim_schedule_slots([key], "future_plan", {"plan_id": "p", "target_date": "2026-07-19", "intent_revision": 1})
     runtime.control_enabled = False
@@ -287,14 +287,14 @@ def test_19_23_00_is_not_cleaned_before_midnight():
 
 def test_20_midnight_cleanup_does_not_touch_new_day_00_01():
     runtime = manager_test.make_runtime()
-    runtime.slots["23_00"].mode = const.MODE_SELLING_FIRST
-    runtime.slots["00_01"].mode = const.MODE_CHARGE
-    runtime._claim_schedule_slots(["23_00"], "future_plan", {"plan_id": "p", "target_date": "2026-07-19", "intent_revision": 1})
-    runtime._claim_schedule_slots(["00_01"], "manual")
+    runtime.slots["2300_2330"].mode = const.MODE_SELLING_FIRST
+    runtime.slots["0000_0030"].mode = const.MODE_CHARGE
+    runtime._claim_schedule_slots(["2300_2330"], "future_plan", {"plan_id": "p", "target_date": "2026-07-19", "intent_revision": 1})
+    runtime._claim_schedule_slots(["0000_0030"], "manual")
     runtime.control_enabled = False
     run_at(runtime, datetime(2026, 7, 20, 0, 1, tzinfo=timezone.utc))
-    assert runtime.slots["23_00"].mode == const.MODE_NORMAL_OPERATION
-    assert runtime.slots["00_01"].mode == const.MODE_CHARGE
+    assert runtime.slots["2300_2330"].mode == const.MODE_NORMAL_OPERATION
+    assert runtime.slots["0000_0030"].mode == const.MODE_CHARGE
 
 
 def test_21_store_payload_contains_lifecycle_ownership_and_revisions():
@@ -314,14 +314,14 @@ def test_22_future_sell_remains_power_only():
 def test_23_authoritative_future_plan_still_has_24_intents():
     runtime = manager_test.make_runtime()
     accept(runtime, datetime(2026, 7, 18, 12, tzinfo=timezone.utc), [sell()])
-    assert len(runtime.future_plan["updates"]) == 24
+    assert len(runtime.future_plan["updates"]) == const.SLOTS_PER_DAY
 
 
 def test_24_acceptance_keeps_daily_profile_date_in_validation():
     runtime = manager_test.make_runtime()
     accept(runtime, datetime(2026, 7, 18, 12, tzinfo=timezone.utc), [sell()])
     assert runtime.future_plan["date"] == "2026-07-19"
-    assert runtime.future_plan["slot_bases"]["05_06"]["base_fingerprint"]
+    assert runtime.future_plan["slot_bases"]["0500_0530"]["base_fingerprint"]
 
 
 def test_25_elapsed_slot_never_calls_future_jit_again():
@@ -332,5 +332,5 @@ def test_25_elapsed_slot_never_calls_future_jit_again():
         calls.append((args, kwargs))
     runtime.async_apply_schedule_patch = capture
     run_at(runtime, datetime(2026, 7, 19, 6, 10, tzinfo=timezone.utc))
-    assert runtime.future_plan["slot_results"]["05_06"]["status"] == "missed"
-    assert not any(call[0][0][0].get("slot_key") == "05_06" for call in calls)
+    assert runtime.future_plan["slot_results"]["0500_0530"]["status"] == "missed"
+    assert not any(call[0][0][0].get("slot_key") == "0500_0530" for call in calls)

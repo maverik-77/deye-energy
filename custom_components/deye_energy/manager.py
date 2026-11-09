@@ -118,6 +118,18 @@ from .const import (
     PHYSICAL_NORMAL_MODES,
     SCHEDULE_SCHEMA_VERSION,
     SLOTS,
+    HOUR_SLOTS,
+    SLOT_INDEX,
+    SLOT_KEYS,
+    SLOTS_PER_DAY,
+    SLOT_MINUTES,
+    MINUTES_PER_DAY,
+    hour_key,
+    hour_of_slot,
+    slot_key_at_minute,
+    slot_end_minute,
+    slot_start_minute,
+    slots_for_key,
     SLOT_MODES,
     WORK_MODES,
     DEFAULT_BATTERY_SOC,
@@ -365,11 +377,13 @@ class TouMappingSlot:
     """
 
     index: int
+    # Minutes after midnight.  ``end`` is 0 for a range that ends at midnight.
     start: int
     end: int
     soc: float
     grid_charge: bool
-    source_hours: list[int] = field(default_factory=list)
+    # Indices (0..SLOTS_PER_DAY-1) of the schedule slots this range covers.
+    source_slots: list[int] = field(default_factory=list)
     provider_fields: dict[str, Any] = field(default_factory=dict)
 
 
@@ -439,7 +453,7 @@ class DeyeEnergyRuntime:
     tou_transaction_log: list[dict[str, Any]] = field(default_factory=list)
     reverse_sync_status: str = "idle"
     reverse_sync_last_error: str = ""
-    reverse_sync_changed_hours: list[int] = field(default_factory=list)
+    reverse_sync_changed_hours: list[str] = field(default_factory=list)
     reverse_sync_round_trip_ok: bool | None = None
     _tou_transaction_lock_obj: asyncio.Lock | None = None
     _tou_pending_owner: object | None = None
@@ -2552,14 +2566,10 @@ class DeyeEnergyRuntime:
         result: list[dict[str, Any]] = []
         for index in range(48):
             hour = index % 24
-            slot = next(
-                (
-                    self.slots[key]
-                    for key, _label, start, end in SLOTS
-                    if start <= hour < end
-                ),
-                None,
-            )
+            # The optimizer plans in hours; the baseline of an hour is the
+            # schedule slot that covers its first half.
+            baseline_key = slots_for_key(hour_key(hour))[0]
+            slot = self.slots.get(baseline_key)
             if slot is None:
                 result.append({
                     "enabled": False,
@@ -3593,11 +3603,8 @@ class DeyeEnergyRuntime:
         # dirty bit and reasons in a fresh bounded cycle.
 
     def active_slot_key(self) -> str:
-        hour = ha_now().hour
-        for key, _label, start, end in SLOTS:
-            if start <= hour < end:
-                return key
-        return "23_00"
+        now = ha_now()
+        return slot_key_at_minute(now.hour * 60 + now.minute)
 
     @property
     def active_slot(self) -> SlotSettings:
@@ -4606,7 +4613,6 @@ class DeyeEnergyRuntime:
         """Describe expected and actually reported values of all six Deye ranges."""
         mapping = self._tou_mapping
         segments = mapping.slots
-        current_hour = ha_now().hour
         rows: list[dict[str, Any]] = []
         capability_rows = self.tou_slot_capabilities()
 
@@ -4621,14 +4627,14 @@ class DeyeEnergyRuntime:
         for idx in range(1, 7):
             segment = segments[idx - 1] if idx <= len(segments) else None
             expected_start = (
-                f"{int(segment.start):02d}:00" if segment is not None else None
+                self._minutes_to_clock(int(segment.start)) if segment is not None else None
             )
             expected_end = None
             active = False
             if segment is not None:
-                end_hour = 24 if int(segment.end) == 0 else int(segment.end)
-                expected_end = f"{end_hour % 24:02d}:00"
-                active = int(segment.start) <= current_hour < end_hour
+                end_minute_expected = MINUTES_PER_DAY if int(segment.end) == 0 else int(segment.end)
+                expected_end = self._minutes_to_clock(end_minute_expected)
+                active = int(segment.start) <= current_minute < end_minute_expected
             capabilities = capability_rows[idx - 1]
             field_caps = capabilities["fields"]
             actual_start = field_caps["start"]["actual"]
@@ -5845,8 +5851,33 @@ class DeyeEnergyRuntime:
         await self.async_save_ai_data()
         self.notify_update()
 
+    @staticmethod
+    def _expand_slot_updates(updates: Any) -> Any:
+        """Fan hourly plan entries out to the half-hour schedule slots they cover.
+
+        The optimizer and the card plan in hours.  An entry addressed to an
+        hourly key such as ``05_06`` becomes one identical entry for each
+        schedule slot of that hour; schedule slot keys pass through unchanged.
+        """
+        if not isinstance(updates, list):
+            return updates
+        expanded: list[Any] = []
+        for raw in updates:
+            if not isinstance(raw, dict):
+                expanded.append(raw)
+                continue
+            key = str(raw.get("slot_key") or "")
+            keys = slots_for_key(key)
+            if len(keys) <= 1:
+                expanded.append(raw)
+                continue
+            for slot_key in keys:
+                expanded.append({**raw, "slot_key": slot_key})
+        return expanded
+
     def _validate_future_plan_updates(self, updates: Any) -> list[dict[str, Any]]:
-        """Validate a dated AI plan without touching the live 24-hour schedule."""
+        """Validate a dated AI plan without touching the live schedule."""
+        updates = self._expand_slot_updates(updates)
         if not isinstance(updates, list) or not updates:
             raise ValueError("Tomorrow's plan does not contain the selected hours")
         numeric_limits = {
@@ -5954,8 +5985,8 @@ class DeyeEnergyRuntime:
             else self._future_plan_normal_intent(key)
             for key, _label, _start, _end in SLOTS
         ]
-        if len(target) != 24 or {str(item.get("slot_key")) for item in target} != set(self.slots):
-            raise ValueError("Could not build a complete 24 h FuturePlan")
+        if len(target) != SLOTS_PER_DAY or {str(item.get("slot_key")) for item in target} != set(self.slots):
+            raise ValueError("Could not build a complete full-day FuturePlan")
         return target, [key for key, _label, _start, _end in SLOTS if key in selected]
 
     def _schedule_slot_fingerprint(self, slot_key: str) -> str:
@@ -6058,7 +6089,7 @@ class DeyeEnergyRuntime:
         }:
             return
         now = ha_now()
-        slot_key = f"{now.hour:02d}_{(now.hour + 1) % 24:02d}"
+        slot_key = slot_key_at_minute(now.hour * 60 + now.minute)
         results = dict(plan.get("slot_results") or {})
         result = results.get(slot_key)
         if not isinstance(result, dict) or result.get("status") not in {
@@ -6136,9 +6167,9 @@ class DeyeEnergyRuntime:
             if not isinstance(owner, dict) or owner.get("source") != "future_plan":
                 continue
             target_date = str(owner.get("target_date") or "")
-            start_hour = int(key.split("_", 1)[0])
             expired = target_date < today or (
-                target_date == today and current.hour > start_hour
+                target_date == today
+                and current.hour * 60 + current.minute >= slot_end_minute(key)
             )
             if not expired or owner.get("fingerprint") != self._schedule_slot_fingerprint(key):
                 continue
@@ -6387,10 +6418,7 @@ class DeyeEnergyRuntime:
         slot_key: str,
         **changes: Any,
     ) -> None:
-        try:
-            hour = int(str(slot_key).split("_", 1)[0])
-        except (TypeError, ValueError):
-            return
+        hour = hour_of_slot(str(slot_key))
         key = self._plan_execution_key(date_key, hour)
         for row in self.plan_execution_archive:
             if not isinstance(row, dict):
@@ -6666,11 +6694,13 @@ class DeyeEnergyRuntime:
         updates, selected_keys = self._build_authoritative_future_plan_updates(
             payload.get("updates")
         )
-        supplied_validations = (
-            payload.get("slot_validations")
-            if isinstance(payload.get("slot_validations"), dict)
-            else {}
-        )
+        supplied_validations: dict[str, Any] = {}
+        raw_validations = payload.get("slot_validations")
+        if isinstance(raw_validations, dict):
+            # Hourly plan keys apply to every half-hour slot of that hour.
+            for raw_key, validation in raw_validations.items():
+                for slot_key in slots_for_key(str(raw_key)) or [str(raw_key)]:
+                    supplied_validations[slot_key] = validation
         previous_plan = self.future_plan if isinstance(self.future_plan, dict) else {}
         superseded_plans = list(previous_plan.get("superseded_plans") or [])[-4:]
         intent_revision = 1
@@ -6831,7 +6861,8 @@ class DeyeEnergyRuntime:
             }
             await self.async_save_ai_data()
             return
-        current_slot_key = f"{current_time.hour:02d}_{(current_time.hour + 1) % 24:02d}"
+        current_slot_key = slot_key_at_minute(current_time.hour * 60 + current_time.minute)
+        current_minute = current_time.hour * 60 + current_time.minute
         profile_id = ""
         execution_stage = "validation"
         slot_results = dict(plan.get("slot_results") or {})
@@ -6844,10 +6875,9 @@ class DeyeEnergyRuntime:
             }
             for update in updates:
                 slot_key = str(update.get("slot_key") or "")
-                start_hour = int(slot_key.split("_", 1)[0])
                 previous_result = slot_results.get(slot_key, {})
                 if (
-                    start_hour < current_time.hour
+                    slot_end_minute(slot_key) <= current_minute
                     and str(previous_result.get("status") or "") not in terminal_statuses
                 ):
                     reason = "The slot passed while Home Assistant did not execute the accepted plan"
@@ -6877,7 +6907,7 @@ class DeyeEnergyRuntime:
                         if isinstance(item, dict)
                     )
                     pending = any(
-                        int(str(item.get("slot_key")).split("_", 1)[0]) > current_time.hour
+                        slot_start_minute(str(item.get("slot_key"))) > current_minute
                         and str(slot_results.get(str(item.get("slot_key")), {}).get("status") or "")
                         not in terminal_statuses
                         for item in updates
@@ -7139,7 +7169,7 @@ class DeyeEnergyRuntime:
                 item
                 for item in updates
                 if item.get("slot_key") not in slot_results
-                and int(str(item.get("slot_key")).split("_", 1)[0]) > current_time.hour
+                and slot_start_minute(str(item.get("slot_key"))) > current_minute
             ]
             self.future_plan = {
                 **plan,
@@ -10592,6 +10622,12 @@ class DeyeEnergyRuntime:
         return str(configured or "")
 
     @staticmethod
+    def _minutes_to_clock(minutes: int) -> str:
+        """Format minutes after midnight as HH:MM (24:00 wraps to 00:00)."""
+        value = int(minutes) % MINUTES_PER_DAY
+        return f"{value // 60:02d}:{value % 60:02d}"
+
+    @staticmethod
     def _time_to_minutes(value: Any) -> int | None:
         """Return minutes after midnight for an HA time state."""
         text = str(value or "").strip()
@@ -10604,18 +10640,18 @@ class DeyeEnergyRuntime:
         return hour * 60 + minute
 
     @classmethod
-    def _tou_hour_boundary(cls, value: Any, label: str) -> str:
-        """Validate and normalize the hourly boundary supported by Stage 5C."""
+    def _tou_boundary(cls, value: Any, label: str) -> str:
+        """Validate and normalize a TOU boundary on a schedule-slot edge."""
         text = str(value or "").strip()
         minutes = cls._time_to_minutes(text)
         if minutes is None:
             raise ValueError(f"{label} must use the HH:MM format")
-        if minutes % 60:
+        if minutes % SLOT_MINUTES:
             raise ValueError(
-                f"{label} must be a full hour in HH:00 format; "
-                "non-zero minutes are not supported"
+                f"{label} must be on a {SLOT_MINUTES}-minute boundary in HH:MM format "
+                f"(for example 05:00 or 05:30)"
             )
-        return f"{minutes // 60:02d}:00"
+        return f"{minutes // 60:02d}:{minutes % 60:02d}"
 
     def _validated_tou_start_vector(
         self,
@@ -10630,7 +10666,7 @@ class DeyeEnergyRuntime:
             entity_id = self._tou_entity(idx, "start")
             raw = self.state_text(entity_id)
             try:
-                starts.append(self._tou_hour_boundary(raw, f"From slot {idx}"))
+                starts.append(self._tou_boundary(raw, f"From slot {idx}"))
             except ValueError as err:
                 raise ValueError(
                     f"Cannot verify the complete Deye TOU 6/6 layout: {err}"
@@ -10638,10 +10674,10 @@ class DeyeEnergyRuntime:
 
         next_slot = 1 if slot == 6 else slot + 1
         normalized_start = (
-            self._tou_hour_boundary(start, "Start") if start is not None else None
+            self._tou_boundary(start, "Start") if start is not None else None
         )
         normalized_end = (
-            self._tou_hour_boundary(end, "End") if end is not None else None
+            self._tou_boundary(end, "End") if end is not None else None
         )
         if normalized_start is not None:
             starts[slot - 1] = normalized_start
@@ -10673,18 +10709,18 @@ class DeyeEnergyRuntime:
                 "crossing between slot 6 and 1"
             )
 
-        coverage = [0] * 24
+        coverage = [0] * SLOTS_PER_DAY
         for idx, start_minute in enumerate(numeric):
             end_minute = numeric[(idx + 1) % 6]
             if idx == 5:
-                end_minute += 24 * 60
+                end_minute += MINUTES_PER_DAY
             if end_minute <= start_minute:
                 raise ValueError("A Deye Time Of Use range cannot have zero length")
-            for hour in range(start_minute // 60, end_minute // 60):
-                coverage[hour % 24] += 1
+            for slot_index in range(start_minute // SLOT_MINUTES, end_minute // SLOT_MINUTES):
+                coverage[slot_index % SLOTS_PER_DAY] += 1
         if any(count != 1 for count in coverage):
             raise ValueError(
-                "Deye Time Of Use ranges must cover the full 24 hours without overlap"
+                "Deye Time Of Use ranges must cover the full day without overlap"
             )
         return starts
 
@@ -10697,7 +10733,7 @@ class DeyeEnergyRuntime:
         slot_row = next((row for row in SLOTS if row[0] == slot_key), None)
         if slot_row is None:
             return None
-        target = int(slot_row[2]) * 60
+        target = int(slot_row[2])
         starts = [
             self._time_to_minutes(self.state_text(self._tou_entity(idx, "start")))
             for idx in range(1, 7)
@@ -10954,7 +10990,7 @@ class DeyeEnergyRuntime:
                 soc_logical = self.safe_float(soc_state.state if soc_state is not None else "", None)
                 grid_logical = False
             else:
-                start_logical = f"{int(item.start):02d}:00"
+                start_logical = self._minutes_to_clock(int(item.start))
                 soc_logical = float(item.soc)
                 grid_logical = bool(item.grid_charge)
             if start_entity:
@@ -11301,42 +11337,39 @@ class DeyeEnergyRuntime:
         manager modes and other runtime overlays are not part of the key.
         """
         raw: list[tuple[int, float, bool]] = []
-        for index, (_key, _label, _start, _end) in enumerate(SLOTS):
-            slot = self.slots[_key]
+        for index, (slot_key, _label, _start, _end) in enumerate(SLOTS):
+            slot = self.slots[slot_key]
             soc = self._effective_physical_tou_soc_for_slot(slot)
-            # ``charge_enabled`` is the physical hourly Grid Charge flag.
+            # ``charge_enabled`` is the physical Grid Charge flag of the slot.
             grid_charge = bool(slot.charge_enabled)
-            start_hour = int(_start)
-            end_hour = int(_end) if _end > start_hour else 24
-            for hour in range(start_hour, end_hour):
-                raw.append((hour, round(float(soc), 1), grid_charge))
+            raw.append((index, round(float(soc), 1), grid_charge))
 
-        if len(raw) != 24:
-            raise ValueError(f"Schedule must cover exactly 24 hours, got {len(raw)}")
+        if len(raw) != SLOTS_PER_DAY:
+            raise ValueError(f"Schedule must cover exactly {SLOTS_PER_DAY} slots, got {len(raw)}")
 
         compressed: list[TouMappingSlot] = []
-        for hour, soc, grid_charge in raw:
+        for index, soc, grid_charge in raw:
             if compressed:
                 last = compressed[-1]
                 if round(last.soc, 1) == soc and last.grid_charge == grid_charge:
-                    last.end = hour + 1
-                    last.source_hours.append(hour)
+                    last.end = (index + 1) * SLOT_MINUTES
+                    last.source_slots.append(index)
                     continue
             compressed.append(
                 TouMappingSlot(
                     index=len(compressed) + 1,
-                    start=hour,
-                    end=hour + 1,
+                    start=index * SLOT_MINUTES,
+                    end=(index + 1) * SLOT_MINUTES,
                     soc=soc,
                     grid_charge=grid_charge,
-                    source_hours=[hour],
+                    source_slots=[index],
                     provider_fields={},
                 )
             )
 
-        # Wrap the 24-hour cycle: a range ending at 24 is represented as 0.
+        # Wrap the day: a range ending at midnight is represented as 0.
         for slot in compressed:
-            if slot.end == 24:
+            if slot.end == MINUTES_PER_DAY:
                 slot.end = 0
 
         # Deye exposes exactly six physical TOU ranges.  If the natural schedule
@@ -11345,28 +11378,29 @@ class DeyeEnergyRuntime:
             return TouMapping(slots=compressed)
 
         # If fewer than six ranges are needed, deterministically split the
-        # longest range until we have six slots.
+        # longest range (on a slot boundary) until we have six slots.
         while len(compressed) < 6:
             split_index = -1
             longest = 0
             for index, segment in enumerate(compressed):
-                segment_end = 24 if segment.end == 0 else int(segment.end)
+                segment_end = MINUTES_PER_DAY if segment.end == 0 else int(segment.end)
                 duration = segment_end - int(segment.start)
-                if duration > longest and duration > 1:
+                if duration > longest and duration > SLOT_MINUTES:
                     longest = duration
                     split_index = index
             if split_index < 0:
                 break
             segment = compressed[split_index]
-            segment_end = 24 if segment.end == 0 else int(segment.end)
-            middle = int(segment.start) + (segment_end - int(segment.start)) // 2
+            segment_end = MINUTES_PER_DAY if segment.end == 0 else int(segment.end)
+            slot_count = (segment_end - int(segment.start)) // SLOT_MINUTES
+            middle = int(segment.start) + (slot_count // 2) * SLOT_MINUTES
             first = TouMappingSlot(
                 index=segment.index,
                 start=segment.start,
                 end=middle,
                 soc=segment.soc,
                 grid_charge=segment.grid_charge,
-                source_hours=[h for h in segment.source_hours if h < middle],
+                source_slots=[h for h in segment.source_slots if h * SLOT_MINUTES < middle],
                 provider_fields=segment.provider_fields,
             )
             second = TouMappingSlot(
@@ -11375,7 +11409,7 @@ class DeyeEnergyRuntime:
                 end=segment.end,
                 soc=segment.soc,
                 grid_charge=segment.grid_charge,
-                source_hours=[h for h in segment.source_hours if h >= middle],
+                source_slots=[h for h in segment.source_slots if h * SLOT_MINUTES >= middle],
                 provider_fields=segment.provider_fields,
             )
             compressed[split_index : split_index + 1] = [first, second]
@@ -11397,6 +11431,8 @@ class DeyeEnergyRuntime:
                 "range": item.index,
                 "start": int(item.start),
                 "end": int(item.end),
+                "start_time": self._minutes_to_clock(int(item.start)),
+                "end_time": self._minutes_to_clock(int(item.end)),
                 "tou_soc": item.soc,
                 "grid_charge": bool(item.grid_charge),
             }
@@ -11430,22 +11466,24 @@ class DeyeEnergyRuntime:
 
         slots: list[TouMappingSlot] = []
         for idx in range(6):
-            start_hour = starts_minutes[idx] // 60
-            end_hour = starts_minutes[(idx + 1) % 6] // 60
-            if start_hour == end_hour:
-                source_hours: list[int] = []
-            elif start_hour < end_hour:
-                source_hours = list(range(start_hour, end_hour))
+            start_minute = int(starts_minutes[idx])
+            end_minute = int(starts_minutes[(idx + 1) % 6])
+            first_slot = start_minute // SLOT_MINUTES
+            last_slot = end_minute // SLOT_MINUTES
+            if first_slot == last_slot:
+                source_slots: list[int] = []
+            elif first_slot < last_slot:
+                source_slots = list(range(first_slot, last_slot))
             else:
-                source_hours = list(range(start_hour, 24)) + list(range(0, end_hour))
+                source_slots = list(range(first_slot, SLOTS_PER_DAY)) + list(range(0, last_slot))
             slots.append(
                 TouMappingSlot(
                     index=idx + 1,
-                    start=start_hour,
-                    end=end_hour,
+                    start=start_minute,
+                    end=end_minute,
                     soc=soc_values[idx],
                     grid_charge=grid_values[idx],
-                    source_hours=source_hours,
+                    source_slots=source_slots,
                     provider_fields={},
                 )
             )
@@ -11461,21 +11499,20 @@ class DeyeEnergyRuntime:
         """
         if mapping is None:
             mapping = self.read_physical_tou_mapping()
-        hour_to_physical: dict[int, tuple[float, bool]] = {}
+        slot_to_physical: dict[int, tuple[float, bool]] = {}
         for slot in mapping.slots:
-            for hour in slot.source_hours:
-                hour_to_physical[hour] = (slot.soc, slot.grid_charge)
-        if len(hour_to_physical) != 24:
-            raise ValueError(f"The physical TOU map covers {len(hour_to_physical)} hours, required 24")
+            for slot_index in slot.source_slots:
+                slot_to_physical[slot_index] = (slot.soc, slot.grid_charge)
+        if len(slot_to_physical) != SLOTS_PER_DAY:
+            raise ValueError(
+                f"The physical TOU map covers {len(slot_to_physical)} slots, required {SLOTS_PER_DAY}"
+            )
 
         patch: list[dict[str, Any]] = []
-        for _key, _label, start, end in SLOTS:
-            start_hour = int(start)
-            end_hour = int(end) if end > start_hour else 24
-            hours = [h % 24 for h in range(start_hour, end_hour)]
-            if not hours or hours[0] not in hour_to_physical:
+        for slot_index, (_key, _label, _start, _end) in enumerate(SLOTS):
+            if slot_index not in slot_to_physical:
                 continue
-            start_soc, start_grid = hour_to_physical[hours[0]]
+            start_soc, start_grid = slot_to_physical[slot_index]
             update: dict[str, Any] = {"slot_key": _key, "charge_enabled": start_grid}
             # In 5A.1 physical TOU SOC is independent of the logical mode.  The
             # logical sale guard ``minimum_sell_soc`` is never overwritten here.
@@ -11488,8 +11525,8 @@ class DeyeEnergyRuntime:
         """Return the physical fields used by the strict 5C.2 round-trip check."""
         return [
             (
-                int(slot.start) % 24,
-                int(slot.end) % 24,
+                int(slot.start) % MINUTES_PER_DAY,
+                int(slot.end) % MINUTES_PER_DAY,
                 round(float(slot.soc), 1),
                 bool(slot.grid_charge),
             )
@@ -11516,8 +11553,8 @@ class DeyeEnergyRuntime:
         """Represent the expected schedule map in physical readback units."""
         return [
             (
-                (int(slot.start) % 24) * 60,
-                (int(slot.end) % 24) * 60,
+                int(slot.start) % MINUTES_PER_DAY,
+                int(slot.end) % MINUTES_PER_DAY,
                 round(float(slot.soc), 1),
                 bool(slot.grid_charge),
             )
@@ -11684,9 +11721,9 @@ class DeyeEnergyRuntime:
         """
         if not updates:
             raise ValueError("The Deye TOU reverse sync contains no hours")
-        changed_hours: list[int] = []
+        changed_hours: list[str] = []
         seen: set[str] = set()
-        slot_hours = {key: int(start) for key, _label, start, _end in SLOTS}
+        slot_times = {key: self._minutes_to_clock(int(start)) for key, _label, start, _end in SLOTS}
         for update in updates:
             if not isinstance(update, dict):
                 raise ValueError("Invalid Deye TOU reverse sync entry")
@@ -11704,12 +11741,12 @@ class DeyeEnergyRuntime:
             grid = bool(update["charge_enabled"])
             target = self.slots[slot_key]
             if target.tou_soc != soc or target.charge_enabled != grid:
-                changed_hours.append(slot_hours[slot_key])
+                changed_hours.append(slot_times[slot_key])
             target.tou_soc = soc
             target.charge_enabled = grid
-        if len(seen) != 24:
+        if len(seen) != SLOTS_PER_DAY:
             raise ValueError(
-                f"Reverse sync Deye TOU covered {len(seen)} hours, 24 required"
+                f"Reverse sync Deye TOU covered {len(seen)} slots, {SLOTS_PER_DAY} required"
             )
         return sorted(changed_hours)
 
@@ -11920,7 +11957,7 @@ class DeyeEnergyRuntime:
                 )
                 detail = (
                     " Neighbouring physical slots have identical SOC and Grid Charge; "
-                    "the current 24 h → 6/6 algorithm does not store such a boundary."
+                    "the current full-day → 6/6 algorithm does not store such a boundary."
                     if adjacent_equal
                     else ""
                 )
@@ -12179,8 +12216,9 @@ class DeyeEnergyRuntime:
             )
 
         selected: dict[str, dict[str, Any]] = {}
-        slot_start = {key: int(start) for key, _label, start, _end in SLOTS}
-        current_hour = ha_now().hour
+        current_now = ha_now()
+        current_minute = current_now.hour * 60 + current_now.minute
+        selected_updates = self._expand_slot_updates(selected_updates)
         for raw in selected_updates:
             if not isinstance(raw, dict):
                 raise ValueError("Every selected Apply Today action must be an object")
@@ -12190,7 +12228,7 @@ class DeyeEnergyRuntime:
                 raise ValueError(f"Unknown schedule slot: {slot_key}")
             if slot_key in selected:
                 raise ValueError(f"Duplicated selected Apply Today hour: {slot_key}")
-            if slot_start[slot_key] < current_hour:
+            if slot_end_minute(slot_key) <= current_minute:
                 raise ValueError(
                     f"The selected hour {slot_key} has already passed; refresh the plan without catch-up"
                 )
@@ -12225,7 +12263,7 @@ class DeyeEnergyRuntime:
             else self._normal_day_replace_update(self.slots[key])
             for key, _label, _start, _end in SLOTS
         ]
-        if len(target) != 24 or {str(item.get("slot_key")) for item in target} != set(self.slots):
+        if len(target) != SLOTS_PER_DAY or {str(item.get("slot_key")) for item in target} != set(self.slots):
             raise ValueError("Could not build a complete 24 h target_schedule_today")
         return target, normal_keys, ai_sell_keys
 
@@ -12257,6 +12295,7 @@ class DeyeEnergyRuntime:
         """
         if not isinstance(updates, list) or not updates:
             raise ValueError("Schedule patch must contain at least one slot")
+        updates = self._expand_slot_updates(updates)
 
         numeric_limits = {
             "sell_power": (0.0, float(self.effective_inverter_max_power_w)),

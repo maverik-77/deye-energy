@@ -47,13 +47,13 @@ def future_runtime(*, soc="50", price="1.20", hour=5):
         "date": "2026-07-19",
         "status": "scheduled",
         "updates": [{
-            "slot_key": f"{hour:02d}_{(hour + 1) % 24:02d}",
+            "slot_key": f"{hour:02d}00_{hour:02d}30",
             "enabled": True,
             "mode": const.MODE_SELLING_FIRST,
             "sell_power": 2500,
         }],
         "slot_validations": {
-            f"{hour:02d}_{(hour + 1) % 24:02d}": {
+            f"{hour:02d}00_{hour:02d}30": {
                 "minimum_soc": 20,
                 "minimum_price": 0.4,
                 "allow_partial": True,
@@ -115,18 +115,18 @@ def test_future_slot_retries_after_transient_soc_loss():
     runtime, writes = future_runtime(soc=None)
     with at(datetime(2026, 7, 19, 5, 1, tzinfo=timezone.utc)):
         asyncio.run(runtime.async_process_future_plan())
-        assert runtime.future_plan["slot_results"]["05_06"]["status"] == "waiting_data"
+        assert runtime.future_plan["slot_results"]["0500_0530"]["status"] == "waiting_data"
         runtime.hass.states.values[runtime.battery_soc_sensor] = FakeState("55")
         asyncio.run(runtime.async_process_future_plan())
     assert len(writes) == 1
-    assert runtime.future_plan["slot_results"]["05_06"]["status"] == "physical_pending"
+    assert runtime.future_plan["slot_results"]["0500_0530"]["status"] == "physical_pending"
 
 
 def test_future_slot_retries_after_transient_price_loss():
     runtime, writes = future_runtime(price=None)
     with at(datetime(2026, 7, 19, 5, 2, tzinfo=timezone.utc)):
         asyncio.run(runtime.async_process_future_plan())
-        assert runtime.future_plan["slot_results"]["05_06"]["status"] == "waiting_data"
+        assert runtime.future_plan["slot_results"]["0500_0530"]["status"] == "waiting_data"
         runtime.hass.states.values[runtime.price_sensor] = FakeState("1.10")
         asyncio.run(runtime.async_process_future_plan())
     assert len(writes) == 1
@@ -138,7 +138,7 @@ def test_future_slot_stops_retrying_after_hour_end():
         asyncio.run(runtime.async_process_future_plan())
     with at(datetime(2026, 7, 19, 6, 0, tzinfo=timezone.utc)):
         asyncio.run(runtime.async_process_future_plan())
-    assert runtime.future_plan["slot_results"]["05_06"]["status"] == "missed"
+    assert runtime.future_plan["slot_results"]["0500_0530"]["status"] == "missed"
     assert writes == []
 
 
@@ -164,7 +164,7 @@ def test_restart_0600_marks_earlier_slots_missed():
     runtime, writes = future_runtime(hour=0)
     with at(datetime(2026, 7, 19, 6, 0, tzinfo=timezone.utc)):
         asyncio.run(runtime.async_process_future_plan())
-    assert runtime.future_plan["slot_results"]["00_01"]["status"] == "missed"
+    assert runtime.future_plan["slot_results"]["0000_0030"]["status"] == "missed"
     assert writes == []
 
 
@@ -189,7 +189,7 @@ def test_learning_dry_run_blocks_plan_application():
     runtime.optimizer_plan = {"data_quality": {"learning_apply_allowed": False}}
     with pytest.raises(ValueError, match="dry-run"):
         asyncio.run(runtime.async_save_future_plan({
-            "date": "2026-07-19", "updates": [{"slot_key": "05_06", "mode": const.MODE_NORMAL_OPERATION}],
+            "date": "2026-07-19", "updates": [{"slot_key": "0500_0530", "mode": const.MODE_NORMAL_OPERATION}],
         }))
 
 
@@ -201,7 +201,7 @@ def test_learning_apply_allowed_enables_manual_plan():
     asyncio.run(runtime.async_save_future_plan({
         "date": "2026-07-19",
         "updates": [{
-            "slot_key": "05_06",
+            "slot_key": "0500_0530",
             "mode": const.MODE_SELLING_FIRST,
             "sell_power": 3000,
         }],

@@ -239,29 +239,85 @@ def normalize_manager_mode(value: str) -> str:
 
 ACCEPTED_SLOT_MODES = [*SLOT_MODES, *list(LEGACY_MANAGER_MODE_MAP.keys())]
 
+SLOT_MINUTES = 30
+MINUTES_PER_DAY = 1440
+SLOTS_PER_DAY = MINUTES_PER_DAY // SLOT_MINUTES
+
+
+def _clock_digits(minute: int) -> str:
+    hour, rest = divmod(minute % MINUTES_PER_DAY, 60)
+    return f"{hour:02d}{rest:02d}"
+
+
+def _clock_label(minute: int) -> str:
+    hour, rest = divmod(minute % MINUTES_PER_DAY, 60)
+    return f"{hour:02d}:{rest:02d}"
+
+
+# Schedule slots: (key, label, start_minute, end_minute).  The last slot ends at
+# 1440 (midnight).  Keys look like ``0530_0600``.
 SLOTS = [
-    ("00_01", "00:00-01:00", 0, 1),
-    ("01_02", "01:00-02:00", 1, 2),
-    ("02_03", "02:00-03:00", 2, 3),
-    ("03_04", "03:00-04:00", 3, 4),
-    ("04_05", "04:00-05:00", 4, 5),
-    ("05_06", "05:00-06:00", 5, 6),
-    ("06_07", "06:00-07:00", 6, 7),
-    ("07_08", "07:00-08:00", 7, 8),
-    ("08_09", "08:00-09:00", 8, 9),
-    ("09_10", "09:00-10:00", 9, 10),
-    ("10_11", "10:00-11:00", 10, 11),
-    ("11_12", "11:00-12:00", 11, 12),
-    ("12_13", "12:00-13:00", 12, 13),
-    ("13_14", "13:00-14:00", 13, 14),
-    ("14_15", "14:00-15:00", 14, 15),
-    ("15_16", "15:00-16:00", 15, 16),
-    ("16_17", "16:00-17:00", 16, 17),
-    ("17_18", "17:00-18:00", 17, 18),
-    ("18_19", "18:00-19:00", 18, 19),
-    ("19_20", "19:00-20:00", 19, 20),
-    ("20_21", "20:00-21:00", 20, 21),
-    ("21_22", "21:00-22:00", 21, 22),
-    ("22_23", "22:00-23:00", 22, 23),
-    ("23_00", "23:00-00:00", 23, 24),
+    (
+        f"{_clock_digits(start)}_{_clock_digits(start + SLOT_MINUTES)}",
+        f"{_clock_label(start)}-{_clock_label(start + SLOT_MINUTES)}",
+        start,
+        start + SLOT_MINUTES,
+    )
+    for start in range(0, MINUTES_PER_DAY, SLOT_MINUTES)
 ]
+
+# Plan-level (optimizer / FuturePlan) concepts stay hourly.  An hourly key such
+# as ``05_06`` fans out to the schedule slots it covers.
+HOUR_SLOTS = [
+    (f"{hour:02d}_{(hour + 1) % 24:02d}", f"{hour:02d}:00-{(hour + 1) % 24:02d}:00", hour, hour + 1)
+    for hour in range(24)
+]
+HOUR_SLOT_KEYS = [row[0] for row in HOUR_SLOTS]
+SLOT_KEYS = [row[0] for row in SLOTS]
+SLOT_INDEX = {key: index for index, key in enumerate(SLOT_KEYS)}
+_HOUR_KEY_TO_SLOTS = {
+    HOUR_SLOTS[hour][0]: [
+        SLOTS[hour * (60 // SLOT_MINUTES) + offset][0] for offset in range(60 // SLOT_MINUTES)
+    ]
+    for hour in range(24)
+}
+
+
+def slot_key_at_minute(minute_of_day: int) -> str:
+    """Return the schedule slot covering a minute of the day."""
+    return SLOTS[(int(minute_of_day) % MINUTES_PER_DAY) // SLOT_MINUTES][0]
+
+
+def hour_key(hour: int) -> str:
+    """Return the hourly plan key for a local hour."""
+    return HOUR_SLOTS[int(hour) % 24][0]
+
+
+def slots_for_key(key: str) -> list[str]:
+    """Resolve a schedule slot key or an hourly plan key to schedule slot keys."""
+    text = str(key or "")
+    if text in SLOT_INDEX:
+        return [text]
+    return list(_HOUR_KEY_TO_SLOTS.get(text, []))
+
+
+def hour_of_slot(key: str) -> int:
+    """Local start hour of a schedule slot or hourly plan key."""
+    text = str(key or "")
+    return int(text[:2]) if len(text) >= 2 and text[:2].isdigit() else 0
+
+
+def slot_start_minute(key: str) -> int:
+    """Start minute of the day for a schedule slot key (or an hourly plan key)."""
+    text = str(key or "")
+    if text in SLOT_INDEX:
+        return SLOTS[SLOT_INDEX[text]][2]
+    return hour_of_slot(text) * 60
+
+
+def slot_end_minute(key: str) -> int:
+    """End minute (exclusive) for a schedule slot key or an hourly plan key."""
+    text = str(key or "")
+    if text in SLOT_INDEX:
+        return SLOTS[SLOT_INDEX[text]][3]
+    return (hour_of_slot(text) + 1) * 60

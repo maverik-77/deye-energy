@@ -399,8 +399,8 @@ class ServiceJsonValidationTests(unittest.TestCase):
         self.assertEqual(result, {"key": "value"})
 
     def test_parse_json_payload_accepts_valid_list(self):
-        result = init._parse_json_payload('[{"slot": "00_01"}]', list)
-        self.assertEqual(result, [{"slot": "00_01"}])
+        result = init._parse_json_payload('[{"slot": "0000_0030"}]', list)
+        self.assertEqual(result, [{"slot": "0000_0030"}])
 
     def test_parse_json_payload_rejects_empty_string(self):
         with self.assertRaises(ValueError):
@@ -415,8 +415,8 @@ class ServiceJsonValidationTests(unittest.TestCase):
             init.AI_DATA_SCHEMA({"data": "x" * 200001})
 
     def test_schedule_patch_schema_accepts_valid_json_string(self):
-        result = init.SCHEDULE_PATCH_SCHEMA({"data": '[{"slot": "00_01"}]'})
-        self.assertEqual(result["data"], '[{"slot": "00_01"}]')
+        result = init.SCHEDULE_PATCH_SCHEMA({"data": '[{"slot": "0000_0030"}]'})
+        self.assertEqual(result["data"], '[{"slot": "0000_0030"}]')
 
     def test_tariff_settings_schema_rejects_non_string(self):
         with self.assertRaises(Exception):

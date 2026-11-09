@@ -352,7 +352,7 @@ get_plan_execution:
 
 set_tou_slot:
   name: Set physical Deye Time Of Use slot
-  description: Write and confirm only the supplied fields of one physical slot through the selected communication adapter. At least one of Start, End, SOC or Grid Charge must be provided.
+  description: Write and confirm only the supplied fields of one physical slot through the selected communication adapter. At least one of Start, End, SOC or Grid Charge must be provided. Start and End must be on a :00 or :30 boundary.
   fields:
     slot:
       name: Slot
