@@ -7452,7 +7452,9 @@ class DeyeEnergyCard extends HTMLElement {
     const demStyle = dashStyle.join(";");
     const infoGridStyle = layout.layout_mode === "grid"
       ? "display:contents"
-      : (layout.is_mobile ? "grid-template-columns:minmax(0,1fr)" : `grid-template-columns:${layout.prices_ratio}fr ${layout.buy_prices_ratio}fr ${layout.solcast_ratio}fr`);
+      : layout.layout_mode === "single"
+        ? (layout.section === "prices" && !layout.is_mobile ? "grid-template-columns:minmax(0,1fr) minmax(0,1fr)" : "grid-template-columns:minmax(0,1fr)")
+        : (layout.is_mobile ? "grid-template-columns:minmax(0,1fr)" : `grid-template-columns:${layout.prices_ratio}fr ${layout.buy_prices_ratio}fr ${layout.solcast_ratio}fr`);
 
     const isSingle = layout.layout_mode === "single";
     const showStatus = isSingle ? layout.section === "status_energy" : layout.sections.status_energy;
