@@ -7792,14 +7792,9 @@ def manual_row(**overrides):
         "to": "00:00",
         "enabled": True,
         "mode": const.MODE_NORMAL_OPERATION,
-        "physical_work_mode": const.MODE_ZERO_EXPORT,
         "sell_power": 0,
-        "discharge_current": 120,
-        "charge_current": 120,
-        "grid_charge_current": 60,
         "minimum_sell_soc": 0,
         "tou_soc": 20,
-        "min_sell_price": 0,
         "charge_enabled": False,
     }
     row.update(overrides)
@@ -7848,8 +7843,11 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
         ])
         self.assertEqual([row["from"] for row in rows], ["00:00", "07:15", "19:45"])
         self.assertEqual(rows[-1]["to"], "00:00")
-        self.assertIsNone(rows[1]["physical_work_mode"])
-        self.assertIsNone(rows[2]["physical_work_mode"])
+        removed = {
+            "physical_work_mode", "discharge_current", "charge_current",
+            "grid_charge_current", "min_sell_price",
+        }
+        self.assertTrue(all(removed.isdisjoint(row) for row in rows))
 
     def test_validation_rejects_invalid_boundaries_and_coverage(self):
         runtime = make_runtime()
@@ -7895,9 +7893,25 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "Unsupported manual schedule mode"):
             runtime._validate_manual_schedule_rows([manual_row(to="00:00", mode="Nope")])
         with self.assertRaisesRegex(ValueError, "must be between"):
-            runtime._validate_manual_schedule_rows([manual_row(to="00:00", discharge_current=241)])
+            runtime._validate_manual_schedule_rows([manual_row(to="00:00", sell_power=-1)])
         with self.assertRaisesRegex(ValueError, "tou_soc"):
             runtime._validate_manual_schedule_rows([manual_row(to="00:00", tou_soc=101)])
+
+    def test_validation_ignores_removed_legacy_fields(self):
+        runtime = make_runtime()
+        rows = runtime._validate_manual_schedule_rows([manual_row(
+            to="00:00",
+            physical_work_mode=const.MODE_ZERO_EXPORT,
+            discharge_current=999,
+            charge_current=999,
+            grid_charge_current=999,
+            min_sell_price=999,
+        )])
+        removed = {
+            "physical_work_mode", "discharge_current", "charge_current",
+            "grid_charge_current", "min_sell_price",
+        }
+        self.assertTrue(all(removed.isdisjoint(row) for row in rows))
 
     def test_slot_mapping_uses_slot_start_time_across_all_48_slots(self):
         runtime = make_runtime()
@@ -7935,6 +7949,11 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(by_key["0730_0800"]["tou_soc"], 30)
         self.assertTrue(by_key["2000_2030"]["charge_enabled"])
         self.assertEqual(by_key["2000_2030"]["tou_soc"], 90)
+        removed = {
+            "physical_work_mode", "discharge_current", "charge_current",
+            "grid_charge_current", "min_sell_price",
+        }
+        self.assertTrue(all(removed.isdisjoint(update) for update in updates))
 
     async def test_activation_overwrites_work_schedule_and_saves_snapshot(self):
         runtime = make_runtime()
@@ -7966,6 +7985,41 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.slots["2330_0000"].mode, const.MODE_SELLING_FIRST)
         self.assertEqual(runtime.slots["2330_0000"].sell_power, 4321)
         self.assertTrue(runtime.scheduler_enabled)
+
+    async def test_activation_leaves_removed_fields_at_work_schedule_values(self):
+        runtime = make_runtime()
+        removed = (
+            "physical_work_mode", "discharge_current", "charge_current",
+            "grid_charge_current", "min_sell_price",
+        )
+        for key in ("0000_0030", "1130_1200", "1200_1230", "2330_0000"):
+            slot = runtime.slots[key]
+            slot.physical_work_mode = const.MODE_ZERO_EXPORT
+            slot.discharge_current = 111
+            slot.charge_current = 112
+            slot.grid_charge_current = 113
+            slot.min_sell_price = 1.25
+        before = {
+            key: tuple(getattr(slot, field) for field in removed)
+            for key, slot in runtime.slots.items()
+        }
+        # The second row switches slots to Selling, which would normally clear
+        # the physical mode or copy a profile into the currents.  The manual
+        # schedule must leave all five fields at their work-schedule values.
+        await runtime.async_save_manual_schedule([
+            manual_row(to="12:00"),
+            manual_row(**{
+                "from": "12:00",
+                "mode": const.MODE_SELLING_FIRST,
+                "sell_power": 4000,
+            }),
+        ])
+        await runtime.async_activate_manual_schedule()
+        after = {
+            key: tuple(getattr(slot, field) for field in removed)
+            for key, slot in runtime.slots.items()
+        }
+        self.assertEqual(after, before)
 
     async def test_deactivation_restores_the_pre_activation_work_schedule(self):
         runtime = make_runtime()

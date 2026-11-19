@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.49`.
+Card resource revision: `v=0.8.0.50`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the
@@ -9,6 +9,7 @@ Deye Energy 0.8.0 is the English-language edition of the
 
 ## Revision history
 
+- `v=0.8.0.50` — Manual schedule rows no longer write physical work-mode, charge/discharge current, grid-charge current or minimum sell-price fields, so work-schedule values are preserved while manual is active. House load is derived from PV, grid and battery power; single-phase voltage tiles show only volts using the grid and inverter voltage sensors; Work and Manual schedules are page-level tabs. Test expectations updated to match the shipped card and backend.
 - `v=0.8.0.49` — New Manual schedule tab in Settings and diagnostics. Rows are
   stored separately from the work schedule, cover the full 24 hours and support
   arbitrary whole-minute boundaries. Activating stores a snapshot of the work

@@ -201,7 +201,7 @@ def test_full_setup_entry_returns_before_started_then_real_core_runs_once():
         sys.modules[cv.__name__] = cv
         sys.modules[typing_module.__name__] = typing_module
         sys.modules[voluptuous.__name__] = voluptuous
-        sys.modules["homeassistant.core"].SupportsResponse = SimpleNamespace(ONLY="only")
+        sys.modules["homeassistant.core"].SupportsResponse = SimpleNamespace(ONLY="only", OPTIONAL="optional")
 
         name = "custom_components.deye_energy.stage5g4j2_integration"
         spec = importlib.util.spec_from_file_location(

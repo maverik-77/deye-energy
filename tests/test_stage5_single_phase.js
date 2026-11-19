@@ -91,6 +91,8 @@ function makeHass() {
       "sensor.deye_energy_grid_power": makeState("3500"),
       "sensor.deye_energy_grid_l1_power": makeState("0"),
       "sensor.deye_energy_grid_l1_voltage": makeState("230"),
+      "sensor.deye_grid_voltage": makeState("230"),
+      "sensor.deye_inverter_voltage": makeState("231"),
       "sensor.deye_energy_grid_l2_power": makeState("0"),
       "sensor.deye_energy_grid_l2_voltage": makeState("0"),
       "sensor.deye_energy_grid_l3_power": makeState("0"),
@@ -149,16 +151,18 @@ function test_single_phase_value_uses_total_when_phase_missing_or_zero() {
   assert.strictEqual(card.singlePhaseValue(1200, 3500), 1200);
 }
 
-function test_mobile_single_phase_shows_only_l1_with_total_fallback() {
+function test_mobile_single_phase_shows_ac_voltages_without_l1() {
   const html = panel(390);
   assert.match(html, /ms-detail-grid single-phase/);
-  assert.match(html, /data-live="grid-l1-power">3\.50 kW/);
-  assert.match(html, /data-live="load-l1-power">2\.80 kW/);
+  assert.match(html, /data-live="grid-ac-voltage">230\.0<\/span> V/);
+  assert.match(html, /data-live="inverter-ac-voltage">231\.0<\/span> V/);
+  assert.doesNotMatch(html, /data-live="grid-l1-power"/);
+  assert.doesNotMatch(html, /data-live="load-l1-power"/);
   assert.doesNotMatch(html, /data-live="grid-l2-power"/);
   assert.doesNotMatch(html, /data-live="grid-l3-power"/);
   assert.doesNotMatch(html, /data-live="load-l2-power"/);
   assert.doesNotMatch(html, /data-live="load-l3-power"/);
-  assert.strictEqual(countOccurrences(html, 'class="ms-phase-label">L1<'), 2);
+  assert.strictEqual(countOccurrences(html, 'class="ms-phase-label">L1<'), 0);
   assert.strictEqual(countOccurrences(html, 'class="ms-phase-label">L2<'), 0);
   assert.strictEqual(countOccurrences(html, 'class="ms-phase-label">L3<'), 0);
 }
@@ -167,8 +171,10 @@ function test_desktop_single_phase_uses_one_column() {
   const html = panel(1366);
   assert.strictEqual(countOccurrences(html, 'class="flow-detail-row one-col"'), 2);
   assert.strictEqual(countOccurrences(html, 'class="flow-detail-row three-cols"'), 1);
-  assert.match(html, /data-live="grid-l1-power">3\.50 kW/);
-  assert.match(html, /data-live="load-l1-power">2\.80 kW/);
+  assert.match(html, /data-live="grid-ac-voltage">230\.0<\/span> V/);
+  assert.match(html, /data-live="inverter-ac-voltage">231\.0<\/span> V/);
+  assert.doesNotMatch(html, /data-live="grid-l1-power"/);
+  assert.doesNotMatch(html, /data-live="load-l1-power"/);
   assert.doesNotMatch(html, /data-live="grid-l2-power"/);
   assert.doesNotMatch(html, /data-live="grid-l3-power"/);
   assert.doesNotMatch(html, /data-live="load-l2-power"/);
@@ -198,7 +204,7 @@ function test_three_phase_opt_in_still_renders_all_phases() {
   assert.strictEqual(countOccurrences(desktopHtml, 'class="flow-detail-row one-col"'), 0);
 }
 
-function test_entity_override_maps_house_load_and_l1() {
+function test_calculated_house_load_and_voltage_in_single_phase() {
   const config = {
     entities: {
       load_power: "sensor.totals_grid_power",
@@ -207,10 +213,14 @@ function test_entity_override_maps_house_load_and_l1() {
   };
   const card = makeCard(390, config);
   card._hass.states["sensor.totals_grid_power"] = makeState("-1250");
+  card._hass.states["sensor.deye_energy_pv_power"] = makeState("0");
+  card._hass.states["sensor.deye_energy_grid_power"] = makeState("-1250");
+  card._hass.states["sensor.deye_energy_battery_power"] = makeState("0");
   const html = card.energyFlowPanel();
   assert.match(html, /data-live="load-main">-1\.25 kW/);
-  assert.match(html, /data-live="load-l1-power">-1\.25 kW/);
-  assert.doesNotMatch(html, /data-live="load-main">2\.80 kW/);
+  assert.match(html, /data-live="inverter-ac-voltage">231\.0<\/span> V/);
+  assert.doesNotMatch(html, /data-live="load-main">8\.75 kW/);
+  assert.doesNotMatch(html, /data-live="load-l1-power"/);
 }
 
 function test_battery_icon_shows_soc_level_and_color() {
@@ -230,9 +240,9 @@ function test_battery_icon_shows_soc_level_and_color() {
 
 test_phase_count_defaults_to_single_phase();
 test_single_phase_value_uses_total_when_phase_missing_or_zero();
-test_mobile_single_phase_shows_only_l1_with_total_fallback();
+test_mobile_single_phase_shows_ac_voltages_without_l1();
 test_desktop_single_phase_uses_one_column();
 test_three_phase_opt_in_still_renders_all_phases();
-test_entity_override_maps_house_load_and_l1();
+test_calculated_house_load_and_voltage_in_single_phase();
 test_battery_icon_shows_soc_level_and_color();
 console.log("single phase status tests passed");

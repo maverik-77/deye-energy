@@ -626,7 +626,7 @@ class EntityRegistrySafetyTests(unittest.TestCase):
 
     def test_config_flow_minor_version_tracks_provider_mapping_schema(self):
         config_flow_source = (ROOT / "custom_components" / "deye_energy" / "config_flow.py").read_text(encoding="utf-8")
-        self.assertIn("MINOR_VERSION = 24", config_flow_source)
+        self.assertIn("MINOR_VERSION = 25", config_flow_source)
 
     def test_init_does_not_auto_enable_entities_and_migration_preserves_mapping(self):
         init_source = (ROOT / "custom_components" / "deye_energy" / "__init__.py").read_text(encoding="utf-8")

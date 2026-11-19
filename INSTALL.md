@@ -44,7 +44,7 @@ integration registers the bundled card resource by itself; nothing to add.
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.49
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.50
       type: module
 ```
 
@@ -55,7 +55,7 @@ type: custom:deye-energy-card
 ```
 
 A sample dashboard is in `dashboard/energy_manager.yaml` (card revision
-`v=0.8.0.49`). After an upgrade, hard-refresh the browser (or clear the app
+`v=0.8.0.50`). After an upgrade, hard-refresh the browser (or clear the app
 cache) so that the new card revision is loaded.
 
 ## 5. First-run checklist
@@ -73,7 +73,7 @@ cache) so that the new card revision is loaded.
 1. Back up Home Assistant.
 2. Update through HACS (or replace the folder) and restart.
 3. Hard-refresh the browser. The resource revision is updated automatically in
-   UI/storage mode; in YAML mode change `v=` to `0.8.0.49`.
+   UI/storage mode; in YAML mode change `v=` to `0.8.0.50`.
 
 ## 7. Uninstall
 

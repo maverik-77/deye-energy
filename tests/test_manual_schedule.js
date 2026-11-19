@@ -38,14 +38,9 @@ function manualRow(overrides = {}) {
     to: "00:00",
     enabled: true,
     mode: "Normal Operation",
-    physical_work_mode: "Zero Export To Load",
     sell_power: 0,
-    discharge_current: 120,
-    charge_current: 120,
-    grid_charge_current: 60,
     minimum_sell_soc: 0,
     tou_soc: 20,
-    min_sell_price: 0,
     charge_enabled: false,
     ...overrides,
   };
@@ -186,6 +181,49 @@ function test_manual_save_sends_normalized_rows_once() {
   });
 }
 
+function test_manual_rows_and_payload_exclude_removed_fields() {
+  const removed = [
+    "physical_work_mode", "discharge_current", "charge_current",
+    "grid_charge_current", "min_sell_price",
+  ];
+  const { card } = makeCard({
+    manual: {
+      active: false,
+      rows: [manualRow({
+        physical_work_mode: "Zero Export To CT",
+        discharge_current: 120,
+        charge_current: 120,
+        grid_charge_current: 60,
+        min_sell_price: 1.5,
+      })],
+    },
+  });
+  const rows = card.ensureManualScheduleDraft();
+  const payload = card.manualSchedulePayloadRows(rows);
+  removed.forEach((field) => {
+    assertTrue(!(field in rows[0]), `legacy ${field} must be dropped from the draft`);
+    assertTrue(!(field in payload[0]), `${field} must not be sent to the backend`);
+  });
+  assertEqual(payload[0].sell_power, 0, "Sell power must remain a row field");
+  assertEqual(payload[0].tou_soc, 20, "Deye TOU SOC must remain a row field");
+  assertEqual(payload[0].charge_enabled, false, "Grid charging must remain a row field");
+}
+
+function test_manual_tab_hides_removed_controls() {
+  const { card } = makeCard();
+  const html = card.renderManualScheduleTab();
+  [
+    'data-manual-field="physical_work_mode"',
+    'data-manual-field="discharge_current"',
+    'data-manual-field="charge_current"',
+    'data-manual-field="grid_charge_current"',
+    'data-manual-field="min_sell_price"',
+  ].forEach((marker) => assertTrue(!html.includes(marker), `removed control must be absent: ${marker}`));
+  assertTrue(html.includes('data-manual-field="sell_power"'), "Sell power must stay editable");
+  assertTrue(html.includes('data-manual-field="tou_soc"'), "Deye TOU SOC must stay editable");
+  assertTrue(html.includes('data-manual-field="charge_enabled"'), "Grid charging must stay editable");
+}
+
 function test_manual_save_rejects_invalid_rows_before_calling_the_service() {
   const { card, calls } = makeCard();
   card.ensureManualScheduleDraft()[0].to = "11:30";
@@ -268,6 +306,43 @@ function test_manual_tab_exposes_fixed_last_midnight_boundary() {
   assertTrue(html.includes('data-manual-field="to" data-manual-index="0"'), "middle To must be editable");
 }
 
+function test_schedule_tabs_default_to_work_and_switch_to_manual() {
+  const { card } = makeCard();
+  assertEqual(card._scheduleTab, "work", "Work schedule must be the default page tab");
+  const work = card.renderScheduleTabs("<div>work panel</div>", "<div>manual panel</div>");
+  assertTrue(work.includes('data-schedule-tab="work"'), "Work tab button must be present");
+  assertTrue(work.includes('data-schedule-tab="manual"'), "Manual tab button must be present");
+  assertTrue(work.includes('class="active" data-schedule-tab="work"'), "Work tab must be active by default");
+  assertTrue(work.includes('data-schedule-panel="work"'), "Work panel must be present");
+  assertTrue(work.includes('data-schedule-panel="manual" hidden'), "Manual panel must be hidden by default");
+  assertEqual((work.match(/class="active"/g) || []).length, 1, "Exactly one tab must be active");
+
+  card._scheduleTab = "manual";
+  const manual = card.renderScheduleTabs("<div>work panel</div>", "<div>manual panel</div>");
+  assertTrue(manual.includes('class="active" data-schedule-tab="manual"'), "Manual tab must become active");
+  assertTrue(manual.includes('data-schedule-panel="work" hidden'), "Work panel must be hidden when Manual is active");
+  assertTrue(!manual.includes('data-schedule-panel="manual" hidden'), "Manual panel must be visible when active");
+  assertEqual((manual.match(/class="active"/g) || []).length, 1, "Exactly one tab must stay active");
+}
+
+function test_manual_tab_uses_the_work_schedule_page_styling() {
+  const { card } = makeCard();
+  const html = card.renderManualScheduleTab();
+  assertTrue(html.includes('class="schedule-head manual-panel-head"'), "Manual tab must use the page schedule head");
+  assertTrue(html.includes("<h2>Manual schedule</h2>"), "Manual tab must have a page-style title");
+  assertTrue(html.includes('class="foot-actions manual-save-actions"'), "Save action must use page footer styling");
+  assertTrue(html.includes('class="primary" data-manual-save="1"'), "Save action must be the primary page button");
+  assertTrue(!html.includes('class="dialog-actions"'), "Manual tab must not use dialog-only styling");
+}
+
+function test_manual_schedule_is_removed_from_the_settings_overlay() {
+  const source = fs.readFileSync(componentCard, "utf8");
+  assertTrue(!source.includes('tabButton("manual"'), "Manual schedule must not be a settings nav item");
+  assertTrue(!source.includes('else if (tab === "manual")'), "Manual schedule must not be a settings dialog branch");
+  assertTrue(!source.includes('data-open-settings="manual"'), "Manual schedule must not be opened from the page toolbar");
+  assertTrue(source.includes('this.renderScheduleTabs(workSchedulePanel, this.renderManualScheduleTab())'), "Both schedules must render as page tabs");
+}
+
 function test_both_card_copies_remain_identical() {
   assertTrue(fs.readFileSync(componentCard).equals(fs.readFileSync(rootCard)), "both card copies must remain identical");
 }
@@ -279,12 +354,17 @@ const tests = [
   test_manual_validation_accepts_arbitrary_minute_contiguous_rows,
   test_manual_add_and_remove_rows_keep_the_chain_contiguous,
   test_manual_save_sends_normalized_rows_once,
+  test_manual_rows_and_payload_exclude_removed_fields,
+  test_manual_tab_hides_removed_controls,
   test_manual_save_rejects_invalid_rows_before_calling_the_service,
   test_manual_activate_saves_then_activates_and_applies_response,
   test_manual_deactivate_calls_the_service_and_clears_active_state,
   test_manual_init_from_tou_calls_the_service,
   test_manual_tab_renders_rows_controls_and_active_status,
   test_manual_tab_exposes_fixed_last_midnight_boundary,
+  test_schedule_tabs_default_to_work_and_switch_to_manual,
+  test_manual_tab_uses_the_work_schedule_page_styling,
+  test_manual_schedule_is_removed_from_the_settings_overlay,
   test_both_card_copies_remain_identical,
 ];
 

@@ -54,7 +54,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
 
     def test_card_sources_declare_current_resource_revision(self):
         for source in self.sources:
-            self.assertTrue(source.startswith("// Resource revision: v=0.8.0.49\n"))
+            self.assertTrue(source.startswith("// Resource revision: v=0.8.0.50\n"))
 
     def test_mapping_view_is_the_simple_24h_to_six_tou_ranges(self):
         for source in self.sources:
@@ -332,7 +332,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         # New SVG icons
         self.assertIn('this.iconSvg("pv2")', method)
         self.assertIn('this.iconSvg("grid2")', method)
-        self.assertIn('this.iconSvg("battery2")', method)
+        self.assertIn("this.batteryLevelSvg(batterySoc)", method)
         self.assertIn('this.iconSvg("home2")', method)
         # Bottom bar separators and 4 sections
         self.assertIn(".flow-status-tile{", method)
@@ -455,7 +455,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
     def test_documentation_uses_current_card_cache_revision(self):
         for name in ("README.md", "INSTALL.md"):
             source = (ROOT / name).read_text(encoding="utf-8")
-            self.assertIn("deye-energy-card.js?v=0.8.0.49", source)
+            self.assertIn("deye-energy-card.js?v=0.8.0.50", source)
             self.assertNotIn("deye-energy-card.js?v=22", source)
             self.assertNotIn("deye-energy-card.js?v=10", source)
             self.assertNotIn("deye-energy-card.js?v=09", source)
@@ -520,7 +520,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         dialog = extract_method(source, "renderDialog(slots, touStarts)")
         self.assertIn("touSoc: this.asNumber(item.tou_soc)", mapping)
         self.assertIn("chargeEnabled: Boolean(item.grid_charge)", mapping)
-        self.assertIn('item.chargeEnabled ? "yes" : "no"', source)
+        self.assertIn('row.gridCharge ? "yes" : "no"', source)
         self.assertNotIn("<th>Function</th>", dialog)
 
     def test_charge_profile_save_uses_one_backend_service_only(self):

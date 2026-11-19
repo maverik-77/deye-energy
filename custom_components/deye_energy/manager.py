@@ -4887,7 +4887,7 @@ class DeyeEnergyRuntime:
             if not tou["ok"]
             else "OK"
         )
-        return {"integration_version": "0.8.0.49", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
+        return {"integration_version": "0.8.0.50", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
                 "inverter_provider": self.inverter_provider,
                 "inverter_device_id": self.data.get(CONF_INVERTER_DEVICE_ID),
                 "inverter_provider_label": provider_profile(self.data).label,
@@ -12467,22 +12467,12 @@ class DeyeEnergyRuntime:
         return bool(isinstance(manual, dict) and manual.get("active"))
 
     def _manual_row_defaults(self) -> dict[str, Any]:
-        normal_physical_mode = (
-            self.normal_profile_physical_work_mode
-            if self.normal_profile_physical_work_mode in PHYSICAL_NORMAL_MODES
-            else self.default_normal_physical_work_mode()
-        )
         return {
             "enabled": True,
             "mode": MODE_NORMAL_OPERATION,
-            "physical_work_mode": normal_physical_mode,
             "sell_power": float(self.normal_profile_sell_power if self.normal_profile_sell_power >= 0 else self.default_sell_power),
-            "discharge_current": float(self.normal_profile_discharge_current if self.normal_profile_discharge_current >= 0 else self.default_discharge_current),
-            "charge_current": float(self.normal_profile_charge_current if self.normal_profile_charge_current >= 0 else self.default_charge_current),
-            "grid_charge_current": float(self.normal_profile_grid_charge_current if self.normal_profile_grid_charge_current >= 0 else self.default_grid_charge_current),
             "minimum_sell_soc": 0.0,
             "tou_soc": self.normal_profile_tou_soc if self.normal_profile_tou_soc is not None else 100.0,
-            "min_sell_price": 0.0,
             "charge_enabled": False,
         }
 
@@ -12490,11 +12480,17 @@ class DeyeEnergyRuntime:
         if not isinstance(raw, dict):
             raise ValueError(f"Manual schedule row {index + 1} must be an object")
         defaults = self._manual_row_defaults()
-        unknown = set(raw) - {
-            "from", "to", "enabled", "mode", "physical_work_mode", "sell_power",
-            "discharge_current", "charge_enabled", "charge_current",
-            "grid_charge_current", "minimum_sell_soc", "tou_soc", "min_sell_price",
+        # These fields used to live on manual rows.  They are no longer
+        # controlled by the manual schedule; ignore them so rows saved by an
+        # older version still load without rejecting the whole schedule.
+        obsolete = {
+            "physical_work_mode", "discharge_current", "charge_current",
+            "grid_charge_current", "min_sell_price",
         }
+        unknown = set(raw) - {
+            "from", "to", "enabled", "mode", "sell_power",
+            "charge_enabled", "minimum_sell_soc", "tou_soc",
+        } - obsolete
         if unknown:
             raise ValueError(
                 f"Unsupported manual schedule fields in row {index + 1}: "
@@ -12507,30 +12503,16 @@ class DeyeEnergyRuntime:
             "to": self._minutes_to_hhmm(end),
             "enabled": bool(raw.get("enabled", defaults["enabled"])),
             "mode": str(raw.get("mode", defaults["mode"])),
-            "physical_work_mode": raw.get("physical_work_mode", defaults["physical_work_mode"]),
             "charge_enabled": bool(raw.get("charge_enabled", defaults["charge_enabled"])),
             "sell_power": self.safe_float(raw.get("sell_power", defaults["sell_power"]), 0),
-            "discharge_current": self.safe_float(raw.get("discharge_current", defaults["discharge_current"]), 0),
-            "charge_current": self.safe_float(raw.get("charge_current", defaults["charge_current"]), 0),
-            "grid_charge_current": self.safe_float(raw.get("grid_charge_current", defaults["grid_charge_current"]), 0),
             "minimum_sell_soc": self.safe_float(raw.get("minimum_sell_soc", defaults["minimum_sell_soc"]), 0),
             "tou_soc": raw.get("tou_soc", defaults["tou_soc"]),
-            "min_sell_price": self.safe_float(raw.get("min_sell_price", defaults["min_sell_price"]), 0),
         }
         if row["mode"] not in SLOT_MODES:
             raise ValueError(f"Unsupported manual schedule mode in row {index + 1}: {row['mode']}")
-        if row["mode"] == MODE_NORMAL_OPERATION:
-            if row["physical_work_mode"] not in PHYSICAL_NORMAL_MODES:
-                row["physical_work_mode"] = defaults["physical_work_mode"]
-        else:
-            row["physical_work_mode"] = None
         numeric_limits = {
             "sell_power": (0.0, float(self.effective_inverter_max_power_w)),
-            "discharge_current": (0.0, 240.0),
-            "charge_current": (0.0, 240.0),
-            "grid_charge_current": (0.0, 240.0),
             "minimum_sell_soc": (0.0, 100.0),
-            "min_sell_price": (0.0, 5.0),
         }
         for field_name, (minimum, maximum) in numeric_limits.items():
             value = float(row[field_name])
@@ -12698,20 +12680,17 @@ class DeyeEnergyRuntime:
         updates: list[dict[str, Any]] = []
         for slot_key, _label, start, _end in SLOTS:
             row = self._manual_row_for_slot_start(rows, int(start))
+            # Only the fields still present on a manual row are written.  The
+            # physical Deye mode, discharge/charge currents and sell-from price
+            # stay at their work-schedule values.
             update = {
                 "slot_key": slot_key,
                 "enabled": bool(row.get("enabled", True)),
                 "mode": str(row.get("mode", MODE_NORMAL_OPERATION)),
                 "sell_power": float(row.get("sell_power", 0)),
-                "discharge_current": float(row.get("discharge_current", 0)),
                 "charge_enabled": bool(row.get("charge_enabled", False)),
-                "charge_current": float(row.get("charge_current", 0)),
-                "grid_charge_current": float(row.get("grid_charge_current", 0)),
                 "minimum_sell_soc": float(row.get("minimum_sell_soc", 0)),
-                "min_sell_price": float(row.get("min_sell_price", 0)),
             }
-            if update["mode"] == MODE_NORMAL_OPERATION and row.get("physical_work_mode") in PHYSICAL_NORMAL_MODES:
-                update["physical_work_mode"] = row["physical_work_mode"]
             if row.get("tou_soc") is not None:
                 update["tou_soc"] = float(row["tou_soc"])
             updates.append(update)
@@ -12815,11 +12794,26 @@ class DeyeEnergyRuntime:
         updates = self._manual_schedule_to_slot_updates(rows)
         if activate and not isinstance(manual.get("activation_snapshot"), dict):
             manual["activation_snapshot"] = self._manual_schedule_slot_snapshot()
-        await self.async_apply_schedule_patch(
-            updates,
-            change_source=reason,
-            _allow_manual_schedule_internal=True,
+        # Manual rows no longer carry these fields.  Keep each slot's existing
+        # work-schedule value even when the shared patch copies a mode template.
+        preserved_fields = (
+            "physical_work_mode", "discharge_current", "charge_current",
+            "grid_charge_current", "min_sell_price",
         )
+        preserved = {
+            key: {field: getattr(slot, field) for field in preserved_fields}
+            for key, slot in self.slots.items()
+        }
+        try:
+            await self.async_apply_schedule_patch(
+                updates,
+                change_source=reason,
+                _allow_manual_schedule_internal=True,
+            )
+        finally:
+            for key, slot in self.slots.items():
+                for field, value in preserved.get(key, {}).items():
+                    setattr(slot, field, value)
 
     async def async_activate_manual_schedule(self) -> dict[str, Any]:
         manual = self._ensure_manual_schedule()

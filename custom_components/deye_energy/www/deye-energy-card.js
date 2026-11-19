@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.49
+// Resource revision: v=0.8.0.50
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -54,6 +54,7 @@ class DeyeEnergyCard extends HTMLElement {
     this._bulkEditFields = null;
     this._bulkApplying = false;
     this._settingsTab = "defaults";
+    this._scheduleTab = "work";
     this._historyFilters = { from: "", to: "", type: "all" };
     this._lastAiAnalysisCheck = 0;
     this._aiSettingsSaveTimer = null;
@@ -515,7 +516,7 @@ class DeyeEnergyCard extends HTMLElement {
     const pvValue = this.asNumber(this.state(this.entity("sensor", "pv_power")), 0) || 0;
     const gridValue = this.asNumber(this.state(this.entity("sensor", "grid_power")), 0) || 0;
     const batteryValue = this.asNumber(this.state(this.entity("sensor", "battery_power")), 0) || 0;
-    const loadValue = this.asNumber(this.state(this.configuredEntity("load_power", "sensor", "load_power")), 0) || 0;
+    const loadValue = this.calculatedHouseLoad(pvValue, gridValue, batteryValue);
     const batterySocValue = this.optionalSocNumber(this.state(this.entity("sensor", "battery_soc")));
     const currentModeValue = this.deyeWorkModeState();
 
@@ -533,7 +534,7 @@ class DeyeEnergyCard extends HTMLElement {
       ? this.singlePhaseValue(detailed("grid_l1_power"), detailed("grid_power"))
       : detailed("grid_l1_power");
     const loadL1Live = singlePhase
-      ? this.singlePhaseValue(detailed("load_l1_power"), detailed("load_power"))
+      ? this.singlePhaseValue(detailed("load_l1_power"), loadValue)
       : detailed("load_l1_power");
     const managerModeClass = this.modeTextClass(modeText);
     const currentModeMeta = currentModeValue ? this.modeMeta(currentModeValue, true) : { cls: "disabled" };
@@ -575,6 +576,8 @@ class DeyeEnergyCard extends HTMLElement {
     this.setText("[data-live='load-l1-power']", formatKw(loadL1Live));
     this.setText("[data-live='load-l2-power']", formatKw(detailed("load_l2_power")));
     this.setText("[data-live='load-l3-power']", formatKw(detailed("load_l3_power")));
+    this.setText("[data-live='grid-ac-voltage']", fmtNum(this.asNumber(this.state(this.acVoltageEntity("grid"))), 1));
+    this.setText("[data-live='inverter-ac-voltage']", fmtNum(this.asNumber(this.state(this.acVoltageEntity("inverter"))), 1));
 
     this.setText("[data-live='inverter-temp']", detailed("inverter_ac_temperature") === null ? "—" : `${Math.round(detailed("inverter_ac_temperature"))}`);
     const soldKwh = this.asNumber(this.state(this.entity("sensor", "sold_energy_today")), null);
@@ -702,6 +705,28 @@ class DeyeEnergyCard extends HTMLElement {
     return this.entity(domain, fallbackSuffix);
   }
 
+  firstExistingEntity(...ids) {
+    for (const id of ids) {
+      const candidate = typeof id === "string" ? id.trim() : "";
+      if (candidate && this.exists(candidate)) return candidate;
+    }
+    return "";
+  }
+
+  acVoltageEntity(kind) {
+    const key = kind === "grid" ? "grid_voltage" : "inverter_output_voltage";
+    const defaults = kind === "grid"
+      ? ["sensor.deye_grid_voltage"]
+      : ["sensor.deye_inverter_voltage", "sensor.deye_grid_voltage"];
+    return this.firstExistingEntity(
+      this.config?.entities?.[key],
+      this.config?.entity_map?.[key],
+      this.config?.mapping?.[key],
+      ...defaults,
+      this.configuredEntity("grid_l1_voltage", "sensor", "grid_l1_voltage"),
+    );
+  }
+
   state(entityId, fallback = "missing") {
     return this._hass?.states?.[entityId]?.state ?? fallback;
   }
@@ -741,6 +766,17 @@ class DeyeEnergyCard extends HTMLElement {
     if (/\d/.test(remainder)) return null;
     const parsed = Number(match[0]);
     return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  calculatedHouseLoad(pvPower, gridPower, batteryPower) {
+    const pv = this.asNumber(pvPower) || 0;
+    const grid = this.asNumber(gridPower) || 0;
+    const battery = this.asNumber(batteryPower) || 0;
+    const gridImport = Math.max(grid, 0);
+    const gridExport = Math.max(-grid, 0);
+    const batteryDischarge = Math.max(battery, 0);
+    const batteryCharge = Math.max(-battery, 0);
+    return (pv + gridImport + batteryDischarge) - (gridExport + batteryCharge);
   }
 
   optionalSocNumber(value) {
@@ -2900,7 +2936,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.49)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.50)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -4082,11 +4118,8 @@ class DeyeEnergyCard extends HTMLElement {
     return manual && typeof manual === "object" && !Array.isArray(manual) ? manual : {};
   }
 
-  manualSchedulePhysicalModeOptions() {
-    const options = this.normalProfileModeOptions();
-    return options.length
-      ? options
-      : [["Zero Export To Load", "Zero Export To Load"], ["Zero Export To CT", "Zero Export To CT"]];
+  manualScheduleFields() {
+    return ["enabled", "mode", "sell_power", "charge_enabled", "minimum_sell_soc", "tou_soc"];
   }
 
   manualScheduleDefaults() {
@@ -4098,16 +4131,9 @@ class DeyeEnergyCard extends HTMLElement {
     return {
       enabled: true,
       mode: "Normal Operation",
-      physical_work_mode: this.canonicalNormalProfileMode(profile.physical_work_mode)
-        || this.defaultPhysicalWorkMode()
-        || this.manualSchedulePhysicalModeOptions()[0][0],
       sell_power: number(profile.sell_power, 0),
-      discharge_current: number(profile.discharge_current, 0),
-      charge_current: number(profile.charge_current, 0),
-      grid_charge_current: number(profile.grid_charge_current, 0),
       minimum_sell_soc: 0,
       tou_soc: number(profile.tou_soc, 100),
-      min_sell_price: 0,
       charge_enabled: false,
     };
   }
@@ -4119,12 +4145,11 @@ class DeyeEnergyCard extends HTMLElement {
       from: String(source.from ?? "00:00").slice(0, 5),
       to: String(source.to ?? "00:00").slice(0, 5),
     };
-    this.slotEditFields().forEach((field) => {
+    this.manualScheduleFields().forEach((field) => {
       const value = source[field] === undefined ? defaults[field] : source[field];
       normalized[field] = this.normalizeSlotEditValue(field, value);
     });
     normalized.mode = this.normalizeManagerMode(normalized.mode || "Normal Operation");
-    if (normalized.mode !== "Normal Operation") normalized.physical_work_mode = null;
     return normalized;
   }
 
@@ -4170,8 +4195,6 @@ class DeyeEnergyCard extends HTMLElement {
     if (field === "mode") {
       row.enabled = true;
       row.mode = this.normalizeManagerMode(row.mode);
-      if (row.mode !== "Normal Operation") row.physical_work_mode = null;
-      else if (!row.physical_work_mode) row.physical_work_mode = this.manualScheduleDefaults().physical_work_mode;
     }
     this._manualScheduleError = "";
     this._manualScheduleStatus = "";
@@ -4234,22 +4257,14 @@ class DeyeEnergyCard extends HTMLElement {
           : "Manual schedule must cover the full 24 hours without gaps.";
       }
     }
-    const physicalOptions = this.manualSchedulePhysicalModeOptions().map(([key]) => key);
     const limits = {
       sell_power: [0, 100000],
-      discharge_current: [0, 240],
-      charge_current: [0, 240],
-      grid_charge_current: [0, 240],
       minimum_sell_soc: [0, 100],
-      min_sell_price: [0, 5],
     };
     for (let index = 0; index < rows.length; index += 1) {
       const row = rows[index];
       const mode = this.normalizeManagerMode(row.mode);
       if (!this.slotWorkModes().includes(mode)) return `Row ${index + 1}: select a valid mode.`;
-      if (mode === "Normal Operation" && !physicalOptions.includes(String(row.physical_work_mode || ""))) {
-        return `Row ${index + 1}: select the physical Deye mode for Normal Operation.`;
-      }
       for (const [field, [minimum, maximum]] of Object.entries(limits)) {
         const value = Number(row[field]);
         if (!Number.isFinite(value) || value < minimum || value > maximum) {
@@ -4281,14 +4296,9 @@ class DeyeEnergyCard extends HTMLElement {
         to: String(row.to ?? "00:00").slice(0, 5),
         enabled: Boolean(row.enabled),
         mode,
-        physical_work_mode: mode === "Normal Operation" ? String(row.physical_work_mode || "") : null,
         sell_power: numeric("sell_power"),
-        discharge_current: numeric("discharge_current"),
-        charge_current: numeric("charge_current"),
-        grid_charge_current: numeric("grid_charge_current"),
         minimum_sell_soc: numeric("minimum_sell_soc"),
         tou_soc: rawTouSoc !== null && Number.isFinite(rawTouSoc) ? rawTouSoc : null,
-        min_sell_price: numeric("min_sell_price"),
         charge_enabled: Boolean(row.charge_enabled),
       };
     });
@@ -4309,14 +4319,14 @@ class DeyeEnergyCard extends HTMLElement {
     if (!this.hasService("deye_energy", service)) {
       this._manualScheduleError = `The ${service} service is unavailable. Reload the integration after installing the new version.`;
       this._manualScheduleStatus = "";
-      this.renderDialogOnly();
+      this.render();
       return false;
     }
     this._manualScheduleSaving = true;
     this._manualScheduleError = "";
     this._manualScheduleStatus = "";
     this.beginSave();
-    this.renderDialogOnly();
+    this.render();
     try {
       const response = await this.callServiceWithResponse("deye_energy", service, data || {});
       if (response && typeof response === "object" && (Array.isArray(response.rows) || "active" in response)) {
@@ -4334,7 +4344,7 @@ class DeyeEnergyCard extends HTMLElement {
       return false;
     } finally {
       this._manualScheduleSaving = false;
-      this.renderDialogOnly();
+      this.render();
     }
   }
 
@@ -4344,7 +4354,7 @@ class DeyeEnergyCard extends HTMLElement {
     if (error) {
       this._manualScheduleError = error;
       this._manualScheduleStatus = "";
-      this.renderDialogOnly();
+      this.render();
       return false;
     }
     return this.runManualScheduleService(
@@ -4370,7 +4380,7 @@ class DeyeEnergyCard extends HTMLElement {
     if (error) {
       this._manualScheduleError = error;
       this._manualScheduleStatus = "";
-      this.renderDialogOnly();
+      this.render();
       return false;
     }
     if (!this._manualScheduleSaving) {
@@ -4396,10 +4406,20 @@ class DeyeEnergyCard extends HTMLElement {
     );
   }
 
-  renderManualScheduleRow(row, index, rows, modeOptions, physicalOptions) {
+  renderScheduleTabs(workPanel, manualPanel) {
+    const tab = this._scheduleTab === "manual" ? "manual" : "work";
+    const scheduleTabButton = (key, label) => `<button type="button" class="${tab === key ? "active" : ""}" data-schedule-tab="${key}">${label}</button>`;
+    const panel = (key, content) => `<div class="schedule-tab-panel" data-schedule-panel="${key}" ${tab === key ? "" : "hidden"}>${content}</div>`;
+    return `<section class="schedule-shell">
+      <div class="schedule-tabs">${scheduleTabButton("work", "Work schedule")}${scheduleTabButton("manual", "Manual schedule")}</div>
+      ${panel("work", workPanel)}
+      ${panel("manual", manualPanel)}
+    </section>`;
+  }
+
+  renderManualScheduleRow(row, index, rows, modeOptions) {
     const mode = this.normalizeManagerMode(row.mode);
     const isSelling = mode === "Selling";
-    const isNormal = mode === "Normal Operation";
     const field = (label, control) => `<label>${this.escapeHtml(label)}${control}</label>`;
     const timeControl = (name) => {
       const fixed = (name === "from" && index === 0) || (name === "to" && index === rows.length - 1);
@@ -4420,15 +4440,10 @@ class DeyeEnergyCard extends HTMLElement {
         ${field("To", timeControl("to"))}
         ${field("Active", checkboxControl("enabled"))}
         ${field("Mode", selectControl("mode", modeOptions))}
-        ${isNormal ? field("Physical Deye mode", selectControl("physical_work_mode", physicalOptions)) : ""}
         ${field("Sell power (W)", numberControl("sell_power", 0, 100000))}
-        ${field("Discharge current (A)", numberControl("discharge_current", 0, 240))}
-        ${field("Battery charge current (A)", numberControl("charge_current", 0, 240))}
         ${field("Grid charging", selectControl("charge_enabled", [["false", "No"], ["true", "Yes"]]))}
-        ${field("Grid charge current (A)", numberControl("grid_charge_current", 0, 240))}
         ${isSelling ? field("Stop selling at SOC (%)", numberControl("minimum_sell_soc", 0, 100)) : ""}
         ${field("Deye TOU SOC (%)", `<input type="text" inputmode="decimal" data-manual-field="tou_soc" data-manual-index="${index}" value="${this.escapeHtml(row.tou_soc === null || row.tou_soc === undefined ? "" : String(row.tou_soc))}">`)}
-        ${field("Sell from price (GBP)", numberControl("min_sell_price", 0, 5, "0.01"))}
       </div>
     </div>`;
   }
@@ -4438,8 +4453,7 @@ class DeyeEnergyCard extends HTMLElement {
     const active = Boolean(this._manualScheduleActive || this.manualScheduleBackend().active);
     const validationError = this.validateManualScheduleRows(rows);
     const modeOptions = this.slotModeOptions();
-    const physicalOptions = this.manualSchedulePhysicalModeOptions();
-    const rowHtml = rows.map((row, index) => this.renderManualScheduleRow(row, index, rows, modeOptions, physicalOptions)).join("");
+    const rowHtml = rows.map((row, index) => this.renderManualScheduleRow(row, index, rows, modeOptions)).join("");
     const message = this._manualScheduleError
       ? `<div class="bad" data-manual-schedule-error>${this.escapeHtml(this._manualScheduleError)}</div>`
       : this._manualScheduleStatus
@@ -4454,16 +4468,22 @@ class DeyeEnergyCard extends HTMLElement {
     const toggle = active
       ? `<button type="button" class="danger-action" data-manual-deactivate="1" ${this._manualScheduleSaving ? "disabled" : ""}>Deactivate</button>`
       : `<button type="button" class="primary" data-manual-activate="1" ${this._manualScheduleSaving ? "disabled" : ""}>Activate</button>`;
-    return `<div class="manual-schedule-status ${active ? "active" : ""}">${status}${toggle}</div>
-      <div class="hint">Manual schedule rows are UI/service-only and do not create per-row entities. When active, each row is mapped onto the 48 work schedule slots by slot start time, overwriting those slots until deactivated. Activating stores a snapshot of the work schedule; deactivating restores it.</div>
+    return `<div class="schedule-head manual-panel-head">
+        <div class="schedule-title">
+          <h2>Manual schedule</h2>
+          <p>Define time ranges that are mapped onto the work schedule when activated. Editing here does not change the work schedule until you activate it.</p>
+        </div>
+      </div>
+      <div class="manual-schedule-status ${active ? "active" : ""}">${status}${toggle}</div>
+      <div class="hint">Manual schedule rows are UI/service-only and do not create per-row entities. When active, each row is mapped onto the 48 work schedule slots by slot start time, overwriting these row fields until deactivated. The physical Deye mode, discharge/charge currents and sell-from price stay at their work-schedule values. Activating stores a snapshot of the work schedule; deactivating restores it.</div>
       ${rowHtml}
       <div class="manual-row-actions">
         <button type="button" data-manual-add="1" ${this._manualScheduleSaving ? "disabled" : ""}>Add row</button>
         <button type="button" data-manual-init="1" ${this._manualScheduleSaving ? "disabled" : ""}>Initialize from Deye Time Of Use</button>
       </div>
       ${validation}
-      <div class="dialog-actions">
-        <button type="button" data-manual-save="1" ${this._manualScheduleSaving ? "disabled" : ""}>${this._manualScheduleSaving ? "Saving…" : active ? "Save and re-apply" : "Save manual schedule"}</button>
+      <div class="foot-actions manual-save-actions">
+        <button type="button" class="primary" data-manual-save="1" ${this._manualScheduleSaving ? "disabled" : ""}>${this._manualScheduleSaving ? "Saving…" : active ? "Save and re-apply" : "Save manual schedule"}</button>
       </div>
       ${message}`;
   }
@@ -4851,12 +4871,14 @@ class DeyeEnergyCard extends HTMLElement {
     const batteryChargeDaily = st("daily_battery_charge");
     const batteryDischargeDaily = st("daily_battery_discharge");
 
-    const loadPower = st("load_power", 0) || 0;
+    const loadPower = this.calculatedHouseLoad(pvPower, gridPower, batteryPower);
     const loadDaily = st("daily_load_consumption");
     const loadL1Power = st("load_l1_power");
     const loadL2Power = st("load_l2_power");
     const loadL3Power = st("load_l3_power");
     const inverterTemp = st("inverter_ac_temperature");
+    const gridAcVoltage = this.asNumber(this.state(this.acVoltageEntity("grid")));
+    const inverterAcVoltage = this.asNumber(this.state(this.acVoltageEntity("inverter")));
 
     const singlePhase = layout.phase_count === 1;
     const phaseLabels = singlePhase ? ["L1"] : ["L1", "L2", "L3"];
@@ -4886,6 +4908,8 @@ class DeyeEnergyCard extends HTMLElement {
 
     const fmtPower = (v) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : this.formatPower(v);
     const fmtNumber = (v, digits = 2) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : v.toFixed(digits);
+    const gridVoltageValue = `<span data-live="grid-ac-voltage">${fmtNumber(gridAcVoltage, 1)}</span> V`;
+    const inverterVoltageValue = `<span data-live="inverter-ac-voltage">${fmtNumber(inverterAcVoltage, 1)}</span> V`;
 
     const gridMain = gridPower < -1 ? `Export ${fmtPower(Math.abs(gridPower))}` : gridPower > 1 ? `Import ${fmtPower(gridPower)}` : `Balance 0 W`;
     const batteryDirection = batteryPower < -1 ? `Charging ${fmtPower(Math.abs(batteryPower))}` : batteryPower > 1 ? `Discharging ${fmtPower(batteryPower)}` : `Idle`;
@@ -5030,7 +5054,9 @@ class DeyeEnergyCard extends HTMLElement {
               </div>
             </div>
             <div class="ms-detail-grid${singlePhase ? " single-phase" : ""}">
-              ${phaseLabels.map((label) => msPhase(label, `<span class="phase-accent" data-live="grid-${phaseKey(label)}-power">${fmtPower(gridPhasePower(label))}</span>`, `<span data-live="grid-${phaseKey(label)}-volt">${fmtNumber(gridPhaseVoltage(label), 1)}</span> V`)).join("")}
+              ${singlePhase
+                ? `<div class="ms-phase"><div class="ms-phase-value">${gridVoltageValue}</div></div>`
+                : phaseLabels.map((label) => msPhase(label, `<span class="phase-accent" data-live="grid-${phaseKey(label)}-power">${fmtPower(gridPhasePower(label))}</span>`, `<span data-live="grid-${phaseKey(label)}-volt">${fmtNumber(gridPhaseVoltage(label), 1)}</span> V`)).join("")}
             </div>
             <div class="ms-foot">
               <span>Imported: <b class="bought"><span data-live="grid-bought">${fmtNumber(gridBought, 2)}</span> kWh</b></span>
@@ -5066,7 +5092,9 @@ class DeyeEnergyCard extends HTMLElement {
               </div>
             </div>
             <div class="ms-detail-grid${singlePhase ? " single-phase" : ""}">
-              ${phaseLabels.map((label) => msPhase(label, `<span class="phase-accent" data-live="load-${phaseKey(label)}-power">${fmtPower(loadPhasePower(label))}</span>`)).join("")}
+              ${singlePhase
+                ? `<div class="ms-phase"><div class="ms-phase-value">${inverterVoltageValue}</div></div>`
+                : phaseLabels.map((label) => msPhase(label, `<span class="phase-accent" data-live="load-${phaseKey(label)}-power">${fmtPower(loadPhasePower(label))}</span>`)).join("")}
             </div>
             <div class="ms-foot"><span>Consumption today</span><strong><span data-live="load-daily">${fmtNumber(loadDaily, 2)}</span> kWh</strong></div>
           </div>
@@ -5238,7 +5266,9 @@ class DeyeEnergyCard extends HTMLElement {
                   </div>
                   <hr class="flow-tile-divider">
                   <div class="flow-detail-row${singlePhase ? " one-col" : " three-cols"}">
-                    ${phaseLabels.map((label) => phaseRow(label, `<span style="color:#c084fc" data-live="grid-${phaseKey(label)}-power">${fmtPower(gridPhasePower(label))}</span>`, `<span data-live="grid-${phaseKey(label)}-volt">${fmtNumber(gridPhaseVoltage(label), 1)}</span> V`)).join("")}
+                    ${singlePhase
+                      ? `<div class="flow-phase"><div class="flow-phase-power">${gridVoltageValue}</div></div>`
+                      : phaseLabels.map((label) => phaseRow(label, `<span style="color:#c084fc" data-live="grid-${phaseKey(label)}-power">${fmtPower(gridPhasePower(label))}</span>`, `<span data-live="grid-${phaseKey(label)}-volt">${fmtNumber(gridPhaseVoltage(label), 1)}</span> V`)).join("")}
                   </div>
                   <hr class="flow-tile-divider">
                   <div class="flow-tile-foot">
@@ -5290,7 +5320,9 @@ class DeyeEnergyCard extends HTMLElement {
                   </div>
                   <hr class="flow-tile-divider">
                   <div class="flow-detail-row${singlePhase ? " one-col" : " three-cols"}">
-                    ${phaseLabels.map((label) => phaseRow(label, `<span style="color:#38bdf8" data-live="load-${phaseKey(label)}-power">${fmtPower(loadPhasePower(label))}</span>`, "")).join("")}
+                    ${singlePhase
+                      ? `<div class="flow-phase"><div class="flow-phase-power">${inverterVoltageValue}</div></div>`
+                      : phaseLabels.map((label) => phaseRow(label, `<span style="color:#38bdf8" data-live="load-${phaseKey(label)}-power">${fmtPower(loadPhasePower(label))}</span>`, "")).join("")}
                   </div>
                   <hr class="flow-tile-divider">
                   <div class="flow-daily-summary flow-daily-home">
@@ -8095,8 +8127,6 @@ class DeyeEnergyCard extends HTMLElement {
         body = this.renderTouSettingsContent();
       } else if (tab === "mapping") {
         body = this.renderMappingTab(slots);
-      } else if (tab === "manual") {
-        body = this.renderManualScheduleTab();
       } else if (tab === "ai") {
         body = this.renderAiSettingsPanel();
       } else if (tab === "tariff") {
@@ -8115,7 +8145,6 @@ class DeyeEnergyCard extends HTMLElement {
               ${tabButton("defaults", "Mode settings")}
               ${tabButton("tou", "Deye Time Of Use")}
               ${tabButton("mapping", "24 h mapping")}
-              ${tabButton("manual", "Manual schedule")}
               ${tabButton("ai", "AI and analysis")}
               ${tabButton("tariff", "Tariff and distribution")}
               ${tabButton("history", "History and data")}
@@ -8450,8 +8479,7 @@ class DeyeEnergyCard extends HTMLElement {
             ${buyPricesSection}
             ${solcastSection}
            </div>` : "";
-    const scheduleSection = showSchedule ? `
-           <section class="schedule-shell">
+    const workSchedulePanel = `
              <div class="schedule-head">
                <div class="schedule-title">
                  <h2>Work schedule <button class="title-icon ai" data-open-ai="1" title="AI suggestions">${this.iconSvg("ai")}</button><span class="save-indicator ${this._saveStatus}" data-save-indicator>${this._saveStatus === "saving" ? this._saveMessage || "Saving..." : this._saveStatus === "saved" ? this._saveMessage || "Saved" : this._saveStatus === "error" ? this._saveMessage : ""}</span></h2>
@@ -8484,14 +8512,15 @@ class DeyeEnergyCard extends HTMLElement {
                        <button data-schedule-clear="1">${this.iconSvg("close")} Deselect</button>
                        <button class="primary" data-open-multi="1" ${selectedCount ? "" : "disabled"}>${this.iconSvg("edit")} Edit selected (${selectedCount})</button>
                        <button data-open-settings="mapping">${this.iconSvg("copy")} Deye mapping</button>
-                       <button data-open-settings="manual">${this.iconSvg("edit")} Manual schedule</button>
                      </div>
                    </div>
                  </div>
                </div>
                ${selectedInfo}
-             </div>
-           </section>` : "";
+             </div>`;
+    const scheduleSection = showSchedule
+      ? this.renderScheduleTabs(workSchedulePanel, this.renderManualScheduleTab())
+      : "";
     const salesSection = showSales ? `
            <section class="panel sales-panel"><h2 class="panel-title">${this.iconSvg("chart")} Selling statistics</h2><div data-live-html="sales-stats">${this.salesStatsPanel()}</div></section>` : "";
 
@@ -8514,6 +8543,7 @@ class DeyeEnergyCard extends HTMLElement {
                      .solcast-panel{width:100%;max-width:100%;min-width:0;overflow:hidden}.solcast-panel [data-live-html="solcast-days"],.solcast-panel [data-live-html="solcast-chart"]{width:100%;max-width:100%;min-width:0;overflow:hidden}.solcast-chart{height:170px;max-width:100%;min-width:0;overflow-x:hidden;border-top:1px solid var(--line);padding:10px 8px 0;box-sizing:border-box;overscroll-behavior:contain}.solcast-bars{height:146px;width:100%;max-width:100%;min-width:0;display:grid;grid-template-columns:repeat(24,minmax(0,1fr));gap:4px;align-items:end}.solcast-bar{height:146px;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:4px}.solcast-columns{height:128px;width:100%;display:flex;align-items:end;justify-content:center;gap:2px}.solcast-columns span{display:block;width:42%;border-radius:4px 4px 0 0;min-height:3px}.solcast-columns .today{background:#2dff95}.solcast-columns .tomorrow{background:#57b9ff}.solcast-bar.now .solcast-columns span{box-shadow:0 0 0 1px #ffd166 inset}.solcast-bar em{font-style:normal;font-size:10px;color:#89a5b5;writing-mode:vertical-rl;transform:rotate(180deg)}.solcast-legend{display:flex;gap:7px;padding:4px 10px 8px;color:#a9c1d0;font-size:12px}.solcast-legend span{width:10px;height:10px;border-radius:999px;display:inline-block}.solcast-legend .today{background:#2dff95}.solcast-legend .tomorrow{background:#57b9ff}.solcast-performance{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:auto;padding:9px;border-top:1px solid var(--line)}.solcast-performance .stat{padding:8px}.solcast-performance .stat strong{font-size:14px}.live-changed{animation:dem-live-pulse .45s ease-out}@keyframes dem-live-pulse{0%{color:#fff;text-shadow:0 0 10px rgba(87,185,255,.9)}100%{color:inherit;text-shadow:none}}
           .defaults-status{margin-top:10px}.defaults-status.saving{color:#ffd166}.defaults-status.saved{color:var(--green)}.defaults-status.error{color:#ff8b98}button[data-default-action]:disabled{opacity:.55;cursor:wait}
            .schedule-shell{width:100%;max-width:100%;min-width:0;box-sizing:border-box;overflow:hidden;padding:10px;background:radial-gradient(circle at 12% 8%,rgba(20,85,130,.22),transparent 30%),linear-gradient(180deg,rgba(5,16,26,.98),rgba(7,21,32,.98))}
+          .schedule-tabs{display:flex;gap:8px;padding:10px;border-bottom:1px solid var(--line);overflow-x:auto}.schedule-tabs button{border:1px solid var(--line2);border-radius:7px;background:rgba(255,255,255,.03);color:#dfeef6;padding:8px 12px;white-space:nowrap;cursor:pointer}.schedule-tabs button.active{border-color:var(--blue);color:#fff;background:rgba(21,155,255,.22)}.schedule-tab-panel[hidden]{display:none}.manual-save-actions{justify-content:flex-end;margin-top:10px}
           .schedule-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:8px}.schedule-title h2{margin:0;display:flex;align-items:center;gap:8px;font-size:22px;font-weight:850}.schedule-title p{margin:3px 0 0;color:#c1d4df;font-size:13px}.title-icon{width:28px;height:28px;border-radius:999px;border:1px solid rgba(142,181,202,.42);background:rgba(255,255,255,.03);color:#d9ecf6;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}.title-icon.ai{color:#2fa8ff}.title-icon:hover{border-color:var(--blue);color:#fff}.save-indicator{display:none;border-radius:999px;padding:4px 9px;font-size:11px;font-weight:800;line-height:1.2}.save-indicator.saving{display:inline-flex;color:#ffd166;background:rgba(246,166,25,.16)}.save-indicator.saved{display:inline-flex;color:var(--green);background:rgba(53,214,111,.14)}.save-indicator.error{display:inline-flex;max-width:360px;color:#ff8b98;background:rgba(255,77,99,.15);white-space:normal}
           .schedule-tools{display:flex;gap:9px;align-items:center;flex-wrap:wrap;justify-content:flex-end}.tool-btn,.gear-btn,.bulk-actions button,.set-btn,.icon-only{border:1px solid rgba(100,145,170,.42);border-radius:8px;background:rgba(7,17,27,.72);color:#eaf7ff;min-height:38px;padding:0 13px;display:inline-flex;align-items:center;gap:9px;cursor:pointer}.tool-btn.active{border-color:var(--blue);color:#2ea7ff;background:rgba(8,53,92,.55)}.gear-btn{width:48px;justify-content:center;padding:0}.gear-btn:hover,.tool-btn:hover,.set-btn:hover,.icon-only:hover{border-color:var(--blue);box-shadow:0 0 0 1px rgba(21,155,255,.25) inset}.icon-only{width:32px;min-height:28px;padding:0;justify-content:center}.set-btn{min-height:29px;padding:0 12px;font-weight:800}
           .mode-legend{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin:4px 0 8px}.mode-tile{display:flex;align-items:center;gap:8px;min-width:0}.mode-icon{width:32px;height:32px;border-radius:11px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}.mode-tile.selling .mode-icon{background:rgba(126,226,45,.16);color:var(--green)}.mode-tile.zero .mode-icon{background:rgba(21,155,255,.16);color:var(--blue)}.mode-tile.ct .mode-icon{background:rgba(188,99,255,.18);color:var(--purple)}.mode-tile.charge .mode-icon{background:rgba(246,166,25,.18);color:var(--gold)}.mode-tile.disabled .mode-icon{background:rgba(155,178,193,.12);color:#b9c9d4}.mode-tile.normal .mode-icon{background:rgba(77,171,247,.16);color:#4dabf7}.mode-tile strong{display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mode-tile.selling strong{color:var(--green)}.mode-tile.zero strong{color:var(--blue)}.mode-tile.ct strong{color:var(--purple)}.mode-tile.charge strong{color:var(--gold)}.mode-tile.normal strong{color:#4dabf7}.mode-tile span{display:block;color:#c2d4de;margin-top:1px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -8801,21 +8831,26 @@ class DeyeEnergyCard extends HTMLElement {
     root.querySelectorAll("[data-save-mapping]").forEach((el) => el.addEventListener("click", () => {
       this.saveMappingToInverter();
     }));
+    root.querySelectorAll("[data-schedule-tab]").forEach((el) => el.addEventListener("click", (event) => {
+      event.preventDefault();
+      this._scheduleTab = el.dataset.scheduleTab === "manual" ? "manual" : "work";
+      this.render();
+    }));
     root.querySelectorAll("[data-manual-field]").forEach((el) => {
       const update = () => {
         this.updateManualScheduleField(Number(el.dataset.manualIndex), el.dataset.manualField, el.value);
-        if (el.dataset.manualField === "mode") this.renderDialogOnly();
+        if (el.dataset.manualField === "mode") this.render();
       };
       el.addEventListener("change", update);
       if (el.tagName !== "SELECT" && el.type !== "checkbox") el.addEventListener("input", update);
     });
     root.querySelectorAll("[data-manual-add]").forEach((el) => el.addEventListener("click", () => {
       this.addManualScheduleRow();
-      this.renderDialogOnly();
+      this.render();
     }));
     root.querySelectorAll("[data-manual-remove]").forEach((el) => el.addEventListener("click", () => {
       this.removeManualScheduleRow(Number(el.dataset.manualRemove));
-      this.renderDialogOnly();
+      this.render();
     }));
     root.querySelectorAll("[data-manual-save]").forEach((el) => el.addEventListener("click", () => this.saveManualSchedule()));
     root.querySelectorAll("[data-manual-init]").forEach((el) => el.addEventListener("click", () => this.initManualScheduleFromTou()));

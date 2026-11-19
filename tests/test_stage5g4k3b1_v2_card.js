@@ -44,5 +44,5 @@ card.tariffData = () => ({
 const tariffHtml = card.renderTariffTab();
 check(!tariffHtml.includes('data-tariff-field="price_source"'), "legacy price source selector must not be runtime authority");
 check(tariffHtml.includes("Detected source:"), "UI must present a derived source instead of a selector");
-check(source.startsWith("// Resource revision: v=0.8.0.49"), "resource revision must be v=0.8.0.49");
+check(source.startsWith("// Resource revision: v=0.8.0.50"), "resource revision must be v=0.8.0.50");
 console.log("stage5g4k3b1 v2 source authority card OK");
