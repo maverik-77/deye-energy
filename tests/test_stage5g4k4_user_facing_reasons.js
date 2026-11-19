@@ -141,8 +141,8 @@ check(
   "SOC freshness source in Data quality must use the central mapper",
 );
 check(
-  source.startsWith("// Resource revision: v=0.8.0.44"),
-  "resource revision must be v=0.8.0.44",
+  source.startsWith("// Resource revision: v=0.8.0.45"),
+  "resource revision must be v=0.8.0.45",
 );
 
 console.log("Stage 5G.4K.4 user-facing reason translation tests passed");

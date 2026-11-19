@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.44
+// Resource revision: v=0.8.0.45
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -2861,7 +2861,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.44)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.45)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}

@@ -14,7 +14,7 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 CARD_FILENAME = "deye-energy-card.js"
-CARD_RESOURCE_REVISION = "0.8.0.44"
+CARD_RESOURCE_REVISION = "0.8.0.45"
 CARD_STATIC_ROOT = f"/{DOMAIN}"
 CARD_RESOURCE_PATH = f"{CARD_STATIC_ROOT}/{CARD_FILENAME}"
 CARD_RESOURCE_URL = f"{CARD_RESOURCE_PATH}?v={CARD_RESOURCE_REVISION}"
@@ -138,19 +138,12 @@ def _resource_type(item: dict[str, Any]) -> str:
 
 
 async def _async_reconcile_collection(collection: Any) -> dict[str, Any]:
-    """Create or update one unambiguous DEM storage resource."""
+    """Create, deduplicate and update one unambiguous DEM storage resource."""
     items = await _async_maybe_await(collection.async_items())
     if not isinstance(items, (list, tuple)):
         return {"status": "collection_invalid", "changed": False}
 
     owned = [item for item in items if isinstance(item, dict) and is_owned_resource_url(item.get("url"))]
-    if len(owned) > 1:
-        return {
-            "status": "ambiguous_duplicates",
-            "changed": False,
-            "owned_count": len(owned),
-        }
-
     if not owned:
         create = getattr(collection, "async_create_item", None)
         if not callable(create):
@@ -160,14 +153,49 @@ async def _async_reconcile_collection(collection: Any) -> dict[str, Any]:
         )
         return {"status": "created", "changed": True, "owned_count": 1}
 
-    current = owned[0]
+    # Prefer an entry already on the canonical path; that is the file HA serves.
+    current = next(
+        (item for item in owned if _resource_path(item.get("url")) == CARD_RESOURCE_PATH),
+        owned[0],
+    )
+
+    deduplicated = False
+    if len(owned) > 1:
+        delete = getattr(collection, "async_delete_item", None)
+        if not callable(delete):
+            return {
+                "status": "duplicate_cleanup_api_unavailable",
+                "changed": False,
+                "owned_count": len(owned),
+            }
+        for item in owned:
+            if item is current:
+                continue
+            duplicate_id = item.get("id")
+            if duplicate_id in (None, ""):
+                return {
+                    "status": "duplicate_cleanup_id_unavailable",
+                    "changed": deduplicated,
+                    "owned_count": len(owned),
+                }
+            await _async_maybe_await(delete(duplicate_id))
+            deduplicated = True
+
     if str(current.get("url") or "") == CARD_RESOURCE_URL:
-        return {"status": "current", "changed": False, "owned_count": 1}
+        return {
+            "status": "deduplicated" if deduplicated else "current",
+            "changed": deduplicated,
+            "owned_count": 1,
+        }
 
     resource_id = current.get("id")
     update = getattr(collection, "async_update_item", None)
     if resource_id in (None, "") or not callable(update):
-        return {"status": "update_api_unavailable", "changed": False, "owned_count": 1}
+        return {
+            "status": "update_api_unavailable",
+            "changed": deduplicated,
+            "owned_count": 1,
+        }
 
     await _async_maybe_await(
         update(
@@ -175,7 +203,11 @@ async def _async_reconcile_collection(collection: Any) -> dict[str, Any]:
             {"url": CARD_RESOURCE_URL, "res_type": _resource_type(current)},
         )
     )
-    return {"status": "updated", "changed": True, "owned_count": 1}
+    return {
+        "status": "deduplicated_and_updated" if deduplicated else "updated",
+        "changed": True,
+        "owned_count": 1,
+    }
 
 
 def _schedule_started_followup(hass: Any, state: dict[str, Any]) -> bool:
@@ -260,9 +292,18 @@ async def async_reconcile_lovelace_resource(
             result = {"status": "error", "changed": False}
             _LOGGER.exception("DEM Lovelace resource reconciliation failed")
         else:
-            if result["status"] == "ambiguous_duplicates":
+            if result["status"] in {"deduplicated", "deduplicated_and_updated"}:
+                _LOGGER.info(
+                    "DEM removed duplicate Lovelace card resources; canonical resource is %s",
+                    CARD_RESOURCE_URL,
+                )
+            elif result["status"] in {
+                "duplicate_cleanup_api_unavailable",
+                "duplicate_cleanup_id_unavailable",
+            }:
                 _LOGGER.warning(
-                    "DEM found multiple owned Lovelace resources; no entry was changed or deleted"
+                    "DEM could not remove duplicate Lovelace card resources (%s)",
+                    result["status"],
                 )
             elif result["status"] in {"created", "updated"}:
                 _LOGGER.info("DEM Lovelace resource %s: %s", result["status"], CARD_RESOURCE_URL)

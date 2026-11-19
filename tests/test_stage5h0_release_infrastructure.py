@@ -65,6 +65,7 @@ class FakeCollection:
 
     async def async_delete_item(self, item_id):
         self.deletes.append(item_id)
+        self.items = [item for item in self.items if item.get("id") != item_id]
 
 
 class FakeHttp:
@@ -180,7 +181,7 @@ def test_next_bundled_revision_reconciles_without_user_edit():
         await frontend.async_setup_frontend(hass)
 
         original_url = frontend.CARD_RESOURCE_URL
-        frontend.CARD_RESOURCE_URL = f"{frontend.CARD_RESOURCE_PATH}?v=0.8.0.45"
+        frontend.CARD_RESOURCE_URL = f"{frontend.CARD_RESOURCE_PATH}?v=0.8.0.46"
         try:
             await frontend.async_reconcile_lovelace_resource(hass)
         finally:
@@ -190,7 +191,7 @@ def test_next_bundled_revision_reconciles_without_user_edit():
             (
                 "dem",
                 {
-                    "url": f"{frontend.CARD_RESOURCE_PATH}?v=0.8.0.45",
+                    "url": f"{frontend.CARD_RESOURCE_PATH}?v=0.8.0.46",
                     "res_type": "module",
                 },
             )
@@ -302,20 +303,54 @@ def test_unrelated_resources_remain_semantically_unchanged():
     asyncio.run(scenario())
 
 
-def test_ambiguous_owned_duplicates_fail_safe_without_update_or_delete():
+def test_owned_duplicates_collapse_to_one_canonical_resource():
     async def scenario():
         original = [
+            resource("legacy", "/local/deye-energy-card.js?v=0.8.0.42", "js"),
             resource("canonical", frontend.CARD_RESOURCE_URL),
-            resource("legacy", "/local/deye-energy-card.js?v=0.8.0.42"),
         ]
         collection = FakeCollection(original)
         hass = FakeHass(collection)
 
         state = await frontend.async_setup_frontend(hass)
 
-        assert state["resource_result"]["status"] == "ambiguous_duplicates"
-        assert collection.items == original
-        assert collection.creates == collection.updates == collection.deletes == []
+        result = state["resource_result"]
+        assert result["status"] == "deduplicated"
+        assert result["changed"] is True
+        assert result["owned_count"] == 1
+        assert collection.deletes == ["legacy"]
+        assert collection.creates == []
+        assert collection.updates == []
+        assert len(collection.items) == 1
+        assert collection.items[0]["id"] == "canonical"
+        assert collection.items[0]["url"] == frontend.CARD_RESOURCE_URL
+
+    asyncio.run(scenario())
+
+
+def test_owned_duplicates_are_deduplicated_and_updated_to_current_revision():
+    async def scenario():
+        original = [
+            resource("old-canonical", f"{frontend.CARD_RESOURCE_PATH}?v=0.8.0.42"),
+            resource("stale-local", "/local/deye-energy-card.js?v=0.8.0.40", "js"),
+        ]
+        collection = FakeCollection(original)
+        hass = FakeHass(collection)
+
+        state = await frontend.async_setup_frontend(hass)
+
+        result = state["resource_result"]
+        assert result["status"] == "deduplicated_and_updated"
+        assert result["changed"] is True
+        assert collection.deletes == ["stale-local"]
+        assert collection.updates == [
+            (
+                "old-canonical",
+                {"url": frontend.CARD_RESOURCE_URL, "res_type": "module"},
+            )
+        ]
+        assert len(collection.items) == 1
+        assert collection.items[0]["url"] == frontend.CARD_RESOURCE_URL
 
     asyncio.run(scenario())
 
@@ -367,7 +402,7 @@ def test_revision_is_single_backend_source_and_matches_unchanged_card():
     first_line = component_card.read_text(encoding="utf-8").splitlines()[0]
     assert first_line == f"// Resource revision: v={frontend.CARD_RESOURCE_REVISION}"
     assert frontend.CARD_RESOURCE_URL == (
-        "/deye_energy/deye-energy-card.js?v=0.8.0.44"
+        "/deye_energy/deye-energy-card.js?v=0.8.0.45"
     )
 
 
@@ -392,7 +427,7 @@ def test_hacs_manifest_and_packaged_brand_assets_are_valid():
     manifest = json.loads((PACKAGE / "manifest.json").read_text(encoding="utf-8"))
     assert hacs["name"] == manifest["name"] == "Deye Energy"
     assert manifest["domain"] == "deye_energy"
-    assert manifest["version"] == "0.8.0"
+    assert manifest["version"] == "0.8.0.45"
     assert manifest["documentation"] == "https://github.com/maverik-77/deye-energy"
     assert manifest["issue_tracker"].endswith("/deye-energy/issues")
 
