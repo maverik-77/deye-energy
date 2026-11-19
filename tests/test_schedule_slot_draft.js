@@ -31,8 +31,8 @@ function assertEqual(actual, expected, message) {
   }
 }
 
-const KEY = "06_07";
-const LABEL = "06:00-07:00";
+const KEY = "0600_0630";
+const LABEL = "06:00-06:30";
 const BACKEND_MANAGER_MODES = ["Normal Operation", "Selling", "Charging"];
 function originalSlot(overrides = {}) {
   return {

@@ -125,6 +125,9 @@ def test_stale_to_valid_same_value_revalidates_and_releases_failure_latch():
     with at(started):
         slot = configure_selling_slot(runtime)
         slot.minimum_sell_soc = 10
+        # The test runs across the half-hour boundary; sell in both halves.
+        for field_name in ("enabled", "mode", "sell_power", "discharge_current", "tou_soc", "minimum_sell_soc"):
+            setattr(runtime.slots["0530_0600"], field_name, getattr(slot, field_name))
         runtime._soc_quality_signature = runtime._soc_semantic_signature(
             runtime.soc_diagnostics()
         )

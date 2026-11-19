@@ -457,7 +457,7 @@ class DeyeEnergyCard extends HTMLElement {
     const rawStatus = this.state(statusEntity);
     const [modeText, modeClass] = this.readMode(rawStatus);
     const activeSlot = this.state(activeSlotEntity);
-    const activeSlotLabel = (slots.find(([key]) => key === activeSlot)?.[1] || activeSlot).replace(/:00/g, "");
+    const activeSlotLabel = (slots.find(([key]) => key === activeSlot)?.[1] || activeSlot);
     const batterySoc = this.entity("sensor", "battery_soc");
     const soldEnergyToday = this.entity("sensor", "sold_energy_today");
     const soldValueToday = this.entity("sensor", "sold_value_today");
@@ -4046,7 +4046,7 @@ class DeyeEnergyCard extends HTMLElement {
   energyFlowPanel() {
     const [modeText, modeClass] = this.readMode(this.state(this.entity("sensor", "manager_status")));
     const activeSlot = this.state(this.entity("sensor", "active_slot"), "");
-    const activeSlotLabel = (this.scheduleSlots().find(([key]) => key === activeSlot)?.[1] || activeSlot).replace(/:00/g, "");
+    const activeSlotLabel = (this.scheduleSlots().find(([key]) => key === activeSlot)?.[1] || activeSlot);
     const currentMode = this.deyeWorkModeState();
     const currentModeMeta = currentMode ? this.modeMeta(currentMode, true) : { cls: "disabled" };
     const managerModeClass = this.modeTextClass(modeText);
@@ -4515,14 +4515,29 @@ class DeyeEnergyCard extends HTMLElement {
     setPath("home", homePath, "#38bdf8", active.load);
   }
 
+  clockFromMinutes(minutes) {
+    const value = ((Number(minutes) % 1440) + 1440) % 1440;
+    return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
+  }
+
   scheduleSlots() {
-    return Array.from({ length: 24 }, (_, hour) => {
-      const next = (hour + 1) % 24;
-      const key = `${String(hour).padStart(2, "0")}_${String(next).padStart(2, "0")}`;
-      const label = `${String(hour).padStart(2, "0")}:00-${String(next).padStart(2, "0")}:00`;
+    const stepMinutes = 30;
+    return Array.from({ length: 1440 / stepMinutes }, (_, index) => {
+      const start = index * stepMinutes;
+      const end = start + stepMinutes;
+      const digits = (minutes) => this.clockFromMinutes(minutes).replace(":", "");
+      const key = `${digits(start)}_${digits(end)}`;
+      const label = `${this.clockFromMinutes(start)}-${this.clockFromMinutes(end)}`;
+      const hour = Math.floor(start / 60);
       const touSlot = hour < 4 ? 1 : hour < 8 ? 2 : hour < 12 ? 3 : hour < 16 ? 4 : hour < 20 ? 5 : 6;
       return [key, label, touSlot];
     });
+  }
+
+  aiHourSlotKeys(hour) {
+    const start = String(Number(hour)).padStart(2, "0");
+    const next = String((Number(hour) + 1) % 24).padStart(2, "0");
+    return [`${start}00_${start}30`, `${start}30_${next}00`];
   }
 
   async startSell() {
@@ -4801,8 +4816,8 @@ class DeyeEnergyCard extends HTMLElement {
         const data = {
           key,
           label,
-          start: Number(key.slice(0, 2)),
-          end: key.endsWith("_00") ? 0 : Number(key.slice(3, 5)),
+          start: Number(key.slice(0, 2)) * 60 + Number(key.slice(2, 4)),
+          end: key.endsWith("_0000") ? 0 : Number(key.slice(5, 7)) * 60 + Number(key.slice(7, 9)),
           enabled,
           mode,
           sellPower: this.asNumber(this.numberState(entities.sellPower, 0)) || 0,
@@ -4835,17 +4850,17 @@ class DeyeEnergyCard extends HTMLElement {
       let splitIndex = -1;
       let longest = 0;
       segments.forEach((segment, index) => {
-        const end = segment.end === 0 ? 24 : segment.end;
+        const end = segment.end === 0 ? 1440 : segment.end;
         const duration = end - segment.start;
-        if (duration > longest && duration > 1) {
+        if (duration > longest && duration > 30) {
           longest = duration;
           splitIndex = index;
         }
       });
       if (splitIndex < 0) break;
       const segment = segments[splitIndex];
-      const end = segment.end === 0 ? 24 : segment.end;
-      const middle = segment.start + Math.floor((end - segment.start) / 2);
+      const end = segment.end === 0 ? 1440 : segment.end;
+      const middle = segment.start + Math.floor((end - segment.start) / 30 / 2) * 30;
       segments.splice(
         splitIndex,
         1,
@@ -6716,27 +6731,24 @@ class DeyeEnergyCard extends HTMLElement {
       const selected = new Set((future.updates || []).map((item) => String(item.slot_key || "")));
       const results = future.slot_results || {};
       rows.forEach((row) => {
-        const key = `${String(row.hour).padStart(2, "0")}_${String((row.hour + 1) % 24).padStart(2, "0")}`;
-        if (selected.has(key)) row.approval_status = future.status === "cancelled" ? "cancelled" : "approved";
-        if (results[key]?.status === "confirmed") row.deployment_status = "confirmed";
-        if (["logical_applied", "physical_pending"].includes(results[key]?.status)) {
-          row.deployment_status = results[key].status;
-        }
-        if (results[key]?.status === "waiting_data") {
-          row.deployment_status = "waiting_data";
-          row.deployment_reason = results[key]?.reason;
-        }
-        if (results[key]?.status === "missed") {
-          row.deployment_status = "missed";
-          row.deployment_reason = results[key]?.reason;
-        }
-        if (results[key]?.status === "blocked") {
-          row.deployment_status = "blocked";
-          row.deployment_reason = results[key]?.reason;
-        }
-        if (results[key]?.status === "manual_override") {
-          row.deployment_status = "manual_override";
-          row.deployment_reason = results[key]?.reason;
+        const keys = [
+          `${String(row.hour).padStart(2, "0")}_${String((row.hour + 1) % 24).padStart(2, "0")}`,
+          ...this.aiHourSlotKeys(row.hour),
+        ];
+        const entries = keys.map((slotKey) => results[slotKey]).filter((entry) => entry && entry.status);
+        const statusOf = (name) => entries.find((entry) => entry.status === name);
+        if (keys.some((slotKey) => selected.has(slotKey))) row.approval_status = future.status === "cancelled" ? "cancelled" : "approved";
+        const halves = this.aiHourSlotKeys(row.hour).map((slotKey) => results[slotKey]?.status);
+        if (halves.length && halves.every((status) => status === "confirmed")) row.deployment_status = "confirmed";
+        else if (entries.length && entries.every((entry) => entry.status === "confirmed")) row.deployment_status = "confirmed";
+        const pendingEntry = statusOf("physical_pending") || statusOf("logical_applied");
+        if (pendingEntry) row.deployment_status = pendingEntry.status;
+        for (const name of ["waiting_data", "missed", "blocked", "manual_override"]) {
+          const entry = statusOf(name);
+          if (entry) {
+            row.deployment_status = name;
+            row.deployment_reason = entry.reason;
+          }
         }
       });
     }
@@ -7113,8 +7125,8 @@ class DeyeEnergyCard extends HTMLElement {
       const segments = this.scheduleSegments(slots);
       const segmentRows = segments.map((item, index) => `<tr>
           <td>${index + 1}</td>
-          <td>${String(item.start).padStart(2, "0")}:00</td>
-          <td>${String(item.end).padStart(2, "0")}:00</td>
+          <td>${this.clockFromMinutes(item.start)}</td>
+          <td>${this.clockFromMinutes(item.end)}</td>
           <td>${item.chargeEnabled ? "yes" : "no"}</td>
           <td>${item.touSoc === null ? "requires confirmation" : `${item.touSoc}%`}</td>
         </tr>`).join("");
@@ -7157,7 +7169,7 @@ class DeyeEnergyCard extends HTMLElement {
       } else if (tab === "tou") {
         body = this.renderTouSettingsContent();
       } else if (tab === "mapping") {
-        body = `<div class="hint">${this.mapWarning(slots)}. The 24 h schedule is arranged into six ranges and written to Deye Time Of Use.</div>
+        body = `<div class="hint">${this.mapWarning(slots)}. The full-day schedule is arranged into six ranges and written to Deye Time Of Use.</div>
           <table class="settings-table"><thead><tr><th>Deye slot</th><th>From</th><th>To</th><th>Grid charging</th><th>SOC</th></tr></thead><tbody>${segmentRows}</tbody></table>`;
       } else if (tab === "ai") {
         body = this.renderAiSettingsPanel();
@@ -7310,7 +7322,7 @@ class DeyeEnergyCard extends HTMLElement {
 
     const slots = this.scheduleSlots();
     const activeSlot = this.state(this.entity("sensor", "active_slot"));
-    const activeSlotLabel = (slots.find(([key]) => key === activeSlot)?.[1] || activeSlot).replace(/:00/g, "");
+    const activeSlotLabel = (slots.find(([key]) => key === activeSlot)?.[1] || activeSlot);
     const [modeText, modeClass] = this.readMode(this.state(this.entity("sensor", "manager_status")));
     const currentInverterMode = this.state(this.entity("sensor", "current_work_mode"));
     const targetInverterMode = this.state(this.entity("sensor", "target_mode"));
@@ -7384,7 +7396,7 @@ class DeyeEnergyCard extends HTMLElement {
       ].filter(Boolean).join(" ");
       return `<tr class="${rowClass}" data-slot-row="${key}">
         <td class="check-col" data-label=""><label class="slot-check"><input type="checkbox" data-slot-check="${key}" ${selected ? "checked" : ""}><span></span></label></td>
-        <td data-label="Hour" class="time-col">${label.replace(/:00/g, "")}</td>
+        <td data-label="Hour" class="time-col">${label}</td>
         <td data-label="Mode">${this.modePill(mode, enabled)}</td>
         <td data-label="Sell power" class="metric sell">${enabled ? `${this.iconSvg("sell")} ${this.numberState(entities.sellPower)} W` : "-"}</td>
         <td data-label="Discharge current" class="metric discharge">${enabled ? `↓ ${this.numberState(entities.dischargeCurrent)} A` : "-"}</td>

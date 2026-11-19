@@ -21,9 +21,9 @@ tariff. The original copyright notice is kept in [LICENSE](LICENSE).
 
 ## Key features
 
-- a schedule of 24 one-hour slots;
+- a schedule of 48 half-hour slots;
 - three logical modes: **Normal Operation**, **Charging** and **Selling**;
-- Deye mapping of the 24 h plan onto the six physical TOU ranges (6/6);
+- Deye mapping of the full-day schedule onto the six physical TOU ranges (6/6), with range boundaries on :00 or :30;
 - an editor for the physical Deye Time Of Use with actual / expected / status;
 - a master **Deye control** switch that blocks every physical write when off;
 - transactional, diff-only writes with confirmation and rollback;
@@ -122,8 +122,10 @@ enter your own values in the card under **Settings → Tariff and distribution**
 ### Known limitations of the tariff engine
 
 - the daily **standing charge** (56.61 p/day) is not modelled;
-- the engine works on hourly slots, so the 23:30 and 05:30 half-hour edges of the
-  off-peak window are rounded to whole hours (23:00–05:00);
+- the schedule and the physical TOU ranges use half-hour slots, but the optimizer,
+  the price rows and the manual tariff engine still work in whole hours, so the
+  23:30 and 05:30 edges of the off-peak window are priced as 23:00–05:00 (the TOU
+  ranges themselves can start at 23:30 and 05:30);
 - there is no manual flat export rate (for example a fixed 12 p/kWh): export
   value comes from the export price entity you map;
 - Intelligent Octopus Go dispatch slots are not used for pricing.

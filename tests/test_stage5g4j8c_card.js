@@ -16,7 +16,7 @@ function testPendingIsNotCompleted() {
 }
 
 function testConfirmedRequiresBackendConfirmedState() {
-  assert(source.includes('results[key]?.status === "confirmed"'), "confirmed backend state is not mapped");
+  assert(source.includes('entry.status === "confirmed"'), "confirmed backend state is not mapped");
   assert(source.includes('row.deployment_status === "confirmed"'), "confirmed execution label is missing");
 }
 

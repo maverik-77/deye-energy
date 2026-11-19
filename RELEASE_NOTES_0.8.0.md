@@ -20,6 +20,9 @@ Deye Energy 0.8.0 is the English-language edition of the
   Octopus Go with Octopus Energy price entities; price mappings use `GBP/kWh` and
   `GBP/MWh`.
 - Numbers and dates use the `en-GB` locale.
+- The work schedule has 48 half-hour slots and the Deye TOU ranges can start and
+  end on :00 or :30. The optimizer, the AI proposals and prices remain hourly and
+  apply to both half-hour slots of an hour.
 
 ## Carried over from the upstream 0.8.0 contract
 
