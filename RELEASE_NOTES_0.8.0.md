@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.47`.
+Card resource revision: `v=0.8.0.48`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the
@@ -9,6 +9,13 @@ Deye Energy 0.8.0 is the English-language edition of the
 
 ## Revision history
 
+- `v=0.8.0.48` — The Settings and diagnostics 24 h mapping is now editable and
+  is refreshed from the inverter every time it is opened. From, To, grid charging
+  and SOC can be changed where the provider allows it; Save validates the full
+  six-range day (00:00 to 00:00, no gaps or overruns) before writing all six
+  physical Deye Time Of Use slots. Read-only providers show values without a
+  save action. Existing `deye_addon` config entries migrate to the writable
+  `sunsynk` provider so TOU writes are available.
 - `v=0.8.0.47` — Energy status now supports single-phase inverters by default.
   The Grid and House tiles show one L1 row; when the L1 power sensor is 0 or
   unavailable, the row uses the `grid_power` / `load_power` total instead. Set

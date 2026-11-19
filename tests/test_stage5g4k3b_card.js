@@ -77,5 +77,5 @@ check(diagnostics.includes("price source not configured"), "missing direction st
 check(diagnostics.includes("not configured") && diagnostics.includes("removed in mapping"), "explicit empty reason must be readable");
 check(diagnostics.includes("missing"), "empty mapped entity must be displayed as missing");
 check(!diagnostics.includes("sensor.octopus_energy_aio_"), "diagnostics must not display a provider fallback");
-check(source.startsWith("// Resource revision: v=0.8.0.47"), "resource revision must be v=0.8.0.47");
+check(source.startsWith("// Resource revision: v=0.8.0.48"), "resource revision must be v=0.8.0.48");
 console.log("stage5g4k3b explicit-empty card contract OK");

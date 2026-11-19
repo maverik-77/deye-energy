@@ -198,9 +198,41 @@ function test_three_phase_opt_in_still_renders_all_phases() {
   assert.strictEqual(countOccurrences(desktopHtml, 'class="flow-detail-row one-col"'), 0);
 }
 
+function test_entity_override_maps_house_load_and_l1() {
+  const config = {
+    entities: {
+      load_power: "sensor.totals_grid_power",
+      load_l1_power: "sensor.totals_grid_power",
+    },
+  };
+  const card = makeCard(390, config);
+  card._hass.states["sensor.totals_grid_power"] = makeState("-1250");
+  const html = card.energyFlowPanel();
+  assert.match(html, /data-live="load-main">-1\.25 kW/);
+  assert.match(html, /data-live="load-l1-power">-1\.25 kW/);
+  assert.doesNotMatch(html, /data-live="load-main">2\.80 kW/);
+}
+
+function test_battery_icon_shows_soc_level_and_color() {
+  const card = makeCard(390);
+  card._hass.states["sensor.deye_energy_battery_soc"] = makeState("15");
+  const low = card.energyFlowPanel();
+  assert.match(low, /data-live-html="battery-icon"/);
+  assert.match(low, /aria-label="Battery 15 percent"/);
+  assert.match(low, /hsl\(0, 85%, 55%\)/);
+  card._hass.states["sensor.deye_energy_battery_soc"] = makeState("90");
+  const high = card.energyFlowPanel();
+  assert.match(high, /aria-label="Battery 90 percent"/);
+  assert.match(high, /hsl\(120, 85%, 55%\)/);
+  card._hass.states["sensor.deye_energy_battery_soc"] = makeState("40");
+  assert.match(card.energyFlowPanel(), /hsl\(60, 85%, 55%\)/);
+}
+
 test_phase_count_defaults_to_single_phase();
 test_single_phase_value_uses_total_when_phase_missing_or_zero();
 test_mobile_single_phase_shows_only_l1_with_total_fallback();
 test_desktop_single_phase_uses_one_column();
 test_three_phase_opt_in_still_renders_all_phases();
+test_entity_override_maps_house_load_and_l1();
+test_battery_icon_shows_soc_level_and_color();
 console.log("single phase status tests passed");

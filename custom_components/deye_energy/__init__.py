@@ -11,15 +11,24 @@ from .const import (
     ABSOLUTE_INVERTER_MAX_POWER_W,
     CONF_BUY_SELLER_ID,
     CONF_BUY_SELLER_TARIFF_ID,
+    CONF_CHARGE_CURRENT_NUMBER,
+    CONF_DISCHARGE_CURRENT_NUMBER,
+    CONF_GRID_CHARGE_CURRENT_NUMBER,
     CONF_INVERTER_PROVIDER,
+    CONF_MAX_SELL_POWER_NUMBER,
+    CONF_WORK_MODE_AUX_ENTITY,
+    CONF_WORK_MODE_SELECT,
     DEFAULT_BUY_SELLER_ID,
     DEFAULT_BUY_SELLER_TARIFF_ID,
     DOMAIN,
     PHYSICAL_NORMAL_MODES,
     PLATFORMS,
+    PROVIDER_DEYE_ADDON,
     PROVIDER_LEWA_REKA,
+    PROVIDER_SUNSYNK,
     WORK_MODES,
     WORK_MODE_SERVICE_VALUES,
+    conf_tou_entity,
 )
 from .frontend import async_setup_frontend, cancel_frontend_followup
 from .manager import DeyeEnergyRuntime
@@ -140,6 +149,75 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
+_SUNSYNK_ENTITY_FALLBACKS: dict[str, str] = {
+    CONF_WORK_MODE_SELECT: "select.deye_load_limit",
+    CONF_WORK_MODE_AUX_ENTITY: "switch.deye_solar_export",
+    CONF_MAX_SELL_POWER_NUMBER: "number.deye_max_sell_power",
+    CONF_DISCHARGE_CURRENT_NUMBER: "number.deye_battery_max_discharge_current",
+    CONF_CHARGE_CURRENT_NUMBER: "number.deye_battery_max_charge_current",
+    CONF_GRID_CHARGE_CURRENT_NUMBER: "number.deye_grid_charge_battery_current",
+}
+for _tou_index in range(1, 7):
+    _SUNSYNK_ENTITY_FALLBACKS[conf_tou_entity(_tou_index, "start")] = (
+        f"select.deye_prog{_tou_index}_time"
+    )
+    _SUNSYNK_ENTITY_FALLBACKS[conf_tou_entity(_tou_index, "soc")] = (
+        f"number.deye_prog{_tou_index}_capacity"
+    )
+    _SUNSYNK_ENTITY_FALLBACKS[conf_tou_entity(_tou_index, "grid")] = (
+        f"select.deye_prog{_tou_index}_charge"
+    )
+
+
+def _entity_exists(hass: HomeAssistant, entity_id: str) -> bool:
+    """True when an entity is loaded or at least registered in HA."""
+    if not entity_id:
+        return False
+    if hass.states.get(entity_id) is not None:
+        return True
+    try:
+        from homeassistant.helpers import entity_registry as er
+
+        return er.async_get(hass).async_get(entity_id) is not None
+    except (ImportError, AttributeError, RuntimeError):
+        return False
+
+
+def _set_migrated_value(
+    data: dict, options: dict, key: str, value: str
+) -> None:
+    """Persist a migrated value where the entry already stores that key."""
+    if key in data:
+        data[key] = value
+    options[key] = value
+
+
+async def _migrate_24_to_25(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Enable writable control for read-only Deye MQTT mappings.
+
+    Version 24 allowed selecting the read-only "Deye Inverter MQTT" provider
+    even when the mapped entities are the writable Sunsynk-compatible Deye
+    MQTT entities.  Version 25 moves only those entries to the Sunsynk
+    profile and fills the Time Of Use mappings the read-only profile never
+    asked for.  Existing mappings and all unrelated config are left intact.
+    """
+    data = dict(entry.data)
+    options = dict(entry.options)
+    merged = {**data, **options}
+    if str(merged.get(CONF_INVERTER_PROVIDER, "")) != PROVIDER_DEYE_ADDON:
+        hass.config_entries.async_update_entry(entry, minor_version=25)
+        return True
+    _set_migrated_value(data, options, CONF_INVERTER_PROVIDER, PROVIDER_SUNSYNK)
+    for key, entity_id in _SUNSYNK_ENTITY_FALLBACKS.items():
+        if str(merged.get(key) or "").strip() or not _entity_exists(hass, entity_id):
+            continue
+        _set_migrated_value(data, options, key, entity_id)
+    hass.config_entries.async_update_entry(
+        entry, data=data, options=options, minor_version=25
+    )
+    return True
+
+
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Migrate legacy entries without changing any mapped entity identifier.
 
@@ -149,6 +227,8 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """
     if entry.version != 1:
         return False
+    if entry.minor_version == 24:
+        return await _migrate_24_to_25(hass, entry)
     if entry.minor_version >= 24:
         return True
     data = dict(entry.data)

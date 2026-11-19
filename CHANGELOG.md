@@ -13,13 +13,16 @@ and are not repeated here.
 - Sunsynk (MQTT) inverter profile as the default, with pre-filled entity names.
 - Octopus Energy price adapter and tariff catalogue (Intelligent Octopus Go, Agile, Flexible); defaults match an Intelligent Octopus Go account with Outgoing export.
 - `GBP/kWh` and `GBP/MWh` accepted as price units.
+- Editable 24 h Deye Time Of Use mapping in Settings and diagnostics, with a
+  forced inverter refresh on open and save-only full-day validation.
 
 ### Changed
 
 - The work schedule uses 48 half-hour slots (keys such as `0530_0600`); hourly plan keys such as `05_06` still work and apply to both halves. Deye TOU ranges may start and end on :00 or :30.
 
 - Integration domain `deye_energy`, card `deye-energy-card`, resource revision
-  `v=0.8.0.47`.
+  `v=0.8.0.48`.
+- Existing `deye_addon` config entries migrate to the writable `sunsynk` provider.
 - Currency, number and date display use pounds and the `en-GB` locale.
 - Deye Time Of Use options in `H:MM` format are parsed; the battery current cap is
   raised from 240 A to 320 A.

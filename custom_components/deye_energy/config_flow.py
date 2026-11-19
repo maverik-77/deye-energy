@@ -1088,7 +1088,7 @@ class DeyeEnergyConfigFlow(MappingWizardMixin, config_entries.ConfigFlow, domain
     """Configuration wizard for Deye Energy."""
 
     VERSION = 1
-    MINOR_VERSION = 24
+    MINOR_VERSION = 25
 
     @staticmethod
     @callback
