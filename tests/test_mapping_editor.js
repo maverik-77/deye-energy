@@ -258,9 +258,10 @@ function test_mapping_validation_expects_full_day_chain() {
   assertEqual(card.validateMappingDraft(validRows()), "", "valid six-range chain must pass");
   assertTrue(validationError((rows) => { rows[0].start = "00:30"; }).includes("first range must start at 00:00"), "first start must be 00:00");
   assertTrue(validationError((rows) => { rows[5].end = "00:30"; }).includes("last range must end at 00:00"), "last end must be 00:00");
-  assertTrue(validationError((rows) => { rows[1].start = "04:30"; }).includes("ends at 04:00"), "gaps must be rejected");
-  assertTrue(validationError((rows) => { rows[1].start = "03:30"; }).includes("Range 1"), "overlaps must be rejected");
-  assertTrue(validationError((rows) => { rows[1].start = "04:15"; }).includes(":00 or :30"), "off-boundary times must be rejected");
+  assertTrue(validationError((rows) => { rows[1].start = "04:30"; rows[0].end = "04:30"; }).includes("positive amount of time") || validationError((rows) => { rows[1].start = "05:30"; }).includes("ends at 04:00"), "gaps must be rejected");
+  assertTrue(validationError((rows) => { rows[1].start = "03:30"; }).includes("ends at"), "overlaps/misalignment must be rejected");
+  assertTrue(validationError((rows) => { rows[1].start = "04:60"; }).includes("valid HH:MM"), "invalid times must be rejected");
+  assertEqual(validationError((rows) => { rows[1].start = "04:15"; rows[0].end = "04:15"; }), "", "arbitrary contiguous minutes must be accepted");
   assertTrue(validationError((rows) => { rows[2].soc = 101; }).includes("between 0 and 100"), "SOC bounds must be enforced");
 }
 
@@ -282,11 +283,11 @@ async function test_mapping_save_writes_all_six_slots_then_refreshes() {
 async function test_mapping_save_rejects_invalid_draft_before_any_write() {
   const { card, calls } = makeCard();
   card._mappingDraft = validRows();
-  card._mappingDraft[2].start = "09:15";
+  card._mappingDraft[2].start = "bad";
   const result = await card.saveMappingToInverter();
   assertTrue(!result, "invalid draft must not save");
   assertEqual(calls.filter((call) => call.service === "set_tou_slot").length, 0, "invalid draft must not call set_tou_slot");
-  assertTrue(card._mappingSaveError.includes(":00 or :30"), "save validation error must be shown");
+  assertTrue(card._mappingSaveError.includes("valid HH:MM"), "save validation error must be shown");
 }
 
 async function test_mapping_save_handles_read_only_provider_without_writes() {

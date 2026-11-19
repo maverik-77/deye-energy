@@ -5858,11 +5858,13 @@ class TouBackendContract5C1Tests(unittest.IsolatedAsyncioTestCase):
             await runtime.async_set_physical_tou_slot(2, start="05:00", end="09:00")
         self.assertEqual((runtime.hass.states.get(first).state, runtime.hass.states.get(second).state), before)
 
-    async def test_tou_rejects_boundary_off_the_slot_grid(self):
+    async def test_tou_accepts_arbitrary_minute_boundary(self):
         runtime = make_runtime()
         self._set_starts(runtime)
-        with self.assertRaisesRegex(ValueError, "30-minute boundary"):
-            await runtime.async_set_physical_tou_slot(2, start="06:15")
+        await runtime.async_set_physical_tou_slot(2, start="06:15")
+        state = runtime.hass.states.get("time.deye_inverter_time_of_use_2_start")
+        self.assertIsNotNone(state)
+        self.assertTrue(str(state.state).startswith("06:15"))
 
     async def test_tou_rejects_identical_start_and_end(self):
         runtime = make_runtime()
@@ -5978,8 +5980,11 @@ class TouBackendContract5C1Tests(unittest.IsolatedAsyncioTestCase):
     async def test_tou_pending_is_cleared_after_validation_error(self):
         runtime = make_runtime()
         self._set_starts(runtime)
+        # Duplicating slot 2's start is a genuine layout validation error and
+        # must still release the pending reservation.  (Arbitrary whole-minute
+        # boundaries such as 01:30 are now valid.)
         with self.assertRaises(ValueError):
-            await runtime.async_set_physical_tou_slot(1, start="01:30")
+            await runtime.async_set_physical_tou_slot(1, start="04:00")
         self.assertFalse(runtime.tou_write_pending)
 
     async def test_tou_pending_is_cleared_after_success(self):
@@ -6367,7 +6372,9 @@ class TouReverseSync5C2Tests(unittest.IsolatedAsyncioTestCase):
 
         runtime.async_set_number = provider_rounding
         await runtime.async_set_physical_tou_slot(2, soc=25)
-        self.assertEqual(self._slot(runtime, 4).tou_soc, 25.05)
+        # The confirmed readback (25.05) is authoritative, not the requested 25.
+        # Physical SOC is normalized to one decimal place, so 25.05 -> 25.1.
+        self.assertEqual(self._slot(runtime, 4).tou_soc, 25.1)
 
     async def test_reverse_sync_failure_restores_schedule_snapshot(self):
         runtime = self._runtime()
@@ -6377,22 +6384,32 @@ class TouReverseSync5C2Tests(unittest.IsolatedAsyncioTestCase):
             await runtime.async_set_physical_tou_slot(2, soc=25)
         self.assertEqual(runtime.slots, before)
 
-    async def test_round_trip_failure_rolls_back_physical_written_entities(self):
+    async def test_round_trip_mismatch_confirms_manual_mapping_and_keeps_write(self):
         runtime = self._runtime()
         self._set_physical(runtime, socs=(20,) * 6, grids=(False,) * 6)
         entity = runtime._tou_entity(2, "start")
         before = runtime.hass.states.get(entity).state
-        with self.assertRaisesRegex(ValueError, "round-trip"):
-            await runtime.async_set_physical_tou_slot(2, start="05:00")
-        self.assertEqual(runtime.hass.states.get(entity).state, before)
+        await runtime.async_set_physical_tou_slot(2, start="05:00")
+        # A round-trip mismatch is no longer a rollback: the confirmed physical
+        # map is adopted as an authoritative manual mapping and the write stands.
+        self.assertEqual(runtime.reverse_sync_status, "confirmed_manual")
+        self.assertTrue(runtime.reverse_sync_round_trip_ok)
+        self.assertIsNotNone(runtime._manual_tou_mapping)
+        after = runtime.hass.states.get(entity).state
+        self.assertNotEqual(after, before)
+        self.assertTrue(str(after).startswith("05:00"))
 
-    async def test_round_trip_failure_restores_local_schedule(self):
+    async def test_round_trip_mismatch_updates_schedule_from_confirmed_readback(self):
         runtime = self._runtime()
         self._set_physical(runtime, socs=(20,) * 6, grids=(False,) * 6)
-        before = {key: replace(slot) for key, slot in runtime.slots.items()}
-        with self.assertRaises(ValueError):
-            await runtime.async_set_physical_tou_slot(2, start="05:00")
-        self.assertEqual(runtime.slots, before)
+        await runtime.async_set_physical_tou_slot(2, start="05:00")
+        self.assertEqual(runtime.reverse_sync_status, "confirmed_manual")
+        # The confirmed readback (SOC 20, Grid Charge off) is adopted locally
+        # rather than rolled back to the pre-write schedule.
+        self.assertEqual(runtime.slots["0400_0430"].tou_soc, 20)
+        self.assertEqual(runtime.slots["0500_0530"].tou_soc, 20)
+        self.assertFalse(runtime.slots["0500_0530"].charge_enabled)
+        self.assertIsNotNone(runtime._manual_tou_mapping)
 
     async def test_reverse_sync_rollback_failure_reports_critical_status(self):
         runtime = self._runtime()
@@ -6504,13 +6521,18 @@ class TouReverseSync5C2Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.reverse_sync_status, "rollback")
         self.assertEqual(runtime.tou_contract_status, "rollback")
 
-    async def test_reverse_sync_respects_physical_boundaries_with_identical_soc_and_grid(self):
+    async def test_reverse_sync_accepts_boundary_with_identical_soc_and_grid(self):
         runtime = self._runtime()
         self._set_physical(runtime, socs=(20,) * 6, grids=(False,) * 6)
-        before = runtime.hass.states.get(runtime._tou_entity(2, "start")).state
-        with self.assertRaisesRegex(ValueError, "does not store such a boundary"):
-            await runtime.async_set_physical_tou_slot(2, start="05:00")
-        self.assertEqual(runtime.hass.states.get(runtime._tou_entity(2, "start")).state, before)
+        await runtime.async_set_physical_tou_slot(2, start="05:00")
+        # Identical SOC/Grid values make the 48-slot round-trip ambiguous.  The
+        # confirmed physical boundary is retained as the authoritative map.
+        self.assertEqual(runtime.reverse_sync_status, "confirmed_manual")
+        manual = runtime._manual_tou_mapping
+        self.assertIsNotNone(manual)
+        self.assertEqual(int(manual.slots[1].start), 5 * 60)
+        self.assertEqual(int(manual.slots[1].end), 8 * 60)
+        self.assertEqual(int(runtime._tou_mapping.slots[1].start), 5 * 60)
 
     def test_uniform_physical_values_round_trip_is_deterministic(self):
         runtime = self._runtime()
@@ -7762,6 +7784,338 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
         self.assertEqual(canonical["buy"]["contract"]["adapter_summary"], "unmapped")
         self.assertNotIn("semantic_scope", canonical["buy"]["contract"])
         self.assertEqual(canonical["sell"]["rows"], [valid_sell_row])
+
+
+def manual_row(**overrides):
+    row = {
+        "from": "00:00",
+        "to": "00:00",
+        "enabled": True,
+        "mode": const.MODE_NORMAL_OPERATION,
+        "physical_work_mode": const.MODE_ZERO_EXPORT,
+        "sell_power": 0,
+        "discharge_current": 120,
+        "charge_current": 120,
+        "grid_charge_current": 60,
+        "minimum_sell_soc": 0,
+        "tou_soc": 20,
+        "min_sell_price": 0,
+        "charge_enabled": False,
+    }
+    row.update(overrides)
+    return row
+
+
+def manual_slot_signature(slot):
+    return (
+        slot.enabled,
+        slot.mode,
+        slot.physical_work_mode,
+        slot.sell_power,
+        slot.discharge_current,
+        slot.charge_enabled,
+        slot.charge_current,
+        slot.grid_charge_current,
+        slot.minimum_sell_soc,
+        slot.tou_soc,
+        slot.min_sell_price,
+    )
+
+
+class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
+    def test_validation_accepts_contiguous_full_day_and_last_midnight(self):
+        runtime = make_runtime()
+        rows = runtime._validate_manual_schedule_rows([
+            manual_row(to="07:15"),
+            manual_row(
+                **{
+                    "from": "07:15",
+                    "to": "19:45",
+                    "mode": const.MODE_SELLING_FIRST,
+                    "sell_power": 5000,
+                    "tou_soc": 30,
+                }
+            ),
+            manual_row(
+                **{
+                    "from": "19:45",
+                    "to": "00:00",
+                    "mode": const.MODE_CHARGE,
+                    "charge_enabled": True,
+                    "tou_soc": 90,
+                }
+            ),
+        ])
+        self.assertEqual([row["from"] for row in rows], ["00:00", "07:15", "19:45"])
+        self.assertEqual(rows[-1]["to"], "00:00")
+        self.assertIsNone(rows[1]["physical_work_mode"])
+        self.assertIsNone(rows[2]["physical_work_mode"])
+
+    def test_validation_rejects_invalid_boundaries_and_coverage(self):
+        runtime = make_runtime()
+        cases = [
+            (
+                [manual_row(**{"from": "00:01"})],
+                "must start at 00:00",
+            ),
+            (
+                [manual_row(to="12:00"), manual_row(**{"from": "12:00", "to": "13:00"})],
+                "must end at 00:00",
+            ),
+            (
+                [manual_row(to="12:00"), manual_row(**{"from": "13:00"})],
+                "without gaps",
+            ),
+            (
+                [manual_row(to="13:00"), manual_row(**{"from": "12:00"})],
+                "must not overlap",
+            ),
+            (
+                [
+                    manual_row(to="10:00"),
+                    manual_row(**{"from": "10:00", "to": "10:00"}),
+                    manual_row(**{"from": "10:00"}),
+                ],
+                "at least 1 minute",
+            ),
+            (
+                [manual_row(to="00:00"), manual_row()],
+                "at least 1 minute",
+            ),
+        ]
+        for rows, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ValueError, message):
+                    runtime._validate_manual_schedule_rows(rows)
+
+    def test_validation_rejects_unknown_fields_modes_and_ranges(self):
+        runtime = make_runtime()
+        with self.assertRaisesRegex(ValueError, "Unsupported manual schedule fields"):
+            runtime._validate_manual_schedule_rows([manual_row(to="00:00", unexpected=1)])
+        with self.assertRaisesRegex(ValueError, "Unsupported manual schedule mode"):
+            runtime._validate_manual_schedule_rows([manual_row(to="00:00", mode="Nope")])
+        with self.assertRaisesRegex(ValueError, "must be between"):
+            runtime._validate_manual_schedule_rows([manual_row(to="00:00", discharge_current=241)])
+        with self.assertRaisesRegex(ValueError, "tou_soc"):
+            runtime._validate_manual_schedule_rows([manual_row(to="00:00", tou_soc=101)])
+
+    def test_slot_mapping_uses_slot_start_time_across_all_48_slots(self):
+        runtime = make_runtime()
+        rows = runtime._validate_manual_schedule_rows([
+            manual_row(to="07:15"),
+            manual_row(
+                **{
+                    "from": "07:15",
+                    "to": "19:45",
+                    "mode": const.MODE_SELLING_FIRST,
+                    "sell_power": 4321,
+                    "tou_soc": 30,
+                }
+            ),
+            manual_row(
+                **{
+                    "from": "19:45",
+                    "to": "00:00",
+                    "mode": const.MODE_CHARGE,
+                    "charge_enabled": True,
+                    "tou_soc": 90,
+                }
+            ),
+        ])
+        updates = runtime._manual_schedule_to_slot_updates(rows)
+        self.assertEqual(len(updates), 48)
+        self.assertEqual([update["slot_key"] for update in updates], const.SLOT_KEYS)
+        by_key = {update["slot_key"]: update for update in updates}
+        self.assertEqual(by_key["0700_0730"]["mode"], const.MODE_NORMAL_OPERATION)
+        self.assertEqual(by_key["0730_0800"]["mode"], const.MODE_SELLING_FIRST)
+        self.assertEqual(by_key["1930_2000"]["mode"], const.MODE_SELLING_FIRST)
+        self.assertEqual(by_key["2000_2030"]["mode"], const.MODE_CHARGE)
+        self.assertEqual(by_key["2330_0000"]["mode"], const.MODE_CHARGE)
+        self.assertEqual(by_key["0730_0800"]["sell_power"], 4321)
+        self.assertEqual(by_key["0730_0800"]["tou_soc"], 30)
+        self.assertTrue(by_key["2000_2030"]["charge_enabled"])
+        self.assertEqual(by_key["2000_2030"]["tou_soc"], 90)
+
+    async def test_activation_overwrites_work_schedule_and_saves_snapshot(self):
+        runtime = make_runtime()
+        runtime.slots["0000_0030"].enabled = True
+        runtime.slots["0000_0030"].sell_power = 1111
+        await runtime.async_save_manual_schedule([
+            manual_row(to="12:00"),
+            manual_row(
+                **{
+                    "from": "12:00",
+                    "to": "00:00",
+                    "mode": const.MODE_SELLING_FIRST,
+                    "sell_power": 4321,
+                    "tou_soc": 35,
+                }
+            ),
+        ])
+
+        state = await runtime.async_activate_manual_schedule()
+
+        self.assertTrue(state["active"])
+        self.assertTrue(state["has_activation_snapshot"])
+        self.assertTrue(runtime.manual_schedule_active)
+        self.assertEqual(runtime.slots["0000_0030"].mode, const.MODE_NORMAL_OPERATION)
+        self.assertEqual(runtime.slots["1130_1200"].mode, const.MODE_NORMAL_OPERATION)
+        self.assertEqual(runtime.slots["1200_1230"].mode, const.MODE_SELLING_FIRST)
+        self.assertEqual(runtime.slots["1200_1230"].sell_power, 4321)
+        self.assertEqual(runtime.slots["1200_1230"].tou_soc, 35)
+        self.assertEqual(runtime.slots["2330_0000"].mode, const.MODE_SELLING_FIRST)
+        self.assertEqual(runtime.slots["2330_0000"].sell_power, 4321)
+        self.assertTrue(runtime.scheduler_enabled)
+
+    async def test_deactivation_restores_the_pre_activation_work_schedule(self):
+        runtime = make_runtime()
+        runtime.slots["0000_0030"].enabled = True
+        runtime.slots["0000_0030"].sell_power = 2222
+        runtime.slots["1200_1230"].mode = const.MODE_CHARGE
+        runtime.slots["1200_1230"].charge_enabled = True
+        before = {
+            key: manual_slot_signature(slot) for key, slot in runtime.slots.items()
+        }
+        await runtime.async_save_manual_schedule([
+            manual_row(to="12:00"),
+            manual_row(
+                **{
+                    "from": "12:00",
+                    "to": "00:00",
+                    "mode": const.MODE_SELLING_FIRST,
+                    "sell_power": 4321,
+                }
+            ),
+        ])
+        await runtime.async_activate_manual_schedule()
+        self.assertNotEqual(
+            manual_slot_signature(runtime.slots["0000_0030"]), before["0000_0030"]
+        )
+
+        state = await runtime.async_deactivate_manual_schedule()
+
+        self.assertFalse(state["active"])
+        self.assertFalse(state["has_activation_snapshot"])
+        self.assertFalse(runtime.manual_schedule_active)
+        after = {
+            key: manual_slot_signature(slot) for key, slot in runtime.slots.items()
+        }
+        self.assertEqual(after, before)
+
+    async def test_active_manual_schedule_blocks_ai_optimizer_future_and_manual_applies(self):
+        runtime = make_runtime()
+        await runtime.async_save_manual_schedule([manual_row(to="00:00")])
+        await runtime.async_activate_manual_schedule()
+
+        for kwargs in (
+            {},
+            {"change_source": "manual"},
+            {"change_source": "apply_today"},
+            {"change_source": "future_plan"},
+            {"change_source": "optimizer_core"},
+            {"ai_source": True},
+            {"replace_day": True, "date": "2026-07-18"},
+        ):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaisesRegex(ValueError, "Manual schedule is active"):
+                    await runtime.async_apply_schedule_patch(
+                        [{"slot_key": "0000_0030", "sell_power": 1}], **kwargs
+                    )
+
+        await runtime.async_apply_schedule_patch(
+            [{"slot_key": "0000_0030", "sell_power": 1234}],
+            change_source="manual_schedule_internal",
+            _allow_manual_schedule_internal=True,
+        )
+        self.assertEqual(runtime.slots["0000_0030"].sell_power, 1234)
+
+    async def test_active_save_rolls_back_rows_when_reapply_fails(self):
+        runtime = make_runtime()
+        await runtime.async_save_manual_schedule([manual_row(to="00:00")])
+        await runtime.async_activate_manual_schedule()
+        before = runtime.manual_schedule_state()["rows"]
+
+        async def fail(*_args, **_kwargs):
+            raise RuntimeError("apply failed")
+
+        runtime.async_apply_schedule_patch = fail
+        with self.assertRaisesRegex(RuntimeError, "apply failed"):
+            await runtime.async_save_manual_schedule([
+                manual_row(to="06:00"),
+                manual_row(**{"from": "06:00"}),
+            ])
+
+        self.assertEqual(runtime.manual_schedule_state()["rows"], before)
+        self.assertTrue(runtime.manual_schedule_active)
+
+    async def test_init_from_tou_builds_six_rows_with_tou_values(self):
+        runtime = make_runtime()
+        starts = ["00:00:00", "04:00:00", "08:00:00", "12:00:00", "16:00:00", "20:00:00"]
+        socs = [10, 20, 30, 40, 50, 60]
+        grids = ["off", "off", "on", "off", "off", "off"]
+        for index in range(1, 7):
+            runtime.hass.states.values[
+                f"time.deye_inverter_time_of_use_{index}_start"
+            ] = FakeState(starts[index - 1])
+            runtime.hass.states.values[
+                f"number.deye_inverter_time_of_use_{index}_soc"
+            ] = FakeState(socs[index - 1])
+            runtime.hass.states.values[
+                f"switch.deye_inverter_time_of_use_{index}_grid_charge"
+            ] = FakeState(grids[index - 1])
+
+        state = await runtime.async_init_manual_schedule_from_tou()
+        rows = state["rows"]
+
+        self.assertEqual(len(rows), 6)
+        self.assertEqual(
+            [(row["from"], row["to"]) for row in rows],
+            [
+                ("00:00", "04:00"),
+                ("04:00", "08:00"),
+                ("08:00", "12:00"),
+                ("12:00", "16:00"),
+                ("16:00", "20:00"),
+                ("20:00", "00:00"),
+            ],
+        )
+        self.assertEqual([row["tou_soc"] for row in rows], [10.0, 20.0, 30.0, 40.0, 50.0, 60.0])
+        self.assertEqual(
+            [row["charge_enabled"] for row in rows],
+            [False, False, True, False, False, False],
+        )
+        self.assertTrue(all(row["mode"] == const.MODE_NORMAL_OPERATION for row in rows))
+        self.assertTrue(state["valid"])
+
+    async def test_store_payload_and_fingerprint_include_manual_schedule(self):
+        runtime = make_runtime()
+        await runtime.async_save_manual_schedule([
+            manual_row(to="12:00"),
+            manual_row(**{"from": "12:00"}),
+        ])
+        expected = runtime.manual_schedule_state()
+
+        payload = runtime._ai_store_payload()
+        fingerprint = runtime._ai_store_fingerprint_payload()
+
+        self.assertEqual(payload["manual_schedule"]["rows"], expected["rows"])
+        self.assertEqual(fingerprint["manual_schedule"]["rows"], expected["rows"])
+        self.assertFalse(payload["manual_schedule"]["active"])
+
+    def test_load_state_drops_invalid_rows_and_requires_a_snapshot_when_active(self):
+        runtime = make_runtime()
+        loaded = runtime._load_manual_schedule_state({
+            "active": True,
+            "rows": [
+                manual_row(to="12:00"),
+                manual_row(**{"from": "12:00"}),
+                {"from": "bad", "to": "00:00"},
+                "not-a-row",
+            ],
+        })
+        self.assertFalse(loaded["active"])
+        self.assertEqual(len(loaded["rows"]), 2)
+        self.assertIsNone(loaded["activation_snapshot"])
 
 
 if __name__ == "__main__":

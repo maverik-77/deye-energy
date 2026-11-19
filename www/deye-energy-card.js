@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.48
+// Resource revision: v=0.8.0.49
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -67,6 +67,12 @@ class DeyeEnergyCard extends HTMLElement {
     this._lastSlowSignature = "";
     this._tariffDraft = null;
     this._tariffSaveStatus = "";
+    this._manualScheduleDraft = null;
+    this._manualScheduleOriginal = null;
+    this._manualScheduleSaving = false;
+    this._manualScheduleStatus = "";
+    this._manualScheduleError = "";
+    this._manualScheduleActive = false;
     this._aiView = "overview";
     this._aiDay = "today";
     this._aiExplanationDay = "today";
@@ -2894,7 +2900,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.48)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.49)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -3739,7 +3745,6 @@ class DeyeEnergyCard extends HTMLElement {
     const payload = { slot: Number(slot) };
     const draft = this._touEditDraft.values;
     const original = this._touEditOriginal.values;
-    const timePattern = /^(?:[01]\d|2[0-3]):(?:00|30)$/;
     this.touFieldNames().forEach((field) => {
       const capability = this.touFieldCapability(slot, field);
       if (capability?.supported !== true || capability.writable !== true) return;
@@ -3751,15 +3756,15 @@ class DeyeEnergyCard extends HTMLElement {
           ? Boolean(current) !== Boolean(previous)
           : String(current ?? "") !== String(previous ?? "");
       if (!changed) return;
-      if ((field === "start" || field === "end") && !timePattern.test(String(current || ""))) {
-        throw new Error("The From and To times must be on a :00 or :30 boundary.");
+      if ((field === "start" || field === "end") && this.minutesFromClock(current) === null) {
+        throw new Error("The From and To times must be valid HH:MM times.");
       }
       if (field === "soc" && (!Number.isFinite(Number(current)) || Number(current) < 0 || Number(current) > 100)) {
         throw new Error("Deye TOU SOC must be between 0 and 100%.");
       }
       if (field === "grid_charge") payload.grid_charge = Boolean(current);
       else if (field === "soc") payload.soc = Number(current);
-      else payload[field] = String(current).slice(0, 5);
+      else payload[field] = this.clockFromMinutes(this.minutesFromClock(current));
     });
     return payload;
   }
@@ -3795,10 +3800,9 @@ class DeyeEnergyCard extends HTMLElement {
 
   // ---- 24 h mapping editor -------------------------------------------------
 
-  // Reverse of clockFromMinutes; only :00/:30 boundaries are accepted because
-  // the inverter stores TOU starts in half-hour slots.
+  // Reverse of clockFromMinutes; accepts any valid HH:MM whole-minute time.
   minutesFromClock(value) {
-    const match = /^([01]\d|2[0-3]):(00|30)$/.exec(String(value ?? "").trim());
+    const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(value ?? "").trim());
     if (!match) return null;
     return Number(match[1]) * 60 + Number(match[2]);
   }
@@ -3807,7 +3811,8 @@ class DeyeEnergyCard extends HTMLElement {
     if (value === null || value === undefined || value === "") return "00:00";
     const text = String(value).trim();
     if (text !== "" && Number.isFinite(Number(text))) return this.clockFromMinutes(Number(text));
-    return text.slice(0, 5);
+    const minutes = this.minutesFromClock(text);
+    return minutes === null ? text.slice(0, 5) : this.clockFromMinutes(minutes);
   }
 
   // The physical TOU entity IDs are published in tou_capabilities[].fields.
@@ -3960,7 +3965,7 @@ class DeyeEnergyCard extends HTMLElement {
 
   // Save-only validation. A first start of 00:00, a last end of 00:00, an
   // unbroken To[i] == From[i+1] chain and positive durations imply exactly one
-  // midnight wrap and coverage of all 48 half-hour slots without gaps/overlap.
+  // midnight wrap and coverage of the full 24-hour day without gaps/overlap.
   validateMappingDraft(rows) {
     if (!Array.isArray(rows) || rows.length !== 6) return "The mapping must contain exactly six ranges.";
     const times = rows.map((row) => ({
@@ -3968,7 +3973,7 @@ class DeyeEnergyCard extends HTMLElement {
       end: this.minutesFromClock(row.end),
     }));
     if (times.some((row) => row.start === null || row.end === null)) {
-      return "All From and To times must be on a :00 or :30 boundary.";
+      return "All From and To times must be valid HH:MM times.";
     }
     if (times[0].start !== 0) return "The first range must start at 00:00.";
     if (times[times.length - 1].end !== 0) return "The last range must end at 00:00.";
@@ -4069,6 +4074,400 @@ class DeyeEnergyCard extends HTMLElement {
     }
   }
 
+  // ---- Manual schedule editor ---------------------------------------------
+
+  manualScheduleBackend() {
+    const entity = this._hass?.states?.[this.entity("sensor", "ai_state")];
+    const manual = entity?.attributes?.manual_schedule;
+    return manual && typeof manual === "object" && !Array.isArray(manual) ? manual : {};
+  }
+
+  manualSchedulePhysicalModeOptions() {
+    const options = this.normalProfileModeOptions();
+    return options.length
+      ? options
+      : [["Zero Export To Load", "Zero Export To Load"], ["Zero Export To CT", "Zero Export To CT"]];
+  }
+
+  manualScheduleDefaults() {
+    const profile = this.normalProfileStoredValues() || {};
+    const number = (value, fallback) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    };
+    return {
+      enabled: true,
+      mode: "Normal Operation",
+      physical_work_mode: this.canonicalNormalProfileMode(profile.physical_work_mode)
+        || this.defaultPhysicalWorkMode()
+        || this.manualSchedulePhysicalModeOptions()[0][0],
+      sell_power: number(profile.sell_power, 0),
+      discharge_current: number(profile.discharge_current, 0),
+      charge_current: number(profile.charge_current, 0),
+      grid_charge_current: number(profile.grid_charge_current, 0),
+      minimum_sell_soc: 0,
+      tou_soc: number(profile.tou_soc, 100),
+      min_sell_price: 0,
+      charge_enabled: false,
+    };
+  }
+
+  normalizeManualScheduleRow(row) {
+    const defaults = this.manualScheduleDefaults();
+    const source = row && typeof row === "object" ? row : {};
+    const normalized = {
+      from: String(source.from ?? "00:00").slice(0, 5),
+      to: String(source.to ?? "00:00").slice(0, 5),
+    };
+    this.slotEditFields().forEach((field) => {
+      const value = source[field] === undefined ? defaults[field] : source[field];
+      normalized[field] = this.normalizeSlotEditValue(field, value);
+    });
+    normalized.mode = this.normalizeManagerMode(normalized.mode || "Normal Operation");
+    if (normalized.mode !== "Normal Operation") normalized.physical_work_mode = null;
+    return normalized;
+  }
+
+  applyManualScheduleState(state) {
+    const source = state && typeof state === "object" ? state : {};
+    const rows = Array.isArray(source.rows) ? source.rows : [];
+    this._manualScheduleDraft = rows.map((row) => this.normalizeManualScheduleRow(row));
+    this._manualScheduleOriginal = JSON.stringify(this._manualScheduleDraft);
+    this._manualScheduleActive = Boolean(source.active);
+  }
+
+  ensureManualScheduleDraft() {
+    if (Array.isArray(this._manualScheduleDraft)) return this._manualScheduleDraft;
+    this.applyManualScheduleState(this.manualScheduleBackend());
+    if (!this._manualScheduleDraft.length) {
+      this._manualScheduleDraft = [{ ...this.manualScheduleDefaults(), from: "00:00", to: "00:00" }];
+      this._manualScheduleOriginal = JSON.stringify(this._manualScheduleDraft);
+    }
+    return this._manualScheduleDraft;
+  }
+
+  resetManualScheduleDraft() {
+    this._manualScheduleDraft = null;
+    this._manualScheduleOriginal = null;
+    this._manualScheduleStatus = "";
+    this._manualScheduleError = "";
+    this.ensureManualScheduleDraft();
+  }
+
+  manualScheduleDirty() {
+    return JSON.stringify(this.ensureManualScheduleDraft()) !== this._manualScheduleOriginal;
+  }
+
+  updateManualScheduleField(index, field, value) {
+    const rows = this.ensureManualScheduleDraft();
+    const row = rows[index];
+    if (!row) return;
+    if (field === "from" || field === "to") {
+      row[field] = String(value || "").slice(0, 5);
+    } else {
+      row[field] = this.normalizeSlotEditValue(field, value);
+    }
+    if (field === "mode") {
+      row.enabled = true;
+      row.mode = this.normalizeManagerMode(row.mode);
+      if (row.mode !== "Normal Operation") row.physical_work_mode = null;
+      else if (!row.physical_work_mode) row.physical_work_mode = this.manualScheduleDefaults().physical_work_mode;
+    }
+    this._manualScheduleError = "";
+    this._manualScheduleStatus = "";
+  }
+
+  addManualScheduleRow() {
+    const rows = this.ensureManualScheduleDraft();
+    const last = rows[rows.length - 1];
+    const start = this.minutesFromClock(last?.from);
+    const end = String(last?.to) === "00:00" ? 1440 : this.minutesFromClock(last?.to);
+    if (start === null || end === null || end - start < 2) {
+      this._manualScheduleError = "The last row needs at least two minutes before it can be split.";
+      this._manualScheduleStatus = "";
+      return;
+    }
+    const middle = start + Math.floor((end - start) / 2);
+    const newRow = { ...last, from: this.clockFromMinutes(middle), to: "00:00" };
+    last.to = this.clockFromMinutes(middle);
+    rows.push(newRow);
+    this._manualScheduleError = "";
+    this._manualScheduleStatus = "";
+  }
+
+  removeManualScheduleRow(index) {
+    const rows = this.ensureManualScheduleDraft();
+    if (rows.length <= 1 || !rows[index]) return;
+    const removed = rows[index];
+    if (index === 0) {
+      rows[1].from = removed.from;
+    } else {
+      rows[index - 1].to = removed.to;
+    }
+    rows.splice(index, 1);
+    this._manualScheduleError = "";
+    this._manualScheduleStatus = "";
+  }
+
+  validateManualScheduleRows(rows) {
+    if (!Array.isArray(rows) || !rows.length) return "Add at least one manual schedule row.";
+    const times = rows.map((row, index) => {
+      const start = this.minutesFromClock(row.from);
+      const rawEnd = String(row.to ?? "").trim();
+      const end = index === rows.length - 1 && rawEnd === "00:00"
+        ? 1440
+        : (rawEnd === "24:00" ? 1440 : this.minutesFromClock(rawEnd));
+      return { start, end };
+    });
+    if (times.some((item) => item.start === null || item.end === null)) {
+      return "All From and To times must be valid whole-minute HH:MM times.";
+    }
+    if (times[0].start !== 0) return "The first row must start at 00:00.";
+    if (times[times.length - 1].end !== 1440) return "The last row must end at 00:00.";
+    for (let index = 0; index < rows.length; index += 1) {
+      const { start, end } = times[index];
+      if (index < rows.length - 1 && end === 1440) return "Only the last row may end at 00:00.";
+      if (end <= start) return `Row ${index + 1} must be at least 1 minute long.`;
+      if (index > 0 && start !== times[index - 1].end) {
+        return start < times[index - 1].end
+          ? "Manual schedule rows must not overlap."
+          : "Manual schedule must cover the full 24 hours without gaps.";
+      }
+    }
+    const physicalOptions = this.manualSchedulePhysicalModeOptions().map(([key]) => key);
+    const limits = {
+      sell_power: [0, 100000],
+      discharge_current: [0, 240],
+      charge_current: [0, 240],
+      grid_charge_current: [0, 240],
+      minimum_sell_soc: [0, 100],
+      min_sell_price: [0, 5],
+    };
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      const mode = this.normalizeManagerMode(row.mode);
+      if (!this.slotWorkModes().includes(mode)) return `Row ${index + 1}: select a valid mode.`;
+      if (mode === "Normal Operation" && !physicalOptions.includes(String(row.physical_work_mode || ""))) {
+        return `Row ${index + 1}: select the physical Deye mode for Normal Operation.`;
+      }
+      for (const [field, [minimum, maximum]] of Object.entries(limits)) {
+        const value = Number(row[field]);
+        if (!Number.isFinite(value) || value < minimum || value > maximum) {
+          return `Row ${index + 1}: ${field} must be between ${minimum} and ${maximum}.`;
+        }
+      }
+      const touSoc = row.tou_soc === null || row.tou_soc === undefined || String(row.tou_soc).trim() === ""
+        ? null
+        : Number(row.tou_soc);
+      if (touSoc !== null && (!Number.isFinite(touSoc) || touSoc < 0 || touSoc > 100)) {
+        return `Row ${index + 1}: tou_soc must be between 0 and 100.`;
+      }
+    }
+    return "";
+  }
+
+  manualSchedulePayloadRows(rows) {
+    return rows.map((row) => {
+      const mode = this.normalizeManagerMode(row.mode);
+      const numeric = (field) => {
+        const value = Number(row[field]);
+        return Number.isFinite(value) ? value : 0;
+      };
+      const rawTouSoc = row.tou_soc === null || row.tou_soc === undefined || String(row.tou_soc).trim() === ""
+        ? null
+        : Number(row.tou_soc);
+      return {
+        from: String(row.from ?? "00:00").slice(0, 5),
+        to: String(row.to ?? "00:00").slice(0, 5),
+        enabled: Boolean(row.enabled),
+        mode,
+        physical_work_mode: mode === "Normal Operation" ? String(row.physical_work_mode || "") : null,
+        sell_power: numeric("sell_power"),
+        discharge_current: numeric("discharge_current"),
+        charge_current: numeric("charge_current"),
+        grid_charge_current: numeric("grid_charge_current"),
+        minimum_sell_soc: numeric("minimum_sell_soc"),
+        tou_soc: rawTouSoc !== null && Number.isFinite(rawTouSoc) ? rawTouSoc : null,
+        min_sell_price: numeric("min_sell_price"),
+        charge_enabled: Boolean(row.charge_enabled),
+      };
+    });
+  }
+
+  async callServiceWithResponse(domain, service, data = {}) {
+    if (typeof this._hass?.callService !== "function") return undefined;
+    try {
+      return await this._hass.callService(domain, service, data, undefined, false, true);
+    } catch (error) {
+      if (!/return_response|does not support response/i.test(String(error?.message || ""))) throw error;
+      return this.callService(domain, service, data);
+    }
+  }
+
+  async runManualScheduleService(service, data, successMessage) {
+    if (this._manualScheduleSaving) return false;
+    if (!this.hasService("deye_energy", service)) {
+      this._manualScheduleError = `The ${service} service is unavailable. Reload the integration after installing the new version.`;
+      this._manualScheduleStatus = "";
+      this.renderDialogOnly();
+      return false;
+    }
+    this._manualScheduleSaving = true;
+    this._manualScheduleError = "";
+    this._manualScheduleStatus = "";
+    this.beginSave();
+    this.renderDialogOnly();
+    try {
+      const response = await this.callServiceWithResponse("deye_energy", service, data || {});
+      if (response && typeof response === "object" && (Array.isArray(response.rows) || "active" in response)) {
+        this.applyManualScheduleState(response);
+      } else {
+        this.applyManualScheduleState(this.manualScheduleBackend());
+      }
+      this._manualScheduleStatus = successMessage;
+      this.finishSave();
+      return true;
+    } catch (error) {
+      this._manualScheduleError = error?.message || `Could not run ${service}.`;
+      this._manualScheduleStatus = "";
+      this.failSave("manual_schedule", error);
+      return false;
+    } finally {
+      this._manualScheduleSaving = false;
+      this.renderDialogOnly();
+    }
+  }
+
+  async saveManualSchedule() {
+    const rows = this.ensureManualScheduleDraft();
+    const error = this.validateManualScheduleRows(rows);
+    if (error) {
+      this._manualScheduleError = error;
+      this._manualScheduleStatus = "";
+      this.renderDialogOnly();
+      return false;
+    }
+    return this.runManualScheduleService(
+      "save_manual_schedule",
+      { data: JSON.stringify(this.manualSchedulePayloadRows(rows)) },
+      this._manualScheduleActive
+        ? "Manual schedule saved and re-applied to the work schedule."
+        : "Manual schedule saved. Activate it to apply it to the work schedule.",
+    );
+  }
+
+  async initManualScheduleFromTou() {
+    return this.runManualScheduleService(
+      "init_manual_schedule_from_tou",
+      {},
+      "Manual schedule initialized from the current inverter Time Of Use ranges.",
+    );
+  }
+
+  async activateManualSchedule() {
+    const rows = this.ensureManualScheduleDraft();
+    const error = this.validateManualScheduleRows(rows);
+    if (error) {
+      this._manualScheduleError = error;
+      this._manualScheduleStatus = "";
+      this.renderDialogOnly();
+      return false;
+    }
+    if (!this._manualScheduleSaving) {
+      const saved = await this.runManualScheduleService(
+        "save_manual_schedule",
+        { data: JSON.stringify(this.manualSchedulePayloadRows(rows)) },
+        "",
+      );
+      if (!saved) return false;
+    }
+    return this.runManualScheduleService(
+      "activate_manual_schedule",
+      {},
+      "Manual schedule activated. Its values are final on the work schedule until deactivated.",
+    );
+  }
+
+  async deactivateManualSchedule() {
+    return this.runManualScheduleService(
+      "deactivate_manual_schedule",
+      {},
+      "Manual schedule deactivated. The work schedule saved before activation was restored.",
+    );
+  }
+
+  renderManualScheduleRow(row, index, rows, modeOptions, physicalOptions) {
+    const mode = this.normalizeManagerMode(row.mode);
+    const isSelling = mode === "Selling";
+    const isNormal = mode === "Normal Operation";
+    const field = (label, control) => `<label>${this.escapeHtml(label)}${control}</label>`;
+    const timeControl = (name) => {
+      const fixed = (name === "from" && index === 0) || (name === "to" && index === rows.length - 1);
+      if (fixed) return "<span>00:00</span>";
+      return `<input type="time" step="60" data-manual-field="${name}" data-manual-index="${index}" value="${this.escapeHtml(String(row[name] || "00:00").slice(0, 5))}">`;
+    };
+    const numberControl = (name, minimum, maximum, step = "1") => `<input type="number" min="${minimum}" max="${maximum}" step="${step}" data-manual-field="${name}" data-manual-index="${index}" value="${this.escapeHtml(row[name] === null || row[name] === undefined ? "" : String(row[name]))}">`;
+    const selectControl = (name, options) => {
+      const current = String(row[name] ?? "");
+      return `<select data-manual-field="${name}" data-manual-index="${index}">${options.map(([value, label]) => `<option value="${this.escapeHtml(value)}" ${String(value) === current ? "selected" : ""}>${this.escapeHtml(label)}</option>`).join("")}</select>`;
+    };
+    const checkboxControl = (name) => `<input type="checkbox" data-manual-field="${name}" data-manual-index="${index}" ${row[name] ? "checked" : ""}>`;
+    return `<div class="manual-row" data-manual-row="${index}">
+      <div class="manual-row-head"><strong>Row ${index + 1}</strong><span>${this.escapeHtml(String(row.from || "00:00"))} → ${this.escapeHtml(String(row.to || "00:00"))}</span>
+        <button type="button" data-manual-remove="${index}" ${rows.length <= 1 || this._manualScheduleSaving ? "disabled" : ""}>Remove</button></div>
+      <div class="manual-row-grid">
+        ${field("From", timeControl("from"))}
+        ${field("To", timeControl("to"))}
+        ${field("Active", checkboxControl("enabled"))}
+        ${field("Mode", selectControl("mode", modeOptions))}
+        ${isNormal ? field("Physical Deye mode", selectControl("physical_work_mode", physicalOptions)) : ""}
+        ${field("Sell power (W)", numberControl("sell_power", 0, 100000))}
+        ${field("Discharge current (A)", numberControl("discharge_current", 0, 240))}
+        ${field("Battery charge current (A)", numberControl("charge_current", 0, 240))}
+        ${field("Grid charging", selectControl("charge_enabled", [["false", "No"], ["true", "Yes"]]))}
+        ${field("Grid charge current (A)", numberControl("grid_charge_current", 0, 240))}
+        ${isSelling ? field("Stop selling at SOC (%)", numberControl("minimum_sell_soc", 0, 100)) : ""}
+        ${field("Deye TOU SOC (%)", `<input type="text" inputmode="decimal" data-manual-field="tou_soc" data-manual-index="${index}" value="${this.escapeHtml(row.tou_soc === null || row.tou_soc === undefined ? "" : String(row.tou_soc))}">`)}
+        ${field("Sell from price (GBP)", numberControl("min_sell_price", 0, 5, "0.01"))}
+      </div>
+    </div>`;
+  }
+
+  renderManualScheduleTab() {
+    const rows = this.ensureManualScheduleDraft();
+    const active = Boolean(this._manualScheduleActive || this.manualScheduleBackend().active);
+    const validationError = this.validateManualScheduleRows(rows);
+    const modeOptions = this.slotModeOptions();
+    const physicalOptions = this.manualSchedulePhysicalModeOptions();
+    const rowHtml = rows.map((row, index) => this.renderManualScheduleRow(row, index, rows, modeOptions, physicalOptions)).join("");
+    const message = this._manualScheduleError
+      ? `<div class="bad" data-manual-schedule-error>${this.escapeHtml(this._manualScheduleError)}</div>`
+      : this._manualScheduleStatus
+        ? `<div class="good" data-manual-schedule-status>${this.escapeHtml(this._manualScheduleStatus)}</div>`
+        : "";
+    const validation = validationError
+      ? `<div class="bad" data-manual-schedule-validation>${this.escapeHtml(validationError)}</div>`
+      : '<div class="good" data-manual-schedule-validation>All rows cover the full 24 hours.</div>';
+    const status = active
+      ? '<strong>Manual schedule: Active</strong><span class="hint" style="margin:0">AI, optimizer and future-plan applies are blocked. Saving changes re-applies them to the work schedule.</span>'
+      : '<strong>Manual schedule: Inactive</strong><span class="hint" style="margin:0">Rows are stored separately and do not affect the work schedule until activated.</span>';
+    const toggle = active
+      ? `<button type="button" class="danger-action" data-manual-deactivate="1" ${this._manualScheduleSaving ? "disabled" : ""}>Deactivate</button>`
+      : `<button type="button" class="primary" data-manual-activate="1" ${this._manualScheduleSaving ? "disabled" : ""}>Activate</button>`;
+    return `<div class="manual-schedule-status ${active ? "active" : ""}">${status}${toggle}</div>
+      <div class="hint">Manual schedule rows are UI/service-only and do not create per-row entities. When active, each row is mapped onto the 48 work schedule slots by slot start time, overwriting those slots until deactivated. Activating stores a snapshot of the work schedule; deactivating restores it.</div>
+      ${rowHtml}
+      <div class="manual-row-actions">
+        <button type="button" data-manual-add="1" ${this._manualScheduleSaving ? "disabled" : ""}>Add row</button>
+        <button type="button" data-manual-init="1" ${this._manualScheduleSaving ? "disabled" : ""}>Initialize from Deye Time Of Use</button>
+      </div>
+      ${validation}
+      <div class="dialog-actions">
+        <button type="button" data-manual-save="1" ${this._manualScheduleSaving ? "disabled" : ""}>${this._manualScheduleSaving ? "Saving…" : active ? "Save and re-apply" : "Save manual schedule"}</button>
+      </div>
+      ${message}`;
+  }
+
   renderMappingTab(slots) {
     const rows = this.ensureMappingDraft();
     const boundaryField = (row, field) => (field === "start" && Number(row.slot) === 1)
@@ -4077,8 +4476,8 @@ class DeyeEnergyCard extends HTMLElement {
       .some((field) => !boundaryField(row, field) && this.mappingFieldWritable(row.slot, field)));
     const rowHtml = rows.map((row) => {
       const timeCell = (field) => !boundaryField(row, field) && this.mappingFieldWritable(row.slot, field)
-        ? `<input type="time" step="1800" data-mapping-field="${field}" data-mapping-slot="${row.slot}" value="${this.escapeHtml(String(row[field] ?? "").slice(0, 5))}">`
-        : `<span>${this.escapeHtml(String(row[field] ?? "").slice(0, 5))}</span>`;
+        ? `<input type="time" step="60" data-mapping-field="${field}" data-mapping-slot="${row.slot}" value="${this.escapeHtml(this.normalizeMappingClock(row[field]))}">`
+        : `<span>${this.escapeHtml(this.normalizeMappingClock(row[field]))}</span>`;
       const socCell = this.mappingFieldWritable(row.slot, "soc")
         ? `<input type="number" min="0" max="100" step="1" data-mapping-field="soc" data-mapping-slot="${row.slot}" value="${this.escapeHtml(String(row.soc ?? ""))}">`
         : `<span>${row.soc === null ? "Unavailable" : `${this.escapeHtml(String(row.soc))}%`}</span>`;
@@ -4139,7 +4538,7 @@ class DeyeEnergyCard extends HTMLElement {
     } else if (!writable) {
       control = `<span data-tou-readonly="${field}">${this.formatTouFieldValue(field, data.actual)}</span>`;
     } else if (field === "start" || field === "end") {
-      control = `<input data-tou-field="${field}" type="time" step="1800" value="${this.escapeHtml(String(draftValue ?? data.actual).slice(0, 5))}">`;
+      control = `<input data-tou-field="${field}" type="time" step="60" value="${this.escapeHtml(this.normalizeMappingClock(draftValue ?? data.actual))}">`;
     } else if (field === "soc") {
       control = `<input data-tou-field="soc" type="number" min="0" max="100" step="1" value="${this.escapeHtml(String(draftValue ?? data.actual))}"><span class="unit">%</span>`;
     } else {
@@ -7696,6 +8095,8 @@ class DeyeEnergyCard extends HTMLElement {
         body = this.renderTouSettingsContent();
       } else if (tab === "mapping") {
         body = this.renderMappingTab(slots);
+      } else if (tab === "manual") {
+        body = this.renderManualScheduleTab();
       } else if (tab === "ai") {
         body = this.renderAiSettingsPanel();
       } else if (tab === "tariff") {
@@ -7714,6 +8115,7 @@ class DeyeEnergyCard extends HTMLElement {
               ${tabButton("defaults", "Mode settings")}
               ${tabButton("tou", "Deye Time Of Use")}
               ${tabButton("mapping", "24 h mapping")}
+              ${tabButton("manual", "Manual schedule")}
               ${tabButton("ai", "AI and analysis")}
               ${tabButton("tariff", "Tariff and distribution")}
               ${tabButton("history", "History and data")}
@@ -8082,6 +8484,7 @@ class DeyeEnergyCard extends HTMLElement {
                        <button data-schedule-clear="1">${this.iconSvg("close")} Deselect</button>
                        <button class="primary" data-open-multi="1" ${selectedCount ? "" : "disabled"}>${this.iconSvg("edit")} Edit selected (${selectedCount})</button>
                        <button data-open-settings="mapping">${this.iconSvg("copy")} Deye mapping</button>
+                       <button data-open-settings="manual">${this.iconSvg("edit")} Manual schedule</button>
                      </div>
                    </div>
                  </div>
@@ -8163,6 +8566,7 @@ class DeyeEnergyCard extends HTMLElement {
             @media(max-width:620px){.ai-execution-toolbar,.ai-execution-date{width:100%}.ai-execution-date{display:grid;grid-template-columns:minmax(0,1fr) auto}.ai-exec-kpi{min-width:calc(50% - 4px)}.ai-execution-chart{padding:8px}.ai-execution-toolbar .ai-day-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}}
 @media(max-width:620px){.ai-execution-toolbar,.ai-execution-date{width:100%}.ai-execution-date{display:grid;grid-template-columns:minmax(0,1fr) auto}.ai-exec-kpi{min-width:calc(50% - 4px)}.ai-execution-chart{padding:8px}.ai-execution-toolbar .ai-day-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}}
            .ai-explanation-view{display:grid;gap:12px}.ai-explanation-view>h2{margin:0}.ai-explanation-profile details,.ai-shadow,.ai-help{margin-top:10px}.ai-explanation-profile summary,.ai-shadow summary,.ai-help summary{cursor:pointer;color:#dff3fc;font-weight:800}.ai-decision-summary{line-height:1.55}.ai-explanation-balance{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0}.ai-explanation-balance>div{border:1px solid rgba(103,158,184,.2);border-radius:6px;padding:9px;background:rgba(3,16,25,.45)}.ai-explanation-balance span{display:block;color:#93adbc;font-size:10px}.ai-explanation-balance strong{display:block;margin-top:4px}.ai-explanation-list{display:grid;gap:7px;padding-left:18px}.ai-explanation-list li{padding:6px 0;border-top:1px solid rgba(103,158,184,.15)}.ai-explanation-list strong{display:block;color:#7ee22d}.ai-explanation-list span{display:block;margin-top:3px;color:#b9d0dc;line-height:1.4}.ai-help dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:7px 12px}.ai-help dt{color:#7ee22d;font-weight:800}.ai-help dd{margin:0;color:#b9d0dc}@media(max-width:620px){.ai-explanation-balance{grid-template-columns:minmax(0,1fr)}.ai-help dl{grid-template-columns:minmax(0,1fr)}}
+           .manual-schedule-status{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;margin-bottom:10px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03)}.manual-schedule-status>strong{font-size:14px}.manual-schedule-status.active{border-color:var(--green);background:rgba(45,255,149,.08)}.manual-row{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.02);margin-bottom:10px;overflow:hidden}.manual-row-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;background:rgba(18,42,59,.6);border-bottom:1px solid var(--line)}.manual-row-head strong{font-size:12px}.manual-row-head span{color:#a9c1d0;font-size:11px}.manual-row-head button{min-height:30px;border:1px solid var(--line2);border-radius:6px;background:#173a57;color:#fff;padding:0 10px;cursor:pointer}.manual-row-head button:disabled{opacity:.4;cursor:not-allowed}.manual-row-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;padding:10px}.manual-row-grid label{display:grid;gap:4px;color:#a9c1d0;font-size:11px}.manual-row-grid input,.manual-row-grid select{width:100%;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:7px}.manual-row-grid input[type=checkbox]{width:auto;justify-self:start;accent-color:var(--blue)}.manual-row-actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}.manual-row-actions button{min-height:36px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 12px;cursor:pointer}.manual-row-actions button:disabled{opacity:.45;cursor:not-allowed}
            </style>
             <div class="dem-v073" style="${demStyle}">
             ${statusSection}
@@ -8397,6 +8801,26 @@ class DeyeEnergyCard extends HTMLElement {
     root.querySelectorAll("[data-save-mapping]").forEach((el) => el.addEventListener("click", () => {
       this.saveMappingToInverter();
     }));
+    root.querySelectorAll("[data-manual-field]").forEach((el) => {
+      const update = () => {
+        this.updateManualScheduleField(Number(el.dataset.manualIndex), el.dataset.manualField, el.value);
+        if (el.dataset.manualField === "mode") this.renderDialogOnly();
+      };
+      el.addEventListener("change", update);
+      if (el.tagName !== "SELECT" && el.type !== "checkbox") el.addEventListener("input", update);
+    });
+    root.querySelectorAll("[data-manual-add]").forEach((el) => el.addEventListener("click", () => {
+      this.addManualScheduleRow();
+      this.renderDialogOnly();
+    }));
+    root.querySelectorAll("[data-manual-remove]").forEach((el) => el.addEventListener("click", () => {
+      this.removeManualScheduleRow(Number(el.dataset.manualRemove));
+      this.renderDialogOnly();
+    }));
+    root.querySelectorAll("[data-manual-save]").forEach((el) => el.addEventListener("click", () => this.saveManualSchedule()));
+    root.querySelectorAll("[data-manual-init]").forEach((el) => el.addEventListener("click", () => this.initManualScheduleFromTou()));
+    root.querySelectorAll("[data-manual-activate]").forEach((el) => el.addEventListener("click", () => this.activateManualSchedule()));
+    root.querySelectorAll("[data-manual-deactivate]").forEach((el) => el.addEventListener("click", () => this.deactivateManualSchedule()));
     root.querySelectorAll("[data-settings-tab]").forEach((el) => el.addEventListener("click", () => {
       this._settingsTab = el.dataset.settingsTab;
       this._tariffDraft = null;

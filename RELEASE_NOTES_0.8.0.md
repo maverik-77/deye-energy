@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.48`.
+Card resource revision: `v=0.8.0.49`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the
@@ -9,6 +9,13 @@ Deye Energy 0.8.0 is the English-language edition of the
 
 ## Revision history
 
+- `v=0.8.0.49` — New Manual schedule tab in Settings and diagnostics. Rows are
+  stored separately from the work schedule, cover the full 24 hours and support
+  arbitrary whole-minute boundaries. Activating stores a snapshot of the work
+  schedule, maps the rows onto the 48 slots by slot start time and blocks AI,
+  optimizer and future-plan applies until deactivated; deactivating restores the
+  snapshot. Rows can be initialized from the inverter's six Deye Time Of Use
+  ranges.
 - `v=0.8.0.48` — The Settings and diagnostics 24 h mapping is now editable and
   is refreshed from the inverter every time it is opened. From, To, grid charging
   and SOC can be changed where the provider allows it; Save validates the full

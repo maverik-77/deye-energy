@@ -24,7 +24,7 @@ class ReleaseVersionTests(unittest.TestCase):
                 encoding="utf-8-sig"
             )
         )
-        self.assertEqual("0.8.0.48", manifest["version"])
+        self.assertEqual("0.8.0.49", manifest["version"])
 
     def test_frontend_copies_and_versions_are_consistent(self):
         paths = (
@@ -33,11 +33,11 @@ class ReleaseVersionTests(unittest.TestCase):
         )
         self.assertEqual(paths[0].read_bytes(), paths[1].read_bytes())
         source = paths[0].read_text(encoding="utf-8-sig")
-        self.assertTrue(source.startswith("// Resource revision: v=0.8.0.48"))
+        self.assertTrue(source.startswith("// Resource revision: v=0.8.0.49"))
         self.assertIn('version: "0.8.0"', source)
         self.assertIn('integration_version || "0.8.0"', source)
         self.assertIn("Deye Energy 0.8.0", source)
-        self.assertIn("card 0.8.0 (resource revision v=0.8.0.48)", source)
+        self.assertIn("card 0.8.0 (resource revision v=0.8.0.49)", source)
 
     def test_docs_and_dashboard_use_current_release(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8-sig")
@@ -46,13 +46,13 @@ class ReleaseVersionTests(unittest.TestCase):
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8-sig")
         release_notes = (ROOT / "RELEASE_NOTES_0.8.0.md").read_text(encoding="utf-8-sig")
         self.assertIn("version-0.8.0", readme)
-        self.assertIn("deye-energy-card.js?v=0.8.0.48", readme)
+        self.assertIn("deye-energy-card.js?v=0.8.0.49", readme)
         self.assertIn("Deye Energy 0.8.0", install)
-        self.assertIn("deye-energy-card.js?v=0.8.0.48", install)
-        self.assertIn("(v=0.8.0.48)", dashboard)
+        self.assertIn("deye-energy-card.js?v=0.8.0.49", install)
+        self.assertIn("(v=0.8.0.49)", dashboard)
         self.assertIn("## [0.8.0]", changelog)
         self.assertIn("# Deye Energy 0.8.0", release_notes)
-        self.assertIn("v=0.8.0.48", release_notes)
+        self.assertIn("v=0.8.0.49", release_notes)
 
     def test_target_release_identity_is_consistent(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -60,7 +60,7 @@ class ReleaseVersionTests(unittest.TestCase):
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         combined = "\n".join((readme, install, changelog))
         self.assertIn("Deye Energy 0.8.0", combined)
-        self.assertIn("v=0.8.0.48", combined)
+        self.assertIn("v=0.8.0.49", combined)
         for stale in ("v=24", "v=25", "v=26", "v=078", "v=079", "v=0.7.7", "v=0.7.8"):
             self.assertNotIn(f"deye-energy-card.js?{stale}", combined)
 

@@ -105,12 +105,23 @@ def test_half_hour_boundary_is_written_to_the_inverter():
     assert any(value.startswith("05:30") for value in starts), starts
 
 
-@pytest.mark.parametrize(("value", "ok"), [("05:00", True), ("05:30", True), ("05:15", False), ("05:45:00", False)])
-def test_tou_boundary_accepts_only_slot_edges(value, ok):
+@pytest.mark.parametrize(
+    ("value", "ok", "expected"),
+    [
+        ("05:00", True, "05:00"),
+        ("05:30", True, "05:30"),
+        ("05:15", True, "05:15"),
+        ("05:45:00", True, "05:45"),
+        ("25:00", False, None),
+        ("05:60", False, None),
+        ("bad", False, None),
+    ],
+)
+def test_tou_boundary_accepts_any_valid_minute(value, ok, expected):
     if ok:
-        assert manager.DeyeEnergyRuntime._tou_boundary(value, "Start") == value[:5]
+        assert manager.DeyeEnergyRuntime._tou_boundary(value, "Start") == expected
     else:
-        with pytest.raises(ValueError, match="30-minute boundary"):
+        with pytest.raises(ValueError, match="HH:MM"):
             manager.DeyeEnergyRuntime._tou_boundary(value, "Start")
 
 

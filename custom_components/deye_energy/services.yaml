@@ -386,3 +386,27 @@ set_tou_slot:
       required: false
       selector:
         boolean:
+
+save_manual_schedule:
+  name: Save manual schedule
+  description: Save the complete manual schedule rows without activating them. Rows must cover the full 24 hours without gaps or overlaps.
+  fields:
+    data:
+      name: Rows JSON
+      description: JSON array of manual schedule rows, or an object with a rows array.
+      required: true
+      selector:
+        text:
+          multiline: true
+
+init_manual_schedule_from_tou:
+  name: Initialize manual schedule from Time Of Use
+  description: Replace the manual schedule rows with the current six physical Deye Time Of Use ranges.
+
+activate_manual_schedule:
+  name: Activate manual schedule
+  description: Map the manual schedule rows onto the 48 work schedule slots and make them final until deactivated. AI, optimizer and future-plan applies are blocked while active.
+
+deactivate_manual_schedule:
+  name: Deactivate manual schedule
+  description: Restore the work schedule that was saved before the manual schedule was activated.

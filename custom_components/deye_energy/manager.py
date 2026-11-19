@@ -444,6 +444,10 @@ class DeyeEnergyRuntime:
     normal_profile_tou_soc: float | None = None
     _normal_profile_loaded_from_store: bool = False
     schedule_schema_version: int = 0
+    # UI-only manual schedule: variable time rows kept separate from the
+    # 48-slot work schedule until explicitly activated.  Activation snapshots
+    # and overwrites the work schedule; deactivation restores that snapshot.
+    manual_schedule: dict[str, Any] = field(default_factory=dict)
     _restored_slot_mode_keys: set[str] = field(default_factory=set)
     # Track which per-slot helper entities have been restored so the 5A.1
     # migration can safely resolve a missing selling slot tou_soc.
@@ -655,6 +659,9 @@ class DeyeEnergyRuntime:
     tou_mismatched_fields: list[str] = field(default_factory=list)
     tou_reconciliation_status: str = "waiting_readback"
     tou_last_reconciliation_error: str = ""
+    # Manual 24 h mapping saved via set_tou_slot is authoritative and independent
+    # of the 48-slot work schedule; schedule-driven writes must not overwrite it.
+    _manual_tou_mapping: TouMapping | None = None
     # Tracks whether the latest TOU operation crossed the preflight boundary
     # and issued at least one physical Deye service call.  Validation failures
     # must not trigger a second transaction that restores defaults.
@@ -707,6 +714,7 @@ class DeyeEnergyRuntime:
 
     def __post_init__(self) -> None:
         self.slots = {key: SlotSettings(key=key, label=label) for key, label, *_ in SLOTS}
+        self.manual_schedule = self._default_manual_schedule()
         raw_ai_api = self.data.get("ai_api") if isinstance(self.data.get("ai_api"), dict) else {}
         try:
             self.ai_api_config = normalize_ai_api_config(raw_ai_api)
@@ -3363,6 +3371,7 @@ class DeyeEnergyRuntime:
             "tariff": self.tariff_context(),
             "planner_48h": self._optimizer_public_snapshot or self.optimizer_plan,
             "future_plan": self.future_plan,
+            "manual_schedule": self.manual_schedule_state(),
             "plan_execution_index": self.plan_execution_index(),
             "plan_execution_today": self.plan_execution_day(),
         }
@@ -4878,7 +4887,7 @@ class DeyeEnergyRuntime:
             if not tou["ok"]
             else "OK"
         )
-        return {"integration_version": "0.8.0.48", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
+        return {"integration_version": "0.8.0.49", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
                 "inverter_provider": self.inverter_provider,
                 "inverter_device_id": self.data.get(CONF_INVERTER_DEVICE_ID),
                 "inverter_provider_label": provider_profile(self.data).label,
@@ -5162,6 +5171,12 @@ class DeyeEnergyRuntime:
                 for key, value in numeric.items():
                     setattr(self, key, value)
                 self._normal_profile_loaded_from_store = True
+        raw_manual_tou = data.get("manual_tou_mapping")
+        if isinstance(raw_manual_tou, (list, dict)):
+            restored = self._deserialize_manual_tou_mapping(raw_manual_tou)
+            if restored is not None:
+                self._manual_tou_mapping = restored
+        self.manual_schedule = self._load_manual_schedule_state(data.get("manual_schedule"))
         if migrated:
             await self.async_save_ai_data()
         else:
@@ -5184,6 +5199,8 @@ class DeyeEnergyRuntime:
             "schedule_revision": self.schedule_revision,
             "schedule_slot_revisions": self.schedule_slot_revisions,
             "schedule_slot_ownership": self.schedule_slot_ownership,
+            "manual_tou_mapping": self._serialize_manual_tou_mapping(),
+            "manual_schedule": deepcopy(self._ensure_manual_schedule()),
             "last_saved_at": self.last_saved_at,
             "schedule_schema_version": self.schedule_schema_version,
             "control_enabled": self.control_enabled,
@@ -5235,6 +5252,8 @@ class DeyeEnergyRuntime:
             "schedule_revision": self.schedule_revision,
             "schedule_slot_revisions": self.schedule_slot_revisions,
             "schedule_slot_ownership": self.schedule_slot_ownership,
+            "manual_tou_mapping": self._serialize_manual_tou_mapping(),
+            "manual_schedule": deepcopy(self._ensure_manual_schedule()),
             "last_saved_at": self.last_saved_at,
             "schedule_schema_version": self.schedule_schema_version,
             "control_enabled": self.control_enabled,
@@ -6180,6 +6199,8 @@ class DeyeEnergyRuntime:
 
     async def _async_cleanup_future_plan_slots(self, current: datetime) -> None:
         """Reset expired dated intents only while the old plan still owns them."""
+        if self.manual_schedule_active:
+            return
         cleanup: list[dict[str, Any]] = []
         cleaned_keys: list[str] = []
         today = current.date().isoformat()
@@ -6854,6 +6875,8 @@ class DeyeEnergyRuntime:
         """Revalidate and apply only the accepted slot that is starting now."""
         current_time = ha_now()
         await self._async_cleanup_future_plan_slots(current_time)
+        if self.manual_schedule_active:
+            return
         plan = self.future_plan
         if not plan or plan.get("status") not in {"scheduled", "partial"}:
             return
@@ -10038,6 +10061,13 @@ class DeyeEnergyRuntime:
                 state = self.hass.states.get(entity_id)
                 options = None if state is None else (getattr(state, "attributes", {}) or {}).get("options")
                 option = format_time_option(options, value)
+                if isinstance(options, (list, tuple)) and option not in options:
+                    supported = ", ".join(str(item) for item in options[:12])
+                    if len(options) > 12:
+                        supported += ", ..."
+                    raise ValueError(
+                        f"Time {value} is not supported by {entity_id}. Supported options: {supported}"
+                    )
                 await self._async_physical_service_call(
                     "select",
                     "select_option",
@@ -10728,16 +10758,11 @@ class DeyeEnergyRuntime:
 
     @classmethod
     def _tou_boundary(cls, value: Any, label: str) -> str:
-        """Validate and normalize a TOU boundary on a schedule-slot edge."""
+        """Validate and normalize a TOU boundary to a whole-minute clock time."""
         text = str(value or "").strip()
         minutes = cls._time_to_minutes(text)
         if minutes is None:
             raise ValueError(f"{label} must use the HH:MM format")
-        if minutes % SLOT_MINUTES:
-            raise ValueError(
-                f"{label} must be on a {SLOT_MINUTES}-minute boundary in HH:MM format "
-                f"(for example 05:00 or 05:30)"
-            )
         return f"{minutes // 60:02d}:{minutes % 60:02d}"
 
     def _validated_tou_start_vector(
@@ -10796,15 +10821,15 @@ class DeyeEnergyRuntime:
                 "crossing between slot 6 and 1"
             )
 
-        coverage = [0] * SLOTS_PER_DAY
+        coverage = [0] * MINUTES_PER_DAY
         for idx, start_minute in enumerate(numeric):
             end_minute = numeric[(idx + 1) % 6]
             if idx == 5:
                 end_minute += MINUTES_PER_DAY
             if end_minute <= start_minute:
                 raise ValueError("A Deye Time Of Use range cannot have zero length")
-            for slot_index in range(start_minute // SLOT_MINUTES, end_minute // SLOT_MINUTES):
-                coverage[slot_index % SLOTS_PER_DAY] += 1
+            for minute in range(start_minute, end_minute):
+                coverage[minute % MINUTES_PER_DAY] += 1
         if any(count != 1 for count in coverage):
             raise ValueError(
                 "Deye Time Of Use ranges must cover the full day without overlap"
@@ -10992,7 +11017,15 @@ class DeyeEnergyRuntime:
         if field in ("start", "end"):
             state = self.hass.states.get(entity_id)
             options = (getattr(state, "attributes", {}) or {}).get("options") if state else None
-            return format_time_option(options, str(logical_value))
+            option = format_time_option(options, str(logical_value))
+            if isinstance(options, (list, tuple)) and option not in options:
+                supported = ", ".join(str(item) for item in options[:12])
+                if len(options) > 12:
+                    supported += ", ..."
+                raise ValueError(
+                    f"Time {logical_value} is not supported by {entity_id}. Supported options: {supported}"
+                )
+            return option
         if field == "soc":
             return float(logical_value)
         if field == "grid":
@@ -11508,6 +11541,9 @@ class DeyeEnergyRuntime:
 
     @property
     def _tou_mapping(self) -> TouMapping:
+        manual = getattr(self, "_manual_tou_mapping", None)
+        if manual is not None and len(manual.slots) == 6:
+            return manual
         return self.schedule_to_tou_mapping()
 
     def schedule_mapping_snapshot(self) -> list[dict[str, Any]]:
@@ -11552,24 +11588,36 @@ class DeyeEnergyRuntime:
             grid_values.append(logical)
 
         slots: list[TouMappingSlot] = []
+        numeric_starts = [int(value) for value in starts_minutes]
         for idx in range(6):
-            start_minute = int(starts_minutes[idx])
-            end_minute = int(starts_minutes[(idx + 1) % 6])
-            first_slot = start_minute // SLOT_MINUTES
-            last_slot = end_minute // SLOT_MINUTES
-            if first_slot == last_slot:
-                source_slots: list[int] = []
-            elif first_slot < last_slot:
-                source_slots = list(range(first_slot, last_slot))
-            else:
-                source_slots = list(range(first_slot, SLOTS_PER_DAY)) + list(range(0, last_slot))
+            start_minute = numeric_starts[idx]
+            end_minute = numeric_starts[(idx + 1) % 6]
+            effective_end = end_minute
+            if idx == 5:
+                effective_end = MINUTES_PER_DAY if end_minute == 0 else end_minute + MINUTES_PER_DAY
+            elif end_minute <= start_minute:
+                raise ValueError(
+                    f"Deye Time Of Use slots {idx + 1} and {idx + 2} overlap or are out of order"
+                )
+            if effective_end <= start_minute:
+                raise ValueError(
+                    f"Deye Time Of Use slot {idx + 1} cannot have zero length"
+                )
+            source_slots: list[int] = []
+            for slot_index, (_key, _label, slot_start, _slot_end) in enumerate(SLOTS):
+                minute = int(slot_start)
+                if idx == 5:
+                    if minute >= start_minute or minute < end_minute:
+                        source_slots.append(slot_index)
+                elif start_minute <= minute < end_minute:
+                    source_slots.append(slot_index)
             slots.append(
                 TouMappingSlot(
                     index=idx + 1,
-                    start=start_minute,
-                    end=end_minute,
-                    soc=soc_values[idx],
-                    grid_charge=grid_values[idx],
+                    start=start_minute % MINUTES_PER_DAY,
+                    end=end_minute % MINUTES_PER_DAY,
+                    soc=round(float(soc_values[idx]), 1),
+                    grid_charge=bool(grid_values[idx]),
                     source_slots=source_slots,
                     provider_fields={},
                 )
@@ -11589,7 +11637,24 @@ class DeyeEnergyRuntime:
         slot_to_physical: dict[int, tuple[float, bool]] = {}
         for slot in mapping.slots:
             for slot_index in slot.source_slots:
-                slot_to_physical[slot_index] = (slot.soc, slot.grid_charge)
+                if 0 <= int(slot_index) < SLOTS_PER_DAY:
+                    slot_to_physical[int(slot_index)] = (slot.soc, slot.grid_charge)
+        if len(slot_to_physical) != SLOTS_PER_DAY:
+            # Arbitrary-minute physical boundaries may not align with 30-minute
+            # schedule slots. Assign each schedule slot by its start minute.
+            slot_to_physical = {}
+            for slot_index, (_key, _label, slot_start, _slot_end) in enumerate(SLOTS):
+                minute = int(slot_start) % MINUTES_PER_DAY
+                for slot in mapping.slots:
+                    start = int(slot.start) % MINUTES_PER_DAY
+                    end = int(slot.end) % MINUTES_PER_DAY
+                    if slot.index == 6 or end == 0:
+                        in_range = minute >= start or minute < (end or 0)
+                    else:
+                        in_range = start <= minute < end
+                    if in_range:
+                        slot_to_physical[slot_index] = (slot.soc, slot.grid_charge)
+                        break
         if len(slot_to_physical) != SLOTS_PER_DAY:
             raise ValueError(
                 f"The physical TOU map covers {len(slot_to_physical)} slots, required {SLOTS_PER_DAY}"
@@ -11606,6 +11671,94 @@ class DeyeEnergyRuntime:
             update["tou_soc"] = start_soc
             patch.append(update)
         return patch
+
+    def _serialize_manual_tou_mapping(self) -> dict[str, Any] | None:
+        """Persist a manually saved 24 h TOU map, independent of the work schedule."""
+        mapping = getattr(self, "_manual_tou_mapping", None)
+        if mapping is None or len(mapping.slots) != 6:
+            return None
+        return {
+            "slots": [
+                {
+                    "index": int(slot.index),
+                    "start": int(slot.start) % MINUTES_PER_DAY,
+                    "end": int(slot.end) % MINUTES_PER_DAY,
+                    "soc": round(float(slot.soc), 1),
+                    "grid_charge": bool(slot.grid_charge),
+                }
+                for slot in sorted(mapping.slots, key=lambda item: int(item.index))
+            ]
+        }
+
+    def _deserialize_manual_tou_mapping(self, raw: Any) -> TouMapping | None:
+        """Restore a stored manual 24 h TOU map; invalid data is ignored."""
+        if isinstance(raw, dict):
+            items = raw.get("slots")
+        elif isinstance(raw, list):
+            items = raw
+        else:
+            return None
+        if not isinstance(items, list) or len(items) != 6:
+            return None
+        slots: list[TouMappingSlot] = []
+        try:
+            for fallback_index, item in enumerate(items, start=1):
+                if not isinstance(item, dict):
+                    return None
+                index = int(self.safe_float(item.get("index"), fallback_index))
+                start = int(self.safe_float(item.get("start"), float("nan")))
+                end = int(self.safe_float(item.get("end"), float("nan")))
+                soc = float(self.safe_float(item.get("soc"), float("nan")))
+                if not math.isfinite(soc):
+                    return None
+                grid_charge = item.get("grid_charge")
+                if not isinstance(grid_charge, bool) or not 0 <= start < MINUTES_PER_DAY or not 0 <= end < MINUTES_PER_DAY or not 0 <= soc <= 100:
+                    return None
+                slots.append(
+                    TouMappingSlot(
+                        index=index,
+                        start=start,
+                        end=end,
+                        soc=round(soc, 1),
+                        grid_charge=grid_charge,
+                        source_slots=[],
+                    )
+                )
+            mapping = TouMapping(slots=slots)
+            # Recompute source slots and validate full-day coverage/order.
+            self.read_physical_tou_mapping  # keep method referenced in context
+            starts = [slot.start for slot in mapping.slots]
+            if sorted([slot.index for slot in mapping.slots]) != [1, 2, 3, 4, 5, 6]:
+                return None
+            numeric = [int(value) for value in starts]
+            if len(set(numeric)) != 6 or any(numeric[idx] >= numeric[idx + 1] for idx in range(5)):
+                return None
+            coverage = [0] * MINUTES_PER_DAY
+            for idx, start_minute in enumerate(numeric):
+                end_minute = numeric[(idx + 1) % 6]
+                if idx == 5:
+                    end_minute += MINUTES_PER_DAY
+                if end_minute <= start_minute:
+                    return None
+                for minute in range(start_minute, end_minute):
+                    coverage[minute % MINUTES_PER_DAY] += 1
+            if any(count != 1 for count in coverage):
+                return None
+            for slot_index, (_key, _label, slot_start, _slot_end) in enumerate(SLOTS):
+                minute = int(slot_start)
+                for slot in mapping.slots:
+                    start = int(slot.start)
+                    end = int(slot.end)
+                    if slot.index == 6:
+                        in_range = minute >= start or minute < end
+                    else:
+                        in_range = start <= minute < end
+                    if in_range:
+                        slot.source_slots.append(slot_index)
+                        break
+            return mapping
+        except Exception:
+            return None
 
     @staticmethod
     def _tou_mapping_rows(mapping: TouMapping) -> list[tuple[int, int, float, bool]]:
@@ -12034,25 +12187,22 @@ class DeyeEnergyRuntime:
             patch = self.tou_mapping_to_schedule_patch(confirmed_mapping)
             changed_hours = self._apply_reverse_sync_patch_locked(patch)
             round_trip = self.schedule_to_tou_mapping()
-            if not self._tou_mappings_match(confirmed_mapping, round_trip):
-                adjacent_equal = any(
-                    round(float(confirmed_mapping.slots[idx].soc), 1)
-                    == round(float(confirmed_mapping.slots[(idx + 1) % 6].soc), 1)
-                    and bool(confirmed_mapping.slots[idx].grid_charge)
-                    == bool(confirmed_mapping.slots[(idx + 1) % 6].grid_charge)
-                    for idx in range(6)
-                )
-                detail = (
-                    " Neighbouring physical slots have identical SOC and Grid Charge; "
-                    "the current full-day → 6/6 algorithm does not store such a boundary."
-                    if adjacent_equal
-                    else ""
-                )
-                raise ValueError(
-                    "The Deye TOU round-trip did not reproduce the confirmed 6/6 map."
-                    + detail
-                )
+            round_trip_ok = self._tou_mappings_match(confirmed_mapping, round_trip)
+            if not round_trip_ok:
+                # A manual 24 h mapping is authoritative and may use arbitrary
+                # minute boundaries that the 48-slot work schedule cannot express.
+                # Keep the confirmed physical map and avoid rolling back a
+                # verified inverter write.
+                self._manual_tou_mapping = confirmed_mapping
+                self.reverse_sync_changed_hours = changed_hours
+                self.reverse_sync_round_trip_ok = True
+                self.reverse_sync_status = "confirmed_manual"
+                self.reverse_sync_last_error = ""
+                self.tou_contract_status = "confirmed"
+                self.tou_operation_status = "success"
+                return
 
+            self._manual_tou_mapping = None
             self.reverse_sync_changed_hours = changed_hours
             self.reverse_sync_round_trip_ok = True
             self.reverse_sync_status = "confirmed"
@@ -12232,6 +12382,10 @@ class DeyeEnergyRuntime:
                     # Reverse sync adopts only a Manager-owned, confirmed manual
                     # edit.  Refresh the physical signature from readback so the
                     # next tick sees agreement and cannot create a write loop.
+                    try:
+                        self._manual_tou_mapping = self.read_physical_tou_mapping()
+                    except Exception:
+                        pass
                     self._last_tou_signature = ""
                     self._refresh_tou_reconciliation_state()
                     self.last_error = ""
@@ -12258,6 +12412,517 @@ class DeyeEnergyRuntime:
             self.notify_update()
             return True
         return bool(await self.async_tick())
+
+    # ------------------------------------------------------------------
+    # Manual schedule (UI/service-only, separate from work schedule)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _manual_time_to_minutes(value: Any, label: str) -> int:
+        if not isinstance(value, str):
+            raise ValueError(f"{label} must be a whole-minute HH:MM time")
+        text = value.strip()
+        parts = text.split(":")
+        if len(parts) != 2 or not all(part.isdigit() for part in parts):
+            raise ValueError(f"{label} must be a whole-minute HH:MM time")
+        hour = int(parts[0])
+        minute = int(parts[1])
+        if hour == 24 and minute == 0:
+            return 24 * 60
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError(f"{label} must be a whole-minute HH:MM time")
+        return hour * 60 + minute
+
+    @staticmethod
+    def _minutes_to_hhmm(minutes: int) -> str:
+        minutes = max(0, min(24 * 60, int(minutes)))
+        if minutes == 24 * 60:
+            return "00:00"
+        return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+    def _default_manual_schedule(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "active": False,
+            "rows": [],
+            "activation_snapshot": None,
+        }
+
+    def _ensure_manual_schedule(self) -> dict[str, Any]:
+        if not isinstance(getattr(self, "manual_schedule", None), dict):
+            self.manual_schedule = self._default_manual_schedule()
+        manual = self.manual_schedule
+        manual.setdefault("schema_version", 1)
+        manual.setdefault("active", False)
+        if not isinstance(manual.get("rows"), list):
+            manual["rows"] = []
+        if "activation_snapshot" not in manual:
+            manual["activation_snapshot"] = None
+        manual["active"] = bool(manual.get("active"))
+        return manual
+
+    @property
+    def manual_schedule_active(self) -> bool:
+        manual = getattr(self, "manual_schedule", None)
+        return bool(isinstance(manual, dict) and manual.get("active"))
+
+    def _manual_row_defaults(self) -> dict[str, Any]:
+        normal_physical_mode = (
+            self.normal_profile_physical_work_mode
+            if self.normal_profile_physical_work_mode in PHYSICAL_NORMAL_MODES
+            else self.default_normal_physical_work_mode()
+        )
+        return {
+            "enabled": True,
+            "mode": MODE_NORMAL_OPERATION,
+            "physical_work_mode": normal_physical_mode,
+            "sell_power": float(self.normal_profile_sell_power if self.normal_profile_sell_power >= 0 else self.default_sell_power),
+            "discharge_current": float(self.normal_profile_discharge_current if self.normal_profile_discharge_current >= 0 else self.default_discharge_current),
+            "charge_current": float(self.normal_profile_charge_current if self.normal_profile_charge_current >= 0 else self.default_charge_current),
+            "grid_charge_current": float(self.normal_profile_grid_charge_current if self.normal_profile_grid_charge_current >= 0 else self.default_grid_charge_current),
+            "minimum_sell_soc": 0.0,
+            "tou_soc": self.normal_profile_tou_soc if self.normal_profile_tou_soc is not None else 100.0,
+            "min_sell_price": 0.0,
+            "charge_enabled": False,
+        }
+
+    def _normalize_manual_row(self, raw: Any, index: int) -> dict[str, Any]:
+        if not isinstance(raw, dict):
+            raise ValueError(f"Manual schedule row {index + 1} must be an object")
+        defaults = self._manual_row_defaults()
+        unknown = set(raw) - {
+            "from", "to", "enabled", "mode", "physical_work_mode", "sell_power",
+            "discharge_current", "charge_enabled", "charge_current",
+            "grid_charge_current", "minimum_sell_soc", "tou_soc", "min_sell_price",
+        }
+        if unknown:
+            raise ValueError(
+                f"Unsupported manual schedule fields in row {index + 1}: "
+                + ", ".join(sorted(unknown))
+            )
+        start = self._manual_time_to_minutes(raw.get("from"), f"Row {index + 1} start time")
+        end = self._manual_time_to_minutes(raw.get("to"), f"Row {index + 1} end time")
+        row: dict[str, Any] = {
+            "from": self._minutes_to_hhmm(start),
+            "to": self._minutes_to_hhmm(end),
+            "enabled": bool(raw.get("enabled", defaults["enabled"])),
+            "mode": str(raw.get("mode", defaults["mode"])),
+            "physical_work_mode": raw.get("physical_work_mode", defaults["physical_work_mode"]),
+            "charge_enabled": bool(raw.get("charge_enabled", defaults["charge_enabled"])),
+            "sell_power": self.safe_float(raw.get("sell_power", defaults["sell_power"]), 0),
+            "discharge_current": self.safe_float(raw.get("discharge_current", defaults["discharge_current"]), 0),
+            "charge_current": self.safe_float(raw.get("charge_current", defaults["charge_current"]), 0),
+            "grid_charge_current": self.safe_float(raw.get("grid_charge_current", defaults["grid_charge_current"]), 0),
+            "minimum_sell_soc": self.safe_float(raw.get("minimum_sell_soc", defaults["minimum_sell_soc"]), 0),
+            "tou_soc": raw.get("tou_soc", defaults["tou_soc"]),
+            "min_sell_price": self.safe_float(raw.get("min_sell_price", defaults["min_sell_price"]), 0),
+        }
+        if row["mode"] not in SLOT_MODES:
+            raise ValueError(f"Unsupported manual schedule mode in row {index + 1}: {row['mode']}")
+        if row["mode"] == MODE_NORMAL_OPERATION:
+            if row["physical_work_mode"] not in PHYSICAL_NORMAL_MODES:
+                row["physical_work_mode"] = defaults["physical_work_mode"]
+        else:
+            row["physical_work_mode"] = None
+        numeric_limits = {
+            "sell_power": (0.0, float(self.effective_inverter_max_power_w)),
+            "discharge_current": (0.0, 240.0),
+            "charge_current": (0.0, 240.0),
+            "grid_charge_current": (0.0, 240.0),
+            "minimum_sell_soc": (0.0, 100.0),
+            "min_sell_price": (0.0, 5.0),
+        }
+        for field_name, (minimum, maximum) in numeric_limits.items():
+            value = float(row[field_name])
+            if not math.isfinite(value) or not minimum <= value <= maximum:
+                raise ValueError(
+                    f"{field_name} for manual schedule row {index + 1} must be between {minimum:g} and {maximum:g}"
+                )
+            row[field_name] = value
+        if row["mode"] == MODE_SELLING_FIRST and row["sell_power"] > 0:
+            self.validate_manual_sell_power_w(f"sell_power for manual schedule row {index + 1}", row["sell_power"])
+        tou_soc = row["tou_soc"]
+        if tou_soc in (None, "", "unknown", "unavailable"):
+            row["tou_soc"] = None
+        else:
+            tou_soc = float(self.safe_float(tou_soc, float("nan")))
+            if not math.isfinite(tou_soc) or not 0 <= tou_soc <= 100:
+                raise ValueError(f"tou_soc for manual schedule row {index + 1} must be between 0 and 100")
+            row["tou_soc"] = round(tou_soc, 1)
+        return row
+
+    def _validate_manual_schedule_rows(self, rows: Any) -> list[dict[str, Any]]:
+        if not isinstance(rows, list) or not rows:
+            raise ValueError("Manual schedule must contain at least one row")
+        normalized = [self._normalize_manual_row(row, index) for index, row in enumerate(rows)]
+        first_start = self._manual_time_to_minutes(normalized[0]["from"], "First row start time")
+        last_end = self._manual_time_to_minutes(normalized[-1]["to"], "Last row end time")
+        if first_start != 0:
+            raise ValueError("Manual schedule must start at 00:00")
+        if last_end == 0:
+            last_end = 24 * 60
+        if last_end != 24 * 60:
+            raise ValueError("Manual schedule must end at 00:00")
+        previous_end: int | None = None
+        for index, row in enumerate(normalized):
+            start = self._manual_time_to_minutes(row["from"], f"Row {index + 1} start time")
+            end = self._manual_time_to_minutes(row["to"], f"Row {index + 1} end time")
+            if index == len(normalized) - 1 and end == 0:
+                end = 24 * 60
+            if index < len(normalized) - 1 and end == 24 * 60:
+                raise ValueError("Only the last manual schedule row may end at 00:00")
+            if end <= start:
+                raise ValueError(f"Manual schedule row {index + 1} must be at least 1 minute long")
+            if previous_end is not None and start != previous_end:
+                if start < previous_end:
+                    raise ValueError("Manual schedule rows must not overlap")
+                raise ValueError("Manual schedule must cover the full 24 hours without gaps")
+            previous_end = end
+        if previous_end != 24 * 60:
+            raise ValueError("Manual schedule must cover the full 24 hours without gaps")
+        return normalized
+
+    def manual_schedule_state(self) -> dict[str, Any]:
+        manual = self._ensure_manual_schedule()
+        rows = []
+        for row in manual.get("rows", []):
+            if isinstance(row, dict):
+                try:
+                    rows.append(self._normalize_manual_row(row, len(rows)))
+                except Exception:
+                    continue
+        valid = False
+        validation_error = ""
+        try:
+            if rows:
+                rows = self._validate_manual_schedule_rows(rows)
+            valid = bool(rows)
+        except Exception as err:
+            validation_error = str(err)
+            valid = False
+        return {
+            "schema_version": int(manual.get("schema_version", 1)),
+            "active": bool(manual.get("active")),
+            "rows": rows,
+            "has_activation_snapshot": isinstance(manual.get("activation_snapshot"), dict),
+            "valid": valid,
+            "validation_error": validation_error,
+        }
+
+    def _manual_schedule_slot_snapshot(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "saved_at": ha_now().isoformat(timespec="seconds"),
+            "scheduler_enabled": bool(self.scheduler_enabled),
+            "schedule_revision": int(self.schedule_revision),
+            "schedule_slot_revisions": deepcopy(self.schedule_slot_revisions),
+            "schedule_slot_ownership": deepcopy(self.schedule_slot_ownership),
+            "slots": {
+                key: {
+                    "enabled": bool(slot.enabled),
+                    "mode": slot.mode,
+                    "physical_work_mode": slot.physical_work_mode,
+                    "sell_power": float(slot.sell_power),
+                    "discharge_current": float(slot.discharge_current),
+                    "charge_enabled": bool(slot.charge_enabled),
+                    "charge_current": float(slot.charge_current),
+                    "grid_charge_current": float(slot.grid_charge_current),
+                    "minimum_sell_soc": float(slot.minimum_sell_soc),
+                    "tou_soc": None if slot.tou_soc is None else float(slot.tou_soc),
+                    "min_sell_price": float(slot.min_sell_price),
+                    "ai_sell_power_only": bool(slot.ai_sell_power_only),
+                }
+                for key, slot in self.slots.items()
+            },
+        }
+
+    def _restore_manual_schedule_slot_snapshot(self, snapshot: Any) -> None:
+        if not isinstance(snapshot, dict):
+            raise ValueError("Manual schedule activation snapshot is missing or invalid")
+        slots = snapshot.get("slots")
+        if not isinstance(slots, dict):
+            raise ValueError("Manual schedule activation snapshot is invalid")
+        for key, slot in self.slots.items():
+            data = slots.get(key)
+            if not isinstance(data, dict):
+                continue
+            slot.enabled = bool(data.get("enabled", slot.enabled))
+            mode = str(data.get("mode", slot.mode))
+            slot.mode = mode if mode in SLOT_MODES else slot.mode
+            physical_work_mode = data.get("physical_work_mode")
+            slot.physical_work_mode = (
+                str(physical_work_mode)
+                if physical_work_mode in PHYSICAL_NORMAL_MODES
+                else None
+            )
+            slot.sell_power = self.safe_float(data.get("sell_power"), slot.sell_power)
+            slot.discharge_current = self.safe_float(data.get("discharge_current"), slot.discharge_current)
+            slot.charge_enabled = bool(data.get("charge_enabled", slot.charge_enabled))
+            slot.charge_current = self.safe_float(data.get("charge_current"), slot.charge_current)
+            slot.grid_charge_current = self.safe_float(data.get("grid_charge_current"), slot.grid_charge_current)
+            slot.minimum_sell_soc = self.safe_float(data.get("minimum_sell_soc"), slot.minimum_sell_soc)
+            tou_soc = data.get("tou_soc")
+            if tou_soc is None:
+                slot.tou_soc = None
+            else:
+                value = self.safe_float(tou_soc, float("nan"))
+                slot.tou_soc = round(value, 1) if math.isfinite(value) else slot.tou_soc
+            slot.min_sell_price = self.safe_float(data.get("min_sell_price"), slot.min_sell_price)
+            slot.ai_sell_power_only = bool(data.get("ai_sell_power_only", False))
+        self.scheduler_enabled = bool(snapshot.get("scheduler_enabled", self.scheduler_enabled))
+        self.schedule_revision = max(0, int(self.safe_float(snapshot.get("schedule_revision"), self.schedule_revision)))
+        revisions = snapshot.get("schedule_slot_revisions")
+        ownership = snapshot.get("schedule_slot_ownership")
+        self.schedule_slot_revisions = {
+            str(key): max(0, int(self.safe_float(value, 0)))
+            for key, value in (revisions.items() if isinstance(revisions, dict) else [])
+            if str(key) in self.slots
+        }
+        self.schedule_slot_ownership = {
+            str(key): deepcopy(value)
+            for key, value in (ownership.items() if isinstance(ownership, dict) else [])
+            if str(key) in self.slots and isinstance(value, dict)
+        }
+
+    def _manual_row_for_slot_start(self, rows: list[dict[str, Any]], slot_start_minute: int) -> dict[str, Any]:
+        minute = int(slot_start_minute) % (24 * 60)
+        for index, row in enumerate(rows):
+            start = self._manual_time_to_minutes(row["from"], f"Row {index + 1} start time")
+            end = self._manual_time_to_minutes(row["to"], f"Row {index + 1} end time")
+            end_cmp = 24 * 60 if index == len(rows) - 1 and end == 0 else end
+            if start <= minute < end_cmp:
+                return row
+        raise ValueError(f"Manual schedule does not cover slot starting at {self._minutes_to_hhmm(minute)}")
+
+    def _manual_schedule_to_slot_updates(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        updates: list[dict[str, Any]] = []
+        for slot_key, _label, start, _end in SLOTS:
+            row = self._manual_row_for_slot_start(rows, int(start))
+            update = {
+                "slot_key": slot_key,
+                "enabled": bool(row.get("enabled", True)),
+                "mode": str(row.get("mode", MODE_NORMAL_OPERATION)),
+                "sell_power": float(row.get("sell_power", 0)),
+                "discharge_current": float(row.get("discharge_current", 0)),
+                "charge_enabled": bool(row.get("charge_enabled", False)),
+                "charge_current": float(row.get("charge_current", 0)),
+                "grid_charge_current": float(row.get("grid_charge_current", 0)),
+                "minimum_sell_soc": float(row.get("minimum_sell_soc", 0)),
+                "min_sell_price": float(row.get("min_sell_price", 0)),
+            }
+            if update["mode"] == MODE_NORMAL_OPERATION and row.get("physical_work_mode") in PHYSICAL_NORMAL_MODES:
+                update["physical_work_mode"] = row["physical_work_mode"]
+            if row.get("tou_soc") is not None:
+                update["tou_soc"] = float(row["tou_soc"])
+            updates.append(update)
+        return updates
+
+    def _load_manual_schedule_state(self, raw: Any) -> dict[str, Any]:
+        state = self._default_manual_schedule()
+        if not isinstance(raw, dict):
+            return state
+        state["schema_version"] = int(self.safe_float(raw.get("schema_version"), 1))
+        state["active"] = bool(raw.get("active", False))
+        rows = raw.get("rows")
+        if isinstance(rows, list):
+            normalized_rows: list[dict[str, Any]] = []
+            for index, row in enumerate(rows):
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    normalized_rows.append(self._normalize_manual_row(row, len(normalized_rows)))
+                except Exception:
+                    continue
+            state["rows"] = normalized_rows
+        snapshot = raw.get("activation_snapshot")
+        if isinstance(snapshot, dict):
+            state["activation_snapshot"] = deepcopy(snapshot)
+        if state["active"] and not isinstance(state.get("activation_snapshot"), dict):
+            state["active"] = False
+        return state
+
+    async def async_init_manual_schedule_from_tou(self) -> dict[str, Any]:
+        """Initialize manual schedule rows from the current inverter 6-row TOU map."""
+        try:
+            mapping = self.read_physical_tou_mapping()
+        except Exception:
+            mapping = self._manual_tou_mapping
+        if mapping is None or len(getattr(mapping, "slots", [])) != 6:
+            raise ValueError("Cannot read the inverter 6-row Time Of Use mapping")
+        defaults = self._manual_row_defaults()
+        rows: list[dict[str, Any]] = []
+        ordered = sorted(mapping.slots, key=lambda item: int(item.index))
+        for idx, slot in enumerate(ordered):
+            start = int(slot.start) % (24 * 60)
+            end = int(slot.end) % (24 * 60)
+            if idx == len(ordered) - 1 and end == 0:
+                end = 24 * 60
+            rows.append({
+                **defaults,
+                "from": self._minutes_to_hhmm(start),
+                "to": self._minutes_to_hhmm(end),
+                "tou_soc": round(float(slot.soc), 1),
+                "charge_enabled": bool(slot.grid_charge),
+            })
+        manual = self._ensure_manual_schedule()
+        previous_rows = deepcopy(manual.get("rows", []))
+        manual["rows"] = self._validate_manual_schedule_rows(rows)
+        try:
+            if manual.get("active"):
+                # Re-apply so the active work schedule matches the new manual rows.
+                await self._async_apply_manual_schedule_to_work_schedule(
+                    activate=False, reason="manual_schedule_init"
+                )
+        except Exception:
+            manual["rows"] = previous_rows
+            self.mark_config_saved()
+            await self.async_save_ai_data()
+            self.notify_update()
+            raise
+        self.mark_config_saved()
+        await self.async_save_ai_data()
+        self.notify_update()
+        return self.manual_schedule_state()
+
+    async def async_save_manual_schedule(self, rows: Any) -> dict[str, Any]:
+        manual = self._ensure_manual_schedule()
+        previous_rows = deepcopy(manual.get("rows", []))
+        manual["rows"] = self._validate_manual_schedule_rows(rows)
+        try:
+            if manual.get("active"):
+                await self._async_apply_manual_schedule_to_work_schedule(
+                    activate=False, reason="manual_schedule_save"
+                )
+        except Exception:
+            manual["rows"] = previous_rows
+            self.mark_config_saved()
+            await self.async_save_ai_data()
+            self.notify_update()
+            raise
+        self.mark_config_saved()
+        await self.async_save_ai_data()
+        self.notify_update()
+        return self.manual_schedule_state()
+
+    async def _async_apply_manual_schedule_to_work_schedule(
+        self,
+        *,
+        activate: bool,
+        reason: str,
+    ) -> None:
+        manual = self._ensure_manual_schedule()
+        rows = self._validate_manual_schedule_rows(manual.get("rows", []))
+        updates = self._manual_schedule_to_slot_updates(rows)
+        if activate and not isinstance(manual.get("activation_snapshot"), dict):
+            manual["activation_snapshot"] = self._manual_schedule_slot_snapshot()
+        await self.async_apply_schedule_patch(
+            updates,
+            change_source=reason,
+            _allow_manual_schedule_internal=True,
+        )
+
+    async def async_activate_manual_schedule(self) -> dict[str, Any]:
+        manual = self._ensure_manual_schedule()
+        rows = self._validate_manual_schedule_rows(manual.get("rows", []))
+        if not manual.get("active"):
+            manual["active"] = True
+            try:
+                await self._async_apply_manual_schedule_to_work_schedule(
+                    activate=True, reason="manual_schedule_activate"
+                )
+            except Exception:
+                manual["active"] = False
+                manual.pop("activation_snapshot", None)
+                self.mark_config_saved()
+                await self.async_save_ai_data()
+                self.notify_update()
+                raise
+        else:
+            await self._async_apply_manual_schedule_to_work_schedule(
+                activate=False, reason="manual_schedule_reapply"
+            )
+        self.mark_config_saved()
+        await self.async_save_ai_data()
+        self.notify_update()
+        return self.manual_schedule_state()
+
+    async def async_deactivate_manual_schedule(self) -> dict[str, Any]:
+        manual = self._ensure_manual_schedule()
+        if not manual.get("active"):
+            manual["active"] = False
+            manual["activation_snapshot"] = None
+            self.mark_config_saved()
+            await self.async_save_ai_data()
+            self.notify_update()
+            return self.manual_schedule_state()
+        snapshot = manual.get("activation_snapshot")
+        if not isinstance(snapshot, dict):
+            manual["active"] = False
+            manual["activation_snapshot"] = None
+            raise ValueError("Manual schedule activation snapshot is missing; cannot restore the previous work schedule")
+        updates = []
+        slots = snapshot.get("slots", {}) if isinstance(snapshot, dict) else {}
+        for key, _label, _start, _end in SLOTS:
+            data = slots.get(key, {})
+            if not isinstance(data, dict):
+                continue
+            update = {
+                "slot_key": key,
+                "enabled": bool(data.get("enabled", False)),
+                "mode": str(data.get("mode", MODE_NORMAL_OPERATION)),
+                "sell_power": float(self.safe_float(data.get("sell_power"), 0)),
+                "discharge_current": float(self.safe_float(data.get("discharge_current"), 0)),
+                "charge_enabled": bool(data.get("charge_enabled", False)),
+                "charge_current": float(self.safe_float(data.get("charge_current"), 0)),
+                "grid_charge_current": float(self.safe_float(data.get("grid_charge_current"), 0)),
+                "minimum_sell_soc": float(self.safe_float(data.get("minimum_sell_soc"), 0)),
+                "min_sell_price": float(self.safe_float(data.get("min_sell_price"), 0)),
+            }
+            if update["mode"] == MODE_NORMAL_OPERATION and data.get("physical_work_mode") in PHYSICAL_NORMAL_MODES:
+                update["physical_work_mode"] = data["physical_work_mode"]
+            if data.get("tou_soc") is not None:
+                update["tou_soc"] = float(self.safe_float(data.get("tou_soc"), 0))
+            updates.append(update)
+        # Apply restored slot values, then restore schedule metadata/ownership.
+        await self.async_apply_schedule_patch(
+            updates,
+            change_source="manual_schedule_deactivate",
+            _allow_manual_schedule_internal=True,
+        )
+        self._restore_manual_schedule_slot_snapshot(snapshot)
+        manual["active"] = False
+        manual["activation_snapshot"] = None
+        self.mark_config_saved()
+        if self._control_is_active() and not self.emergency_stop:
+            self._schedule_schedule_reconciliation()
+        await self.async_save_ai_data()
+        self.notify_update()
+        return self.manual_schedule_state()
+
+    def _ensure_manual_schedule_allows_apply(
+        self,
+        *,
+        replace_day: bool = False,
+        ai_source: bool = False,
+        change_source: str | None = None,
+        _allow_manual_schedule_internal: bool = False,
+    ) -> None:
+        if _allow_manual_schedule_internal or not self.manual_schedule_active:
+            return
+        source = str(change_source or "")
+        if replace_day or ai_source or source in {
+            "apply_today", "future_plan", "optimizer_core", "future_cleanup",
+        }:
+            raise ValueError(
+                "Manual schedule is active. Deactivate it before applying AI, optimizer, or future-plan changes."
+            )
+        if source in {"manual", "", "unknown"}:
+            raise ValueError(
+                "Manual schedule is active and its values are final. Deactivate it before editing the work schedule."
+            )
+        raise ValueError(
+            "Manual schedule is active. Deactivate it before changing the work schedule."
+        )
 
     def _normal_day_replace_update(self, slot: SlotSettings) -> dict[str, Any]:
         """Return the canonical Normal Operation target for one unselected hour.
@@ -12379,6 +13044,7 @@ class DeyeEnergyRuntime:
         ai_source: bool = False,
         change_source: str | None = None,
         source_context: dict[str, Any] | None = None,
+        _allow_manual_schedule_internal: bool = False,
     ) -> None:
         """Validate and save logical slot changes, then reconcile Deye in background.
 
@@ -12411,6 +13077,12 @@ class DeyeEnergyRuntime:
         }
 
         async with self._operation_lock:
+            self._ensure_manual_schedule_allows_apply(
+                replace_day=replace_day,
+                ai_source=ai_source,
+                change_source=change_source,
+                _allow_manual_schedule_internal=_allow_manual_schedule_internal,
+            )
             previous_schedule_revision = self.schedule_revision
             previous_slot_revisions = deepcopy(self.schedule_slot_revisions)
             previous_slot_ownership = deepcopy(self.schedule_slot_ownership)

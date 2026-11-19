@@ -109,6 +109,9 @@ TOU_SLOT_SCHEMA = vol.Schema(
         vol.Optional("grid_charge"): cv.boolean,
     }
 )
+MANUAL_SCHEDULE_DATA_SCHEMA = vol.Schema(
+    {vol.Required("data"): vol.All(cv.string, vol.Length(max=100000))}
+)
 SERVICE_NAMES = (
     "apply_settings",
     "manual_sell",
@@ -136,6 +139,10 @@ SERVICE_NAMES = (
     "cancel_future_plan",
     "get_plan_execution",
     "set_tou_slot",
+    "save_manual_schedule",
+    "init_manual_schedule_from_tou",
+    "activate_manual_schedule",
+    "deactivate_manual_schedule",
 )
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the integration domain before config entries are loaded.
@@ -511,6 +518,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             grid_charge=call.data.get("grid_charge"),
         )
 
+    async def handle_save_manual_schedule(call: ServiceCall) -> dict[str, Any]:
+        payload = _parse_json_payload(call.data["data"], (list, dict))
+        if isinstance(payload, list):
+            rows = payload
+        else:
+            unknown = set(payload) - {"rows"}
+            if unknown:
+                raise ValueError(
+                    "Unsupported manual schedule fields: " + ", ".join(sorted(unknown))
+                )
+            rows = payload.get("rows")
+        return await runtime.async_save_manual_schedule(rows)
+
+    async def handle_init_manual_schedule_from_tou(call: ServiceCall) -> dict[str, Any]:
+        return await runtime.async_init_manual_schedule_from_tou()
+
+    async def handle_activate_manual_schedule(call: ServiceCall) -> dict[str, Any]:
+        return await runtime.async_activate_manual_schedule()
+
+    async def handle_deactivate_manual_schedule(call: ServiceCall) -> dict[str, Any]:
+        return await runtime.async_deactivate_manual_schedule()
+
     hass.services.async_register(DOMAIN, "apply_settings", handle_apply_settings, schema=APPLY_SCHEMA)
     hass.services.async_register(DOMAIN, "manual_sell", handle_manual_sell, schema=MANUAL_SELL_SCHEMA)
     hass.services.async_register(DOMAIN, "charge_now", handle_charge_now, schema=CHARGE_SCHEMA)
@@ -576,6 +605,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "set_tou_slot",
         handle_set_tou_slot,
         schema=TOU_SLOT_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "save_manual_schedule",
+        handle_save_manual_schedule,
+        schema=MANUAL_SCHEDULE_DATA_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "init_manual_schedule_from_tou",
+        handle_init_manual_schedule_from_tou,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "activate_manual_schedule",
+        handle_activate_manual_schedule,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "deactivate_manual_schedule",
+        handle_deactivate_manual_schedule,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     return True
 
