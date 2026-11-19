@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.50
+// Resource revision: v=0.8.0.51
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -2078,7 +2078,7 @@ class DeyeEnergyCard extends HTMLElement {
       : [];
     buttons.forEach((button) => {
       button.textContent = `Deye control — ${control.status}`;
-      button.disabled = control.pending;
+      button.disabled = control.pending || this.manualScheduleIsActive();
       button.classList?.toggle("active", control.enabled);
     });
     const status = typeof this.querySelector === "function"
@@ -2088,6 +2088,10 @@ class DeyeEnergyCard extends HTMLElement {
       status.textContent = control.status;
       status.className = `mode-${control.enabled ? "normal" : "disabled"}`;
     }
+    const manualActivate = typeof this.querySelector === "function"
+      ? this.querySelector("[data-manual-activate]")
+      : null;
+    if (manualActivate) manualActivate.disabled = control.enabled || this._manualScheduleSaving;
 
     if (updateFeedback) {
       this._saveStatus = settled ? "saved" : "saving";
@@ -2379,6 +2383,7 @@ class DeyeEnergyCard extends HTMLElement {
   async toggleControl() {
     const control = this.controlState();
     if (control.pending) return false;
+    if (this.manualScheduleIsActive()) return false;
     const entityId = control.entity_id;
     const entity = entityId ? this._hass?.states?.[entityId] : null;
     if (!entity || ["unavailable", "unknown"].includes(String(entity.state))) {
@@ -2936,7 +2941,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.50)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.51)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -4118,6 +4123,10 @@ class DeyeEnergyCard extends HTMLElement {
     return manual && typeof manual === "object" && !Array.isArray(manual) ? manual : {};
   }
 
+  manualScheduleIsActive() {
+    return Boolean(this._manualScheduleActive || this.manualScheduleBackend().active);
+  }
+
   manualScheduleFields() {
     return ["enabled", "mode", "sell_power", "charge_enabled", "minimum_sell_soc", "tou_soc"];
   }
@@ -4375,6 +4384,12 @@ class DeyeEnergyCard extends HTMLElement {
   }
 
   async activateManualSchedule() {
+    if (this.controlEnabled()) {
+      this._manualScheduleError = "Disable Deye control before activating the manual schedule.";
+      this._manualScheduleStatus = "";
+      this.render();
+      return false;
+    }
     const rows = this.ensureManualScheduleDraft();
     const error = this.validateManualScheduleRows(rows);
     if (error) {
@@ -4450,7 +4465,7 @@ class DeyeEnergyCard extends HTMLElement {
 
   renderManualScheduleTab() {
     const rows = this.ensureManualScheduleDraft();
-    const active = Boolean(this._manualScheduleActive || this.manualScheduleBackend().active);
+    const active = this.manualScheduleIsActive();
     const validationError = this.validateManualScheduleRows(rows);
     const modeOptions = this.slotModeOptions();
     const rowHtml = rows.map((row, index) => this.renderManualScheduleRow(row, index, rows, modeOptions)).join("");
@@ -4462,12 +4477,13 @@ class DeyeEnergyCard extends HTMLElement {
     const validation = validationError
       ? `<div class="bad" data-manual-schedule-validation>${this.escapeHtml(validationError)}</div>`
       : '<div class="good" data-manual-schedule-validation>All rows cover the full 24 hours.</div>';
+    const controlOn = this.controlEnabled();
     const status = active
       ? '<strong>Manual schedule: Active</strong><span class="hint" style="margin:0">AI, optimizer and future-plan applies are blocked. Saving changes re-applies them to the work schedule.</span>'
       : '<strong>Manual schedule: Inactive</strong><span class="hint" style="margin:0">Rows are stored separately and do not affect the work schedule until activated.</span>';
     const toggle = active
       ? `<button type="button" class="danger-action" data-manual-deactivate="1" ${this._manualScheduleSaving ? "disabled" : ""}>Deactivate</button>`
-      : `<button type="button" class="primary" data-manual-activate="1" ${this._manualScheduleSaving ? "disabled" : ""}>Activate</button>`;
+      : `<button type="button" class="primary" data-manual-activate="1" ${this._manualScheduleSaving || controlOn ? "disabled" : ""}>Activate</button>`;
     return `<div class="schedule-head manual-panel-head">
         <div class="schedule-title">
           <h2>Manual schedule</h2>
@@ -8287,6 +8303,7 @@ class DeyeEnergyCard extends HTMLElement {
     const masterControl = control.entity_id;
     const masterControlOn = control.enabled;
     const controlStatus = control.status;
+    const manualScheduleActive = this.manualScheduleIsActive();
 
     const batterySoc = this.entity("sensor", "battery_soc");
     const soldEnergyToday = this.entity("sensor", "sold_energy_today");
@@ -8486,7 +8503,7 @@ class DeyeEnergyCard extends HTMLElement {
                  <p>Click an hour to edit a single slot or select several to edit them together.</p>
                 </div>
                 <div class="schedule-tools">
-                 <button class="tool-btn ${masterControlOn ? "active" : ""}" data-control-toggle="1" ${control.pending ? "disabled" : ""}>Deye control — ${this.escapeHtml(controlStatus)}</button>
+                 <button class="tool-btn ${masterControlOn ? "active" : ""}" data-control-toggle="1" ${control.pending || manualScheduleActive ? "disabled" : ""}>Deye control — ${this.escapeHtml(controlStatus)}</button>
                  <button class="tool-btn ${this._selectionMode ? "active" : ""}" data-toggle-selection="1">${this.iconSvg("check")} Selection mode</button>
                  <button class="tool-btn" data-schedule-select-all="1">${this.iconSvg("copy")} Select all</button>
                  <button class="tool-btn" data-schedule-clear="1">${this.iconSvg("close")} Deselect all</button>
@@ -8752,6 +8769,31 @@ class DeyeEnergyCard extends HTMLElement {
       if (el.tagName !== "SELECT" && el.type !== "checkbox") el.addEventListener("input", saveBulkDraft);
     });
     root.querySelectorAll("[data-apply-multi]").forEach((el) => el.addEventListener("click", () => this.applyMultiEdit(slots)));
+    root.querySelectorAll("[data-schedule-tab]").forEach((el) => el.addEventListener("click", (event) => {
+      event.preventDefault();
+      this._scheduleTab = el.dataset.scheduleTab === "manual" ? "manual" : "work";
+      this.render();
+    }));
+    root.querySelectorAll("[data-manual-field]").forEach((el) => {
+      const update = () => {
+        this.updateManualScheduleField(Number(el.dataset.manualIndex), el.dataset.manualField, el.value);
+        if (el.dataset.manualField === "mode") this.render();
+      };
+      el.addEventListener("change", update);
+      if (el.tagName !== "SELECT" && el.type !== "checkbox") el.addEventListener("input", update);
+    });
+    root.querySelectorAll("[data-manual-add]").forEach((el) => el.addEventListener("click", () => {
+      this.addManualScheduleRow();
+      this.render();
+    }));
+    root.querySelectorAll("[data-manual-remove]").forEach((el) => el.addEventListener("click", () => {
+      this.removeManualScheduleRow(Number(el.dataset.manualRemove));
+      this.render();
+    }));
+    root.querySelectorAll("[data-manual-save]").forEach((el) => el.addEventListener("click", () => this.saveManualSchedule()));
+    root.querySelectorAll("[data-manual-init]").forEach((el) => el.addEventListener("click", () => this.initManualScheduleFromTou()));
+    root.querySelectorAll("[data-manual-activate]").forEach((el) => el.addEventListener("click", () => this.activateManualSchedule()));
+    root.querySelectorAll("[data-manual-deactivate]").forEach((el) => el.addEventListener("click", () => this.deactivateManualSchedule()));
   }
 
   bindDialogControls(slots) {
@@ -8831,31 +8873,6 @@ class DeyeEnergyCard extends HTMLElement {
     root.querySelectorAll("[data-save-mapping]").forEach((el) => el.addEventListener("click", () => {
       this.saveMappingToInverter();
     }));
-    root.querySelectorAll("[data-schedule-tab]").forEach((el) => el.addEventListener("click", (event) => {
-      event.preventDefault();
-      this._scheduleTab = el.dataset.scheduleTab === "manual" ? "manual" : "work";
-      this.render();
-    }));
-    root.querySelectorAll("[data-manual-field]").forEach((el) => {
-      const update = () => {
-        this.updateManualScheduleField(Number(el.dataset.manualIndex), el.dataset.manualField, el.value);
-        if (el.dataset.manualField === "mode") this.render();
-      };
-      el.addEventListener("change", update);
-      if (el.tagName !== "SELECT" && el.type !== "checkbox") el.addEventListener("input", update);
-    });
-    root.querySelectorAll("[data-manual-add]").forEach((el) => el.addEventListener("click", () => {
-      this.addManualScheduleRow();
-      this.render();
-    }));
-    root.querySelectorAll("[data-manual-remove]").forEach((el) => el.addEventListener("click", () => {
-      this.removeManualScheduleRow(Number(el.dataset.manualRemove));
-      this.render();
-    }));
-    root.querySelectorAll("[data-manual-save]").forEach((el) => el.addEventListener("click", () => this.saveManualSchedule()));
-    root.querySelectorAll("[data-manual-init]").forEach((el) => el.addEventListener("click", () => this.initManualScheduleFromTou()));
-    root.querySelectorAll("[data-manual-activate]").forEach((el) => el.addEventListener("click", () => this.activateManualSchedule()));
-    root.querySelectorAll("[data-manual-deactivate]").forEach((el) => el.addEventListener("click", () => this.deactivateManualSchedule()));
     root.querySelectorAll("[data-settings-tab]").forEach((el) => el.addEventListener("click", () => {
       this._settingsTab = el.dataset.settingsTab;
       this._tariffDraft = null;

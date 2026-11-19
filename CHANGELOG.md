@@ -25,7 +25,7 @@ and are not repeated here.
 - The work schedule uses 48 half-hour slots (keys such as `0530_0600`); hourly plan keys such as `05_06` still work and apply to both halves. Deye TOU ranges may start and end on :00 or :30.
 
 - Integration domain `deye_energy`, card `deye-energy-card`, resource revision
-  `v=0.8.0.50`.
+  `v=0.8.0.51`.
 - Existing `deye_addon` config entries migrate to the writable `sunsynk` provider.
 - Currency, number and date display use pounds and the `en-GB` locale.
 - Deye Time Of Use options in `H:MM` format are parsed; the battery current cap is

@@ -32,6 +32,31 @@ function assertEqual(actual, expected, message) {
   }
 }
 
+function methodBody(source, signature) {
+  const start = source.indexOf(signature);
+  if (start < 0) return "";
+  const opening = source.indexOf("{", start);
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let index = opening; index < source.length; index += 1) {
+    const character = source[index];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'" || character === "`") quote = character;
+    else if (character === "{") depth += 1;
+    else if (character === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, index + 1);
+    }
+  }
+  return "";
+}
+
 function manualRow(overrides = {}) {
   return {
     from: "00:00",
@@ -343,6 +368,54 @@ function test_manual_schedule_is_removed_from_the_settings_overlay() {
   assertTrue(source.includes('this.renderScheduleTabs(workSchedulePanel, this.renderManualScheduleTab())'), "Both schedules must render as page tabs");
 }
 
+function test_page_schedule_controls_are_bound_in_the_dashboard_binder() {
+  const source = fs.readFileSync(componentCard, "utf8");
+  const dashboard = methodBody(source, "bindDashboardControls(slots) {");
+  const dialog = methodBody(source, "bindDialogControls(slots) {");
+  assertTrue(dashboard.length > 0 && dialog.length > 0, "both bind methods must be present");
+  for (const selector of [
+    "[data-schedule-tab]", "[data-manual-field]", "[data-manual-add]",
+    "[data-manual-remove]", "[data-manual-save]", "[data-manual-init]",
+    "[data-manual-activate]", "[data-manual-deactivate]",
+  ]) {
+    assertTrue(dashboard.includes(selector), `${selector} must be bound on the page`);
+    assertTrue(!dialog.includes(selector), `${selector} must not be bound inside the dialog host`);
+  }
+}
+
+function test_manual_activation_is_disabled_while_deye_control_is_active() {
+  const { card, calls } = makeCard();
+  card._hass.states["sensor.deye_energy_manager_status"] = {
+    state: "ok",
+    attributes: { control: { entity_id: "switch.deye_energy_control", enabled: true, status: "Active" } },
+  };
+  const html = card.renderManualScheduleTab();
+  assertTrue(html.includes('data-manual-activate="1" disabled'), "Activate must be disabled while Deye control is Active");
+  return card.activateManualSchedule().then((ok) => {
+    assertTrue(!ok, "activation must be refused while Deye control is Active");
+    assertEqual(serviceCalls(calls, "activate_manual_schedule").length, 0, "no activation service call while Deye control is Active");
+  });
+}
+
+function test_deye_control_toggle_is_disabled_while_manual_schedule_is_active() {
+  const { card, calls } = makeCard();
+  card._hass.states["sensor.deye_energy_manager_status"] = {
+    state: "ok",
+    attributes: { control: { entity_id: "switch.deye_energy_control", enabled: false, status: "Disabled" } },
+  };
+  card._hass.states["switch.deye_energy_control"] = { state: "off", attributes: {} };
+  const button = { textContent: "", disabled: false, classList: { toggle: () => {} } };
+  card.querySelectorAll = (selector) => (selector === "[data-control-toggle]" ? [button] : []);
+  card.querySelector = () => null;
+  card.applyManualScheduleState({ active: true, rows: [] });
+  card.updateControlUi();
+  assertTrue(button.disabled, "Deye control toggle must be disabled while manual schedule is active");
+  return card.toggleControl().then((ok) => {
+    assertTrue(!ok, "Deye control must not toggle while manual schedule is active");
+    assertEqual(calls.filter((call) => call.domain === "switch").length, 0, "no switch service call while manual schedule is active");
+  });
+}
+
 function test_both_card_copies_remain_identical() {
   assertTrue(fs.readFileSync(componentCard).equals(fs.readFileSync(rootCard)), "both card copies must remain identical");
 }
@@ -365,6 +438,9 @@ const tests = [
   test_schedule_tabs_default_to_work_and_switch_to_manual,
   test_manual_tab_uses_the_work_schedule_page_styling,
   test_manual_schedule_is_removed_from_the_settings_overlay,
+  test_page_schedule_controls_are_bound_in_the_dashboard_binder,
+  test_manual_activation_is_disabled_while_deye_control_is_active,
+  test_deye_control_toggle_is_disabled_while_manual_schedule_is_active,
   test_both_card_copies_remain_identical,
 ];
 

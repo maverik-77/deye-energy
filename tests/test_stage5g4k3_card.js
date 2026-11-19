@@ -27,5 +27,5 @@ check(card.canonicalPriceMaps("sell")[0].get(5) === 1.25, "SELL must use its ind
 check(source.includes('this.canonicalPriceMaps(scrollKey.startsWith("buy") ? "buy" : "sell")'), "price tables must use backend canonical rows");
 check(!source.includes("price + distributionCost(todayKey, hour)"), "browser must not add DSO to a canonical BUY price");
 check(source.includes("Full source"), "all-in Octopus Energy breakdown must be labelled as a full source price");
-check(source.includes("v=0.8.0.50"), "resource revision must be 0.8.0.50");
+check(source.includes("v=0.8.0.51"), "resource revision must be 0.8.0.51");
 console.log("stage5g4k3 card contract OK");
