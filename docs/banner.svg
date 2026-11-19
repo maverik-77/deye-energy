@@ -31,14 +31,4 @@
   <text class="title" x="300" y="158">Deye Energy Manager</text>
   <text class="sub" x="304" y="205">Home Assistant / HACS for controlling energy selling and storage</text>
   <text class="small" x="304" y="246">24 h schedule · Octopus Energy prices · Deye Grid Charge · AI suggestions</text>
-  <g transform="translate(304 292)">
-    <rect class="badge" x="0" y="0" width="130" height="36" rx="18"/>
-    <text class="badgeText" x="65" y="24" text-anchor="middle">HACS Custom</text>
-    <rect class="badge" x="146" y="0" width="108" height="36" rx="18"/>
-    <text class="badgeText" x="200" y="24" text-anchor="middle">MIT</text>
-    <rect class="badge" x="270" y="0" width="134" height="36" rx="18"/>
-    <text class="badgeText" x="337" y="24" text-anchor="middle">v0.8.0</text>
-    <rect class="badge" x="420" y="0" width="176" height="36" rx="18"/>
-    <text class="badgeText" x="508" y="24" text-anchor="middle">buycoffee.to</text>
-  </g>
 </svg>

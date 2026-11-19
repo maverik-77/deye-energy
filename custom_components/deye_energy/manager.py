@@ -41,6 +41,9 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import now as ha_now
 
 from .const import (
+    ENERGY_STATUS_DISPLAY_SCHEMA_VERSION,
+    ENERGY_STATUS_ROLES,
+    ENERGY_STATUS_ROLE_KEYS,
     CONF_BATTERY_BMS_VOLTAGE_SENSOR,
     CONF_BATTERY_CURRENT_SENSOR,
     CONF_BATTERY_SOH_SENSOR,
@@ -448,6 +451,9 @@ class DeyeEnergyRuntime:
     # 48-slot work schedule.  Activation selects these rows as the scheduler's
     # trigger source without copying them into, or restoring, the work schedule.
     manual_schedule: dict[str, Any] = field(default_factory=dict)
+    # Card-controlled mapping/visibility overrides for the Energy status page.
+    # Empty means "use the card's existing mapping, show every reading".
+    energy_status_display: dict[str, Any] = field(default_factory=dict)
     # Cached per-slot overlay built from the active manual rows.  Work-slot
     # values are read live, so non-manual fields can never go stale.
     _manual_effective_rows: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -3375,6 +3381,7 @@ class DeyeEnergyRuntime:
             "planner_48h": self._optimizer_public_snapshot or self.optimizer_plan,
             "future_plan": self.future_plan,
             "manual_schedule": self.manual_schedule_state(),
+            "energy_status_display": self.energy_status_display_state(),
             "plan_execution_index": self.plan_execution_index(),
             "plan_execution_today": self.plan_execution_day(),
         }
@@ -4912,7 +4919,7 @@ class DeyeEnergyRuntime:
             if not tou["ok"]
             else "OK"
         )
-        return {"integration_version": "0.8.0.52", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
+        return {"integration_version": "0.8.0.53", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
                 "inverter_provider": self.inverter_provider,
                 "inverter_device_id": self.data.get(CONF_INVERTER_DEVICE_ID),
                 "inverter_provider_label": provider_profile(self.data).label,
@@ -5202,6 +5209,9 @@ class DeyeEnergyRuntime:
             if restored is not None:
                 self._manual_tou_mapping = restored
         self.manual_schedule = self._load_manual_schedule_state(data.get("manual_schedule"))
+        self.energy_status_display = self._normalize_energy_status_display(
+            data.get("energy_status_display")
+        )
         self._manual_effective_rows = {}
         if self.manual_schedule_active:
             try:
@@ -5235,6 +5245,9 @@ class DeyeEnergyRuntime:
             "schedule_slot_ownership": self.schedule_slot_ownership,
             "manual_tou_mapping": self._serialize_manual_tou_mapping(),
             "manual_schedule": deepcopy(self._ensure_manual_schedule()),
+            "energy_status_display": self._normalize_energy_status_display(
+                self.energy_status_display
+            ),
             "last_saved_at": self.last_saved_at,
             "schedule_schema_version": self.schedule_schema_version,
             "control_enabled": self.control_enabled,
@@ -5288,6 +5301,9 @@ class DeyeEnergyRuntime:
             "schedule_slot_ownership": self.schedule_slot_ownership,
             "manual_tou_mapping": self._serialize_manual_tou_mapping(),
             "manual_schedule": deepcopy(self._ensure_manual_schedule()),
+            "energy_status_display": self._normalize_energy_status_display(
+                self.energy_status_display
+            ),
             "last_saved_at": self.last_saved_at,
             "schedule_schema_version": self.schedule_schema_version,
             "control_enabled": self.control_enabled,
@@ -9865,14 +9881,22 @@ class DeyeEnergyRuntime:
             )
         return self.default_charge_current
 
+    @staticmethod
+    def _format_decision_power(watts: float) -> str:
+        """Show a decision power in W below 10 kW and in kW above it."""
+        value = max(0.0, float(watts))
+        if value < 10000:
+            return f"{value:.0f} W"
+        return f"{value / 1000:.1f} kW"
+
     def _planned_manager_action_text(self) -> str:
         """Describe the existing decision path in stable, user-facing English."""
 
         if self.emergency_stop:
             action = "Emergency stop"
         elif self.control_mode == "Manual Sell":
-            power_kw = f"{self.manual_sell_power / 1000:.1f}"
-            action = f"Manual selling — {power_kw} kW"
+            power = self._format_decision_power(self.manual_sell_power)
+            action = f"Manual selling — {power}"
         elif self.control_mode == "Charge Battery":
             action = f"Battery charging — {self.manual_charge_current:.0f} A"
         elif self.control_mode == "Stop Sell":
@@ -9889,8 +9913,8 @@ class DeyeEnergyRuntime:
                 _kind, reason = guard_issue
                 action = reason.replace(":", " —", 1)
             else:
-                power_kw = f"{self.applied_sell_power / 1000:.1f}"
-                action = f"Selling — {power_kw} kW"
+                power = self._format_decision_power(self.applied_sell_power)
+                action = f"Selling — {power}"
         elif self.active_slot.mode == MODE_CHARGE:
             source = "from grid" if self.active_slot.charge_enabled else "from PV"
             target_soc = self.safe_float(self.active_slot.tou_soc, 0)
@@ -12522,7 +12546,6 @@ class DeyeEnergyRuntime:
             "mode": MODE_NORMAL_OPERATION,
             "sell_power": float(self.normal_profile_sell_power if self.normal_profile_sell_power >= 0 else self.default_sell_power),
             "minimum_sell_soc": 0.0,
-            "tou_soc": self.normal_profile_tou_soc if self.normal_profile_tou_soc is not None else 100.0,
             "charge_enabled": False,
         }
 
@@ -12535,11 +12558,11 @@ class DeyeEnergyRuntime:
         # older version still load without rejecting the whole schedule.
         obsolete = {
             "physical_work_mode", "discharge_current", "charge_current",
-            "grid_charge_current", "min_sell_price",
+            "grid_charge_current", "min_sell_price", "tou_soc",
         }
         unknown = set(raw) - {
             "from", "to", "enabled", "mode", "sell_power",
-            "charge_enabled", "minimum_sell_soc", "tou_soc",
+            "charge_enabled", "minimum_sell_soc",
         } - obsolete
         if unknown:
             raise ValueError(
@@ -12556,7 +12579,6 @@ class DeyeEnergyRuntime:
             "charge_enabled": bool(raw.get("charge_enabled", defaults["charge_enabled"])),
             "sell_power": self.safe_float(raw.get("sell_power", defaults["sell_power"]), 0),
             "minimum_sell_soc": self.safe_float(raw.get("minimum_sell_soc", defaults["minimum_sell_soc"]), 0),
-            "tou_soc": raw.get("tou_soc", defaults["tou_soc"]),
         }
         if row["mode"] not in SLOT_MODES:
             raise ValueError(f"Unsupported manual schedule mode in row {index + 1}: {row['mode']}")
@@ -12573,14 +12595,6 @@ class DeyeEnergyRuntime:
             row[field_name] = value
         if row["mode"] == MODE_SELLING_FIRST and row["sell_power"] > 0:
             self.validate_manual_sell_power_w(f"sell_power for manual schedule row {index + 1}", row["sell_power"])
-        tou_soc = row["tou_soc"]
-        if tou_soc in (None, "", "unknown", "unavailable"):
-            row["tou_soc"] = None
-        else:
-            tou_soc = float(self.safe_float(tou_soc, float("nan")))
-            if not math.isfinite(tou_soc) or not 0 <= tou_soc <= 100:
-                raise ValueError(f"tou_soc for manual schedule row {index + 1} must be between 0 and 100")
-            row["tou_soc"] = round(tou_soc, 1)
         return row
 
     def _validate_manual_schedule_rows(self, rows: Any) -> list[dict[str, Any]]:
@@ -12613,6 +12627,87 @@ class DeyeEnergyRuntime:
         if previous_end != 24 * 60:
             raise ValueError("Manual schedule must cover the full 24 hours without gaps")
         return normalized
+
+    @staticmethod
+    def _normalize_energy_status_display(raw: Any) -> dict[str, Any]:
+        """Coerce stored or submitted Energy status display data into shape."""
+        source = raw if isinstance(raw, dict) else {}
+        mappings_in = source.get("mappings")
+        visibility_in = source.get("visibility")
+        mappings: dict[str, str] = {}
+        visibility: dict[str, bool] = {}
+        if isinstance(mappings_in, dict):
+            for key, value in mappings_in.items():
+                if key not in ENERGY_STATUS_ROLE_KEYS:
+                    continue
+                entity_id = str(value or "").strip()
+                if entity_id:
+                    mappings[str(key)] = entity_id
+        if isinstance(visibility_in, dict):
+            for key, value in visibility_in.items():
+                if key not in ENERGY_STATUS_ROLE_KEYS:
+                    continue
+                visibility[str(key)] = bool(value)
+        return {
+            "schema_version": ENERGY_STATUS_DISPLAY_SCHEMA_VERSION,
+            "mappings": mappings,
+            "visibility": visibility,
+        }
+
+    @staticmethod
+    def _validate_energy_status_display_payload(payload: Any) -> dict[str, Any]:
+        """Strictly validate a service submission, rejecting unknown roles."""
+        if not isinstance(payload, dict):
+            raise ValueError("Energy status display must be an object")
+        unknown = set(payload) - {"schema_version", "mappings", "visibility"}
+        if unknown:
+            raise ValueError("Unsupported energy status fields: " + ", ".join(sorted(unknown)))
+        normalized: dict[str, Any] = {}
+        for field_name in ("mappings", "visibility"):
+            value = payload.get(field_name)
+            if value is not None and not isinstance(value, dict):
+                raise ValueError(f"Energy status {field_name} must be an object")
+            normalized[field_name] = value or {}
+        for field_name, value in normalized.items():
+            for key in value:
+                if key not in ENERGY_STATUS_ROLE_KEYS:
+                    raise ValueError(f"Unknown energy status sensor role: {key}")
+        mappings: dict[str, str] = {}
+        for key, value in normalized["mappings"].items():
+            entity_id = str(value or "").strip()
+            if not entity_id:
+                continue
+            domain, _, object_id = entity_id.partition(".")
+            if not domain or not object_id:
+                raise ValueError(f"Invalid entity id for {key}: {entity_id}")
+            mappings[str(key)] = entity_id
+        visibility = {
+            str(key): bool(value)
+            for key, value in normalized["visibility"].items()
+        }
+        return {
+            "schema_version": ENERGY_STATUS_DISPLAY_SCHEMA_VERSION,
+            "mappings": mappings,
+            "visibility": visibility,
+        }
+
+    def energy_status_display_state(self) -> dict[str, Any]:
+        """Public view consumed by the card, including the role catalog."""
+        return {
+            **self._normalize_energy_status_display(self.energy_status_display),
+            "roles": [
+                {"key": key, "label": label, "group": group}
+                for key, label, group in ENERGY_STATUS_ROLES
+            ],
+        }
+
+    async def async_save_energy_status_display(self, payload: Any) -> dict[str, Any]:
+        """Persist card Energy status mapping/visibility overrides."""
+        self.energy_status_display = self._validate_energy_status_display_payload(payload)
+        self.mark_config_saved()
+        await self.async_save_ai_data()
+        self.notify_update()
+        return self.energy_status_display_state()
 
     def manual_schedule_state(self) -> dict[str, Any]:
         manual = self._ensure_manual_schedule()
@@ -12679,8 +12774,6 @@ class DeyeEnergyRuntime:
                 "charge_enabled": bool(row.get("charge_enabled", False)),
                 "minimum_sell_soc": float(row.get("minimum_sell_soc", 0)),
             }
-            if row.get("tou_soc") is not None:
-                update["tou_soc"] = float(row["tou_soc"])
             updates.append(update)
         return updates
 
@@ -12776,7 +12869,6 @@ class DeyeEnergyRuntime:
                 **defaults,
                 "from": self._minutes_to_hhmm(start),
                 "to": self._minutes_to_hhmm(end),
-                "tou_soc": round(float(slot.soc), 1),
                 "charge_enabled": bool(slot.grid_charge),
             })
         manual = self._ensure_manual_schedule()

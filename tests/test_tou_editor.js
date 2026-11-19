@@ -129,6 +129,13 @@ function makeCard(options = {}) {
   return { card, attrs, calls };
 }
 
+function sectionBetween(source, from, to) {
+  const start = source.indexOf(from);
+  if (start < 0) return "";
+  const end = source.indexOf(to, start + from.length);
+  return end > start ? source.slice(start, end) : "";
+}
+
 function editorHtml(card, slot = 1) {
   card.openTouEditor(slot);
   return card.renderDialog([], []);
@@ -312,6 +319,63 @@ function test_tou_editor_shows_changed_hours() {
   const { card } = makeCard({ changedHours: [6, 7, 8, 9] });
   assertTrue(card.renderTouReverseSyncSummary().includes("6, 7, 8, 9"), "changed hours must render");
 }
+function test_tou_apply_button_only_enables_when_a_field_changed() {
+  const { card } = makeCard();
+  card.openTouEditor(1);
+  assertTrue(!card.touEditorDirty(1), "untouched editor must not be dirty");
+  const clean = card.renderDialog([], []);
+  assertTrue(clean.includes("Apply to Inverter"), "apply button must name the inverter write explicitly");
+  assertTrue(clean.includes('data-save-tou="1" disabled'), "apply must start disabled");
+  assertTrue(clean.includes('data-rollback-tou="1"'), "rollback button must be rendered");
+  draft(card, { soc: 55 });
+  assertTrue(card.touEditorDirty(1), "changed field must mark the editor dirty");
+  const changed = card.renderDialog([], []);
+  assertTrue(!changed.includes('data-save-tou="1" disabled'), "apply must be enabled when a field changed");
+}
+
+function test_tou_apply_and_rollback_button_state_follows_draft_without_a_rerender() {
+  const { card } = makeCard();
+  card.openTouEditor(1);
+  const apply = { disabled: false, textContent: "", setAttribute: () => {} };
+  const rollback = { disabled: false, textContent: "" };
+  card.querySelectorAll = (selector) => {
+    if (selector === '[data-save-tou="1"]') return [apply];
+    if (selector === "[data-rollback-tou]") return [rollback];
+    return [];
+  };
+  card.updateTouEditorButtons(1);
+  assertTrue(apply.disabled && apply.textContent === "Apply to Inverter", "clean draft must keep apply disabled");
+  assertTrue(!rollback.disabled, "rollback must be available for a writable slot");
+  draft(card, { soc: 55 });
+  card.updateTouEditorButtons(1);
+  assertTrue(!apply.disabled, "changed draft must enable apply without a render");
+}
+
+async function test_tou_rollback_force_refreshes_and_restores_inverter_values() {
+  const { card, attrs, calls } = makeCard();
+  card._hass.services.homeassistant = { update_entity: true };
+  card._hass.states["select.deye_tou_slot_1_soc"] = { state: "77" };
+  attrs.tou_capabilities[0].fields.soc.entity_id = "select.deye_tou_slot_1_soc";
+  card.openTouEditor(1);
+  draft(card, { soc: 55 });
+  const ok = await card.rollbackTouEditor(1);
+  assertTrue(ok, "rollback must succeed");
+  assertEqual(calls.map((call) => call.service), ["update_entity"], "rollback must force a fresh inverter read");
+  assertEqual(card._touEditDraft.values.soc, 77, "rollback must show the inverter value in the editor");
+  assertEqual(card._touEditOriginal.values.soc, 77, "rollback must reset the original baseline");
+  assertTrue(!card.touEditorDirty(1), "rollback must leave the editor clean");
+}
+
+function test_tou_edit_buttons_are_bound_in_the_dialog_host() {
+  const source = fs.readFileSync(componentCard, "utf8");
+  const dashboard = sectionBetween(source, "bindDashboardControls(slots) {", "bindDialogControls(slots) {");
+  const dialog = sectionBetween(source, "bindDialogControls(slots) {", "renderDialogOnly() {");
+  assertTrue(!dashboard.includes("[data-open-tou]"), "edit binding must not live in the dashboard-only scope");
+  assertTrue(dialog.includes("[data-open-tou]"), "edit binding must be applied to the dialog host after every re-render");
+  assertTrue(dialog.includes("[data-rollback-tou]"), "rollback binding must be applied in the dialog host");
+  assertTrue(dialog.includes("this.rollbackTouEditor("), "rollback handler must call the rollback method");
+}
+
 function test_both_card_copies_remain_identical() {
   assertEqual(fs.readFileSync(componentCard), fs.readFileSync(rootCard), "both card copies must remain identical");
 }
@@ -357,6 +421,10 @@ const tests = [
   test_tou_editor_shows_reverse_sync_confirmed,
   test_tou_editor_shows_reverse_sync_error,
   test_tou_editor_shows_changed_hours,
+  test_tou_apply_button_only_enables_when_a_field_changed,
+  test_tou_apply_and_rollback_button_state_follows_draft_without_a_rerender,
+  test_tou_rollback_force_refreshes_and_restores_inverter_values,
+  test_tou_edit_buttons_are_bound_in_the_dialog_host,
   test_both_card_copies_remain_identical,
 ];
 

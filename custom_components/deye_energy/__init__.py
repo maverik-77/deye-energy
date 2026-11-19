@@ -112,6 +112,9 @@ TOU_SLOT_SCHEMA = vol.Schema(
 MANUAL_SCHEDULE_DATA_SCHEMA = vol.Schema(
     {vol.Required("data"): vol.All(cv.string, vol.Length(max=100000))}
 )
+ENERGY_STATUS_DISPLAY_DATA_SCHEMA = vol.Schema(
+    {vol.Required("data"): vol.All(cv.string, vol.Length(max=50000))}
+)
 SERVICE_NAMES = (
     "apply_settings",
     "manual_sell",
@@ -143,6 +146,7 @@ SERVICE_NAMES = (
     "init_manual_schedule_from_tou",
     "activate_manual_schedule",
     "deactivate_manual_schedule",
+    "save_energy_status_display",
 )
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the integration domain before config entries are loaded.
@@ -540,6 +544,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_deactivate_manual_schedule(call: ServiceCall) -> dict[str, Any]:
         return await runtime.async_deactivate_manual_schedule()
 
+    async def handle_save_energy_status_display(call: ServiceCall) -> dict[str, Any]:
+        payload = _parse_json_payload(call.data["data"], dict)
+        return await runtime.async_save_energy_status_display(payload)
+
     hass.services.async_register(DOMAIN, "apply_settings", handle_apply_settings, schema=APPLY_SCHEMA)
     hass.services.async_register(DOMAIN, "manual_sell", handle_manual_sell, schema=MANUAL_SELL_SCHEMA)
     hass.services.async_register(DOMAIN, "charge_now", handle_charge_now, schema=CHARGE_SCHEMA)
@@ -629,6 +637,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         "deactivate_manual_schedule",
         handle_deactivate_manual_schedule,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "save_energy_status_display",
+        handle_save_energy_status_display,
+        schema=ENERGY_STATUS_DISPLAY_DATA_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
     return True

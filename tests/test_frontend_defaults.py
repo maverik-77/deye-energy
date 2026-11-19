@@ -54,7 +54,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
 
     def test_card_sources_declare_current_resource_revision(self):
         for source in self.sources:
-            self.assertTrue(source.startswith("// Resource revision: v=0.8.0.52\n"))
+            self.assertTrue(source.startswith("// Resource revision: v=0.8.0.53\n"))
 
     def test_mapping_view_is_the_simple_24h_to_six_tou_ranges(self):
         for source in self.sources:
@@ -377,6 +377,17 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         ):
             self.assertIn(required, panel)
 
+    def test_sold_today_icon_uses_pound_instead_of_money(self):
+        source = self.sources[0]
+        icons = extract_method(source, "iconSvg(type)")
+        panel = extract_method(source, "energyFlowPanel()")
+        self.assertIn('pound: \'<svg viewBox="0 0 24 24">', icons)
+        self.assertIn(
+            'flow-sold-icon" style="color:#7ee22d">${this.iconSvg("pound")}',
+            panel,
+        )
+        self.assertNotIn('this.iconSvg("money")', panel)
+
     def test_status_v23_is_frontend_only_and_preserves_local_scaling(self):
         source = self.sources[0]
         panel = extract_method(source, "energyFlowPanel()")
@@ -448,14 +459,14 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
             "battery-voltage", "battery-current", "battery-temp",
             "battery-charge-daily", "battery-discharge-daily",
             "load-l1-power", "load-l2-power", "load-l3-power",
-            "inverter-temp", "pv-daily", "load-daily", "sold-today-line",
+            "inverter-temp", "pv-daily", "load-daily", "sold-today-kwh", "sold-today-gbp",
         ]:
             self.assertIn(f"data-live='{key}'", update)
 
     def test_documentation_uses_current_card_cache_revision(self):
         for name in ("README.md", "INSTALL.md"):
             source = (ROOT / name).read_text(encoding="utf-8")
-            self.assertIn("deye-energy-card.js?v=0.8.0.52", source)
+            self.assertIn("deye-energy-card.js?v=0.8.0.53", source)
             self.assertNotIn("deye-energy-card.js?v=22", source)
             self.assertNotIn("deye-energy-card.js?v=10", source)
             self.assertNotIn("deye-energy-card.js?v=09", source)
@@ -502,9 +513,31 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
             "this.touCapabilityRow(idx)",
             "this.touEditorFieldHtml(idx, field)",
             "data-save-tou",
-            "Save",
+            "Apply to Inverter",
+            "data-rollback-tou",
         ):
             self.assertIn(required, tou_dialog)
+
+    def test_tou_edit_and_rollback_controls_are_bound_inside_the_dialog(self):
+        for source in self.sources:
+            dialog = extract_method(source, "bindDialogControls(slots) {")
+            dashboard = extract_method(source, "bindDashboardControls(slots) {")
+            self.assertIn("[data-open-tou]", dialog)
+            self.assertNotIn("[data-open-tou]", dashboard)
+            self.assertIn("[data-rollback-tou]", dialog)
+            self.assertIn("this.rollbackTouEditor(", dialog)
+            self.assertIn("this.updateTouEditorButtons(", dialog)
+
+            rollback = extract_method(source, "async rollbackTouEditor(slot)")
+            self.assertIn("update_entity", rollback)
+            self.assertIn("mappingTouEntityIds()", rollback)
+            self.assertIn("this.touActualValues(slot)", rollback)
+            self.assertIn("this._touEditDraft =", rollback)
+
+            dirty = extract_method(source, "touEditorDirty(slot)")
+            self.assertNotIn("collectTouEditorDraft(", dirty)
+            self.assertIn("touEditorWritableFields(slot)", dirty)
+            self.assertIn("touFieldChanged(", dirty)
 
     def test_unconfirmed_logical_tou_soc_never_renders_as_zero(self):
         source = self.sources[0]
@@ -1081,6 +1114,75 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertIn("Executed decision", flow)
         self.assertIn('[data-control-toggle]', binding)
         self.assertIn("this.toggleControl()", binding)
+
+    def test_manual_schedule_header_shares_settings_and_control_buttons(self):
+        source = self.sources[0]
+        render = extract_method(source, "renderManualScheduleTab() {")
+        self.assertIn('data-control-toggle="1"', render)
+        self.assertIn("Deye control — ${this.escapeHtml(control.status)}", render)
+        self.assertIn('data-open-settings="1"', render)
+        self.assertIn('class="gear-btn"', render)
+        self.assertIn('class="schedule-table manual-schedule-table"', render)
+        row = extract_method(source, "renderManualScheduleRow(row, index, rows, modeOptions) {")
+        self.assertIn("data-manual-edit=", row)
+        self.assertIn("data-manual-remove=", row)
+
+    def test_manual_schedule_current_row_glow_is_rendered_and_live(self):
+        for source in self.sources:
+            helper = extract_method(source, "manualScheduleCurrentRowIndex(rows, now = new Date()) {")
+            self.assertIn("localMinuteOfDay(now)", helper)
+            self.assertIn("minutesFromClock(row.from)", helper)
+            self.assertIn("minutesFromClock(row.to)", helper)
+            self.assertIn("end = 1440", helper)
+
+            row = extract_method(source, "renderManualScheduleRow(row, index, rows, modeOptions) {")
+            self.assertIn('current ? "time-current" : ""', row)
+
+            dynamic = extract_method(source, "updateDynamicValues() {")
+            self.assertIn("manualScheduleCurrentRowIndex(this.ensureManualScheduleDraft())", dynamic)
+            self.assertIn('[data-manual-row]', dynamic)
+            self.assertIn(
+                '"time-current", Number(row.getAttribute("data-manual-row")) === currentManualRow',
+                dynamic,
+            )
+
+            self.assertIn(".manual-schedule-table tr.time-current", source)
+            self.assertIn("@keyframes manual-time-current-row", source)
+            self.assertIn("@keyframes manual-time-current-cell", source)
+            self.assertIn("3.2s ease-in-out infinite", source)
+
+    def test_schedule_source_captions_are_live_in_both_status_layouts(self):
+        source = self.sources[0]
+        helper = extract_method(source, "scheduleSourceLabel() {")
+        self.assertIn("schedule_source", helper)
+        self.assertIn('"Manual schedule"', helper)
+        self.assertIn('"Work schedule"', helper)
+        flow = extract_method(source, "energyFlowPanel()")
+        self.assertIn("const scheduleSourceLabel = this.scheduleSourceLabel();", flow)
+        self.assertEqual(flow.count('data-live="executed-schedule-source"'), 2)
+        self.assertEqual(flow.count('data-live="manager-schedule-source"'), 2)
+        dynamic = extract_method(source, "updateDynamicValues() {")
+        self.assertIn("[data-live='executed-schedule-source']", dynamic)
+        self.assertIn("[data-live='manager-schedule-source']", dynamic)
+
+    def test_manager_mode_slot_follows_the_active_schedule_source(self):
+        source = self.sources[0]
+        helper = extract_method(source, "activeSlotTimeLabel(now = new Date()) {")
+        self.assertIn("schedule_source", helper)
+        self.assertIn('"manual"', helper)
+        self.assertIn("manualScheduleBackend().rows", helper)
+        self.assertIn("localMinuteOfDay(now)", helper)
+        self.assertIn("row.from", helper)
+        self.assertIn("row.to", helper)
+        minutes = extract_method(source, "localMinuteOfDay(value = new Date()) {")
+        self.assertIn('minute: "2-digit"', minutes)
+        self.assertIn("hour === 24 ? 0 : hour", minutes)
+        flow = extract_method(source, "energyFlowPanel()")
+        self.assertIn("const activeSlotLabel = this.activeSlotTimeLabel();", flow)
+        self.assertEqual(flow.count('data-live="active-slot">${activeSlotLabel}</b>'), 2)
+        dynamic = extract_method(source, "updateDynamicValues() {")
+        self.assertIn("const activeSlotLabel = this.activeSlotTimeLabel();", dynamic)
+        self.assertIn('this.setText("[data-live=\'active-slot\']", activeSlotLabel);', dynamic)
 
     def test_disabled_schedule_save_has_explicit_english_monitoring_message(self):
         method = extract_method(self.sources[0], "async applySchedulePatch(updates, options = null)")

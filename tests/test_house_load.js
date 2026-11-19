@@ -130,12 +130,12 @@ function makeCard(width, config) {
 {
   const card = makeCard(390);
   const mobile = card.energyFlowPanel();
-  assert.match(mobile, /data-live="load-main">1\.50 kW/, "mobile tile uses calculated load");
-  assert.doesNotMatch(mobile, /data-live="load-main">9\.99 kW/, "raw load sensor is ignored");
+  assert.match(mobile, /data-live="load-main">1500 W/, "mobile tile uses calculated load");
+  assert.doesNotMatch(mobile, /data-live="load-main">9999 W/, "raw load sensor is ignored");
 
   const desktopCard = makeCard(1366);
   const desktop = desktopCard.energyFlowPanel();
-  assert.match(desktop, /data-live="load-main">1\.50 kW/, "desktop tile uses calculated load");
+  assert.match(desktop, /data-live="load-main">1500 W/, "desktop tile uses calculated load");
 }
 
 // 3. Single-phase shows only the grid AC voltage and the inverter output AC voltage.
@@ -159,7 +159,7 @@ function makeCard(width, config) {
   card.querySelectorAll = () => [];
   card._isRendered = true;
   card.updateDynamicValues();
-  assert.strictEqual(written["[data-live='load-main']"], "1.50 kW");
+  assert.strictEqual(written["[data-live='load-main']"], "1500 W");
   assert.strictEqual(written["[data-live='grid-ac-voltage']"], "230.0");
   assert.strictEqual(written["[data-live='inverter-ac-voltage']"], "231.0");
 }

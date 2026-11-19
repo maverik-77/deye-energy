@@ -217,9 +217,9 @@ function test_calculated_house_load_and_voltage_in_single_phase() {
   card._hass.states["sensor.deye_energy_grid_power"] = makeState("-1250");
   card._hass.states["sensor.deye_energy_battery_power"] = makeState("0");
   const html = card.energyFlowPanel();
-  assert.match(html, /data-live="load-main">-1\.25 kW/);
+  assert.match(html, /data-live="load-main">-1250 W/);
   assert.match(html, /data-live="inverter-ac-voltage">231\.0<\/span> V/);
-  assert.doesNotMatch(html, /data-live="load-main">8\.75 kW/);
+  assert.doesNotMatch(html, /data-live="load-main">8750 W/);
   assert.doesNotMatch(html, /data-live="load-l1-power"/);
 }
 

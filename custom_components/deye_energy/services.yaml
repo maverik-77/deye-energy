@@ -410,3 +410,15 @@ activate_manual_schedule:
 deactivate_manual_schedule:
   name: Deactivate manual schedule
   description: Restore the work schedule that was saved before the manual schedule was activated.
+
+save_energy_status_display:
+  name: Save Energy status sensor display
+  description: Save the card's Energy status sensor source-entity overrides and visibility choices. Unknown sensor roles are rejected.
+  fields:
+    data:
+      name: Display configuration JSON
+      description: JSON object with optional "mappings" (role to entity id) and "visibility" (role to boolean) objects.
+      required: true
+      selector:
+        text:
+          multiline: true

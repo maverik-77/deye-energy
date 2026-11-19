@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.52
+// Resource revision: v=0.8.0.53
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -17,6 +17,8 @@ class DeyeEnergyCard extends HTMLElement {
     this._touSaving = false;
     this._touSaveError = "";
     this._touAwaitingConfirmation = null;
+    this._touRollingBack = false;
+    this._touRollbackStatus = "";
     this._lastTouDiagnosticsSignature = "";
     this._mappingDraft = null;
     this._mappingSaveError = "";
@@ -54,6 +56,10 @@ class DeyeEnergyCard extends HTMLElement {
     this._bulkEditFields = null;
     this._bulkApplying = false;
     this._settingsTab = "defaults";
+    this._energyStatusDraft = null;
+    this._energyStatusMessage = "";
+    this._energyStatusDisplaySource = null;
+    this._energyStatusDisplayCache = {};
     this._scheduleTab = "manual";
     this._historyFilters = { from: "", to: "", type: "all" };
     this._lastAiAnalysisCheck = 0;
@@ -75,6 +81,7 @@ class DeyeEnergyCard extends HTMLElement {
     this._manualScheduleError = "";
     this._manualScheduleActive = false;
     this._manualScheduleAutoLoadAttempted = false;
+    this._manualScheduleEditing = new Set();
     this._aiView = "overview";
     this._aiDay = "today";
     this._aiExplanationDay = "today";
@@ -471,11 +478,10 @@ class DeyeEnergyCard extends HTMLElement {
     this.updateControlUi();
     const slots = this.scheduleSlots();
     const statusEntity = this.entity("sensor", "manager_status");
-    const activeSlotEntity = this.entity("sensor", "active_slot");
     const rawStatus = this.state(statusEntity);
     const [modeText, modeClass] = this.readMode(rawStatus);
-    const activeSlot = this.state(activeSlotEntity);
-    const activeSlotLabel = (slots.find(([key]) => key === activeSlot)?.[1] || activeSlot);
+    const scheduleSourceLabel = this.scheduleSourceLabel();
+    const activeSlotLabel = this.activeSlotTimeLabel();
     const batterySoc = this.entity("sensor", "battery_soc");
     const soldEnergyToday = this.entity("sensor", "sold_energy_today");
     const soldValueToday = this.entity("sensor", "sold_value_today");
@@ -515,22 +521,19 @@ class DeyeEnergyCard extends HTMLElement {
       this.saveAiAnalysis(this.aiSuggestions(slots));
     }
 
-    const pvValue = this.asNumber(this.state(this.entity("sensor", "pv_power")), 0) || 0;
-    const gridValue = this.asNumber(this.state(this.entity("sensor", "grid_power")), 0) || 0;
-    const batteryValue = this.asNumber(this.state(this.entity("sensor", "battery_power")), 0) || 0;
+    const pvValue = this.asNumber(this.state(this.energyStatusEntity("pv_power")), 0) || 0;
+    const gridValue = this.asNumber(this.state(this.energyStatusEntity("grid_power")), 0) || 0;
+    const batteryValue = this.asNumber(this.state(this.energyStatusEntity("battery_power")), 0) || 0;
     const loadValue = this.calculatedHouseLoad(pvValue, gridValue, batteryValue);
-    const batterySocValue = this.optionalSocNumber(this.state(this.entity("sensor", "battery_soc")));
+    const batterySocValue = this.optionalSocNumber(this.state(this.energyStatusEntity("battery_soc")));
     const currentModeValue = this.deyeWorkModeState();
 
-    const formatKw = (w) => {
-      if (w === null || w === undefined || Number.isNaN(w)) return "—";
-      return Math.abs(w) >= 1000 ? `${(w / 1000).toFixed(2)} kW` : `${Math.round(w)} W`;
-    };
+    const formatKw = (w) => this.formatEnergyStatusPower(w);
     const gridMainText = gridValue < -1 ? `Export ${formatKw(Math.abs(gridValue))}` : gridValue > 1 ? `Import ${formatKw(gridValue)}` : `Balance 0 kW`;
     const batteryDirectionText = batteryValue < -1 ? `Charging ${formatKw(Math.abs(batteryValue))}` : batteryValue > 1 ? `Discharging ${formatKw(batteryValue)}` : `Idle`;
 
     const fmtNum = (v, d = 1) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : v.toFixed(d);
-    const detailed = (key, fallback = null) => this.asNumber(this.state(this.configuredEntity(key, "sensor", key)), fallback);
+    const detailed = (key, fallback = null) => this.asNumber(this.state(this.energyStatusEntity(key)), fallback);
     const singlePhase = this.layoutConfig().phase_count === 1;
     const gridL1Live = singlePhase
       ? this.singlePhaseValue(detailed("grid_l1_power"), detailed("grid_power"))
@@ -582,11 +585,14 @@ class DeyeEnergyCard extends HTMLElement {
     this.setText("[data-live='inverter-ac-voltage']", fmtNum(this.asNumber(this.state(this.acVoltageEntity("inverter"))), 1));
 
     this.setText("[data-live='inverter-temp']", detailed("inverter_ac_temperature") === null ? "—" : `${Math.round(detailed("inverter_ac_temperature"))}`);
-    const soldKwh = this.asNumber(this.state(this.entity("sensor", "sold_energy_today")), null);
-    const soldGbp = this.asNumber(this.state(this.entity("sensor", "sold_value_today")), null);
-    this.setText("[data-live='sold-today-line']", `${fmtNum(soldKwh, 2)} kWh / ${fmtNum(soldGbp, 2)} GBP`);
+    const soldKwh = this.asNumber(this.state(this.energyStatusEntity("sold_energy_today")), null);
+    const soldGbp = this.asNumber(this.state(this.energyStatusEntity("sold_value_today")), null);
+    this.setText("[data-live='sold-today-kwh']", `${fmtNum(soldKwh, 2)} kWh`);
+    this.setText("[data-live='sold-today-gbp']", `${fmtNum(soldGbp, 2)} GBP`);
 
     this.setText("[data-live='active-slot']", activeSlotLabel);
+    this.setText("[data-live='executed-schedule-source']", scheduleSourceLabel);
+    this.setText("[data-live='manager-schedule-source']", scheduleSourceLabel);
     this.setText("[data-live='manager-mode']", modeText);
     this.setText("[data-live='manager-active-mode']", modeText);
     this.setText("[data-live='decision-reason']", this.state(this.entity("sensor", "decision_reason"), "—"));
@@ -602,6 +608,11 @@ class DeyeEnergyCard extends HTMLElement {
     this.querySelector("[data-action='sell']")?.classList.toggle("active", sellActive);
     this.querySelector("[data-action='stop']")?.classList.toggle("active", stopActive);
     this.querySelector("[data-action='defaults']")?.classList.toggle("active", defaultButtonActive);
+
+    const currentManualRow = this.manualScheduleCurrentRowIndex(this.ensureManualScheduleDraft());
+    this.querySelectorAll("[data-manual-row]").forEach((row) => {
+      row.classList.toggle("time-current", Number(row.getAttribute("data-manual-row")) === currentManualRow);
+    });
 
     this.setText("[data-live='target-mode']", this.state(this.entity("sensor", "target_mode")));
     this.setText("[data-live='target-sell-power']", `${this.state(this.entity("sensor", "target_sell_power"))} W`);
@@ -705,6 +716,28 @@ class DeyeEnergyCard extends HTMLElement {
       if (typeof value === "string" && value.trim()) return value.trim();
     }
     return this.entity(domain, fallbackSuffix);
+  }
+
+  energyStatusDisplay() {
+    const state = this._hass?.states?.[this.entity("sensor", "ai_state")];
+    const display = state?.attributes?.energy_status_display;
+    if (!display || typeof display !== "object" || Array.isArray(display)) return {};
+    if (this._energyStatusDisplaySource === display) return this._energyStatusDisplayCache;
+    this._energyStatusDisplaySource = display;
+    this._energyStatusDisplayCache = display;
+    return display;
+  }
+
+  energyStatusVisible(role) {
+    const visibility = this.energyStatusDisplay().visibility;
+    if (!visibility || typeof visibility[role] !== "boolean") return true;
+    return visibility[role];
+  }
+
+  energyStatusEntity(role) {
+    const mapping = this.energyStatusDisplay().mappings?.[role];
+    if (typeof mapping === "string" && mapping.trim()) return mapping.trim();
+    return this.configuredEntity(role, "sensor", role);
   }
 
   firstExistingEntity(...ids) {
@@ -845,6 +878,27 @@ class DeyeEnergyCard extends HTMLElement {
         date: `${parts.year}-${parts.month}-${parts.day}`,
         hour: hour === 24 ? 0 : hour,
       };
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  localMinuteOfDay(value = new Date()) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    const timeZone = this._hass?.config?.time_zone || undefined;
+    try {
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone,
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      }).formatToParts(date).reduce((result, item) => {
+        if (item.type !== "literal") result[item.type] = item.value;
+        return result;
+      }, {});
+      const hour = Number(parts.hour);
+      return (hour === 24 ? 0 : hour) * 60 + Number(parts.minute);
     } catch (_error) {
       return null;
     }
@@ -1026,6 +1080,12 @@ class DeyeEnergyCard extends HTMLElement {
         <td data-price="${scrollKey}:tomorrow:${hour}">${this.priceCell(tomorrow.get(hour), threshold, highIsGood)}</td>
       </tr>`).join("")}</tbody>
     </table></div>`;
+  }
+
+  formatEnergyStatusPower(value) {
+    const number = this.asNumber(value);
+    if (number === null) return "—";
+    return Math.abs(number) >= 10000 ? `${(number / 1000).toFixed(2)} kW` : `${Math.round(number)} W`;
   }
 
   formatPower(value) {
@@ -1420,6 +1480,59 @@ class DeyeEnergyCard extends HTMLElement {
 
   managerStatusAttributes() {
     return this._hass?.states?.[this.entity("sensor", "manager_status")]?.attributes || {};
+  }
+
+  scheduleSourceLabel() {
+    return String(this.managerStatusAttributes().schedule_source || "") === "manual"
+      ? "Manual schedule"
+      : "Work schedule";
+  }
+
+  activeSlotTimeLabel(now = new Date()) {
+    const workLabel = () => {
+      const activeSlot = this.state(this.entity("sensor", "active_slot"), "");
+      return this.scheduleSlots().find(([key]) => key === activeSlot)?.[1] || activeSlot;
+    };
+    if (String(this.managerStatusAttributes().schedule_source || "") !== "manual") {
+      return workLabel();
+    }
+    const rows = this.manualScheduleBackend().rows;
+    if (!Array.isArray(rows) || !rows.length) return workLabel();
+    const minuteOfDay = this.localMinuteOfDay(now);
+    if (minuteOfDay === null) return workLabel();
+    const toMinutes = (text) => {
+      const match = /^(\d{1,2}):(\d{2})$/.exec(String(text || ""));
+      if (!match) return null;
+      const hours = Number(match[1]);
+      const minutes = Number(match[2]);
+      return hours <= 23 && minutes <= 59 ? hours * 60 + minutes : null;
+    };
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      const start = toMinutes(row.from);
+      let end = toMinutes(row.to);
+      if (start === null || end === null) continue;
+      if (index === rows.length - 1 && end === 0) end = 1440;
+      if (start <= minuteOfDay && minuteOfDay < end) {
+        return `${String(row.from).slice(0, 5)}-${String(row.to).slice(0, 5)}`;
+      }
+    }
+    return workLabel();
+  }
+
+  manualScheduleCurrentRowIndex(rows, now = new Date()) {
+    if (!Array.isArray(rows) || !rows.length) return -1;
+    const minuteOfDay = this.localMinuteOfDay(now);
+    if (minuteOfDay === null) return -1;
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      const start = this.minutesFromClock(row.from);
+      let end = this.minutesFromClock(row.to);
+      if (start === null || end === null) continue;
+      if (index === rows.length - 1 && end === 0) end = 1440;
+      if (start <= minuteOfDay && minuteOfDay < end) return index;
+    }
+    return -1;
   }
 
   controlContract() {
@@ -2044,6 +2157,36 @@ class DeyeEnergyCard extends HTMLElement {
       this.failSave(`tou_slot_${slot}`, error);
       return false;
     }
+  }
+
+  async rollbackTouEditor(slot) {
+    if (this._touRollingBack || this._touSaving || this.touWritePending()) return false;
+    const entityIds = this.mappingTouEntityIds();
+    this._touRollingBack = true;
+    this._touSaveError = "";
+    this._touRollbackStatus = "Reading the current values from the inverter…";
+    this.renderDialogOnly();
+    try {
+      if (entityIds.length && this.hasService("homeassistant", "update_entity")) {
+        await this.callService("homeassistant", "update_entity", { entity_id: entityIds });
+      }
+      const actual = this.touActualValues(slot);
+      this.touFieldNames().forEach((field) => {
+        const live = this.mappingLiveValue(this.mappingEntityId(slot, field), field);
+        if (live !== null && live !== undefined) actual[field] = live;
+      });
+      this._touEditOriginal = { slot: Number(slot), values: { ...actual } };
+      this._touEditDraft = { slot: Number(slot), values: { ...actual } };
+      this._touAwaitingConfirmation = null;
+      this._touRollbackStatus = "Restored the values currently reported by the inverter.";
+    } catch (error) {
+      this._touSaveError = error?.message || "Could not read the inverter values.";
+      this._touRollbackStatus = "";
+    } finally {
+      this._touRollingBack = false;
+      this.renderDialogOnly();
+    }
+    return !this._touSaveError;
   }
 
   hasService(domain, service) {
@@ -2937,7 +3080,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.52)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.53)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -3166,6 +3309,94 @@ class DeyeEnergyCard extends HTMLElement {
       this._tariffSaveStatus = `Save error: ${error?.message || error}`;
     }
     this.render();
+  }
+
+  renderEnergyStatusTab() {
+    const display = this.energyStatusDisplay();
+    const roles = Array.isArray(display.roles) ? display.roles : [];
+    if (!roles.length) {
+      return `<h3>Energy status sensors</h3>
+        <div class="hint">This editor needs the updated Deye Energy integration. Install the update and restart Home Assistant, then reopen Settings.</div>`;
+    }
+    const draft = this._energyStatusDraft || {
+      mappings: display.mappings && typeof display.mappings === "object" ? display.mappings : {},
+      visibility: display.visibility && typeof display.visibility === "object" ? display.visibility : {},
+    };
+    const groups = new Map();
+    roles.forEach((role) => {
+      if (!role || typeof role.key !== "string" || !role.key) return;
+      const group = String(role.group || "Other");
+      if (!groups.has(group)) groups.set(group, []);
+      groups.get(group).push(role);
+    });
+    const sections = [...groups.entries()].map(([group, rows]) => `
+      <section class="diagnostic-section">
+        <h3>${this.escapeHtml(group)}</h3>
+        ${rows.map((role) => {
+          const key = role.key;
+          const label = this.escapeHtml(role.label || key);
+          const current = this.configuredEntity(key, "sensor", key);
+          const mapping = Object.prototype.hasOwnProperty.call(draft.mappings, key)
+            ? String(draft.mappings[key] ?? "") : "";
+          const visible = Object.prototype.hasOwnProperty.call(draft.visibility, key)
+            ? Boolean(draft.visibility[key]) : true;
+          return `<div class="energy-status-row">
+            <span class="energy-status-label">${label}</span>
+            <input type="text" data-energy-role-field="mapping" data-energy-role="${this.escapeHtml(key)}" value="${this.escapeHtml(mapping)}" placeholder="${this.escapeHtml(current)}" aria-label="Source entity for ${label}">
+            <label class="energy-status-visible"><input type="checkbox" data-energy-role-field="visible" data-energy-role="${this.escapeHtml(key)}"${visible ? " checked" : ""}> Visible</label>
+          </div>`;
+        }).join("")}
+      </section>`).join("");
+    return `<style>
+.energy-status-row{display:grid;grid-template-columns:minmax(120px,1fr) minmax(180px,2fr) auto;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(95,148,177,.15)}
+.energy-status-row input[type="text"]{width:100%;box-sizing:border-box}
+.energy-status-visible{white-space:nowrap;display:flex;align-items:center;gap:5px}
+.energy-status-actions{display:flex;align-items:center;gap:10px;margin-top:12px}
+      </style>
+      <h3>Energy status sensors</h3>
+      <div class="hint">Leave a source entity blank to keep the current automatic mapping. Uncheck Visible to hide that reading from the Energy status page.</div>
+      ${sections}
+      <div class="energy-status-actions"><button type="button" data-save-energy-status="1">Save sensor display</button></div>
+      <div class="hint${this._energyStatusMessage ? " defaults-status saved" : ""}" data-energy-status-status>${this.escapeHtml(this._energyStatusMessage)}</div>`;
+  }
+
+  collectEnergyStatusDraft() {
+    const roles = this.energyStatusDisplay().roles;
+    const mappings = {};
+    const visibility = {};
+    (Array.isArray(roles) ? roles : []).forEach((role) => {
+      if (!role || typeof role.key !== "string" || !role.key) return;
+      const input = this.querySelector(`[data-energy-role-field='mapping'][data-energy-role="${role.key}"]`);
+      const checkbox = this.querySelector(`[data-energy-role-field='visible'][data-energy-role="${role.key}"]`);
+      const value = input ? String(input.value || "").trim() : "";
+      if (value) mappings[role.key] = value;
+      visibility[role.key] = checkbox ? Boolean(checkbox.checked) : true;
+    });
+    this._energyStatusDraft = { mappings, visibility };
+    return this._energyStatusDraft;
+  }
+
+  async saveEnergyStatusDisplay() {
+    if (!this.hasService("deye_energy", "save_energy_status_display")) {
+      this._energyStatusMessage = "The save_energy_status_display service is unavailable. Update and restart the integration.";
+      this.renderDialogOnly();
+      return false;
+    }
+    const draft = this.collectEnergyStatusDraft();
+    this.beginSave();
+    try {
+      await this.callService("deye_energy", "save_energy_status_display", { data: JSON.stringify(draft) });
+      this._energyStatusDraft = null;
+      this._energyStatusMessage = "Energy status sensor display saved.";
+      this.finishSave();
+      this.renderDialogOnly();
+      return true;
+    } catch (error) {
+      this._energyStatusMessage = `Save error: ${error?.message || "could not save sensor display"}`;
+      this.failSave("energy_status_display", error);
+      this.renderDialogOnly();
+      return false;
+    }
   }
 
   renderTariffTab() {
@@ -3719,6 +3950,8 @@ class DeyeEnergyCard extends HTMLElement {
     this._touEditOriginal = null;
     this._touSaveError = "";
     this._touAwaitingConfirmation = null;
+    this._touRollingBack = false;
+    this._touRollbackStatus = "";
   }
 
   openTouEditor(slot) {
@@ -3778,6 +4011,45 @@ class DeyeEnergyCard extends HTMLElement {
     return values;
   }
 
+  touFieldChanged(field, current, previous) {
+    if (field === "soc") return Number(current) !== Number(previous);
+    if (field === "grid_charge") return Boolean(current) !== Boolean(previous);
+    return String(current ?? "") !== String(previous ?? "");
+  }
+
+  touEditorWritableFields(slot) {
+    return this.touFieldNames().filter((field) => {
+      const capability = this.touFieldCapability(slot, field);
+      return capability?.supported === true && capability.writable === true;
+    });
+  }
+
+  touEditorDirty(slot) {
+    const draft = this._touEditDraft?.values || {};
+    const original = this._touEditOriginal?.values || {};
+    return this.touEditorWritableFields(slot).some((field) => this.touFieldChanged(field, draft[field], original[field]));
+  }
+
+  updateTouEditorButtons(slot) {
+    const capability = this.touCapabilityRow(slot);
+    const blocked = !capability
+      || capability.read_only === true
+      || this.touControlBlocked(capability)
+      || this._touSaving === true
+      || this._touRollingBack === true
+      || this.touWritePending();
+    const dirty = !blocked && this.touEditorDirty(slot);
+    this.querySelectorAll(`[data-save-tou="${Number(slot)}"]`).forEach((button) => {
+      button.textContent = this._touSaving ? "Saving…" : "Apply to Inverter";
+      button.disabled = blocked || !dirty;
+      button.setAttribute("aria-busy", this._touSaving ? "true" : "false");
+    });
+    this.querySelectorAll("[data-rollback-tou]").forEach((button) => {
+      button.disabled = blocked;
+      button.textContent = this._touRollingBack ? "Reading…" : "Rollback";
+    });
+  }
+
   buildTouPartialPayload(slot) {
     this.ensureTouEditorDraft(slot);
     const payload = { slot: Number(slot) };
@@ -3787,13 +4059,7 @@ class DeyeEnergyCard extends HTMLElement {
       const capability = this.touFieldCapability(slot, field);
       if (capability?.supported !== true || capability.writable !== true) return;
       const current = draft[field];
-      const previous = original[field];
-      const changed = field === "soc"
-        ? Number(current) !== Number(previous)
-        : field === "grid_charge"
-          ? Boolean(current) !== Boolean(previous)
-          : String(current ?? "") !== String(previous ?? "");
-      if (!changed) return;
+      if (!this.touFieldChanged(field, current, original[field])) return;
       if ((field === "start" || field === "end") && this.minutesFromClock(current) === null) {
         throw new Error("The From and To times must be valid HH:MM times.");
       }
@@ -4137,7 +4403,7 @@ class DeyeEnergyCard extends HTMLElement {
   }
 
   manualScheduleFields() {
-    return ["enabled", "mode", "sell_power", "charge_enabled", "minimum_sell_soc", "tou_soc"];
+    return ["enabled", "mode", "sell_power", "charge_enabled", "minimum_sell_soc"];
   }
 
   manualScheduleDefaults() {
@@ -4151,7 +4417,6 @@ class DeyeEnergyCard extends HTMLElement {
       mode: "Normal Operation",
       sell_power: number(profile.sell_power, 0),
       minimum_sell_soc: 0,
-      tou_soc: number(profile.tou_soc, 100),
       charge_enabled: false,
     };
   }
@@ -4238,6 +4503,16 @@ class DeyeEnergyCard extends HTMLElement {
     this._manualScheduleStatus = "";
   }
 
+  toggleManualScheduleRowEdit(index) {
+    if (!this._manualScheduleEditing) this._manualScheduleEditing = new Set();
+    if (this._manualScheduleEditing.has(index)) this._manualScheduleEditing.delete(index);
+    else this._manualScheduleEditing.add(index);
+  }
+
+  clearManualScheduleRowEdits() {
+    this._manualScheduleEditing = new Set();
+  }
+
   removeManualScheduleRow(index) {
     const rows = this.ensureManualScheduleDraft();
     if (rows.length <= 1 || !rows[index]) return;
@@ -4248,6 +4523,12 @@ class DeyeEnergyCard extends HTMLElement {
       rows[index - 1].to = removed.to;
     }
     rows.splice(index, 1);
+    if (this._manualScheduleEditing?.has(index)) this._manualScheduleEditing.delete(index);
+    if (this._manualScheduleEditing) {
+      this._manualScheduleEditing = new Set(
+        [...this._manualScheduleEditing].map((editingIndex) => (editingIndex > index ? editingIndex - 1 : editingIndex)),
+      );
+    }
     this._manualScheduleError = "";
     this._manualScheduleStatus = "";
   }
@@ -4291,12 +4572,6 @@ class DeyeEnergyCard extends HTMLElement {
           return `Row ${index + 1}: ${field} must be between ${minimum} and ${maximum}.`;
         }
       }
-      const touSoc = row.tou_soc === null || row.tou_soc === undefined || String(row.tou_soc).trim() === ""
-        ? null
-        : Number(row.tou_soc);
-      if (touSoc !== null && (!Number.isFinite(touSoc) || touSoc < 0 || touSoc > 100)) {
-        return `Row ${index + 1}: tou_soc must be between 0 and 100.`;
-      }
     }
     return "";
   }
@@ -4308,9 +4583,6 @@ class DeyeEnergyCard extends HTMLElement {
         const value = Number(row[field]);
         return Number.isFinite(value) ? value : 0;
       };
-      const rawTouSoc = row.tou_soc === null || row.tou_soc === undefined || String(row.tou_soc).trim() === ""
-        ? null
-        : Number(row.tou_soc);
       return {
         from: String(row.from ?? "00:00").slice(0, 5),
         to: String(row.to ?? "00:00").slice(0, 5),
@@ -4318,7 +4590,6 @@ class DeyeEnergyCard extends HTMLElement {
         mode,
         sell_power: numeric("sell_power"),
         minimum_sell_soc: numeric("minimum_sell_soc"),
-        tou_soc: rawTouSoc !== null && Number.isFinite(rawTouSoc) ? rawTouSoc : null,
         charge_enabled: Boolean(row.charge_enabled),
       };
     });
@@ -4334,7 +4605,7 @@ class DeyeEnergyCard extends HTMLElement {
     }
   }
 
-  async runManualScheduleService(service, data, successMessage) {
+  async runManualScheduleService(service, data, successMessage, clearEditsOnSuccess = false) {
     if (this._manualScheduleSaving) return false;
     if (!this.hasService("deye_energy", service)) {
       this._manualScheduleError = `The ${service} service is unavailable. Reload the integration after installing the new version.`;
@@ -4354,6 +4625,7 @@ class DeyeEnergyCard extends HTMLElement {
       } else {
         this.applyManualScheduleState(this.manualScheduleBackend());
       }
+      if (clearEditsOnSuccess) this.clearManualScheduleRowEdits();
       this._manualScheduleStatus = successMessage;
       this.finishSave();
       return true;
@@ -4383,6 +4655,7 @@ class DeyeEnergyCard extends HTMLElement {
       this._manualScheduleActive
         ? "Manual schedule saved and re-applied to the work schedule."
         : "Manual schedule saved. Activate it to apply it to the work schedule.",
+      true,
     );
   }
 
@@ -4430,7 +4703,7 @@ class DeyeEnergyCard extends HTMLElement {
     const scheduleTabButton = (key, label) => `<button type="button" class="${tab === key ? "active" : ""}" data-schedule-tab="${key}">${label}</button>`;
     const panel = (key, content) => `<div class="schedule-tab-panel" data-schedule-panel="${key}" ${tab === key ? "" : "hidden"}>${content}</div>`;
     const sourceBanner = this.manualScheduleIsActive()
-      ? `<div class="good schedule-source-banner" data-schedule-source-banner>Manual schedule is active — the scheduler is following the manual rows. The work schedule is saved but paused; use the Work schedule toggle or Deactivate here to switch back.</div>`
+      ? `<div class="good schedule-source-banner" data-schedule-source-banner>Manual schedule is active — the scheduler is following the manual rows. The work schedule is saved but paused; use the Work schedule toggle or Disable here to switch back.</div>`
       : "";
     return `<section class="schedule-shell">
       <div class="schedule-tabs">${scheduleTabButton("manual", "Manual schedule")}${scheduleTabButton("work", "Work schedule")}</div>
@@ -4443,32 +4716,36 @@ class DeyeEnergyCard extends HTMLElement {
   renderManualScheduleRow(row, index, rows, modeOptions) {
     const mode = this.normalizeManagerMode(row.mode);
     const isSelling = mode === "Selling";
-    const field = (label, control) => `<label>${this.escapeHtml(label)}${control}</label>`;
-    const timeControl = (name) => {
-      const fixed = (name === "from" && index === 0) || (name === "to" && index === rows.length - 1);
+    const editing = Boolean(this._manualScheduleEditing?.has(index));
+    const from = this.escapeHtml(String(row.from || "00:00").slice(0, 5));
+    const to = this.escapeHtml(String(row.to || "00:00").slice(0, 5));
+    const timeCell = (name, fixed, value) => {
       if (fixed) return "<span>00:00</span>";
-      return `<input type="time" step="60" data-manual-field="${name}" data-manual-index="${index}" value="${this.escapeHtml(String(row[name] || "00:00").slice(0, 5))}">`;
+      if (!editing) return `<span>${value}</span>`;
+      return `<input type="time" step="60" data-manual-field="${name}" data-manual-index="${index}" value="${value}">`;
     };
     const numberControl = (name, minimum, maximum, step = "1") => `<input type="number" min="${minimum}" max="${maximum}" step="${step}" data-manual-field="${name}" data-manual-index="${index}" value="${this.escapeHtml(row[name] === null || row[name] === undefined ? "" : String(row[name]))}">`;
     const selectControl = (name, options) => {
       const current = String(row[name] ?? "");
       return `<select data-manual-field="${name}" data-manual-index="${index}">${options.map(([value, label]) => `<option value="${this.escapeHtml(value)}" ${String(value) === current ? "selected" : ""}>${this.escapeHtml(label)}</option>`).join("")}</select>`;
     };
-    const checkboxControl = (name) => `<input type="checkbox" data-manual-field="${name}" data-manual-index="${index}" ${row[name] ? "checked" : ""}>`;
-    return `<div class="manual-row" data-manual-row="${index}">
-      <div class="manual-row-head"><strong>Row ${index + 1}</strong><span>${this.escapeHtml(String(row.from || "00:00"))} → ${this.escapeHtml(String(row.to || "00:00"))}</span>
-        <button type="button" data-manual-remove="${index}" ${rows.length <= 1 || this._manualScheduleSaving ? "disabled" : ""}>Remove</button></div>
-      <div class="manual-row-grid">
-        ${field("From", timeControl("from"))}
-        ${field("To", timeControl("to"))}
-        ${field("Active", checkboxControl("enabled"))}
-        ${field("Mode", selectControl("mode", modeOptions))}
-        ${field("Sell power (W)", numberControl("sell_power", 0, 100000))}
-        ${field("Grid charging", selectControl("charge_enabled", [["false", "No"], ["true", "Yes"]]))}
-        ${isSelling ? field("Stop selling at SOC (%)", numberControl("minimum_sell_soc", 0, 100)) : ""}
-        ${field("Deye TOU SOC (%)", `<input type="text" inputmode="decimal" data-manual-field="tou_soc" data-manual-index="${index}" value="${this.escapeHtml(row.tou_soc === null || row.tou_soc === undefined ? "" : String(row.tou_soc))}">`)}
-      </div>
-    </div>`;
+    const sellPower = this.escapeHtml(String(row.sell_power ?? 0));
+    const soc = this.escapeHtml(String(row.minimum_sell_soc ?? 0));
+    const current = index === this.manualScheduleCurrentRowIndex(rows);
+    const rowClass = [editing ? "editing" : "", current ? "time-current" : "", row.enabled ? "enabled" : "disabled"].filter(Boolean).join(" ");
+    return `<tr class="${rowClass}" data-manual-row="${index}">
+      <td data-label="From" class="time-col">${timeCell("from", index === 0, from)}</td>
+      <td data-label="To" class="time-col">${timeCell("to", index === rows.length - 1, to)}</td>
+      <td data-label="Mode">${editing ? selectControl("mode", modeOptions) : this.modePill(mode, row.enabled)}</td>
+      <td data-label="Sell power" class="metric sell">${editing ? numberControl("sell_power", 0, 100000) : row.enabled ? `${this.iconSvg("sell")} ${sellPower} W` : "-"}</td>
+      <td data-label="Grid charging" class="metric grid">${editing ? selectControl("charge_enabled", [["false", "No"], ["true", "Yes"]]) : `<span class="pill ${row.charge_enabled ? "on" : "off"}">${row.charge_enabled ? "yes" : "no"}</span>`}</td>
+      <td data-label="Stop selling at SOC" class="metric soc">${!isSelling ? "-" : editing ? numberControl("minimum_sell_soc", 0, 100) : `◇ ${soc}%`}</td>
+      <td data-label="Active">${editing ? `<input type="checkbox" data-manual-field="enabled" data-manual-index="${index}" ${row.enabled ? "checked" : ""}>` : `<span class="pill ${row.enabled ? "on" : "off"}">${row.enabled ? "ON" : "OFF"}</span>`}</td>
+      <td data-label="Action"><div class="manual-action-cell">
+        <button type="button" class="icon-only ${editing ? "active" : ""}" data-manual-edit="${index}" title="${editing ? "Finish editing row" : "Edit row"}">${this.iconSvg("edit")}</button>
+        <button type="button" class="icon-only remove" data-manual-remove="${index}" title="Remove row" ${rows.length <= 1 || this._manualScheduleSaving ? "disabled" : ""}>${this.iconSvg("remove")}</button>
+      </div></td>
+    </tr>`;
   }
 
   renderManualScheduleTab() {
@@ -4485,21 +4762,26 @@ class DeyeEnergyCard extends HTMLElement {
     const validation = validationError
       ? `<div class="bad" data-manual-schedule-validation>${this.escapeHtml(validationError)}</div>`
       : '<div class="good" data-manual-schedule-validation>All rows cover the full 24 hours.</div>';
-    const status = active
-      ? '<strong>Manual schedule: Active</strong><span class="hint" style="margin:0">AI, optimizer and future-plan applies are blocked. Saving changes re-applies them to the work schedule.</span>'
-      : '<strong>Manual schedule: Inactive</strong><span class="hint" style="margin:0">Rows are stored separately and do not affect the work schedule until activated.</span>';
     const toggle = active
-      ? `<button type="button" class="danger-action" data-manual-deactivate="1" ${this._manualScheduleSaving ? "disabled" : ""}>Deactivate</button>`
-      : `<button type="button" class="primary" data-manual-activate="1" ${this._manualScheduleSaving ? "disabled" : ""}>Activate</button>`;
+      ? `<button type="button" class="tool-btn active" data-manual-deactivate="1" ${this._manualScheduleSaving ? "disabled" : ""}>Manual schedule — Disable</button>`
+      : `<button type="button" class="tool-btn" data-manual-activate="1" ${this._manualScheduleSaving ? "disabled" : ""}>Manual schedule — Enable</button>`;
+    const control = this.controlState();
+    const controlButton = `<button class="tool-btn ${control.enabled ? "active" : ""}" data-control-toggle="1" ${control.pending ? "disabled" : ""}>Deye control — ${this.escapeHtml(control.status)}</button>`;
+    const settingsButton = `<button class="gear-btn" data-open-settings="1" title="Settings">${this.iconSvg("gear")}</button>`;
     return `<div class="schedule-head manual-panel-head">
         <div class="schedule-title">
           <h2>Manual schedule</h2>
-          <p>Define time ranges that are mapped onto the work schedule when activated. Editing here does not change the work schedule until you activate it.</p>
+          <p>Define time ranges for each row. The work schedule is saved separately and is not changed here.</p>
         </div>
+        <div class="schedule-tools">${toggle}${controlButton}${settingsButton}</div>
       </div>
-      <div class="manual-schedule-status ${active ? "active" : ""}">${status}${toggle}</div>
-      <div class="hint">Manual schedule rows are UI/service-only and do not create per-row entities. When active, each row is mapped onto the 48 work schedule slots by slot start time. The physical Deye mode, discharge/charge currents and sell-from price stay at their work-schedule values. Deactivate here or use the Work schedule toggle to switch the active source; Deye control is a separate master gate.</div>
-      ${rowHtml}
+      <div class="schedule-table-card">
+        <table class="schedule-table manual-schedule-table">
+          <colgroup><col class="col-time"><col class="col-time"><col class="col-mode"><col class="col-power"><col class="col-grid"><col class="col-soc"><col class="col-active"><col class="col-action"></colgroup>
+          <thead><tr><th class="time-col">From</th><th class="time-col">To</th><th>Mode</th><th>Sell power</th><th>Grid charging</th><th>Stop selling at SOC</th><th>Active</th><th>Action</th></tr></thead>
+          <tbody>${rowHtml}</tbody>
+        </table>
+      </div>
       <div class="manual-row-actions">
         <button type="button" data-manual-add="1" ${this._manualScheduleSaving ? "disabled" : ""}>Add row</button>
       </div>
@@ -4829,8 +5111,7 @@ class DeyeEnergyCard extends HTMLElement {
 
   energyFlowPanel() {
     const [modeText, modeClass] = this.readMode(this.state(this.entity("sensor", "manager_status")));
-    const activeSlot = this.state(this.entity("sensor", "active_slot"), "");
-    const activeSlotLabel = (this.scheduleSlots().find(([key]) => key === activeSlot)?.[1] || activeSlot);
+    const activeSlotLabel = this.activeSlotTimeLabel();
     const currentMode = this.deyeWorkModeState();
     const currentModeMeta = currentMode ? this.modeMeta(currentMode, true) : { cls: "disabled" };
     const managerModeClass = this.modeTextClass(modeText);
@@ -4838,6 +5119,7 @@ class DeyeEnergyCard extends HTMLElement {
     const controlOn = control.enabled;
     const controlStatus = control.status;
     const statusAttrs = this.managerStatusAttributes();
+    const scheduleSourceLabel = this.scheduleSourceLabel();
     const plannedAction = this.state(this.entity("sensor", "planned_manager_action"), statusAttrs.planned_manager_action || "—");
     const executedAction = this.state(this.entity("sensor", "executed_manager_action"), statusAttrs.executed_manager_action || "—");
     const layout = this.effectiveLayout();
@@ -4862,7 +5144,10 @@ class DeyeEnergyCard extends HTMLElement {
     const flowDuration = Math.max(0.5, 18 / flowSpeed).toFixed(2);
     const flowOffset = Math.round(220 * flowDuration / 3);
 
-    const st = (key, fallback = null) => this.asNumber(this.state(this.configuredEntity(key, "sensor", key)), fallback);
+    const st = (key, fallback = null) => this.asNumber(this.state(this.energyStatusEntity(key)), fallback);
+    const esHidden = (role) => (this.energyStatusVisible(role) ? "" : " es-hidden");
+    const esAllHidden = (...roles) => roles.every((role) => !this.energyStatusVisible(role));
+    const esSpan = (role, html) => `<span${esHidden(role)}>${html}</span>`;
     const pvPower = st("pv_power", 0) || 0;
     const pvDaily = st("daily_pv_production", 0) || 0;
     const pv1Power = st("pv1_power");
@@ -4885,7 +5170,7 @@ class DeyeEnergyCard extends HTMLElement {
 
     const batteryPower = st("battery_power", 0) || 0;
     const batterySoc = this.optionalSocNumber(
-      this.state(this.entity("sensor", "battery_soc")),
+      this.state(this.energyStatusEntity("battery_soc")),
     );
     const batteryVoltage = st("battery_bms_voltage");
     const batteryCurrent = st("battery_current");
@@ -4916,8 +5201,8 @@ class DeyeEnergyCard extends HTMLElement {
       if (label === "L3") return loadL3Power;
       return singlePhase ? this.singlePhaseValue(loadL1Power, loadPower) : loadL1Power;
     };
-    const soldTodayKwh = this.asNumber(this.state(this.entity("sensor", "sold_energy_today")), 0) || 0;
-    const soldTodayGbp = this.asNumber(this.state(this.entity("sensor", "sold_value_today")), 0) || 0;
+    const soldTodayKwh = this.asNumber(this.state(this.energyStatusEntity("sold_energy_today")), 0) || 0;
+    const soldTodayGbp = this.asNumber(this.state(this.energyStatusEntity("sold_value_today")), 0) || 0;
 
     const active = {
       pv: pvPower > 1,
@@ -4928,7 +5213,7 @@ class DeyeEnergyCard extends HTMLElement {
       load: loadPower > 1,
     };
 
-    const fmtPower = (v) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : this.formatPower(v);
+    const fmtPower = (v) => this.formatEnergyStatusPower(v);
     const fmtNumber = (v, digits = 2) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : v.toFixed(digits);
     const gridVoltageValue = `<span data-live="grid-ac-voltage">${fmtNumber(gridAcVoltage, 1)}</span> V`;
     const inverterVoltageValue = `<span data-live="inverter-ac-voltage">${fmtNumber(inverterAcVoltage, 1)}</span> V`;
@@ -4937,8 +5222,8 @@ class DeyeEnergyCard extends HTMLElement {
     const batteryDirection = batteryPower < -1 ? `Charging ${fmtPower(Math.abs(batteryPower))}` : batteryPower > 1 ? `Discharging ${fmtPower(batteryPower)}` : `Idle`;
     const socMain = batterySoc === null ? "—" : `${Math.round(batterySoc)}`;
 
-    const phaseRow = (label, power, volt) => `
-      <div class="flow-phase">
+    const phaseRow = (label, power, volt, hidden = false) => `
+      <div class="flow-phase${hidden ? " es-hidden" : ""}">
         <div class="flow-phase-label">${label}</div>
         <div class="flow-phase-power">${power}</div>
         <div class="flow-phase-volt">${volt}</div>
@@ -4990,8 +5275,8 @@ class DeyeEnergyCard extends HTMLElement {
     </svg>`;
 
     if (layout.is_mobile) {
-      const msPhase = (label, value, sub = "") => `
-        <div class="ms-phase">
+      const msPhase = (label, value, sub = "", hidden = false) => `
+        <div class="ms-phase${hidden ? " es-hidden" : ""}">
           <div class="ms-phase-label">${label}</div>
           <div class="ms-phase-value">${value}</div>
           ${sub ? `<div class="ms-phase-sub">${sub}</div>` : ""}
@@ -5050,6 +5335,7 @@ class DeyeEnergyCard extends HTMLElement {
 .ms-status-tile .slot-time{color:#fbbf24}
 .mode-selling{color:#7ee22d}.mode-normal{color:#4ade80}.mode-charge{color:#f6a619}.mode-disabled{color:#b9c9d4}.mode-zero,.mode-ct{color:#38bdf8}
 .ms-footer{text-align:center;width:100%;margin-top:12px;font-size:12px;color:#89a6b7}
+.es-hidden{display:none!important}
         </style>
         <div class="ms-body">
           <div class="ms-tile ms-pv">
@@ -5057,14 +5343,14 @@ class DeyeEnergyCard extends HTMLElement {
               <div class="ms-tile-icon" style="color:#fbbf24">${this.iconSvg("pv2")}</div>
               <div class="ms-tile-heading">
                 <div class="ms-tile-title">PV (Production)</div>
-                <div class="ms-tile-main" data-live="pv-main">${fmtPower(pvPower)}</div>
+                <div class="ms-tile-main${esHidden("pv_power")}" data-live="pv-main">${fmtPower(pvPower)}</div>
               </div>
             </div>
             <div class="ms-detail-grid">
-              ${msPhase("PV1", `<span class="phase-accent" data-live="pv1-power">${fmtPower(pv1Power)}</span>`, `<span data-live="pv1-volts">${fmtNumber(pv1V, 1)}</span> V | <span data-live="pv1-amps">${fmtNumber(pv1A, 1)}</span> A`)}
-              ${msPhase("PV2", `<span class="phase-accent" data-live="pv2-power">${fmtPower(pv2Power)}</span>`, `<span data-live="pv2-volts">${fmtNumber(pv2V, 1)}</span> V | <span data-live="pv2-amps">${fmtNumber(pv2A, 1)}</span> A`)}
+              ${msPhase("PV1", esSpan("pv1_power", `<span class="phase-accent" data-live="pv1-power">${fmtPower(pv1Power)}</span>`), `${esSpan("pv1_voltage", `<span data-live="pv1-volts">${fmtNumber(pv1V, 1)}</span>`)} V | ${esSpan("pv1_current", `<span data-live="pv1-amps">${fmtNumber(pv1A, 1)}</span>`)} A`, esAllHidden("pv1_power", "pv1_voltage", "pv1_current"))}
+              ${msPhase("PV2", esSpan("pv2_power", `<span class="phase-accent" data-live="pv2-power">${fmtPower(pv2Power)}</span>`), `${esSpan("pv2_voltage", `<span data-live="pv2-volts">${fmtNumber(pv2V, 1)}</span>`)} V | ${esSpan("pv2_current", `<span data-live="pv2-amps">${fmtNumber(pv2A, 1)}</span>`)} A`, esAllHidden("pv2_power", "pv2_voltage", "pv2_current"))}
             </div>
-            <div class="ms-foot"><span>Produced today</span><strong><span data-live="pv-daily">${fmtNumber(pvDaily, 2)}</span> kWh</strong></div>
+            <div class="ms-foot${esHidden("daily_pv_production")}"><span>Produced today</span><strong><span data-live="pv-daily">${fmtNumber(pvDaily, 2)}</span> kWh</strong></div>
           </div>
           ${msArrow}
           <div class="ms-tile ms-grid">
@@ -5072,18 +5358,18 @@ class DeyeEnergyCard extends HTMLElement {
               <div class="ms-tile-icon" style="color:#c084fc">${this.iconSvg("grid2")}</div>
               <div class="ms-tile-heading">
                 <div class="ms-tile-title">Grid</div>
-                <div class="ms-tile-main" data-live="grid-main">${gridMain}</div>
+                <div class="ms-tile-main${esHidden("grid_power")}" data-live="grid-main">${gridMain}</div>
               </div>
             </div>
             <div class="ms-detail-grid${singlePhase ? " single-phase" : ""}">
               ${singlePhase
-                ? `<div class="ms-phase"><div class="ms-phase-value">${gridVoltageValue}</div></div>`
-                : phaseLabels.map((label) => msPhase(label, `<span class="phase-accent" data-live="grid-${phaseKey(label)}-power">${fmtPower(gridPhasePower(label))}</span>`, `<span data-live="grid-${phaseKey(label)}-volt">${fmtNumber(gridPhaseVoltage(label), 1)}</span> V`)).join("")}
+                ? `<div class="ms-phase${esHidden("grid_l1_voltage")}"><div class="ms-phase-value">${gridVoltageValue}</div></div>`
+                : phaseLabels.map((label) => msPhase(label, esSpan(`grid_${phaseKey(label)}_power`, `<span class="phase-accent" data-live="grid-${phaseKey(label)}-power">${fmtPower(gridPhasePower(label))}</span>`), `${esSpan(`grid_${phaseKey(label)}_voltage`, `<span data-live="grid-${phaseKey(label)}-volt">${fmtNumber(gridPhaseVoltage(label), 1)}</span>`)} V`, esAllHidden(`grid_${phaseKey(label)}_power`, `grid_${phaseKey(label)}_voltage`))).join("")}
             </div>
             <div class="ms-foot">
-              <span>Imported: <b class="bought"><span data-live="grid-bought">${fmtNumber(gridBought, 2)}</span> kWh</b></span>
-              <span>Exported: <b class="sold"><span data-live="grid-sold">${fmtNumber(gridSold, 2)}</span> kWh</b></span>
-              <span>Freq: <span data-live="grid-frequency">${fmtNumber(frequency, 2)}</span> Hz</span>
+              <span${esHidden("daily_energy_bought")}>Imported: <b class="bought"><span data-live="grid-bought">${fmtNumber(gridBought, 2)}</span> kWh</b></span>
+              <span${esHidden("daily_energy_sold")}>Exported: <b class="sold"><span data-live="grid-sold">${fmtNumber(gridSold, 2)}</span> kWh</b></span>
+              <span${esHidden("load_frequency")}>Freq: <span data-live="grid-frequency">${fmtNumber(frequency, 2)}</span> Hz</span>
             </div>
           </div>
           ${msArrow}
@@ -5092,16 +5378,16 @@ class DeyeEnergyCard extends HTMLElement {
               <div class="ms-tile-icon" data-live-html="battery-icon">${this.batteryLevelSvg(batterySoc)}</div>
               <div class="ms-tile-heading">
                 <div class="ms-tile-title">Battery</div>
-                <div class="ms-tile-main"><span data-live="battery-soc-value">${socMain}</span><span class="unit">% SOC</span></div>
-                <div class="ms-tile-sub" data-live="battery-direction" style="color:#4ade80">${batteryDirection}</div>
+                <div class="ms-tile-main${esHidden("battery_soc")}"><span data-live="battery-soc-value">${socMain}</span><span class="unit">% SOC</span></div>
+                <div class="ms-tile-sub${esHidden("battery_power")}" data-live="battery-direction" style="color:#4ade80">${batteryDirection}</div>
               </div>
             </div>
             <div class="ms-detail-grid">
-              ${msPhase("Voltage", `<span data-live="battery-voltage">${fmtNumber(batteryVoltage, 1)}</span> V`)}
-              ${msPhase("Current", `<span data-live="battery-current">${fmtNumber(batteryCurrent, 1)}</span> A`)}
-              ${msPhase("Temp.", `<span data-live="battery-temp">${fmtNumber(batteryTemp, 1)}</span> °C`)}
-              ${msPhase("Charge today", `<span class="positive"><span data-live="battery-charge-daily">${fmtNumber(batteryChargeDaily, 2)}</span> kWh</span>`)}
-              ${msPhase("Discharge today", `<span class="positive"><span data-live="battery-discharge-daily">${fmtNumber(batteryDischargeDaily, 2)}</span> kWh</span>`)}
+              ${msPhase("Voltage", `<span data-live="battery-voltage">${fmtNumber(batteryVoltage, 1)}</span> V`, "", !this.energyStatusVisible("battery_bms_voltage"))}
+              ${msPhase("Current", `<span data-live="battery-current">${fmtNumber(batteryCurrent, 1)}</span> A`, "", !this.energyStatusVisible("battery_current"))}
+              ${msPhase("Temp.", `<span data-live="battery-temp">${fmtNumber(batteryTemp, 1)}</span> °C`, "", !this.energyStatusVisible("battery_temperature"))}
+              ${msPhase("Charge today", `<span class="positive"><span data-live="battery-charge-daily">${fmtNumber(batteryChargeDaily, 2)}</span> kWh</span>`, "", !this.energyStatusVisible("daily_battery_charge"))}
+              ${msPhase("Discharge today", `<span class="positive"><span data-live="battery-discharge-daily">${fmtNumber(batteryDischargeDaily, 2)}</span> kWh</span>`, "", !this.energyStatusVisible("daily_battery_discharge"))}
             </div>
           </div>
           ${msArrow}
@@ -5116,16 +5402,16 @@ class DeyeEnergyCard extends HTMLElement {
             <div class="ms-detail-grid${singlePhase ? " single-phase" : ""}">
               ${singlePhase
                 ? `<div class="ms-phase"><div class="ms-phase-value">${inverterVoltageValue}</div></div>`
-                : phaseLabels.map((label) => msPhase(label, `<span class="phase-accent" data-live="load-${phaseKey(label)}-power">${fmtPower(loadPhasePower(label))}</span>`)).join("")}
+                : phaseLabels.map((label) => msPhase(label, esSpan(`load_${phaseKey(label)}_power`, `<span class="phase-accent" data-live="load-${phaseKey(label)}-power">${fmtPower(loadPhasePower(label))}</span>`), "", esAllHidden(`load_${phaseKey(label)}_power`))).join("")}
             </div>
-            <div class="ms-foot"><span>Consumption today</span><strong><span data-live="load-daily">${fmtNumber(loadDaily, 2)}</span> kWh</strong></div>
+            <div class="ms-foot${esHidden("daily_load_consumption")}"><span>Consumption today</span><strong><span data-live="load-daily">${fmtNumber(loadDaily, 2)}</span> kWh</strong></div>
           </div>
           <div class="ms-inverter">
             <div class="ms-inverter-icon">${inverterSvg}</div>
             <div class="ms-inverter-copy">
               <div class="ms-inverter-name">Deye inverter</div>
-              <div class="ms-inverter-temp">${this.iconSvg("thermometer")}<span data-live="inverter-temp">${inverterTemp === null ? "—" : `${Math.round(inverterTemp)}`}</span> °C</div>
-              <div class="ms-inverter-sold"><span>Sold today</span><strong data-live="sold-today-line">${fmtNumber(soldTodayKwh, 2)} kWh / ${fmtNumber(soldTodayGbp, 2)} GBP</strong></div>
+              <div class="ms-inverter-temp${esHidden("inverter_ac_temperature")}">${this.iconSvg("thermometer")}<span data-live="inverter-temp">${inverterTemp === null ? "—" : `${Math.round(inverterTemp)}`}</span> °C</div>
+              <div class="ms-inverter-sold${esAllHidden("sold_energy_today", "sold_value_today") ? " es-hidden" : ""}"><span>Sold today</span><strong data-live="sold-today-line">${esSpan("sold_energy_today", `<span data-live="sold-today-kwh">${fmtNumber(soldTodayKwh, 2)} kWh</span>`)} / ${esSpan("sold_value_today", `<span data-live="sold-today-gbp">${fmtNumber(soldTodayGbp, 2)} GBP</span>`)}</strong></div>
             </div>
           </div>
           <div class="ms-status-grid">
@@ -5141,11 +5427,13 @@ class DeyeEnergyCard extends HTMLElement {
             <div class="ms-status-tile">
               <span>Executed decision</span>
               <strong>${this.escapeHtml(executedAction)}</strong>
+              <span class="ms-sub">Source: <b data-live="executed-schedule-source">${scheduleSourceLabel}</b></span>
             </div>
             <div class="ms-status-tile">
               <span>Manager mode</span>
               <strong class="mode-${managerModeClass}" data-live="manager-mode">${modeText}</strong>
               <span class="ms-sub">Slot: <b class="slot-time" data-live="active-slot">${activeSlotLabel}</b></span>
+              <span class="ms-sub">Source: <b data-live="manager-schedule-source">${scheduleSourceLabel}</b></span>
             </div>
           </div>
           <div class="ms-footer">Data updated every 5 s</div>
@@ -5230,6 +5518,7 @@ class DeyeEnergyCard extends HTMLElement {
           .mode-disabled{color:#b9c9d4}
 .mode-zero,.mode-ct{color:#38bdf8}
 .flow-footer{text-align:center;width:${boardWidth}px;margin-top:12px;font-size:13px;color:#89a6b7}
+.es-hidden{display:none!important}
             .ai-crisp-main{min-width:0;border:1px solid rgba(105,159,184,.25);border-radius:7px;overflow:hidden;background:rgba(3,18,28,.38)}
             .ai-crisp-integrated-grid{min-width:0;border-top:1px solid rgba(104,151,174,.2);background:rgba(3,17,27,.28)}
             .ai-crisp-plot,.ai-crisp-axis{height:clamp(236px,22vw,268px)}
@@ -5264,16 +5553,16 @@ class DeyeEnergyCard extends HTMLElement {
                     <div class="flow-tile-icon" style="color:#fbbf24">${this.iconSvg("pv2")}</div>
                     <div class="flow-tile-heading">
                       <div class="flow-tile-title">PV (Production)</div>
-                      <div class="flow-tile-main" data-live="pv-main">${fmtPower(pvPower)}</div>
+                      <div class="flow-tile-main${esHidden("pv_power")}" data-live="pv-main">${fmtPower(pvPower)}</div>
                     </div>
                   </div>
                   <hr class="flow-tile-divider">
                   <div class="flow-detail-row">
-                    ${phaseRow("PV1", `<span style="color:#fbbf24" data-live="pv1-power">${fmtPower(pv1Power)}</span>`, `<span data-live="pv1-volts">${fmtNumber(pv1V, 1)}</span> V | <span data-live="pv1-amps">${fmtNumber(pv1A, 1)}</span> A`)}
-                    ${phaseRow("PV2", `<span style="color:#fbbf24" data-live="pv2-power">${fmtPower(pv2Power)}</span>`, `<span data-live="pv2-volts">${fmtNumber(pv2V, 1)}</span> V | <span data-live="pv2-amps">${fmtNumber(pv2A, 1)}</span> A`)}
+                    ${phaseRow("PV1", esSpan("pv1_power", `<span style="color:#fbbf24" data-live="pv1-power">${fmtPower(pv1Power)}</span>`), `${esSpan("pv1_voltage", `<span data-live="pv1-volts">${fmtNumber(pv1V, 1)}</span>`)} V | ${esSpan("pv1_current", `<span data-live="pv1-amps">${fmtNumber(pv1A, 1)}</span>`)} A`, esAllHidden("pv1_power", "pv1_voltage", "pv1_current"))}
+                    ${phaseRow("PV2", esSpan("pv2_power", `<span style="color:#fbbf24" data-live="pv2-power">${fmtPower(pv2Power)}</span>`), `${esSpan("pv2_voltage", `<span data-live="pv2-volts">${fmtNumber(pv2V, 1)}</span>`)} V | ${esSpan("pv2_current", `<span data-live="pv2-amps">${fmtNumber(pv2A, 1)}</span>`)} A`, esAllHidden("pv2_power", "pv2_voltage", "pv2_current"))}
                   </div>
                   <hr class="flow-tile-divider">
-                  <div class="flow-daily-summary flow-daily-pv">
+                  <div class="flow-daily-summary flow-daily-pv${esHidden("daily_pv_production")}">
                     <span>Produced today:</span>
                     <strong><span data-live="pv-daily">${fmtNumber(pvDaily, 2)}</span> kWh</strong>
                   </div>
@@ -5283,31 +5572,31 @@ class DeyeEnergyCard extends HTMLElement {
                     <div class="flow-tile-icon" style="color:#c084fc">${this.iconSvg("grid2")}</div>
                     <div class="flow-tile-heading">
                       <div class="flow-tile-title">Grid</div>
-                      <div class="flow-tile-main" data-live="grid-main">${gridMain}</div>
+                      <div class="flow-tile-main${esHidden("grid_power")}" data-live="grid-main">${gridMain}</div>
                     </div>
                   </div>
                   <hr class="flow-tile-divider">
                   <div class="flow-detail-row${singlePhase ? " one-col" : " three-cols"}">
                     ${singlePhase
-                      ? `<div class="flow-phase"><div class="flow-phase-power">${gridVoltageValue}</div></div>`
-                      : phaseLabels.map((label) => phaseRow(label, `<span style="color:#c084fc" data-live="grid-${phaseKey(label)}-power">${fmtPower(gridPhasePower(label))}</span>`, `<span data-live="grid-${phaseKey(label)}-volt">${fmtNumber(gridPhaseVoltage(label), 1)}</span> V`)).join("")}
+                      ? `<div class="flow-phase${esHidden("grid_l1_voltage")}"><div class="flow-phase-power">${gridVoltageValue}</div></div>`
+                      : phaseLabels.map((label) => phaseRow(label, esSpan(`grid_${phaseKey(label)}_power`, `<span style="color:#c084fc" data-live="grid-${phaseKey(label)}-power">${fmtPower(gridPhasePower(label))}</span>`), `${esSpan(`grid_${phaseKey(label)}_voltage`, `<span data-live="grid-${phaseKey(label)}-volt">${fmtNumber(gridPhaseVoltage(label), 1)}</span>`)} V`, esAllHidden(`grid_${phaseKey(label)}_power`, `grid_${phaseKey(label)}_voltage`))).join("")}
                   </div>
                   <hr class="flow-tile-divider">
                   <div class="flow-tile-foot">
-                    <div>Today: <span class="bought">imported <span data-live="grid-bought">${fmtNumber(gridBought, 2)}</span> kWh</span></div>
-                    <div>Today: <span class="sold">exported <span data-live="grid-sold">${fmtNumber(gridSold, 2)}</span> kWh</span></div>
-                    <div>Frequency: <span data-live="grid-frequency">${fmtNumber(frequency, 2)}</span> Hz</div>
+                    <div${esHidden("daily_energy_bought")}>Today: <span class="bought">imported <span data-live="grid-bought">${fmtNumber(gridBought, 2)}</span> kWh</span></div>
+                    <div${esHidden("daily_energy_sold")}>Today: <span class="sold">exported <span data-live="grid-sold">${fmtNumber(gridSold, 2)}</span> kWh</span></div>
+                    <div${esHidden("load_frequency")}>Frequency: <span data-live="grid-frequency">${fmtNumber(frequency, 2)}</span> Hz</div>
                   </div>
                 </div>
                 <div class="flow-inverter">
                   ${inverterSvg}
                   <div class="flow-inverter-name">Deye inverter</div>
-                  <div class="flow-inverter-temp">${this.iconSvg("thermometer")}<span data-live="inverter-temp">${inverterTemp === null ? "—" : `${Math.round(inverterTemp)}`}</span> °C</div>
-                  <div class="flow-sold-tile">
-                    <div class="flow-sold-icon" style="color:#7ee22d">${this.iconSvg("money")}</div>
+                  <div class="flow-inverter-temp${esHidden("inverter_ac_temperature")}">${this.iconSvg("thermometer")}<span data-live="inverter-temp">${inverterTemp === null ? "—" : `${Math.round(inverterTemp)}`}</span> °C</div>
+                  <div class="flow-sold-tile${esAllHidden("sold_energy_today", "sold_value_today") ? " es-hidden" : ""}">
+                    <div class="flow-sold-icon" style="color:#7ee22d">${this.iconSvg("pound")}</div>
                     <div class="flow-sold-copy">
                       <span>Sold today</span>
-                      <strong class="flow-sold-value" data-live="sold-today-line">${fmtNumber(soldTodayKwh, 2)} kWh / ${fmtNumber(soldTodayGbp, 2)} GBP</strong>
+                      <strong class="flow-sold-value" data-live="sold-today-line">${esSpan("sold_energy_today", `<span data-live="sold-today-kwh">${fmtNumber(soldTodayKwh, 2)} kWh</span>`)} / ${esSpan("sold_value_today", `<span data-live="sold-today-gbp">${fmtNumber(soldTodayGbp, 2)} GBP</span>`)}</strong>
                     </div>
                   </div>
                 </div>
@@ -5316,20 +5605,20 @@ class DeyeEnergyCard extends HTMLElement {
                     <div class="flow-tile-icon" data-live-html="battery-icon">${this.batteryLevelSvg(batterySoc)}</div>
                     <div class="flow-tile-heading">
                       <div class="flow-tile-title">Battery</div>
-                      <div class="flow-tile-main"><span class="soc-value" data-live="battery-soc-value">${socMain}</span><span class="unit">% SOC</span></div>
-                      <div class="flow-tile-sub" data-live="battery-direction" style="color:#4ade80">${batteryDirection}</div>
+                      <div class="flow-tile-main${esHidden("battery_soc")}"><span class="soc-value" data-live="battery-soc-value">${socMain}</span><span class="unit">% SOC</span></div>
+                      <div class="flow-tile-sub${esHidden("battery_power")}" data-live="battery-direction" style="color:#4ade80">${batteryDirection}</div>
                     </div>
                   </div>
                   <hr class="flow-tile-divider">
                   <div class="flow-detail-row three-cols">
-                    ${phaseRow("Voltage", `<span data-live="battery-voltage">${fmtNumber(batteryVoltage, 1)}</span> V`, "")}
-                    ${phaseRow("Current", `<span data-live="battery-current">${fmtNumber(batteryCurrent, 1)}</span> A`, "")}
-                    ${phaseRow("Temp.", `<span data-live="battery-temp">${fmtNumber(batteryTemp, 1)}</span> °C`, "")}
+                    ${phaseRow("Voltage", `<span data-live="battery-voltage">${fmtNumber(batteryVoltage, 1)}</span> V`, "", !this.energyStatusVisible("battery_bms_voltage"))}
+                    ${phaseRow("Current", `<span data-live="battery-current">${fmtNumber(batteryCurrent, 1)}</span> A`, "", !this.energyStatusVisible("battery_current"))}
+                    ${phaseRow("Temp.", `<span data-live="battery-temp">${fmtNumber(batteryTemp, 1)}</span> °C`, "", !this.energyStatusVisible("battery_temperature"))}
                   </div>
                   <hr class="flow-tile-divider">
                   <div class="flow-tile-foot">
-                    <div>Today: <span class="positive">charging <span data-live="battery-charge-daily">${fmtNumber(batteryChargeDaily, 2)}</span> kWh</span></div>
-                    <div>Today: <span class="positive">discharge <span data-live="battery-discharge-daily">${fmtNumber(batteryDischargeDaily, 2)}</span> kWh</span></div>
+                    <div${esHidden("daily_battery_charge")}>Today: <span class="positive">charging <span data-live="battery-charge-daily">${fmtNumber(batteryChargeDaily, 2)}</span> kWh</span></div>
+                    <div${esHidden("daily_battery_discharge")}>Today: <span class="positive">discharge <span data-live="battery-discharge-daily">${fmtNumber(batteryDischargeDaily, 2)}</span> kWh</span></div>
                   </div>
                 </div>
                 <div class="flow-tile flow-tile-home">
@@ -5344,10 +5633,10 @@ class DeyeEnergyCard extends HTMLElement {
                   <div class="flow-detail-row${singlePhase ? " one-col" : " three-cols"}">
                     ${singlePhase
                       ? `<div class="flow-phase"><div class="flow-phase-power">${inverterVoltageValue}</div></div>`
-                      : phaseLabels.map((label) => phaseRow(label, `<span style="color:#38bdf8" data-live="load-${phaseKey(label)}-power">${fmtPower(loadPhasePower(label))}</span>`, "")).join("")}
+                      : phaseLabels.map((label) => phaseRow(label, esSpan(`load_${phaseKey(label)}_power`, `<span style="color:#38bdf8" data-live="load-${phaseKey(label)}-power">${fmtPower(loadPhasePower(label))}</span>`), "", esAllHidden(`load_${phaseKey(label)}_power`))).join("")}
                   </div>
                   <hr class="flow-tile-divider">
-                  <div class="flow-daily-summary flow-daily-home">
+                  <div class="flow-daily-summary flow-daily-home${esHidden("daily_load_consumption")}">
                     <span>Consumption today:</span>
                     <strong><span data-live="load-daily">${fmtNumber(loadDaily, 2)}</span> kWh</strong>
                   </div>
@@ -5398,6 +5687,7 @@ class DeyeEnergyCard extends HTMLElement {
                   <div class="flow-status-copy">
                     <span>Executed decision</span>
                     <strong>${this.escapeHtml(executedAction)}</strong>
+                    <div class="sub">Source: <b data-live="executed-schedule-source">${scheduleSourceLabel}</b></div>
                   </div>
                 </div>
                 <div class="flow-status-tile">
@@ -5406,6 +5696,7 @@ class DeyeEnergyCard extends HTMLElement {
                     <span>Manager mode</span>
                     <strong class="mode-${managerModeClass}" data-live="manager-mode">${modeText}</strong>
                     <div class="sub">Slot: <b data-live="active-slot">${activeSlotLabel}</b></div>
+                    <div class="sub">Source: <b data-live="manager-schedule-source">${scheduleSourceLabel}</b></div>
                   </div>
                 </div>
               </div>
@@ -5437,7 +5728,7 @@ class DeyeEnergyCard extends HTMLElement {
     wrapper.style.overflow = "hidden";
   }
   updateFlowLines() {
-    const st = (key) => this.asNumber(this.state(this.entity("sensor", key)), 0) || 0;
+    const st = (key) => this.asNumber(this.state(this.energyStatusEntity(key)), 0) || 0;
     const active = {
       pv: st("pv_power") > 1,
       gridImport: st("grid_power") > 1,
@@ -5667,6 +5958,7 @@ class DeyeEnergyCard extends HTMLElement {
       shield: '<svg viewBox="0 0 24 24"><path d="M12 3 5 6v6c0 4 3 7 7 9 4-2 7-5 7-9V6z"/><path d="M9 12l2 2 4-5"/></svg>',
       normal: '<svg viewBox="0 0 24 24"><path d="M3 12h2v7h14v-7h2"/><path d="M5 10l7-7 7 7"/><path d="M9 21v-6h6v6"/><path d="M12 3v4"/></svg>',
       edit: '<svg viewBox="0 0 24 24"><path d="M4 20h4l11-11-4-4L4 16z"/><path d="M13 6l4 4"/></svg>',
+      remove: '<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg>',
       gear: '<svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"/><path d="M4 12h2m12 0h2M12 4v2m0 12v2M6.3 6.3l1.4 1.4m8.6 8.6 1.4 1.4m0-11.4-1.4 1.4m-8.6 8.6-1.4 1.4"/></svg>',
       ai: '<svg viewBox="0 0 24 24"><path d="M12 3l1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7z"/><path d="M18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8z"/></svg>',
       info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 10v6"/><path d="M12 7h.01"/></svg>',
@@ -5686,6 +5978,7 @@ class DeyeEnergyCard extends HTMLElement {
       chart: '<svg viewBox="0 0 24 24"><path d="M4 20V10m6 10V4m6 16v-7m4 7H2"/></svg>',
       zap: '<svg viewBox="0 0 24 24"><path d="M13 2 5 13h6l-1 9 8-12h-6z"/></svg>',
       money: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15 8.5c-.8-.7-1.8-1-3-1-1.7 0-3 .9-3 2s1 1.8 3 2.2 3 1.1 3 2.3-1.3 2-3 2c-1.3 0-2.5-.4-3.3-1.2M12 5v14"/></svg>',
+      pound: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 18h7M8.5 9h6"/><path d="M9 5v13"/><path d="M15 9c0-2.2-1.6-4-3.8-4S8 6.7 8 9c0 2 3 2.2 3 4.5 0 1.4-1 2.5-2.5 2.5"/></svg>',
       calendar: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 10h18M8 14h.01m4 0h.01m4 0h.01M8 18h.01m4 0h.01"/></svg>',
       weather: '<svg viewBox="0 0 24 24"><circle cx="8" cy="8" r="3"/><path d="M8 2v2M2 8h2M3.8 3.8l1.4 1.4M13 8h2M10.8 5.2l1.4-1.4"/><path d="M7 19h10a4 4 0 0 0 0-8 6 6 0 0 0-11.3 2A3 3 0 0 0 7 19z"/></svg>',
     };
@@ -8149,6 +8442,8 @@ class DeyeEnergyCard extends HTMLElement {
         body = this.renderTouSettingsContent();
       } else if (tab === "mapping") {
         body = this.renderMappingTab(slots);
+      } else if (tab === "energy-status") {
+        body = this.renderEnergyStatusTab();
       } else if (tab === "ai") {
         body = this.renderAiSettingsPanel();
       } else if (tab === "tariff") {
@@ -8167,6 +8462,7 @@ class DeyeEnergyCard extends HTMLElement {
               ${tabButton("defaults", "Mode settings")}
               ${tabButton("tou", "Deye Time Of Use")}
               ${tabButton("mapping", "24 h mapping")}
+              ${tabButton("energy-status", "Energy status sensors")}
               ${tabButton("ai", "AI and analysis")}
               ${tabButton("tariff", "Tariff and distribution")}
               ${tabButton("history", "History and data")}
@@ -8223,8 +8519,15 @@ class DeyeEnergyCard extends HTMLElement {
       const readOnlyMessage = capability?.read_only === true
         ? `<div class="hint">This provider exposes Deye Time Of Use as read-only.</div>`
         : "";
+      const dirty = !readOnly && supportedFields.length > 0 && this.touEditorDirty(idx);
       const saveButton = !readOnly && supportedFields.length
-        ? `<button class="primary" type="button" data-save-tou="${idx}" ${blockedByControl || pending ? "disabled" : ""} title="${this.escapeHtml(blockMessage)}">${pending ? "Saving…" : "Save"}</button>`
+        ? `<button class="primary" type="button" data-save-tou="${idx}" ${blockedByControl || pending || !dirty ? "disabled" : ""} title="${this.escapeHtml(blockMessage || (!dirty ? "No changes to apply." : ""))}">${pending ? "Saving…" : "Apply to Inverter"}</button>`
+        : "";
+      const rollbackButton = supportedFields.length
+        ? `<button type="button" data-rollback-tou="${idx}" ${readOnly || blockedByControl || pending || this._touRollingBack ? "disabled" : ""}>${this._touRollingBack ? "Reading…" : "Rollback"}</button>`
+        : "";
+      const rollbackStatus = this._touRollbackStatus
+        ? `<div class="hint" data-tou-rollback-status>${this.escapeHtml(this._touRollbackStatus)}</div>`
         : "";
       const error = this._touSaveError || (["rollback", "rollback_failed", "mismatch", "unavailable"].includes(this.touOperationStatus()) ? this.touOperationError() : "");
       return `<div class="overlay" data-close-dialog="1">
@@ -8235,9 +8538,10 @@ class DeyeEnergyCard extends HTMLElement {
             <div class="hint">Operation status: <strong>${this.touOperationStatusLabel()}</strong></div>
             ${blockMessage ? `<div class="hint">${blockMessage}</div>` : ""}
             ${error ? `<div class="bad" data-tou-save-error>${this.escapeHtml(String(error))}</div>` : ""}
+            ${rollbackStatus}
             ${this.renderTouReverseSyncSummary()}
           </div>
-          <div class="dialog-actions"><button type="button" data-close-dialog="1">${readOnly ? "Close" : "Cancel"}</button>${saveButton}</div>
+          <div class="dialog-actions"><button type="button" data-close-dialog="1">${readOnly ? "Close" : "Cancel"}</button>${rollbackButton}${saveButton}</div>
         </section>
       </div>`;
     }
@@ -8620,7 +8924,7 @@ class DeyeEnergyCard extends HTMLElement {
             @media(max-width:620px){.ai-execution-toolbar,.ai-execution-date{width:100%}.ai-execution-date{display:grid;grid-template-columns:minmax(0,1fr) auto}.ai-exec-kpi{min-width:calc(50% - 4px)}.ai-execution-chart{padding:8px}.ai-execution-toolbar .ai-day-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}}
 @media(max-width:620px){.ai-execution-toolbar,.ai-execution-date{width:100%}.ai-execution-date{display:grid;grid-template-columns:minmax(0,1fr) auto}.ai-exec-kpi{min-width:calc(50% - 4px)}.ai-execution-chart{padding:8px}.ai-execution-toolbar .ai-day-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}}
            .ai-explanation-view{display:grid;gap:12px}.ai-explanation-view>h2{margin:0}.ai-explanation-profile details,.ai-shadow,.ai-help{margin-top:10px}.ai-explanation-profile summary,.ai-shadow summary,.ai-help summary{cursor:pointer;color:#dff3fc;font-weight:800}.ai-decision-summary{line-height:1.55}.ai-explanation-balance{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0}.ai-explanation-balance>div{border:1px solid rgba(103,158,184,.2);border-radius:6px;padding:9px;background:rgba(3,16,25,.45)}.ai-explanation-balance span{display:block;color:#93adbc;font-size:10px}.ai-explanation-balance strong{display:block;margin-top:4px}.ai-explanation-list{display:grid;gap:7px;padding-left:18px}.ai-explanation-list li{padding:6px 0;border-top:1px solid rgba(103,158,184,.15)}.ai-explanation-list strong{display:block;color:#7ee22d}.ai-explanation-list span{display:block;margin-top:3px;color:#b9d0dc;line-height:1.4}.ai-help dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:7px 12px}.ai-help dt{color:#7ee22d;font-weight:800}.ai-help dd{margin:0;color:#b9d0dc}@media(max-width:620px){.ai-explanation-balance{grid-template-columns:minmax(0,1fr)}.ai-help dl{grid-template-columns:minmax(0,1fr)}}
-           .manual-schedule-status{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;margin-bottom:10px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03)}.manual-schedule-status>strong{font-size:14px}.manual-schedule-status.active{border-color:var(--green);background:rgba(45,255,149,.08)}.manual-row{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.02);margin-bottom:10px;overflow:hidden}.manual-row-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;background:rgba(18,42,59,.6);border-bottom:1px solid var(--line)}.manual-row-head strong{font-size:12px}.manual-row-head span{color:#a9c1d0;font-size:11px}.manual-row-head button{min-height:30px;border:1px solid var(--line2);border-radius:6px;background:#173a57;color:#fff;padding:0 10px;cursor:pointer}.manual-row-head button:disabled{opacity:.4;cursor:not-allowed}.manual-row-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;padding:10px}.manual-row-grid label{display:grid;gap:4px;color:#a9c1d0;font-size:11px}.manual-row-grid input,.manual-row-grid select{width:100%;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:7px}.manual-row-grid input[type=checkbox]{width:auto;justify-self:start;accent-color:var(--blue)}.manual-row-actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}.manual-row-actions button{min-height:36px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 12px;cursor:pointer}.manual-row-actions button:disabled{opacity:.45;cursor:not-allowed}
+           .manual-schedule-table{min-width:820px}.manual-schedule-table .time-col{white-space:nowrap}.manual-schedule-table tr.editing{background:rgba(21,155,255,.09)}.manual-schedule-table tr.disabled{opacity:.72}.manual-schedule-table tr.editing td{border-top-color:rgba(21,155,255,.38)}.manual-schedule-table input,.manual-schedule-table select{width:100%;min-width:90px;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:5px 6px}.manual-schedule-table input[type=checkbox]{width:auto;min-width:0;accent-color:var(--blue)}.manual-action-cell{display:flex;gap:6px;align-items:center}.manual-schedule-table .icon-only.active{border-color:var(--blue);color:#2ea7ff;background:rgba(8,53,92,.55)}.manual-schedule-table .icon-only.remove:hover{border-color:rgba(255,77,99,.7);color:#ff9cab}.manual-schedule-table .icon-only:disabled{opacity:.35;cursor:not-allowed}.manual-row-actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}.manual-row-actions button{min-height:36px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 12px;cursor:pointer}.manual-row-actions button:disabled{opacity:.45;cursor:not-allowed}.manual-schedule-table tr.time-current{animation:manual-time-current-row 3.2s ease-in-out infinite}.manual-schedule-table tr.time-current td{animation:manual-time-current-cell 3.2s ease-in-out infinite}@keyframes manual-time-current-row{0%,100%{background:rgba(37,105,151,.18)}50%{background:rgba(37,105,151,.46)}}@keyframes manual-time-current-cell{0%,100%{box-shadow:inset 0 0 0 1px rgba(87,185,255,.22),inset 0 0 6px rgba(87,185,255,.08);text-shadow:none}50%{box-shadow:inset 0 0 0 1px rgba(87,185,255,.7),inset 0 0 14px rgba(87,185,255,.32);text-shadow:0 0 8px rgba(87,185,255,.7)}}
            </style>
             <div class="dem-v073" style="${demStyle}">
             ${statusSection}
@@ -8716,16 +9020,6 @@ class DeyeEnergyCard extends HTMLElement {
       this.openScheduleSlotEditor(key, label, type);
       this.render();
     }));
-    root.querySelectorAll("[data-open-tou]").forEach((el) => el.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      this.captureScrollPositions();
-      this.openTouEditor(Number(el.dataset.openTou));
-      this.render();
-    }));
-    root.querySelectorAll("[data-save-tou]").forEach((el) => el.addEventListener("click", () => {
-      this.savePhysicalTouSlot(Number(el.dataset.saveTou));
-    }));
     root.querySelectorAll("[data-open-ai]").forEach((el) => el.addEventListener("click", (event) => {
       event.preventDefault();
       this.captureScrollPositions();
@@ -8793,8 +9087,17 @@ class DeyeEnergyCard extends HTMLElement {
       this.addManualScheduleRow();
       this.render();
     }));
+    root.querySelectorAll("[data-manual-edit]").forEach((el) => el.addEventListener("click", () => {
+      this.toggleManualScheduleRowEdit(Number(el.dataset.manualEdit));
+      this.render();
+    }));
     root.querySelectorAll("[data-manual-remove]").forEach((el) => el.addEventListener("click", () => {
-      this.removeManualScheduleRow(Number(el.dataset.manualRemove));
+      const index = Number(el.dataset.manualRemove);
+      const row = this.ensureManualScheduleDraft()[index];
+      if (!row) return;
+      const label = `row ${index + 1} (${row.from} → ${row.to})`;
+      if (!window.confirm(`Remove manual schedule ${label}? The remaining rows will be joined automatically.`)) return;
+      this.removeManualScheduleRow(index);
       this.render();
     }));
     root.querySelectorAll("[data-manual-save]").forEach((el) => el.addEventListener("click", () => this.saveManualSchedule()));
@@ -8859,14 +9162,28 @@ class DeyeEnergyCard extends HTMLElement {
     }));
     root.querySelectorAll("[data-tou-field]").forEach((el) => {
       const update = () => {
-        if (this._dialog?.type === "tou") this.collectTouEditorDraft(Number(this._dialog.idx));
+        if (this._dialog?.type === "tou") {
+          this.collectTouEditorDraft(Number(this._dialog.idx));
+          this.updateTouEditorButtons(Number(this._dialog.idx));
+        }
       };
       el.addEventListener("change", update);
       if (el.tagName !== "SELECT") el.addEventListener("input", update);
     });
+    root.querySelectorAll("[data-open-tou]").forEach((el) => el.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.captureScrollPositions();
+      this.openTouEditor(Number(el.dataset.openTou));
+      this.render();
+    }));
     root.querySelectorAll("[data-save-tou]").forEach((el) => el.addEventListener("click", () => {
       this.savePhysicalTouSlot(Number(el.dataset.saveTou));
     }));
+    root.querySelectorAll("[data-rollback-tou]").forEach((el) => el.addEventListener("click", () => {
+      this.rollbackTouEditor(Number(el.dataset.rollbackTou));
+    }));
+    if (this._dialog?.type === "tou") this.updateTouEditorButtons(Number(this._dialog.idx));
     root.querySelectorAll("[data-mapping-field]").forEach((el) => {
       const update = () => this.collectMappingDraft();
       el.addEventListener("change", update);
@@ -8879,6 +9196,14 @@ class DeyeEnergyCard extends HTMLElement {
     }));
     root.querySelectorAll("[data-save-mapping]").forEach((el) => el.addEventListener("click", () => {
       this.saveMappingToInverter();
+    }));
+    root.querySelectorAll("[data-energy-role-field]").forEach((el) => {
+      const update = () => this.collectEnergyStatusDraft();
+      el.addEventListener("change", update);
+      if (el.tagName !== "SELECT") el.addEventListener("input", update);
+    });
+    root.querySelectorAll("[data-save-energy-status]").forEach((el) => el.addEventListener("click", () => {
+      this.saveEnergyStatusDisplay();
     }));
     root.querySelectorAll("[data-settings-tab]").forEach((el) => el.addEventListener("click", () => {
       this._settingsTab = el.dataset.settingsTab;

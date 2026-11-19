@@ -5260,7 +5260,7 @@ class ControlMasterTests(unittest.IsolatedAsyncioTestCase):
 
         for name in monitored:
             getattr(runtime, name).assert_awaited_once_with()
-        self.assertEqual(runtime.planned_manager_action, "Selling — 5.0 kW — monitoring only")
+        self.assertEqual(runtime.planned_manager_action, "Selling — 5000 W — monitoring only")
         self.assertEqual(runtime.executed_manager_action, "Not performed — control disabled")
         self.assertEqual(runtime.manager_status, "MONITORING ONLY")
         self.assertEqual(runtime.hass.services.calls, [])
@@ -7239,7 +7239,13 @@ class ManagerActionSemantics5F6Tests(unittest.IsolatedAsyncioTestCase):
         runtime = self._runtime()
         configure_selling_slot(runtime)
 
-        self.assertEqual(runtime._planned_manager_action_text(), "Selling — 5.0 kW")
+        self.assertEqual(runtime._planned_manager_action_text(), "Selling — 5000 W")
+
+    def test_decision_power_switches_to_kw_at_10000_watts(self):
+        self.assertEqual(manager.DeyeEnergyRuntime._format_decision_power(9999), "9999 W")
+        self.assertEqual(manager.DeyeEnergyRuntime._format_decision_power(10000), "10.0 kW")
+        self.assertEqual(manager.DeyeEnergyRuntime._format_decision_power(12345), "12.3 kW")
+        self.assertEqual(manager.DeyeEnergyRuntime._format_decision_power(300), "300 W")
 
     async def test_planned_action_describes_current_charge_slot(self):
         runtime = self._runtime()
@@ -7328,7 +7334,7 @@ class ManagerActionSemantics5F6Tests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             runtime.planned_manager_action,
-            "Selling — 5.0 kW — monitoring only",
+            "Selling — 5000 W — monitoring only",
         )
 
     async def test_actions_do_not_show_idle_after_successful_manager_cycle(self):
@@ -7794,7 +7800,6 @@ def manual_row(**overrides):
         "mode": const.MODE_NORMAL_OPERATION,
         "sell_power": 0,
         "minimum_sell_soc": 0,
-        "tou_soc": 20,
         "charge_enabled": False,
     }
     row.update(overrides)
@@ -7894,8 +7899,6 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
             runtime._validate_manual_schedule_rows([manual_row(to="00:00", mode="Nope")])
         with self.assertRaisesRegex(ValueError, "must be between"):
             runtime._validate_manual_schedule_rows([manual_row(to="00:00", sell_power=-1)])
-        with self.assertRaisesRegex(ValueError, "tou_soc"):
-            runtime._validate_manual_schedule_rows([manual_row(to="00:00", tou_soc=101)])
 
     def test_validation_ignores_removed_legacy_fields(self):
         runtime = make_runtime()
@@ -7906,10 +7909,11 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
             charge_current=999,
             grid_charge_current=999,
             min_sell_price=999,
+            tou_soc=999,
         )])
         removed = {
             "physical_work_mode", "discharge_current", "charge_current",
-            "grid_charge_current", "min_sell_price",
+            "grid_charge_current", "min_sell_price", "tou_soc",
         }
         self.assertTrue(all(removed.isdisjoint(row) for row in rows))
 
@@ -7923,7 +7927,6 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
                     "to": "19:45",
                     "mode": const.MODE_SELLING_FIRST,
                     "sell_power": 4321,
-                    "tou_soc": 30,
                 }
             ),
             manual_row(
@@ -7932,7 +7935,6 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
                     "to": "00:00",
                     "mode": const.MODE_CHARGE,
                     "charge_enabled": True,
-                    "tou_soc": 90,
                 }
             ),
         ])
@@ -7946,9 +7948,8 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(by_key["2000_2030"]["mode"], const.MODE_CHARGE)
         self.assertEqual(by_key["2330_0000"]["mode"], const.MODE_CHARGE)
         self.assertEqual(by_key["0730_0800"]["sell_power"], 4321)
-        self.assertEqual(by_key["0730_0800"]["tou_soc"], 30)
         self.assertTrue(by_key["2000_2030"]["charge_enabled"])
-        self.assertEqual(by_key["2000_2030"]["tou_soc"], 90)
+        self.assertTrue(all("tou_soc" not in update for update in updates))
         removed = {
             "physical_work_mode", "discharge_current", "charge_current",
             "grid_charge_current", "min_sell_price",
@@ -7971,7 +7972,6 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
                     "to": "00:00",
                     "mode": const.MODE_SELLING_FIRST,
                     "sell_power": 4321,
-                    "tou_soc": 35,
                 }
             ),
         ])
@@ -7990,7 +7990,8 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(effective["1130_1200"].mode, const.MODE_NORMAL_OPERATION)
         self.assertEqual(effective["1200_1230"].mode, const.MODE_SELLING_FIRST)
         self.assertEqual(effective["1200_1230"].sell_power, 4321)
-        self.assertEqual(effective["1200_1230"].tou_soc, 35)
+        # TOU SOC stays at the work-schedule value; manual rows no longer set it.
+        self.assertEqual(effective["1200_1230"].tou_soc, 20)
         self.assertEqual(effective["2330_0000"].mode, const.MODE_SELLING_FIRST)
         self.assertEqual(effective["2330_0000"].sell_power, 4321)
         self.assertTrue(runtime.scheduler_enabled)
@@ -8151,15 +8152,16 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
         runtime = make_runtime()
         work_mapping = runtime.schedule_to_tou_mapping()
         await runtime.async_save_manual_schedule([
-            manual_row(to="12:00", tou_soc=25),
-            manual_row(**{"from": "12:00", "tou_soc": 65, "charge_enabled": True}),
+            manual_row(to="12:00"),
+            manual_row(**{"from": "12:00", "charge_enabled": True}),
         ])
         await runtime.async_activate_manual_schedule()
 
         previous_now = manager.ha_now
         try:
             manager.ha_now = lambda: datetime(2026, 7, 18, 13, 15, tzinfo=timezone.utc)
-            self.assertEqual(runtime.active_slot.tou_soc, 65)
+            # Manual rows no longer carry TOU SOC, so the work-schedule value stays.
+            self.assertEqual(runtime.active_slot.tou_soc, 20)
             self.assertTrue(runtime.active_slot.charge_enabled)
         finally:
             manager.ha_now = previous_now
@@ -8215,7 +8217,7 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
             rows.append(manual_row(**{
                 "from": f"{start:02d}:00",
                 "to": "00:00" if end == 24 else f"{end:02d}:00",
-                "tou_soc": 10 if index % 2 == 0 else 20,
+                "charge_enabled": index % 2 == 0,
             }))
         await runtime.async_save_manual_schedule(rows)
 
@@ -8223,7 +8225,7 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
             await runtime.async_activate_manual_schedule()
         self.assertFalse(runtime.manual_schedule_active)
 
-    async def test_init_from_tou_builds_six_rows_with_tou_values(self):
+    async def test_init_from_tou_builds_six_rows_from_inverter_ranges(self):
         runtime = make_runtime()
         starts = ["00:00:00", "04:00:00", "08:00:00", "12:00:00", "16:00:00", "20:00:00"]
         socs = [10, 20, 30, 40, 50, 60]
@@ -8254,7 +8256,7 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
                 ("20:00", "00:00"),
             ],
         )
-        self.assertEqual([row["tou_soc"] for row in rows], [10.0, 20.0, 30.0, 40.0, 50.0, 60.0])
+        self.assertTrue(all("tou_soc" not in row for row in rows), "rows must not carry TOU SOC")
         self.assertEqual(
             [row["charge_enabled"] for row in rows],
             [False, False, True, False, False, False],

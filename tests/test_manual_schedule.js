@@ -65,7 +65,6 @@ function manualRow(overrides = {}) {
     mode: "Normal Operation",
     sell_power: 0,
     minimum_sell_soc: 0,
-    tou_soc: 20,
     charge_enabled: false,
     ...overrides,
   };
@@ -77,7 +76,7 @@ function makeCard(options = {}) {
     active: false,
     rows: [
       manualRow({ to: "12:00" }),
-      manualRow({ from: "12:00", mode: "Selling", sell_power: 4000, tou_soc: 30 }),
+      manualRow({ from: "12:00", mode: "Selling", sell_power: 4000 }),
     ],
     has_activation_snapshot: false,
     valid: true,
@@ -138,7 +137,6 @@ function test_manual_backend_state_populates_draft() {
   assertEqual(rows.length, 2, "backend rows must populate the draft");
   assertEqual(rows[0].to, "12:00", "first row end must be kept");
   assertEqual(rows[1].mode, "Selling", "row mode must be kept");
-  assertEqual(rows[1].tou_soc, 30, "row TOU SOC must be kept");
   assertTrue(!card.manualScheduleDirty(), "fresh draft must not be dirty");
 }
 
@@ -213,7 +211,7 @@ function test_manual_save_sends_normalized_rows_once() {
 function test_manual_rows_and_payload_exclude_removed_fields() {
   const removed = [
     "physical_work_mode", "discharge_current", "charge_current",
-    "grid_charge_current", "min_sell_price",
+    "grid_charge_current", "min_sell_price", "tou_soc",
   ];
   const { card } = makeCard({
     manual: {
@@ -224,6 +222,7 @@ function test_manual_rows_and_payload_exclude_removed_fields() {
         charge_current: 120,
         grid_charge_current: 60,
         min_sell_price: 1.5,
+        tou_soc: 99,
       })],
     },
   });
@@ -234,12 +233,12 @@ function test_manual_rows_and_payload_exclude_removed_fields() {
     assertTrue(!(field in payload[0]), `${field} must not be sent to the backend`);
   });
   assertEqual(payload[0].sell_power, 0, "Sell power must remain a row field");
-  assertEqual(payload[0].tou_soc, 20, "Deye TOU SOC must remain a row field");
   assertEqual(payload[0].charge_enabled, false, "Grid charging must remain a row field");
 }
 
 function test_manual_tab_hides_removed_controls() {
   const { card } = makeCard();
+  card.toggleManualScheduleRowEdit(0);
   const html = card.renderManualScheduleTab();
   [
     'data-manual-field="physical_work_mode"',
@@ -247,9 +246,9 @@ function test_manual_tab_hides_removed_controls() {
     'data-manual-field="charge_current"',
     'data-manual-field="grid_charge_current"',
     'data-manual-field="min_sell_price"',
+    'data-manual-field="tou_soc"',
   ].forEach((marker) => assertTrue(!html.includes(marker), `removed control must be absent: ${marker}`));
   assertTrue(html.includes('data-manual-field="sell_power"'), "Sell power must stay editable");
-  assertTrue(html.includes('data-manual-field="tou_soc"'), "Deye TOU SOC must stay editable");
   assertTrue(html.includes('data-manual-field="charge_enabled"'), "Grid charging must stay editable");
 }
 
@@ -332,30 +331,119 @@ function test_manual_tou_init_button_and_handler_are_removed_from_the_card() {
 function test_manual_tab_renders_rows_controls_and_active_status() {
   const { card } = makeCard();
   const inactive = card.renderManualScheduleTab();
-  assertTrue(inactive.includes("Manual schedule: Inactive"), "inactive status must be shown");
-  assertTrue(inactive.includes('data-manual-activate="1"'), "activate control must be present");
+  assertTrue(inactive.includes("Manual schedule — Enable"), "Enable label must be shown");
+  assertTrue(inactive.includes('class="tool-btn" data-manual-activate="1"'), "Enable control must use the work-schedule tool button styling");
   assertTrue(inactive.includes('data-manual-add="1"'), "add row control must be present");
   assertTrue(!inactive.includes('data-manual-init="1"'), "initialize control must be absent");
   assertTrue(!inactive.includes("Initialize from Deye Time Of Use"), "initialize label must be absent");
   assertTrue(inactive.includes('data-manual-save="1"'), "save control must be present");
-  assertTrue(inactive.includes('data-manual-field="from" data-manual-index="1"'), "middle From must be editable");
-  assertTrue(inactive.includes('data-manual-field="to" data-manual-index="0"'), "middle To must be editable");
-  assertTrue(!inactive.includes('data-manual-field="from" data-manual-index="0"'), "first From must be fixed");
-  assertTrue(!inactive.includes('data-manual-field="to" data-manual-index="1"'), "last To must be fixed");
+  assertTrue(!inactive.includes("data-manual-field="), "rows must be read-only by default");
+  assertTrue(inactive.includes('data-manual-edit="0"'), "edit icon must be present on each row");
+  assertTrue(inactive.includes('data-manual-remove="0"'), "remove icon must be present on each row");
+  card.toggleManualScheduleRowEdit(0);
+  card.toggleManualScheduleRowEdit(1);
+  const editing = card.renderManualScheduleTab();
+  assertTrue(editing.includes('data-manual-field="from" data-manual-index="1"'), "middle From must be editable");
+  assertTrue(editing.includes('data-manual-field="to" data-manual-index="0"'), "middle To must be editable");
+  assertTrue(!editing.includes('data-manual-field="from" data-manual-index="0"'), "first From must be fixed");
+  assertTrue(!editing.includes('data-manual-field="to" data-manual-index="1"'), "last To must be fixed");
 
   card.applyManualScheduleState({ active: true, rows: [manualRow()] });
   const active = card.renderManualScheduleTab();
-  assertTrue(active.includes("Manual schedule: Active"), "active status must be shown");
-  assertTrue(active.includes('data-manual-deactivate="1"'), "deactivate control must be present");
-  assertTrue(active.includes("AI, optimizer and future-plan applies are blocked"), "active blocking must be explained");
+  assertTrue(active.includes("Manual schedule — Disable"), "Disable label must be shown");
+  assertTrue(active.includes('class="tool-btn active" data-manual-deactivate="1"'), "Disable control must use the active work-schedule tool button styling");
+  assertTrue(active.includes('<div class="schedule-tools">'), "toggle must live in the header tools row");
+}
+
+function test_manual_tab_drops_stale_slot_mapping_copy() {
+  const { card } = makeCard();
+  const html = card.renderManualScheduleTab();
+  assertTrue(!html.includes("48 work schedule slots"), "48-slot mapping message must be removed");
+  assertTrue(!html.includes("mapped onto the work schedule"), "stale mapping subheading must be removed");
+  assertTrue(!html.includes("manual-schedule-status"), "separate status bar must be removed");
 }
 
 function test_manual_tab_exposes_fixed_last_midnight_boundary() {
   const { card } = makeCard();
   card.applyManualScheduleState({ active: false, rows: [manualRow(), manualRow({ from: "12:00" })] });
+  card.toggleManualScheduleRowEdit(0);
+  card.toggleManualScheduleRowEdit(1);
   const html = card.renderManualScheduleTab();
   assertTrue(!html.includes('data-manual-field="to" data-manual-index="1"'), "last To must be fixed at 00:00");
   assertTrue(html.includes('data-manual-field="to" data-manual-index="0"'), "middle To must be editable");
+}
+
+function test_manual_tab_shares_settings_and_control_buttons() {
+  const { card } = makeCard();
+  const html = card.renderManualScheduleTab();
+  assertTrue(html.includes('data-control-toggle="1"'), "Deye control button must be available from Manual schedule");
+  assertTrue(html.includes("Deye control — "), "Deye control button must keep the same label");
+  assertTrue(html.includes('class="tool-btn '), "Deye control button must use tool button styling");
+  assertTrue(html.includes('data-open-settings="1"'), "Settings and diagnostics button must be available from Manual schedule");
+  assertTrue(html.includes('class="gear-btn"'), "Settings button must use the same gear styling");
+}
+
+function test_manual_tab_uses_work_schedule_table_styling() {
+  const { card } = makeCard();
+  const html = card.renderManualScheduleTab();
+  assertTrue(html.includes('<div class="schedule-table-card">'), "manual rows must use the work schedule table card");
+  assertTrue(html.includes('<table class="schedule-table manual-schedule-table">'), "manual rows must use the work schedule table styling");
+  assertTrue(html.includes('<thead><tr><th class="time-col">From</th><th class="time-col">To</th><th>Mode</th><th>Sell power</th><th>Grid charging</th><th>Stop selling at SOC</th><th>Active</th><th>Action</th></tr></thead>'), "manual table headers must describe the manual fields");
+  assertTrue(html.indexOf('<td data-label="Active">') < html.indexOf('<td data-label="Action">'), "Active must sit immediately before the Action icons");
+  assertTrue(html.includes('data-manual-edit="0"'), "edit icon must be in the Action column");
+  assertTrue(html.includes('data-manual-remove="0"'), "remove icon must be in the Action column");
+  assertTrue(!html.includes('class="manual-row"'), "old manual row cards must be gone");
+}
+
+function test_manual_editing_lifecycle_clears_only_on_save() {
+  const { card } = makeCard();
+  card.toggleManualScheduleRowEdit(1);
+  assertTrue(card.renderManualScheduleTab().includes('data-manual-field="mode" data-manual-index="1"'), "edit mode must show the row inputs");
+  card.addManualScheduleRow();
+  assertTrue(!card.renderManualScheduleTab().includes('data-manual-field="mode" data-manual-index="2"'), "newly added rows must start read-only");
+  return card.activateManualSchedule().then((ok) => {
+    assertTrue(ok, "activate must succeed");
+    assertTrue(card.renderManualScheduleTab().includes('data-manual-field="mode" data-manual-index="1"'), "activate must not clear edit mode");
+    return card.saveManualSchedule();
+  }).then((ok) => {
+    assertTrue(ok, "save must succeed");
+    assertTrue(!card.renderManualScheduleTab().includes("data-manual-field="), "save must clear edit mode for every row");
+  });
+}
+
+function test_manual_remove_asks_for_confirmation() {
+  const { card } = makeCard();
+  const originalConfirm = window.confirm;
+  let message = "";
+  let accept = false;
+  window.confirm = (text) => { message = text; return accept; };
+  let removeHandler = null;
+  let editHandler = null;
+  card.querySelectorAll = (selector) => {
+    if (selector === "[data-manual-remove]") return [{ dataset: { manualRemove: "0" }, addEventListener: (_type, fn) => { removeHandler = fn; } }];
+    if (selector === "[data-manual-edit]") return [{ dataset: { manualEdit: "1" }, addEventListener: (_type, fn) => { editHandler = fn; } }];
+    return [];
+  };
+  try {
+    card.bindDashboardControls(card.ensureManualScheduleDraft());
+    assertTrue(typeof removeHandler === "function", "remove icon must be bound");
+    assertTrue(typeof editHandler === "function", "edit icon must be bound");
+
+    card.toggleManualScheduleRowEdit(1);
+    card.removeManualScheduleRow(0);
+    assertTrue(card._manualScheduleEditing.has(0), "editing index must shift down after a row is removed");
+    card.applyManualScheduleState({ active: false, rows: [manualRow({ to: "12:00" }), manualRow({ from: "12:00" })] });
+    card.clearManualScheduleRowEdits();
+
+    removeHandler();
+    assertEqual(card.ensureManualScheduleDraft().length, 2, "cancelling confirmation must keep the row");
+    assertTrue(message.includes("row 1"), "confirmation must name the row being removed");
+    accept = true;
+    removeHandler();
+    assertEqual(card.ensureManualScheduleDraft().length, 1, "accepting confirmation must remove the row");
+  } finally {
+    window.confirm = originalConfirm;
+  }
 }
 
 function test_schedule_tabs_default_to_manual_and_switch_to_work() {
@@ -394,6 +482,7 @@ function test_manual_tab_uses_the_work_schedule_page_styling() {
   const html = card.renderManualScheduleTab();
   assertTrue(html.includes('class="schedule-head manual-panel-head"'), "Manual tab must use the page schedule head");
   assertTrue(html.includes("<h2>Manual schedule</h2>"), "Manual tab must have a page-style title");
+  assertTrue(html.includes('<div class="schedule-tools">'), "Toggle must be in the page header tools row");
   assertTrue(html.includes('class="foot-actions manual-save-actions"'), "Save action must use page footer styling");
   assertTrue(html.includes('class="primary" data-manual-save="1"'), "Save action must be the primary page button");
   assertTrue(!html.includes('class="dialog-actions"'), "Manual tab must not use dialog-only styling");
@@ -414,12 +503,15 @@ function test_page_schedule_controls_are_bound_in_the_dashboard_binder() {
   assertTrue(dashboard.length > 0 && dialog.length > 0, "both bind methods must be present");
   for (const selector of [
     "[data-schedule-tab]", "[data-manual-field]", "[data-manual-add]",
-    "[data-manual-remove]", "[data-manual-save]",
+    "[data-manual-edit]", "[data-manual-remove]", "[data-manual-save]",
     "[data-manual-activate]", "[data-manual-deactivate]",
   ]) {
     assertTrue(dashboard.includes(selector), `${selector} must be bound on the page`);
     assertTrue(!dialog.includes(selector), `${selector} must not be bound inside the dialog host`);
   }
+  assertTrue(dashboard.includes("[data-control-toggle]"), "shared Deye control button must be bound on the page");
+  assertTrue(dashboard.includes("this.toggleControl()"), "shared Deye control must keep its handler");
+  assertTrue(dashboard.includes("[data-open-settings]"), "shared settings button must be bound on the page");
   assertTrue(!dashboard.includes("[data-manual-init]"), "manual init binding must be gone");
   assertTrue(!dialog.includes("[data-manual-init]"), "manual init binding must not exist in the dialog");
 }
@@ -480,6 +572,84 @@ function test_work_schedule_toggle_switches_to_the_opposite_source() {
   });
 }
 
+function withFixedDate(iso, fn) {
+  const RealDate = Date;
+  global.Date = class extends RealDate {
+    constructor(...args) { super(...(args.length ? args : [iso])); }
+  };
+  try { return fn(); } finally { global.Date = RealDate; }
+}
+
+function test_manual_current_row_index_follows_the_local_clock() {
+  const { card } = makeCard();
+  card._hass.config = { time_zone: "UTC" };
+  const rows = [
+    manualRow({ to: "12:00" }),
+    manualRow({ from: "12:00", mode: "Selling", sell_power: 4000 }),
+  ];
+  const at = (iso) => card.manualScheduleCurrentRowIndex(rows, new Date(iso));
+  assertEqual(at("2026-11-19T00:00:00Z"), 0, "midnight must select the first row");
+  assertEqual(at("2026-11-19T06:30:00Z"), 0, "a time inside the first window must select row 0");
+  assertEqual(at("2026-11-19T11:59:00Z"), 0, "the minute before the boundary must stay on row 0");
+  assertEqual(at("2026-11-19T12:00:00Z"), 1, "the boundary must select only the second row");
+  assertEqual(at("2026-11-19T23:59:00Z"), 1, "late evening must select the final row");
+
+  const three = [
+    manualRow({ to: "07:15" }),
+    manualRow({ from: "07:15", to: "19:45" }),
+    manualRow({ from: "19:45" }),
+  ];
+  assertEqual(card.manualScheduleCurrentRowIndex(three, new Date("2026-11-19T19:44:00Z")), 1, "arbitrary-minute rows must use their own boundaries");
+  assertEqual(card.manualScheduleCurrentRowIndex(three, new Date("2026-11-19T19:45:00Z")), 2, "the next row must take over at its exact start");
+
+  card._hass.config = { time_zone: "Asia/Tokyo" };
+  assertEqual(at("2026-11-19T03:00:00Z"), 1, "selection must use the Home Assistant time zone");
+  assertEqual(card.manualScheduleCurrentRowIndex([], new Date("2026-11-19T06:30:00Z")), -1, "no rows must select nothing");
+}
+
+function test_manual_tab_glows_only_the_row_covering_now() {
+  const { card } = makeCard();
+  card._hass.config = { time_zone: "UTC" };
+  withFixedDate("2026-11-19T06:30:00Z", () => {
+    const html = card.renderManualScheduleTab();
+    const rendered = [...html.matchAll(/<tr class="([^"]*)" data-manual-row="(\d+)"/g)];
+    assertEqual(rendered.length, 2, "both manual rows must render");
+    const glowing = rendered.filter((match) => match[1].split(" ").includes("time-current"));
+    assertEqual(glowing.length, 1, "exactly one row must carry the glow");
+    assertEqual(Number(glowing[0][2]), 0, "the row covering the current time must glow");
+    assertTrue(!rendered[1][1].includes("time-current"), "other rows must not glow");
+  });
+}
+
+function test_manual_glow_follows_time_on_live_updates() {
+  const { card } = makeCard();
+  card._hass.config = { time_zone: "UTC" };
+  card._isRendered = true;
+  card.setText = () => {};
+  const makeRow = (index) => {
+    const row = { applied: null };
+    row.getAttribute = (name) => (name === "data-manual-row" ? String(index) : null);
+    row.classList = { toggle: (name, on) => { if (name === "time-current") row.applied = on; } };
+    return row;
+  };
+  const rows = [makeRow(0), makeRow(1)];
+  card.querySelectorAll = (selector) => (selector === "[data-manual-row]" ? rows : []);
+  let iso = "2026-11-19T06:30:00Z";
+  const RealDate = Date;
+  global.Date = class extends RealDate {
+    constructor(...args) { super(...(args.length ? args : [iso])); }
+  };
+  try {
+    card.updateDynamicValues();
+    assertEqual(rows.map((row) => row.applied), [true, false], "the live glow must follow the first window");
+    iso = "2026-11-19T12:30:00Z";
+    card.updateDynamicValues();
+    assertEqual(rows.map((row) => row.applied), [false, true], "the live glow must move at the next boundary");
+  } finally {
+    global.Date = RealDate;
+  }
+}
+
 function test_both_card_copies_remain_identical() {
   assertTrue(fs.readFileSync(componentCard).equals(fs.readFileSync(rootCard)), "both card copies must remain identical");
 }
@@ -500,7 +670,12 @@ const tests = [
   test_manual_existing_row_does_not_auto_load_tou_rows,
   test_manual_tou_init_button_and_handler_are_removed_from_the_card,
   test_manual_tab_renders_rows_controls_and_active_status,
+  test_manual_tab_drops_stale_slot_mapping_copy,
   test_manual_tab_exposes_fixed_last_midnight_boundary,
+  test_manual_tab_shares_settings_and_control_buttons,
+  test_manual_tab_uses_work_schedule_table_styling,
+  test_manual_editing_lifecycle_clears_only_on_save,
+  test_manual_remove_asks_for_confirmation,
   test_schedule_tabs_default_to_manual_and_switch_to_work,
   test_schedule_tabs_show_active_source_banner,
   test_manual_tab_uses_the_work_schedule_page_styling,
@@ -510,6 +685,9 @@ const tests = [
   test_deye_control_toggle_is_independent_of_manual_schedule,
   test_work_schedule_toggle_is_rendered_and_bound_on_the_page,
   test_work_schedule_toggle_switches_to_the_opposite_source,
+  test_manual_current_row_index_follows_the_local_clock,
+  test_manual_tab_glows_only_the_row_covering_now,
+  test_manual_glow_follows_time_on_live_updates,
   test_both_card_copies_remain_identical,
 ];
 
