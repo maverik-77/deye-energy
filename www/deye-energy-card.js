@@ -3706,7 +3706,7 @@ class DeyeEnergyCard extends HTMLElement {
     const payload = { slot: Number(slot) };
     const draft = this._touEditDraft.values;
     const original = this._touEditOriginal.values;
-    const timePattern = /^(?:[01]\d|2[0-3]):00$/;
+    const timePattern = /^(?:[01]\d|2[0-3]):(?:00|30)$/;
     this.touFieldNames().forEach((field) => {
       const capability = this.touFieldCapability(slot, field);
       if (capability?.supported !== true || capability.writable !== true) return;
@@ -3719,7 +3719,7 @@ class DeyeEnergyCard extends HTMLElement {
           : String(current ?? "") !== String(previous ?? "");
       if (!changed) return;
       if ((field === "start" || field === "end") && !timePattern.test(String(current || ""))) {
-        throw new Error("The From and To times must be a full hour with 00 minutes.");
+        throw new Error("The From and To times must be on a :00 or :30 boundary.");
       }
       if (field === "soc" && (!Number.isFinite(Number(current)) || Number(current) < 0 || Number(current) > 100)) {
         throw new Error("Deye TOU SOC must be between 0 and 100%.");
@@ -3796,7 +3796,7 @@ class DeyeEnergyCard extends HTMLElement {
     } else if (!writable) {
       control = `<span data-tou-readonly="${field}">${this.formatTouFieldValue(field, data.actual)}</span>`;
     } else if (field === "start" || field === "end") {
-      control = `<input data-tou-field="${field}" type="time" step="3600" value="${this.escapeHtml(String(draftValue ?? data.actual).slice(0, 5))}">`;
+      control = `<input data-tou-field="${field}" type="time" step="1800" value="${this.escapeHtml(String(draftValue ?? data.actual).slice(0, 5))}">`;
     } else if (field === "soc") {
       control = `<input data-tou-field="soc" type="number" min="0" max="100" step="1" value="${this.escapeHtml(String(draftValue ?? data.actual))}"><span class="unit">%</span>`;
     } else {

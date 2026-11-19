@@ -187,11 +187,21 @@ function test_tou_editor_last_end_uses_first_slot_actual_start() {
   card.openTouEditor(6);
   assertEqual(card._touEditDraft.values.end, "00:00", "last end must wrap to first start");
 }
-async function test_tou_editor_rejects_non_hour_time_before_service_call() {
+async function test_tou_editor_accepts_half_hour_time_before_service_call() {
   const { card, calls } = makeCard();
   draft(card, { start: "06:30" });
   const result = await card.savePhysicalTouSlot(1);
-  assertTrue(!result && calls.length === 0, "non-hour time must be rejected before service");
+  assertTrue(result && calls.length === 1 && calls[0].data.start === "06:30", "half-hour time must be sent to service");
+}
+async function test_tou_editor_rejects_time_off_the_half_hour_boundary() {
+  const { card, calls } = makeCard();
+  draft(card, { start: "06:15" });
+  const result = await card.savePhysicalTouSlot(1);
+  assertTrue(!result && calls.length === 0, "off-boundary time must be rejected before service");
+}
+function test_tou_editor_time_inputs_step_by_half_hour() {
+  const { card } = makeCard();
+  assertTrue(editorHtml(card).includes('type="time" step="1800"'), "time inputs must step in 30-minute increments");
 }
 function test_tou_editor_soc_only_save_sends_only_soc() {
   assertEqual(payloadFor({ soc: 55 }), { slot: 1, soc: 55 }, "SOC-only payload");
@@ -316,7 +326,9 @@ const tests = [
   test_manual_tou_editor_really_exposes_end_field,
   test_tou_editor_end_uses_next_slot_actual_start,
   test_tou_editor_last_end_uses_first_slot_actual_start,
-  test_tou_editor_rejects_non_hour_time_before_service_call,
+  test_tou_editor_accepts_half_hour_time_before_service_call,
+  test_tou_editor_rejects_time_off_the_half_hour_boundary,
+  test_tou_editor_time_inputs_step_by_half_hour,
   test_tou_editor_soc_only_save_sends_only_soc,
   test_tou_editor_start_only_save_sends_only_start,
   test_tou_editor_end_only_save_sends_only_end,
