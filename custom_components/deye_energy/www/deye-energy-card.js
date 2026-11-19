@@ -4186,6 +4186,169 @@ class DeyeEnergyCard extends HTMLElement {
       <path d="M59 219h72" stroke="#8da0b5" stroke-width="2" opacity=".55"/>
     </svg>`;
 
+    if (layout.is_mobile) {
+      const msPhase = (label, value, sub = "") => `
+        <div class="ms-phase">
+          <div class="ms-phase-label">${label}</div>
+          <div class="ms-phase-value">${value}</div>
+          ${sub ? `<div class="ms-phase-sub">${sub}</div>` : ""}
+        </div>`;
+      const msArrow = `<div class="ms-arrow" aria-hidden="true"><span>↓</span></div>`;
+      return `
+      <section class="panel status-panel mobile-status-panel">
+        <h2 class="panel-title">${this.iconSvg("chart")} Energy status</h2>
+        <style>
+.mobile-status-panel{width:100%;height:auto;box-sizing:border-box;background:radial-gradient(circle at 30% 0%,rgba(13,72,113,.18),transparent 42%),linear-gradient(180deg,#030d17 0%,#061521 100%)!important;border-color:rgba(85,145,177,.48)!important}
+.mobile-status-panel>.panel-title{font-size:18px!important;padding:12px 14px!important;gap:9px!important;letter-spacing:0!important}
+.mobile-status-panel>.panel-title svg{width:19px!important;height:19px!important}
+.ms-body{display:flex;flex-direction:column;gap:0;width:100%;box-sizing:border-box;padding:6px 10px 12px}
+.ms-tile{width:100%;box-sizing:border-box;border:1px solid rgba(86,149,184,.46);border-radius:12px;background:radial-gradient(circle at 18% 0%,rgba(26,100,151,.14),transparent 45%),linear-gradient(180deg,rgba(6,21,34,.98),rgba(4,16,26,.99));padding:12px 13px;box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 8px 18px rgba(0,0,0,.28)}
+.ms-tile-head{display:flex;align-items:center;gap:11px;margin-bottom:10px}
+.ms-tile-icon{width:34px;height:34px;flex:0 0 30px;display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 0 6px currentColor)}
+.ms-tile-icon svg{width:30px;height:30px}
+.ms-tile-heading{min-width:0;flex:1}
+.ms-tile-title{font-size:14px;font-weight:800;color:#f3f8fc;line-height:1.2}
+.ms-tile-main{font-size:24px;font-weight:900;line-height:1.1;margin-top:4px;letter-spacing:-.4px;text-shadow:0 0 9px currentColor;overflow-wrap:anywhere}
+.ms-tile-main .unit{font-size:14px;font-weight:700;color:#c7d7e1;margin-left:3px;text-shadow:none}
+.ms-tile-sub{font-size:13px;color:#b7c9d5;line-height:1.25;margin-top:3px}
+.ms-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px;padding-top:10px;border-top:1px solid rgba(95,148,177,.35)}
+.ms-phase{min-width:0;text-align:left}
+.ms-phase-label{font-size:11px;color:#a9c1d0;letter-spacing:.2px;margin-bottom:3px}
+.ms-phase-value{font-size:15px;font-weight:850;color:#f2f8fc;line-height:1.15;overflow-wrap:anywhere}
+.ms-phase-sub{font-size:11px;color:#b7c7d2;margin-top:3px;line-height:1.2}
+.ms-foot{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px 10px;font-size:12px;color:#b4c6d1;padding-top:10px;margin-top:10px;border-top:1px solid rgba(95,148,177,.35)}
+.ms-foot strong{font-size:14px;font-weight:850;white-space:nowrap}
+.ms-arrow{height:26px;display:flex;align-items:center;justify-content:center;color:#5f93ad;font-size:19px;line-height:1}
+.ms-pv .ms-tile-main{color:#fbbf24}
+.ms-grid .ms-tile-main{color:#c084fc}
+.ms-battery .ms-tile-main{color:#4ade80}
+.ms-home .ms-tile-main{color:#38bdf8}
+.ms-pv .phase-accent{color:#fbbf24}
+.ms-grid .phase-accent{color:#c084fc}
+.ms-home .phase-accent{color:#38bdf8}
+.ms-foot .positive{color:#4ade80}
+.ms-foot .bought{color:#c084fc}
+.ms-foot .sold{color:#4ade80}
+.ms-inverter{display:flex;align-items:center;gap:12px;width:100%;box-sizing:border-box;margin-top:6px;padding:10px 13px;border:1px solid rgba(89,151,181,.4);border-radius:12px;background:linear-gradient(180deg,rgba(7,24,35,.96),rgba(4,15,24,.98))}
+.ms-inverter-icon{width:40px;height:56px;flex:0 0 40px;display:flex;align-items:center;justify-content:center}
+.ms-inverter-icon svg{width:40px;height:auto;display:block}
+.ms-inverter-copy{min-width:0;flex:1;display:grid;gap:3px}
+.ms-inverter-name{font-size:14px;font-weight:850;color:#f2f7fb}
+.ms-inverter-temp{font-size:13px;font-weight:800;color:#23b9ff}
+.ms-inverter-temp svg{width:15px;height:15px;vertical-align:-3px}
+.ms-inverter-sold{font-size:12px;color:#9fb9c8}
+.ms-inverter-sold strong{display:block;font-size:13px;color:#eaf4f9;margin-top:2px;overflow-wrap:anywhere}
+.ms-status-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;box-sizing:border-box;margin-top:12px}
+.ms-status-tile{min-width:0;padding:10px 11px;border:1px solid rgba(89,146,174,.4);border-radius:10px;background:linear-gradient(180deg,rgba(6,21,33,.97),rgba(4,15,24,.99))}
+.ms-status-tile>span{display:block;font-size:11px;color:#9fb9c8;margin-bottom:5px}
+.ms-status-tile>strong{display:block;font-size:14px;font-weight:850;color:#f1f7fb;line-height:1.2;overflow-wrap:anywhere}
+.ms-status-tile .ms-sub{display:block;font-size:11px;color:#aebfca;margin-top:5px;line-height:1.25}
+.ms-status-tile .slot-time{color:#fbbf24}
+.mode-selling{color:#7ee22d}.mode-normal{color:#4ade80}.mode-charge{color:#f6a619}.mode-disabled{color:#b9c9d4}.mode-zero,.mode-ct{color:#38bdf8}
+.ms-footer{text-align:center;width:100%;margin-top:12px;font-size:12px;color:#89a6b7}
+        </style>
+        <div class="ms-body">
+          <div class="ms-tile ms-pv">
+            <div class="ms-tile-head">
+              <div class="ms-tile-icon" style="color:#fbbf24">${this.iconSvg("pv2")}</div>
+              <div class="ms-tile-heading">
+                <div class="ms-tile-title">PV (Production)</div>
+                <div class="ms-tile-main" data-live="pv-main">${fmtPower(pvPower)}</div>
+              </div>
+            </div>
+            <div class="ms-detail-grid">
+              ${msPhase("PV1", `<span class="phase-accent" data-live="pv1-power">${fmtPower(pv1Power)}</span>`, `<span data-live="pv1-volts">${fmtNumber(pv1V, 1)}</span> V | <span data-live="pv1-amps">${fmtNumber(pv1A, 1)}</span> A`)}
+              ${msPhase("PV2", `<span class="phase-accent" data-live="pv2-power">${fmtPower(pv2Power)}</span>`, `<span data-live="pv2-volts">${fmtNumber(pv2V, 1)}</span> V | <span data-live="pv2-amps">${fmtNumber(pv2A, 1)}</span> A`)}
+            </div>
+            <div class="ms-foot"><span>Produced today</span><strong><span data-live="pv-daily">${fmtNumber(pvDaily, 2)}</span> kWh</strong></div>
+          </div>
+          ${msArrow}
+          <div class="ms-tile ms-grid">
+            <div class="ms-tile-head">
+              <div class="ms-tile-icon" style="color:#c084fc">${this.iconSvg("grid2")}</div>
+              <div class="ms-tile-heading">
+                <div class="ms-tile-title">Grid</div>
+                <div class="ms-tile-main" data-live="grid-main">${gridMain}</div>
+              </div>
+            </div>
+            <div class="ms-detail-grid">
+              ${msPhase("L1", `<span class="phase-accent" data-live="grid-l1-power">${fmtPower(gridL1Power)}</span>`, `<span data-live="grid-l1-volt">${fmtNumber(gridL1V, 1)}</span> V`)}
+              ${msPhase("L2", `<span class="phase-accent" data-live="grid-l2-power">${fmtPower(gridL2Power)}</span>`, `<span data-live="grid-l2-volt">${fmtNumber(gridL2V, 1)}</span> V`)}
+              ${msPhase("L3", `<span class="phase-accent" data-live="grid-l3-power">${fmtPower(gridL3Power)}</span>`, `<span data-live="grid-l3-volt">${fmtNumber(gridL3V, 1)}</span> V`)}
+            </div>
+            <div class="ms-foot">
+              <span>Imported: <b class="bought"><span data-live="grid-bought">${fmtNumber(gridBought, 2)}</span> kWh</b></span>
+              <span>Exported: <b class="sold"><span data-live="grid-sold">${fmtNumber(gridSold, 2)}</span> kWh</b></span>
+              <span>Freq: <span data-live="grid-frequency">${fmtNumber(frequency, 2)}</span> Hz</span>
+            </div>
+          </div>
+          ${msArrow}
+          <div class="ms-tile ms-battery">
+            <div class="ms-tile-head">
+              <div class="ms-tile-icon" style="color:#4ade80">${this.iconSvg("battery2")}</div>
+              <div class="ms-tile-heading">
+                <div class="ms-tile-title">Battery</div>
+                <div class="ms-tile-main"><span data-live="battery-soc-value">${socMain}</span><span class="unit">% SOC</span></div>
+                <div class="ms-tile-sub" data-live="battery-direction" style="color:#4ade80">${batteryDirection}</div>
+              </div>
+            </div>
+            <div class="ms-detail-grid">
+              ${msPhase("Voltage", `<span data-live="battery-voltage">${fmtNumber(batteryVoltage, 1)}</span> V`)}
+              ${msPhase("Current", `<span data-live="battery-current">${fmtNumber(batteryCurrent, 1)}</span> A`)}
+              ${msPhase("Temp.", `<span data-live="battery-temp">${fmtNumber(batteryTemp, 1)}</span> °C`)}
+              ${msPhase("Charge today", `<span class="positive"><span data-live="battery-charge-daily">${fmtNumber(batteryChargeDaily, 2)}</span> kWh</span>`)}
+              ${msPhase("Discharge today", `<span class="positive"><span data-live="battery-discharge-daily">${fmtNumber(batteryDischargeDaily, 2)}</span> kWh</span>`)}
+            </div>
+          </div>
+          ${msArrow}
+          <div class="ms-tile ms-home">
+            <div class="ms-tile-head">
+              <div class="ms-tile-icon" style="color:#38bdf8">${this.iconSvg("home2")}</div>
+              <div class="ms-tile-heading">
+                <div class="ms-tile-title">House (Loads)</div>
+                <div class="ms-tile-main" data-live="load-main">${fmtPower(loadPower)}</div>
+              </div>
+            </div>
+            <div class="ms-detail-grid">
+              ${msPhase("L1", `<span class="phase-accent" data-live="load-l1-power">${fmtPower(loadL1Power)}</span>`)}
+              ${msPhase("L2", `<span class="phase-accent" data-live="load-l2-power">${fmtPower(loadL2Power)}</span>`)}
+              ${msPhase("L3", `<span class="phase-accent" data-live="load-l3-power">${fmtPower(loadL3Power)}</span>`)}
+            </div>
+            <div class="ms-foot"><span>Consumption today</span><strong><span data-live="load-daily">${fmtNumber(loadDaily, 2)}</span> kWh</strong></div>
+          </div>
+          <div class="ms-inverter">
+            <div class="ms-inverter-icon">${inverterSvg}</div>
+            <div class="ms-inverter-copy">
+              <div class="ms-inverter-name">Deye inverter</div>
+              <div class="ms-inverter-temp">${this.iconSvg("thermometer")}<span data-live="inverter-temp">${inverterTemp === null ? "—" : `${Math.round(inverterTemp)}`}</span> °C</div>
+              <div class="ms-inverter-sold"><span>Sold today</span><strong data-live="sold-today-line">${fmtNumber(soldTodayKwh, 2)} kWh / ${fmtNumber(soldTodayGbp, 2)} GBP</strong></div>
+            </div>
+          </div>
+          <div class="ms-status-grid">
+            <div class="ms-status-tile">
+              <span>Deye control</span>
+              <strong class="mode-${controlOn ? "normal" : "disabled"}" data-live="control-status">${this.escapeHtml(controlStatus)}</strong>
+              <span class="ms-sub">Deye: <b data-live="manager-deye-mode">${currentMode || "—"}</b><b data-live="deye-mode" hidden>${currentMode || "—"}</b></span>
+            </div>
+            <div class="ms-status-tile">
+              <span>Planned decision</span>
+              <strong>${this.escapeHtml(plannedAction)}</strong>
+            </div>
+            <div class="ms-status-tile">
+              <span>Executed decision</span>
+              <strong>${this.escapeHtml(executedAction)}</strong>
+            </div>
+            <div class="ms-status-tile">
+              <span>Manager mode</span>
+              <strong class="mode-${managerModeClass}" data-live="manager-mode">${modeText}</strong>
+              <span class="ms-sub">Slot: <b class="slot-time" data-live="active-slot">${activeSlotLabel}</b></span>
+            </div>
+          </div>
+          <div class="ms-footer">Data updated every 5 s</div>
+        </div>
+      </section>`;
+    }
+
     return `
       <section class="panel status-panel">
         <h2 class="panel-title">${this.iconSvg("chart")} Energy status</h2>
@@ -4449,6 +4612,7 @@ class DeyeEnergyCard extends HTMLElement {
   }
 
   scaleFlowPanel() {
+    if (this.querySelector(".mobile-status-panel")) return;
     const wrapper = this.querySelector(".flow-wrapper");
     const scaler = this.querySelector(".flow-scaler");
     if (!wrapper || !scaler) return;

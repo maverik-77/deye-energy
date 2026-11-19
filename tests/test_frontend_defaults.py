@@ -180,6 +180,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
 
     def test_dashboard_has_common_scaling_logic(self):
         method = extract_method(self.sources[0], "scaleFlowPanel() {")
+        self.assertIn('if (this.querySelector(".mobile-status-panel")) return;', method)
         self.assertIn("const baseWidth = parseFloat(scaler.dataset.baseWidth) || 1328", method)
         self.assertIn("const baseHeight = parseFloat(scaler.dataset.baseHeight) || 768", method)
         self.assertIn("Math.min(1, Math.max(available / baseWidth, 0.2))", method)
