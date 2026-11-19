@@ -23,6 +23,14 @@ _HOMEASSISTANT_STARTED_EVENT = "homeassistant_started"
 _SOLCAST_DAILY_FORECAST_STALE_SECONDS = 30 * 60 * 60
 _SOLCAST_TRACKING_STALE_SECONDS = 30 * 60
 
+# A dropped inverter connection leaves every mapped Deye control entity
+# unavailable. Pause the rule engine only after a short stable outage and resume
+# only after a short stable recovery, so a marginal link cannot flap the loop.
+# The freshness tolerance exceeds the add-on's slowest (300 s) report cycle.
+_INVERTER_LINK_STALE_SECONDS = 600
+_INVERTER_LINK_UNAVAILABLE_TICKS = 2
+_INVERTER_LINK_AVAILABLE_TICKS = 2
+
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import (
     async_track_point_in_time,
@@ -551,6 +559,8 @@ class DeyeEnergyRuntime:
         "notify_update_count": 0,
         "self_entity_event_ignored": 0,
         "external_input_event_count": 0,
+        "skipped_inverter_unavailable": 0,
+        "inverter_unavailable_reason": "",
     })
     ai_api_config: dict[str, Any] = field(default_factory=dict)
     ai_api_status: dict[str, Any] = field(default_factory=lambda: {"status": "disabled"})
@@ -610,6 +620,12 @@ class DeyeEnergyRuntime:
     last_error: str = ""
     last_schedule_attempt: dict[str, Any] = field(default_factory=dict)
     control_confirmation_timeout: float = 30.0
+    # Runtime-only inverter-link health. A restart must re-derive availability
+    # from live HA state, never from a remembered "was down" verdict.
+    _inverter_link_unavailable_ticks: int = 0
+    _inverter_link_available_ticks: int = 0
+    _inverter_link_gated: bool = False
+    _inverter_link_reason: str = ""
     _pending_control_transaction: dict[str, Any] = field(default_factory=dict)
     unsub_confirmation_timer: Any = None
     unsub_confirmation_listener: Any = None
@@ -831,7 +847,11 @@ class DeyeEnergyRuntime:
         return False
 
     def _guard_physical_write(self, entity_id: str, target_value: Any) -> None:
-        """Enforce the master control state at the lowest write layer."""
+        """Enforce master control and inverter-link health at the lowest write layer."""
+        if self._inverter_link_gated:
+            raise ControlDisabledError(
+                "Deye inverter is unavailable; physical writes are blocked."
+            )
         transaction_id = _CONTROL_TRANSACTION_ID.get()
         meta = self._active_control_transactions.get(transaction_id or "")
 
@@ -10258,6 +10278,73 @@ class DeyeEnergyRuntime:
             if entity_id
         ]
 
+    def _inverter_link_issue(self) -> str:
+        """Return why the inverter link is down, or '' when it looks healthy.
+
+        Only the entities that confirm physical writes are checked: a dropped
+        connection makes all of them unavailable at once, so this is sufficient
+        and immune to optional sensor mappings. A numerically valid value that
+        has not been reported for a long time is also treated as unavailable so
+        rules never act on readings left behind by the disconnect.
+        """
+        entity_ids = self._control_confirmation_entities()
+        if not entity_ids:
+            return ""
+        now = ha_now()
+        unavailable: list[str] = []
+        stale: list[str] = []
+        for entity_id in entity_ids:
+            state = self.hass.states.get(entity_id)
+            if state is None or str(state.state).strip().lower() in {
+                "", "unknown", "unavailable", "none"
+            }:
+                unavailable.append(entity_id)
+                continue
+            reported = getattr(state, "last_reported", None)
+            if not isinstance(reported, datetime):
+                reported = getattr(state, "last_updated", None)
+            if isinstance(reported, datetime):
+                try:
+                    age = (now - reported).total_seconds()
+                except TypeError:
+                    age = 0.0
+                if age > _INVERTER_LINK_STALE_SECONDS:
+                    stale.append(entity_id)
+        if unavailable:
+            return "entities unavailable: " + ", ".join(unavailable)
+        if stale:
+            return "entities stale: " + ", ".join(stale)
+        return ""
+
+    def _update_inverter_link_gate(self) -> bool:
+        """Apply hysteresis and return True while inverter rules must be skipped."""
+        issue = self._inverter_link_issue()
+        if issue:
+            self._inverter_link_reason = issue
+            self._inverter_link_unavailable_ticks += 1
+            self._inverter_link_available_ticks = 0
+        else:
+            self._inverter_link_available_ticks += 1
+            self._inverter_link_unavailable_ticks = 0
+
+        if self._inverter_link_gated:
+            if self._inverter_link_available_ticks >= _INVERTER_LINK_AVAILABLE_TICKS:
+                self._inverter_link_gated = False
+                self._inverter_link_reason = ""
+                self._inverter_link_available_ticks = 0
+                _LOGGER.info("Deye inverter link recovered; control rules resumed")
+        elif self._inverter_link_unavailable_ticks >= _INVERTER_LINK_UNAVAILABLE_TICKS:
+            self._inverter_link_gated = True
+            _LOGGER.warning(
+                "Deye inverter link is unavailable (%s); control rules paused",
+                issue,
+            )
+
+        if self._inverter_link_gated:
+            self.runtime_metrics["skipped_inverter_unavailable"] += 1
+            self.runtime_metrics["inverter_unavailable_reason"] = self._inverter_link_reason
+        return self._inverter_link_gated
+
     def _start_schedule_input_listener(self) -> None:
         """Coalesce material planning inputs and refresh the remaining horizon."""
         if self.unsub_input_listener:
@@ -12028,6 +12115,13 @@ class DeyeEnergyRuntime:
         grid_charge: bool | None = None,
     ) -> None:
         """Write only supplied physical TOU fields through the provider adapter."""
+        if self._inverter_link_gated:
+            self.last_action = "Not performed — inverter unavailable"
+            self.executed_manager_action = "Not performed — inverter unavailable"
+            self.notify_update()
+            raise ControlDisabledError(
+                "Deye inverter is unavailable; physical writes are blocked."
+            )
         profile = provider_profile(self.data)
         if not profile.native_tou:
             raise ValueError(
@@ -12790,6 +12884,13 @@ class DeyeEnergyRuntime:
         grid_charge_current: float | None = None,
     ) -> None:
         """Apply direct inverter settings using a safe, serialized write order."""
+        if self._inverter_link_gated:
+            self.last_action = "Not performed — inverter unavailable"
+            self.executed_manager_action = "Not performed — inverter unavailable"
+            self.notify_update()
+            raise ControlDisabledError(
+                "Deye inverter is unavailable; physical writes are blocked."
+            )
         effective_grid_charge_current = grid_charge_current if grid_charge_current is not None else self.default_grid_charge_current
         self.validate_manual_sell_power_w("Sell power", sell_power)
         physical_sell_power = self.normalize_automatic_sell_power_w(sell_power)
@@ -13412,6 +13513,7 @@ class DeyeEnergyRuntime:
             await self.async_apply_safe_defaults("Emergency stop")
 
     async def _async_tick_impl(self, *_args: Any) -> bool:
+        inverter_unavailable = self._update_inverter_link_gate()
         if self._refresh_soc_quality_signature():
             self._optimizer_generation_reason = "material_live_input_changed:soc_freshness"
             self.request_optimizer_recalc("soc")
@@ -13443,6 +13545,14 @@ class DeyeEnergyRuntime:
                 if self.emergency_stop
                 else f"Not performed — provider {profile.label} is read-only"
             )
+            self.notify_update()
+            return True
+
+        # With the inverter link down, rule evaluation can only issue writes
+        # that never confirm, then churn through timeout/failure/default chains.
+        # Skip the whole control block until the link is stable again.
+        if inverter_unavailable:
+            self.executed_manager_action = "Not performed — inverter unavailable"
             self.notify_update()
             return True
 
