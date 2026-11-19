@@ -445,9 +445,12 @@ class DeyeEnergyRuntime:
     _normal_profile_loaded_from_store: bool = False
     schedule_schema_version: int = 0
     # UI-only manual schedule: variable time rows kept separate from the
-    # 48-slot work schedule until explicitly activated.  Activation snapshots
-    # and overwrites the work schedule; deactivation restores that snapshot.
+    # 48-slot work schedule.  Activation selects these rows as the scheduler's
+    # trigger source without copying them into, or restoring, the work schedule.
     manual_schedule: dict[str, Any] = field(default_factory=dict)
+    # Cached per-slot overlay built from the active manual rows.  Work-slot
+    # values are read live, so non-manual fields can never go stale.
+    _manual_effective_rows: dict[str, dict[str, Any]] = field(default_factory=dict)
     _restored_slot_mode_keys: set[str] = field(default_factory=set)
     # Track which per-slot helper entities have been restored so the 5A.1
     # migration can safely resolve a missing selling slot tou_soc.
@@ -3635,9 +3638,31 @@ class DeyeEnergyRuntime:
         now = ha_now()
         return slot_key_at_minute(now.hour * 60 + now.minute)
 
+    def effective_slots(self) -> dict[str, SlotSettings]:
+        """Return all 48 slots as seen by the scheduler's active source."""
+        return {key: self.effective_slot_for_key(key) for key, *_rest in SLOTS}
+
+    def effective_slot_for_key(self, slot_key: str) -> SlotSettings:
+        """Return the slot that currently drives the scheduler.
+
+        Work Schedule and Manual Schedule are independent sources.  While the
+        manual source is active its rows supply the logical trigger fields;
+        fields a manual row does not carry are inherited from the work slot.
+        The work schedule itself is never modified.
+        """
+        work_slot = self.slots[slot_key]
+        overlay = self._manual_effective_rows.get(slot_key)
+        if not self.manual_schedule_active or not overlay:
+            return work_slot
+        return replace(work_slot, **overlay)
+
+    def effective_slot_at_minute(self, minute_of_day: int) -> SlotSettings:
+        """Return the effective slot covering a minute of the day."""
+        return self.effective_slot_for_key(slot_key_at_minute(int(minute_of_day)))
+
     @property
     def active_slot(self) -> SlotSettings:
-        return self.slots[self.active_slot_key()]
+        return self.effective_slot_for_key(self.active_slot_key())
 
     def state_float(self, entity_id: str | None, default: float = 0) -> float:
         value = self.state_float_or_none(entity_id)
@@ -4388,7 +4413,7 @@ class DeyeEnergyRuntime:
         current_index = keys.index(self.active_slot_key())
         for offset in range(1, len(keys) + 1):
             key, label, *_rest = SLOTS[(current_index + offset) % len(SLOTS)]
-            if self.slots[key].enabled:
+            if self.effective_slot_for_key(key).enabled:
                 return label
         return "NONE"
 
@@ -4887,7 +4912,7 @@ class DeyeEnergyRuntime:
             if not tou["ok"]
             else "OK"
         )
-        return {"integration_version": "0.8.0.51", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
+        return {"integration_version": "0.8.0.52", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
                 "inverter_provider": self.inverter_provider,
                 "inverter_device_id": self.data.get(CONF_INVERTER_DEVICE_ID),
                 "inverter_provider_label": provider_profile(self.data).label,
@@ -5177,6 +5202,15 @@ class DeyeEnergyRuntime:
             if restored is not None:
                 self._manual_tou_mapping = restored
         self.manual_schedule = self._load_manual_schedule_state(data.get("manual_schedule"))
+        self._manual_effective_rows = {}
+        if self.manual_schedule_active:
+            try:
+                self._rebuild_manual_effective_rows()
+            except Exception:
+                # An unreadable row set must not silently become an empty manual
+                # source: fall back to the work schedule until rows are fixed.
+                self.manual_schedule["active"] = False
+                self.manual_schedule["activation_snapshot"] = None
         if migrated:
             await self.async_save_ai_data()
         else:
@@ -11449,16 +11483,21 @@ class DeyeEnergyRuntime:
                     self._active_tou_cancel_event = None
                 self.notify_update()
 
-    def schedule_to_tou_mapping(self) -> TouMapping:
-        """Build the physical Deye TOU mapping from the 24-hour schedule.
+    def schedule_to_tou_mapping(
+        self, slot_source: dict[str, SlotSettings] | None = None
+    ) -> TouMapping:
+        """Build the physical Deye TOU mapping from the active trigger source.
 
         The mapping compresses the schedule into ranges where the physical key
         (effective Deye TOU SOC, hourly Grid Charge flag) is identical.  Logical
         manager modes and other runtime overlays are not part of the key.
+        ``slot_source`` allows validating a candidate manual row set before it
+        becomes active.
         """
+        source = slot_source if slot_source is not None else self.effective_slots()
         raw: list[tuple[int, float, bool]] = []
         for index, (slot_key, _label, _start, _end) in enumerate(SLOTS):
-            slot = self.slots[slot_key]
+            slot = source[slot_key]
             soc = self._effective_physical_tou_soc_for_slot(slot)
             # ``charge_enabled`` is the physical Grid Charge flag of the slot.
             grid_charge = bool(slot.charge_enabled)
@@ -12078,10 +12117,11 @@ class DeyeEnergyRuntime:
             )
             self.notify_update()
             return False
+        effective_slots = self.effective_slots()
         missing_soc = [
-            self.slots[key].label
+            effective_slots[key].label
             for key, _label, _start, _end in SLOTS
-            if self._physical_tou_soc_for_slot(self.slots[key]) is None
+            if self._physical_tou_soc_for_slot(effective_slots[key]) is None
         ]
         if missing_soc:
             self.tou_reconciliation_status = "waiting_readback"
@@ -12164,6 +12204,16 @@ class DeyeEnergyRuntime:
         self.reverse_sync_changed_hours = []
         self.reverse_sync_round_trip_ok = None
         self.notify_update()
+        if self.manual_schedule_active:
+            # Manual rows are the authoritative trigger source.  A confirmed
+            # physical TOU write must never be copied into the independent
+            # work slots while that source is selected.
+            self.reverse_sync_status = "skipped_manual_schedule"
+            self.reverse_sync_round_trip_ok = True
+            self.tou_contract_status = "confirmed"
+            self.tou_operation_status = "success"
+            self.notify_update()
+            return
         try:
             if not self._control_result_is_current(transaction_id) or not self._control_is_active():
                 raise ControlDisabledError(self._control_block_message())
@@ -12591,79 +12641,17 @@ class DeyeEnergyRuntime:
             "validation_error": validation_error,
         }
 
-    def _manual_schedule_slot_snapshot(self) -> dict[str, Any]:
+    def _manual_schedule_activation_snapshot(self) -> dict[str, Any]:
+        """Legacy snapshot shape kept for stored-state compatibility.
+
+        Manual Schedule is an independent trigger source and the other source
+        is always selected on deactivation, so the saved scheduler flag is no
+        longer restored.  Existing snapshots remain valid and load normally.
+        """
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "saved_at": ha_now().isoformat(timespec="seconds"),
             "scheduler_enabled": bool(self.scheduler_enabled),
-            "schedule_revision": int(self.schedule_revision),
-            "schedule_slot_revisions": deepcopy(self.schedule_slot_revisions),
-            "schedule_slot_ownership": deepcopy(self.schedule_slot_ownership),
-            "slots": {
-                key: {
-                    "enabled": bool(slot.enabled),
-                    "mode": slot.mode,
-                    "physical_work_mode": slot.physical_work_mode,
-                    "sell_power": float(slot.sell_power),
-                    "discharge_current": float(slot.discharge_current),
-                    "charge_enabled": bool(slot.charge_enabled),
-                    "charge_current": float(slot.charge_current),
-                    "grid_charge_current": float(slot.grid_charge_current),
-                    "minimum_sell_soc": float(slot.minimum_sell_soc),
-                    "tou_soc": None if slot.tou_soc is None else float(slot.tou_soc),
-                    "min_sell_price": float(slot.min_sell_price),
-                    "ai_sell_power_only": bool(slot.ai_sell_power_only),
-                }
-                for key, slot in self.slots.items()
-            },
-        }
-
-    def _restore_manual_schedule_slot_snapshot(self, snapshot: Any) -> None:
-        if not isinstance(snapshot, dict):
-            raise ValueError("Manual schedule activation snapshot is missing or invalid")
-        slots = snapshot.get("slots")
-        if not isinstance(slots, dict):
-            raise ValueError("Manual schedule activation snapshot is invalid")
-        for key, slot in self.slots.items():
-            data = slots.get(key)
-            if not isinstance(data, dict):
-                continue
-            slot.enabled = bool(data.get("enabled", slot.enabled))
-            mode = str(data.get("mode", slot.mode))
-            slot.mode = mode if mode in SLOT_MODES else slot.mode
-            physical_work_mode = data.get("physical_work_mode")
-            slot.physical_work_mode = (
-                str(physical_work_mode)
-                if physical_work_mode in PHYSICAL_NORMAL_MODES
-                else None
-            )
-            slot.sell_power = self.safe_float(data.get("sell_power"), slot.sell_power)
-            slot.discharge_current = self.safe_float(data.get("discharge_current"), slot.discharge_current)
-            slot.charge_enabled = bool(data.get("charge_enabled", slot.charge_enabled))
-            slot.charge_current = self.safe_float(data.get("charge_current"), slot.charge_current)
-            slot.grid_charge_current = self.safe_float(data.get("grid_charge_current"), slot.grid_charge_current)
-            slot.minimum_sell_soc = self.safe_float(data.get("minimum_sell_soc"), slot.minimum_sell_soc)
-            tou_soc = data.get("tou_soc")
-            if tou_soc is None:
-                slot.tou_soc = None
-            else:
-                value = self.safe_float(tou_soc, float("nan"))
-                slot.tou_soc = round(value, 1) if math.isfinite(value) else slot.tou_soc
-            slot.min_sell_price = self.safe_float(data.get("min_sell_price"), slot.min_sell_price)
-            slot.ai_sell_power_only = bool(data.get("ai_sell_power_only", False))
-        self.scheduler_enabled = bool(snapshot.get("scheduler_enabled", self.scheduler_enabled))
-        self.schedule_revision = max(0, int(self.safe_float(snapshot.get("schedule_revision"), self.schedule_revision)))
-        revisions = snapshot.get("schedule_slot_revisions")
-        ownership = snapshot.get("schedule_slot_ownership")
-        self.schedule_slot_revisions = {
-            str(key): max(0, int(self.safe_float(value, 0)))
-            for key, value in (revisions.items() if isinstance(revisions, dict) else [])
-            if str(key) in self.slots
-        }
-        self.schedule_slot_ownership = {
-            str(key): deepcopy(value)
-            for key, value in (ownership.items() if isinstance(ownership, dict) else [])
-            if str(key) in self.slots and isinstance(value, dict)
         }
 
     def _manual_row_for_slot_start(self, rows: list[dict[str, Any]], slot_start_minute: int) -> dict[str, Any]:
@@ -12695,6 +12683,54 @@ class DeyeEnergyRuntime:
                 update["tou_soc"] = float(row["tou_soc"])
             updates.append(update)
         return updates
+
+    def _manual_schedule_effective_rows(
+        self, rows: list[dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        """Build the per-slot manual overlay without touching the work slots."""
+        return {
+            str(update["slot_key"]): {
+                field: value for field, value in update.items() if field != "slot_key"
+            }
+            for update in self._manual_schedule_to_slot_updates(rows)
+        }
+
+    def _rebuild_manual_effective_rows(
+        self, rows: list[dict[str, Any]] | None = None
+    ) -> dict[str, dict[str, Any]]:
+        """Validate manual rows and refresh the cached scheduler overlay."""
+        source = rows if rows is not None else self._ensure_manual_schedule().get("rows", [])
+        validated = self._validate_manual_schedule_rows(source)
+        self._manual_effective_rows = self._manual_schedule_effective_rows(validated)
+        return self._manual_effective_rows
+
+    def _effective_slots_for_rows(
+        self, rows: list[dict[str, Any]]
+    ) -> dict[str, SlotSettings]:
+        """Build effective slots for a candidate row set (TOU preflight)."""
+        overlay = self._manual_schedule_effective_rows(
+            self._validate_manual_schedule_rows(rows)
+        )
+        return {
+            key: replace(self.slots[key], **fields)
+            for key, fields in overlay.items()
+        }
+
+    def _validate_manual_tou_range_count(
+        self, rows: list[dict[str, Any]]
+    ) -> None:
+        """Reject manual rows that cannot fit the inverter's six TOU ranges."""
+        mapping = self.schedule_to_tou_mapping(self._effective_slots_for_rows(rows))
+        if len(mapping) > 6:
+            raise ValueError(
+                f"Manual schedule requires {len(mapping)} Deye Time Of Use ranges; "
+                "Deye supports at most 6"
+            )
+
+    def _request_manual_schedule_reconciliation(self) -> None:
+        """Apply the newly selected trigger source immediately when possible."""
+        if self._control_is_active() and not self.emergency_stop:
+            self._schedule_schedule_reconciliation()
 
     def _load_manual_schedule_state(self, raw: Any) -> dict[str, Any]:
         state = self._default_manual_schedule()
@@ -12745,15 +12781,20 @@ class DeyeEnergyRuntime:
             })
         manual = self._ensure_manual_schedule()
         previous_rows = deepcopy(manual.get("rows", []))
-        manual["rows"] = self._validate_manual_schedule_rows(rows)
+        validated_rows = self._validate_manual_schedule_rows(rows)
+        manual["rows"] = validated_rows
         try:
             if manual.get("active"):
-                # Re-apply so the active work schedule matches the new manual rows.
-                await self._async_apply_manual_schedule_to_work_schedule(
-                    activate=False, reason="manual_schedule_init"
-                )
+                self._validate_manual_tou_range_count(validated_rows)
+                self._rebuild_manual_effective_rows(validated_rows)
+                self.scheduler_enabled = True
+                self._request_manual_schedule_reconciliation()
         except Exception:
             manual["rows"] = previous_rows
+            try:
+                self._rebuild_manual_effective_rows(previous_rows)
+            except Exception:
+                self._manual_effective_rows = {}
             self.mark_config_saved()
             await self.async_save_ai_data()
             self.notify_update()
@@ -12766,14 +12807,20 @@ class DeyeEnergyRuntime:
     async def async_save_manual_schedule(self, rows: Any) -> dict[str, Any]:
         manual = self._ensure_manual_schedule()
         previous_rows = deepcopy(manual.get("rows", []))
-        manual["rows"] = self._validate_manual_schedule_rows(rows)
+        validated_rows = self._validate_manual_schedule_rows(rows)
+        manual["rows"] = validated_rows
         try:
             if manual.get("active"):
-                await self._async_apply_manual_schedule_to_work_schedule(
-                    activate=False, reason="manual_schedule_save"
-                )
+                self._validate_manual_tou_range_count(validated_rows)
+                self._rebuild_manual_effective_rows(validated_rows)
+                self.scheduler_enabled = True
+                self._request_manual_schedule_reconciliation()
         except Exception:
             manual["rows"] = previous_rows
+            try:
+                self._rebuild_manual_effective_rows(previous_rows)
+            except Exception:
+                self._manual_effective_rows = {}
             self.mark_config_saved()
             await self.async_save_ai_data()
             self.notify_update()
@@ -12783,60 +12830,32 @@ class DeyeEnergyRuntime:
         self.notify_update()
         return self.manual_schedule_state()
 
-    async def _async_apply_manual_schedule_to_work_schedule(
-        self,
-        *,
-        activate: bool,
-        reason: str,
-    ) -> None:
-        manual = self._ensure_manual_schedule()
-        rows = self._validate_manual_schedule_rows(manual.get("rows", []))
-        updates = self._manual_schedule_to_slot_updates(rows)
-        if activate and not isinstance(manual.get("activation_snapshot"), dict):
-            manual["activation_snapshot"] = self._manual_schedule_slot_snapshot()
-        # Manual rows no longer carry these fields.  Keep each slot's existing
-        # work-schedule value even when the shared patch copies a mode template.
-        preserved_fields = (
-            "physical_work_mode", "discharge_current", "charge_current",
-            "grid_charge_current", "min_sell_price",
-        )
-        preserved = {
-            key: {field: getattr(slot, field) for field in preserved_fields}
-            for key, slot in self.slots.items()
-        }
-        try:
-            await self.async_apply_schedule_patch(
-                updates,
-                change_source=reason,
-                _allow_manual_schedule_internal=True,
-            )
-        finally:
-            for key, slot in self.slots.items():
-                for field, value in preserved.get(key, {}).items():
-                    setattr(slot, field, value)
-
     async def async_activate_manual_schedule(self) -> dict[str, Any]:
         manual = self._ensure_manual_schedule()
         rows = self._validate_manual_schedule_rows(manual.get("rows", []))
-        if not manual.get("active"):
+        self._validate_manual_tou_range_count(rows)
+        previous_active = bool(manual.get("active"))
+        previous_snapshot = deepcopy(manual.get("activation_snapshot"))
+        previous_overlay = deepcopy(self._manual_effective_rows)
+        previous_scheduler = self.scheduler_enabled
+        try:
+            if not previous_active:
+                manual["activation_snapshot"] = self._manual_schedule_activation_snapshot()
             manual["active"] = True
-            try:
-                await self._async_apply_manual_schedule_to_work_schedule(
-                    activate=True, reason="manual_schedule_activate"
-                )
-            except Exception:
-                manual["active"] = False
-                manual.pop("activation_snapshot", None)
-                self.mark_config_saved()
-                await self.async_save_ai_data()
-                self.notify_update()
-                raise
-        else:
-            await self._async_apply_manual_schedule_to_work_schedule(
-                activate=False, reason="manual_schedule_reapply"
-            )
-        self.mark_config_saved()
-        await self.async_save_ai_data()
+            self._rebuild_manual_effective_rows(rows)
+            self.scheduler_enabled = True
+            self.mark_config_saved()
+            await self.async_save_ai_data()
+            self._request_manual_schedule_reconciliation()
+        except Exception:
+            manual["active"] = previous_active
+            manual["activation_snapshot"] = previous_snapshot
+            self._manual_effective_rows = previous_overlay
+            self.scheduler_enabled = previous_scheduler
+            self.mark_config_saved()
+            await self.async_save_ai_data()
+            self.notify_update()
+            raise
         self.notify_update()
         return self.manual_schedule_state()
 
@@ -12845,51 +12864,20 @@ class DeyeEnergyRuntime:
         if not manual.get("active"):
             manual["active"] = False
             manual["activation_snapshot"] = None
+            self._manual_effective_rows = {}
+            self.scheduler_enabled = True
             self.mark_config_saved()
             await self.async_save_ai_data()
+            self._request_manual_schedule_reconciliation()
             self.notify_update()
             return self.manual_schedule_state()
-        snapshot = manual.get("activation_snapshot")
-        if not isinstance(snapshot, dict):
-            manual["active"] = False
-            manual["activation_snapshot"] = None
-            raise ValueError("Manual schedule activation snapshot is missing; cannot restore the previous work schedule")
-        updates = []
-        slots = snapshot.get("slots", {}) if isinstance(snapshot, dict) else {}
-        for key, _label, _start, _end in SLOTS:
-            data = slots.get(key, {})
-            if not isinstance(data, dict):
-                continue
-            update = {
-                "slot_key": key,
-                "enabled": bool(data.get("enabled", False)),
-                "mode": str(data.get("mode", MODE_NORMAL_OPERATION)),
-                "sell_power": float(self.safe_float(data.get("sell_power"), 0)),
-                "discharge_current": float(self.safe_float(data.get("discharge_current"), 0)),
-                "charge_enabled": bool(data.get("charge_enabled", False)),
-                "charge_current": float(self.safe_float(data.get("charge_current"), 0)),
-                "grid_charge_current": float(self.safe_float(data.get("grid_charge_current"), 0)),
-                "minimum_sell_soc": float(self.safe_float(data.get("minimum_sell_soc"), 0)),
-                "min_sell_price": float(self.safe_float(data.get("min_sell_price"), 0)),
-            }
-            if update["mode"] == MODE_NORMAL_OPERATION and data.get("physical_work_mode") in PHYSICAL_NORMAL_MODES:
-                update["physical_work_mode"] = data["physical_work_mode"]
-            if data.get("tou_soc") is not None:
-                update["tou_soc"] = float(self.safe_float(data.get("tou_soc"), 0))
-            updates.append(update)
-        # Apply restored slot values, then restore schedule metadata/ownership.
-        await self.async_apply_schedule_patch(
-            updates,
-            change_source="manual_schedule_deactivate",
-            _allow_manual_schedule_internal=True,
-        )
-        self._restore_manual_schedule_slot_snapshot(snapshot)
         manual["active"] = False
         manual["activation_snapshot"] = None
+        self._manual_effective_rows = {}
+        self.scheduler_enabled = True
         self.mark_config_saved()
-        if self._control_is_active() and not self.emergency_stop:
-            self._schedule_schedule_reconciliation()
         await self.async_save_ai_data()
+        self._request_manual_schedule_reconciliation()
         self.notify_update()
         return self.manual_schedule_state()
 

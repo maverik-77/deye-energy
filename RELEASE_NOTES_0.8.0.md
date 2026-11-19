@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.51`.
+Card resource revision: `v=0.8.0.52`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the
@@ -9,6 +9,7 @@ Deye Energy 0.8.0 is the English-language edition of the
 
 ## Revision history
 
+- `v=0.8.0.52` — Manual Schedule now uses independent storage: saving, activating and deactivating manual rows never overwrite the work schedule, and the scheduler, TOU mapping, diagnostics and sensor snapshots follow the active source. The Work Schedule and Manual Schedule page toggles are now an exact switch — disabling one selects the other, with Deye control remaining a separate hardware master gate. Manual Schedule is the first schedule tab and the default. Removed the Manual Schedule "Initialize from Deye Time Of Use" button; empty manual rows are auto-loaded once through the existing service instead. Added regression tests across the manager, card, versioning and release files.
 - `v=0.8.0.51` — Fixed the Work/Manual schedule tabs: clicking **Manual schedule** now switches the page (its click handlers were attached to the settings dialog instead of the dashboard, so all manual-schedule controls were inert). The Work-schedule **Deye control** toggle is now disabled while the Manual schedule is active, and the Manual schedule **Activate** button is disabled while Deye control is Active. This is a UI-only guard; it does not change either state automatically.
 - `v=0.8.0.50` — Manual schedule rows no longer write physical work-mode, charge/discharge current, grid-charge current or minimum sell-price fields, so work-schedule values are preserved while manual is active. House load is derived from PV, grid and battery power; single-phase voltage tiles show only volts using the grid and inverter voltage sensors; Work and Manual schedules are page-level tabs. Test expectations updated to match the shipped card and backend.
 - `v=0.8.0.49` — New Manual schedule tab in Settings and diagnostics. Rows are

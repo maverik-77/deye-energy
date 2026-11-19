@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.51
+// Resource revision: v=0.8.0.52
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -54,7 +54,7 @@ class DeyeEnergyCard extends HTMLElement {
     this._bulkEditFields = null;
     this._bulkApplying = false;
     this._settingsTab = "defaults";
-    this._scheduleTab = "work";
+    this._scheduleTab = "manual";
     this._historyFilters = { from: "", to: "", type: "all" };
     this._lastAiAnalysisCheck = 0;
     this._aiSettingsSaveTimer = null;
@@ -74,6 +74,7 @@ class DeyeEnergyCard extends HTMLElement {
     this._manualScheduleStatus = "";
     this._manualScheduleError = "";
     this._manualScheduleActive = false;
+    this._manualScheduleAutoLoadAttempted = false;
     this._aiView = "overview";
     this._aiDay = "today";
     this._aiExplanationDay = "today";
@@ -294,6 +295,7 @@ class DeyeEnergyCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    this.maybeAutoLoadManualScheduleFromTou();
     this.syncSlotEditorAfterHass();
     if (this._isRendered) {
       const touSignature = this.touDiagnosticsSignature();
@@ -2078,7 +2080,7 @@ class DeyeEnergyCard extends HTMLElement {
       : [];
     buttons.forEach((button) => {
       button.textContent = `Deye control — ${control.status}`;
-      button.disabled = control.pending || this.manualScheduleIsActive();
+      button.disabled = control.pending;
       button.classList?.toggle("active", control.enabled);
     });
     const status = typeof this.querySelector === "function"
@@ -2088,11 +2090,6 @@ class DeyeEnergyCard extends HTMLElement {
       status.textContent = control.status;
       status.className = `mode-${control.enabled ? "normal" : "disabled"}`;
     }
-    const manualActivate = typeof this.querySelector === "function"
-      ? this.querySelector("[data-manual-activate]")
-      : null;
-    if (manualActivate) manualActivate.disabled = control.enabled || this._manualScheduleSaving;
-
     if (updateFeedback) {
       this._saveStatus = settled ? "saved" : "saving";
       this._saveMessage = settled
@@ -2383,7 +2380,6 @@ class DeyeEnergyCard extends HTMLElement {
   async toggleControl() {
     const control = this.controlState();
     if (control.pending) return false;
-    if (this.manualScheduleIsActive()) return false;
     const entityId = control.entity_id;
     const entity = entityId ? this._hass?.states?.[entityId] : null;
     if (!entity || ["unavailable", "unknown"].includes(String(entity.state))) {
@@ -2941,7 +2937,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.51)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.52)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -3692,6 +3688,7 @@ class DeyeEnergyCard extends HTMLElement {
       idle: "No active synchronisation",
       applying: "Synchronising the schedule",
       confirmed: "Confirmed",
+      skipped_manual_schedule: "Skipped — manual schedule active",
       rollback: "Wycofana",
       rollback_failed: "Could not restore the settings",
     })[String(status)] || "No data";
@@ -4123,6 +4120,18 @@ class DeyeEnergyCard extends HTMLElement {
     return manual && typeof manual === "object" && !Array.isArray(manual) ? manual : {};
   }
 
+  maybeAutoLoadManualScheduleFromTou() {
+    const rows = this.manualScheduleBackend().rows;
+    if (Array.isArray(rows) && rows.length) {
+      this._manualScheduleAutoLoadAttempted = false;
+      return Promise.resolve(false);
+    }
+    if (this._manualScheduleAutoLoadAttempted || this._manualScheduleSaving) return Promise.resolve(false);
+    if (!this.hasService("deye_energy", "init_manual_schedule_from_tou")) return Promise.resolve(false);
+    this._manualScheduleAutoLoadAttempted = true;
+    return this.runManualScheduleService("init_manual_schedule_from_tou", {}, "");
+  }
+
   manualScheduleIsActive() {
     return Boolean(this._manualScheduleActive || this.manualScheduleBackend().active);
   }
@@ -4173,10 +4182,6 @@ class DeyeEnergyCard extends HTMLElement {
   ensureManualScheduleDraft() {
     if (Array.isArray(this._manualScheduleDraft)) return this._manualScheduleDraft;
     this.applyManualScheduleState(this.manualScheduleBackend());
-    if (!this._manualScheduleDraft.length) {
-      this._manualScheduleDraft = [{ ...this.manualScheduleDefaults(), from: "00:00", to: "00:00" }];
-      this._manualScheduleOriginal = JSON.stringify(this._manualScheduleDraft);
-    }
     return this._manualScheduleDraft;
   }
 
@@ -4211,6 +4216,12 @@ class DeyeEnergyCard extends HTMLElement {
 
   addManualScheduleRow() {
     const rows = this.ensureManualScheduleDraft();
+    if (!rows.length) {
+      rows.push({ ...this.manualScheduleDefaults(), from: "00:00", to: "00:00" });
+      this._manualScheduleError = "";
+      this._manualScheduleStatus = "";
+      return;
+    }
     const last = rows[rows.length - 1];
     const start = this.minutesFromClock(last?.from);
     const end = String(last?.to) === "00:00" ? 1440 : this.minutesFromClock(last?.to);
@@ -4375,21 +4386,7 @@ class DeyeEnergyCard extends HTMLElement {
     );
   }
 
-  async initManualScheduleFromTou() {
-    return this.runManualScheduleService(
-      "init_manual_schedule_from_tou",
-      {},
-      "Manual schedule initialized from the current inverter Time Of Use ranges.",
-    );
-  }
-
   async activateManualSchedule() {
-    if (this.controlEnabled()) {
-      this._manualScheduleError = "Disable Deye control before activating the manual schedule.";
-      this._manualScheduleStatus = "";
-      this.render();
-      return false;
-    }
     const rows = this.ensureManualScheduleDraft();
     const error = this.validateManualScheduleRows(rows);
     if (error) {
@@ -4417,18 +4414,29 @@ class DeyeEnergyCard extends HTMLElement {
     return this.runManualScheduleService(
       "deactivate_manual_schedule",
       {},
-      "Manual schedule deactivated. The work schedule saved before activation was restored.",
+      "Manual schedule deactivated. The scheduler is following the work schedule again.",
     );
   }
 
+  async toggleWorkSchedule() {
+    if (this._manualScheduleSaving) return false;
+    return this.manualScheduleIsActive()
+      ? this.deactivateManualSchedule()
+      : this.activateManualSchedule();
+  }
+
   renderScheduleTabs(workPanel, manualPanel) {
-    const tab = this._scheduleTab === "manual" ? "manual" : "work";
+    const tab = this._scheduleTab === "work" ? "work" : "manual";
     const scheduleTabButton = (key, label) => `<button type="button" class="${tab === key ? "active" : ""}" data-schedule-tab="${key}">${label}</button>`;
     const panel = (key, content) => `<div class="schedule-tab-panel" data-schedule-panel="${key}" ${tab === key ? "" : "hidden"}>${content}</div>`;
+    const sourceBanner = this.manualScheduleIsActive()
+      ? `<div class="good schedule-source-banner" data-schedule-source-banner>Manual schedule is active — the scheduler is following the manual rows. The work schedule is saved but paused; use the Work schedule toggle or Deactivate here to switch back.</div>`
+      : "";
     return `<section class="schedule-shell">
-      <div class="schedule-tabs">${scheduleTabButton("work", "Work schedule")}${scheduleTabButton("manual", "Manual schedule")}</div>
-      ${panel("work", workPanel)}
+      <div class="schedule-tabs">${scheduleTabButton("manual", "Manual schedule")}${scheduleTabButton("work", "Work schedule")}</div>
+      ${sourceBanner}
       ${panel("manual", manualPanel)}
+      ${panel("work", workPanel)}
     </section>`;
   }
 
@@ -4477,13 +4485,12 @@ class DeyeEnergyCard extends HTMLElement {
     const validation = validationError
       ? `<div class="bad" data-manual-schedule-validation>${this.escapeHtml(validationError)}</div>`
       : '<div class="good" data-manual-schedule-validation>All rows cover the full 24 hours.</div>';
-    const controlOn = this.controlEnabled();
     const status = active
       ? '<strong>Manual schedule: Active</strong><span class="hint" style="margin:0">AI, optimizer and future-plan applies are blocked. Saving changes re-applies them to the work schedule.</span>'
       : '<strong>Manual schedule: Inactive</strong><span class="hint" style="margin:0">Rows are stored separately and do not affect the work schedule until activated.</span>';
     const toggle = active
       ? `<button type="button" class="danger-action" data-manual-deactivate="1" ${this._manualScheduleSaving ? "disabled" : ""}>Deactivate</button>`
-      : `<button type="button" class="primary" data-manual-activate="1" ${this._manualScheduleSaving || controlOn ? "disabled" : ""}>Activate</button>`;
+      : `<button type="button" class="primary" data-manual-activate="1" ${this._manualScheduleSaving ? "disabled" : ""}>Activate</button>`;
     return `<div class="schedule-head manual-panel-head">
         <div class="schedule-title">
           <h2>Manual schedule</h2>
@@ -4491,11 +4498,10 @@ class DeyeEnergyCard extends HTMLElement {
         </div>
       </div>
       <div class="manual-schedule-status ${active ? "active" : ""}">${status}${toggle}</div>
-      <div class="hint">Manual schedule rows are UI/service-only and do not create per-row entities. When active, each row is mapped onto the 48 work schedule slots by slot start time, overwriting these row fields until deactivated. The physical Deye mode, discharge/charge currents and sell-from price stay at their work-schedule values. Activating stores a snapshot of the work schedule; deactivating restores it.</div>
+      <div class="hint">Manual schedule rows are UI/service-only and do not create per-row entities. When active, each row is mapped onto the 48 work schedule slots by slot start time. The physical Deye mode, discharge/charge currents and sell-from price stay at their work-schedule values. Deactivate here or use the Work schedule toggle to switch the active source; Deye control is a separate master gate.</div>
       ${rowHtml}
       <div class="manual-row-actions">
         <button type="button" data-manual-add="1" ${this._manualScheduleSaving ? "disabled" : ""}>Add row</button>
-        <button type="button" data-manual-init="1" ${this._manualScheduleSaving ? "disabled" : ""}>Initialize from Deye Time Of Use</button>
       </div>
       ${validation}
       <div class="foot-actions manual-save-actions">
@@ -8303,7 +8309,7 @@ class DeyeEnergyCard extends HTMLElement {
     const masterControl = control.entity_id;
     const masterControlOn = control.enabled;
     const controlStatus = control.status;
-    const manualScheduleActive = this.manualScheduleIsActive();
+    const workScheduleEnabled = !this.manualScheduleIsActive();
 
     const batterySoc = this.entity("sensor", "battery_soc");
     const soldEnergyToday = this.entity("sensor", "sold_energy_today");
@@ -8503,7 +8509,8 @@ class DeyeEnergyCard extends HTMLElement {
                  <p>Click an hour to edit a single slot or select several to edit them together.</p>
                 </div>
                 <div class="schedule-tools">
-                 <button class="tool-btn ${masterControlOn ? "active" : ""}" data-control-toggle="1" ${control.pending || manualScheduleActive ? "disabled" : ""}>Deye control — ${this.escapeHtml(controlStatus)}</button>
+                 <button class="tool-btn ${workScheduleEnabled ? "active" : ""}" data-work-schedule-toggle="1" ${this._manualScheduleSaving ? "disabled" : ""}>Work schedule — ${workScheduleEnabled ? "Enabled" : "Disabled"}</button>
+                 <button class="tool-btn ${masterControlOn ? "active" : ""}" data-control-toggle="1" ${control.pending ? "disabled" : ""}>Deye control — ${this.escapeHtml(controlStatus)}</button>
                  <button class="tool-btn ${this._selectionMode ? "active" : ""}" data-toggle-selection="1">${this.iconSvg("check")} Selection mode</button>
                  <button class="tool-btn" data-schedule-select-all="1">${this.iconSvg("copy")} Select all</button>
                  <button class="tool-btn" data-schedule-clear="1">${this.iconSvg("close")} Deselect all</button>
@@ -8771,7 +8778,7 @@ class DeyeEnergyCard extends HTMLElement {
     root.querySelectorAll("[data-apply-multi]").forEach((el) => el.addEventListener("click", () => this.applyMultiEdit(slots)));
     root.querySelectorAll("[data-schedule-tab]").forEach((el) => el.addEventListener("click", (event) => {
       event.preventDefault();
-      this._scheduleTab = el.dataset.scheduleTab === "manual" ? "manual" : "work";
+      this._scheduleTab = el.dataset.scheduleTab === "work" ? "work" : "manual";
       this.render();
     }));
     root.querySelectorAll("[data-manual-field]").forEach((el) => {
@@ -8791,9 +8798,9 @@ class DeyeEnergyCard extends HTMLElement {
       this.render();
     }));
     root.querySelectorAll("[data-manual-save]").forEach((el) => el.addEventListener("click", () => this.saveManualSchedule()));
-    root.querySelectorAll("[data-manual-init]").forEach((el) => el.addEventListener("click", () => this.initManualScheduleFromTou()));
     root.querySelectorAll("[data-manual-activate]").forEach((el) => el.addEventListener("click", () => this.activateManualSchedule()));
     root.querySelectorAll("[data-manual-deactivate]").forEach((el) => el.addEventListener("click", () => this.deactivateManualSchedule()));
+    root.querySelectorAll("[data-work-schedule-toggle]").forEach((el) => el.addEventListener("click", () => this.toggleWorkSchedule()));
   }
 
   bindDialogControls(slots) {

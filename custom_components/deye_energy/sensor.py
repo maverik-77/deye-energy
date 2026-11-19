@@ -164,6 +164,7 @@ def manager_status_attrs(runtime):
         },
         "control_enabled": bool(runtime.control_enabled),
         "control_status": runtime.control_status,
+        "schedule_source": "manual" if runtime.manual_schedule_active else "work",
         "planned_manager_action": runtime.planned_manager_action,
         "executed_manager_action": runtime.executed_manager_action,
         "charge_profile": {
@@ -195,7 +196,7 @@ def manager_status_attrs(runtime):
                 "minimum_sell_soc": round(slot.minimum_sell_soc, 1),
                 "tou_soc": None if slot.tou_soc is None else round(slot.tou_soc, 1),
             }
-            for key, slot in runtime.slots.items()
+            for key, slot in runtime.effective_slots().items()
         },
         # Canonical per-slot snapshot used by the transactional schedule editor.
         # In particular, physical_work_mode has no dedicated per-slot entity.
@@ -213,7 +214,7 @@ def manager_status_attrs(runtime):
                 "tou_soc": None if slot.tou_soc is None else round(slot.tou_soc, 2),
                 "min_sell_price": round(slot.min_sell_price, 4),
             }
-            for key, slot in runtime.slots.items()
+            for key, slot in runtime.effective_slots().items()
         },
     }
 

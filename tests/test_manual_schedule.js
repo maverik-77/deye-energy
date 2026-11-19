@@ -142,12 +142,11 @@ function test_manual_backend_state_populates_draft() {
   assertTrue(!card.manualScheduleDirty(), "fresh draft must not be dirty");
 }
 
-function test_manual_default_draft_covers_the_full_day() {
+function test_manual_empty_backend_starts_with_no_rows() {
   const { card } = makeCard({ manual: { rows: [] } });
   const rows = card.ensureManualScheduleDraft();
-  assertEqual(rows.length, 1, "empty backend must start with one row");
-  assertEqual([rows[0].from, rows[0].to], ["00:00", "00:00"], "single row must cover the full day");
-  assertEqual(card.validateManualScheduleRows(rows), "", "single full-day row must be valid");
+  assertEqual(rows.length, 0, "empty backend must not invent a row");
+  assertTrue(card.validateManualScheduleRows(rows).includes("at least one"), "empty draft must ask the user to add a row");
 }
 
 function test_manual_validation_rejects_gaps_overlaps_and_boundaries() {
@@ -177,10 +176,15 @@ function test_manual_validation_accepts_arbitrary_minute_contiguous_rows() {
 
 function test_manual_add_and_remove_rows_keep_the_chain_contiguous() {
   const { card } = makeCard({ manual: { rows: [] } });
-  card.ensureManualScheduleDraft();
-  card.addManualScheduleRow();
   let rows = card.ensureManualScheduleDraft();
-  assertEqual(rows.length, 2, "add must create a second row");
+  assertEqual(rows.length, 0, "empty backend must start empty");
+  card.addManualScheduleRow();
+  rows = card.ensureManualScheduleDraft();
+  assertEqual(rows.length, 1, "first add must create a full-day row");
+  assertEqual([rows[0].from, rows[0].to], ["00:00", "00:00"], "new row must cover the full day");
+  card.addManualScheduleRow();
+  rows = card.ensureManualScheduleDraft();
+  assertEqual(rows.length, 2, "second add must split the full-day row");
   assertEqual([rows[0].to, rows[1].from], ["12:00", "12:00"], "split must keep the boundary contiguous");
   assertEqual(rows[1].to, "00:00", "new last row must end at midnight");
   assertEqual(card.validateManualScheduleRows(rows), "", "split rows must cover the full day");
@@ -290,17 +294,39 @@ function test_manual_deactivate_calls_the_service_and_clears_active_state() {
   });
 }
 
-function test_manual_init_from_tou_calls_the_service() {
+function test_manual_empty_backend_auto_loads_tou_rows_once() {
+  const touRows = [manualRow({ to: "12:00" }), manualRow({ from: "12:00" })];
   const { card, calls } = makeCard({
+    manual: { rows: [], active: false },
     response: (domain, service) => service === "init_manual_schedule_from_tou"
-      ? { active: false, rows: [manualRow()], has_activation_snapshot: false, valid: true, validation_error: "" }
+      ? { active: false, rows: touRows, has_activation_snapshot: false, valid: true, validation_error: "" }
       : undefined,
   });
-  return card.initManualScheduleFromTou().then((ok) => {
-    assertTrue(ok, "initialize must succeed");
-    assertEqual(serviceCalls(calls, "init_manual_schedule_from_tou").length, 1, "initialize service must be called once");
-    assertEqual(card.ensureManualScheduleDraft().length, 1, "service response must replace the draft");
+  return card.maybeAutoLoadManualScheduleFromTou().then((loaded) => {
+    assertTrue(loaded, "auto-load must succeed");
+    return card.maybeAutoLoadManualScheduleFromTou().then((loadedAgain) => {
+      assertTrue(!loadedAgain, "empty backend must not call the service twice");
+      assertEqual(serviceCalls(calls, "init_manual_schedule_from_tou").length, 1, "TOU service must be called once");
+      assertEqual(card.ensureManualScheduleDraft().length, 2, "service response must populate the draft");
+    });
   });
+}
+
+function test_manual_existing_row_does_not_auto_load_tou_rows() {
+  const { card, calls } = makeCard({ manual: { rows: [manualRow()], active: false } });
+  return card.maybeAutoLoadManualScheduleFromTou().then((loaded) => {
+    assertTrue(!loaded, "a saved row must prevent auto-load");
+    assertEqual(serviceCalls(calls, "init_manual_schedule_from_tou").length, 0, "TOU service must not be called when a row exists");
+    assertEqual(card.ensureManualScheduleDraft().length, 1, "the existing row must be kept untouched");
+  });
+}
+
+function test_manual_tou_init_button_and_handler_are_removed_from_the_card() {
+  const source = fs.readFileSync(componentCard, "utf8");
+  assertTrue(!source.includes("initManualScheduleFromTou"), "manual init handler must be removed");
+  assertTrue(!source.includes("data-manual-init"), "manual init button binding must be removed");
+  assertTrue(!source.includes("Initialize from Deye Time Of Use"), "manual init button must be removed");
+  assertTrue(source.includes("maybeAutoLoadManualScheduleFromTou"), "empty-state auto-load must remain");
 }
 
 function test_manual_tab_renders_rows_controls_and_active_status() {
@@ -309,7 +335,8 @@ function test_manual_tab_renders_rows_controls_and_active_status() {
   assertTrue(inactive.includes("Manual schedule: Inactive"), "inactive status must be shown");
   assertTrue(inactive.includes('data-manual-activate="1"'), "activate control must be present");
   assertTrue(inactive.includes('data-manual-add="1"'), "add row control must be present");
-  assertTrue(inactive.includes('data-manual-init="1"'), "initialize control must be present");
+  assertTrue(!inactive.includes('data-manual-init="1"'), "initialize control must be absent");
+  assertTrue(!inactive.includes("Initialize from Deye Time Of Use"), "initialize label must be absent");
   assertTrue(inactive.includes('data-manual-save="1"'), "save control must be present");
   assertTrue(inactive.includes('data-manual-field="from" data-manual-index="1"'), "middle From must be editable");
   assertTrue(inactive.includes('data-manual-field="to" data-manual-index="0"'), "middle To must be editable");
@@ -331,23 +358,35 @@ function test_manual_tab_exposes_fixed_last_midnight_boundary() {
   assertTrue(html.includes('data-manual-field="to" data-manual-index="0"'), "middle To must be editable");
 }
 
-function test_schedule_tabs_default_to_work_and_switch_to_manual() {
+function test_schedule_tabs_default_to_manual_and_switch_to_work() {
   const { card } = makeCard();
-  assertEqual(card._scheduleTab, "work", "Work schedule must be the default page tab");
-  const work = card.renderScheduleTabs("<div>work panel</div>", "<div>manual panel</div>");
-  assertTrue(work.includes('data-schedule-tab="work"'), "Work tab button must be present");
-  assertTrue(work.includes('data-schedule-tab="manual"'), "Manual tab button must be present");
-  assertTrue(work.includes('class="active" data-schedule-tab="work"'), "Work tab must be active by default");
-  assertTrue(work.includes('data-schedule-panel="work"'), "Work panel must be present");
-  assertTrue(work.includes('data-schedule-panel="manual" hidden'), "Manual panel must be hidden by default");
-  assertEqual((work.match(/class="active"/g) || []).length, 1, "Exactly one tab must be active");
-
-  card._scheduleTab = "manual";
+  assertEqual(card._scheduleTab, "manual", "Manual schedule must be the default page tab");
   const manual = card.renderScheduleTabs("<div>work panel</div>", "<div>manual panel</div>");
-  assertTrue(manual.includes('class="active" data-schedule-tab="manual"'), "Manual tab must become active");
-  assertTrue(manual.includes('data-schedule-panel="work" hidden'), "Work panel must be hidden when Manual is active");
-  assertTrue(!manual.includes('data-schedule-panel="manual" hidden'), "Manual panel must be visible when active");
-  assertEqual((manual.match(/class="active"/g) || []).length, 1, "Exactly one tab must stay active");
+  assertTrue(manual.indexOf('data-schedule-tab="manual"') < manual.indexOf('data-schedule-tab="work"'), "Manual tab must be first");
+  assertTrue(manual.includes('data-schedule-tab="work"'), "Work tab button must be present");
+  assertTrue(manual.includes('class="active" data-schedule-tab="manual"'), "Manual tab must be active by default");
+  assertTrue(manual.includes('data-schedule-panel="manual"'), "Manual panel must be present");
+  assertTrue(manual.indexOf('data-schedule-panel="manual"') < manual.indexOf('data-schedule-panel="work"'), "Manual panel must come first");
+  assertTrue(manual.includes('data-schedule-panel="work" hidden'), "Work panel must be hidden by default");
+  assertEqual((manual.match(/class="active"/g) || []).length, 1, "Exactly one tab must be active");
+
+  card._scheduleTab = "work";
+  const work = card.renderScheduleTabs("<div>work panel</div>", "<div>manual panel</div>");
+  assertTrue(work.includes('class="active" data-schedule-tab="work"'), "Work tab must become active");
+  assertTrue(work.includes('data-schedule-panel="manual" hidden'), "Manual panel must be hidden when Work is active");
+  assertTrue(!work.includes('data-schedule-panel="work" hidden'), "Work panel must be visible when active");
+  assertEqual((work.match(/class="active"/g) || []).length, 1, "Exactly one tab must stay active");
+}
+
+function test_schedule_tabs_show_active_source_banner() {
+  const { card } = makeCard();
+  let html = card.renderScheduleTabs("<div>work panel</div>", "<div>manual panel</div>");
+  assertTrue(!html.includes("data-schedule-source-banner"), "No source banner while the work schedule is active");
+
+  card.applyManualScheduleState({ active: true, rows: [] });
+  html = card.renderScheduleTabs("<div>work panel</div>", "<div>manual panel</div>");
+  assertTrue(html.includes("data-schedule-source-banner"), "Source banner must appear while manual schedule is active");
+  assertTrue(html.includes("scheduler is following the manual rows"), "Banner must name the active trigger source");
 }
 
 function test_manual_tab_uses_the_work_schedule_page_styling() {
@@ -375,29 +414,31 @@ function test_page_schedule_controls_are_bound_in_the_dashboard_binder() {
   assertTrue(dashboard.length > 0 && dialog.length > 0, "both bind methods must be present");
   for (const selector of [
     "[data-schedule-tab]", "[data-manual-field]", "[data-manual-add]",
-    "[data-manual-remove]", "[data-manual-save]", "[data-manual-init]",
+    "[data-manual-remove]", "[data-manual-save]",
     "[data-manual-activate]", "[data-manual-deactivate]",
   ]) {
     assertTrue(dashboard.includes(selector), `${selector} must be bound on the page`);
     assertTrue(!dialog.includes(selector), `${selector} must not be bound inside the dialog host`);
   }
+  assertTrue(!dashboard.includes("[data-manual-init]"), "manual init binding must be gone");
+  assertTrue(!dialog.includes("[data-manual-init]"), "manual init binding must not exist in the dialog");
 }
 
-function test_manual_activation_is_disabled_while_deye_control_is_active() {
+function test_manual_activation_is_independent_of_deye_control() {
   const { card, calls } = makeCard();
   card._hass.states["sensor.deye_energy_manager_status"] = {
     state: "ok",
     attributes: { control: { entity_id: "switch.deye_energy_control", enabled: true, status: "Active" } },
   };
   const html = card.renderManualScheduleTab();
-  assertTrue(html.includes('data-manual-activate="1" disabled'), "Activate must be disabled while Deye control is Active");
+  assertTrue(!html.includes('data-manual-activate="1" disabled'), "Activate must not be disabled while Deye control is Active");
   return card.activateManualSchedule().then((ok) => {
-    assertTrue(!ok, "activation must be refused while Deye control is Active");
-    assertEqual(serviceCalls(calls, "activate_manual_schedule").length, 0, "no activation service call while Deye control is Active");
+    assertTrue(ok, "activation must be allowed while Deye control is Active");
+    assertEqual(serviceCalls(calls, "activate_manual_schedule").length, 1, "activation service must be called while Deye control is Active");
   });
 }
 
-function test_deye_control_toggle_is_disabled_while_manual_schedule_is_active() {
+function test_deye_control_toggle_is_independent_of_manual_schedule() {
   const { card, calls } = makeCard();
   card._hass.states["sensor.deye_energy_manager_status"] = {
     state: "ok",
@@ -407,12 +448,35 @@ function test_deye_control_toggle_is_disabled_while_manual_schedule_is_active() 
   const button = { textContent: "", disabled: false, classList: { toggle: () => {} } };
   card.querySelectorAll = (selector) => (selector === "[data-control-toggle]" ? [button] : []);
   card.querySelector = () => null;
-  card.applyManualScheduleState({ active: true, rows: [] });
+  card.applyManualScheduleState({ active: true, rows: [manualRow()] });
   card.updateControlUi();
-  assertTrue(button.disabled, "Deye control toggle must be disabled while manual schedule is active");
+  assertTrue(!button.disabled, "Deye control toggle must remain available while manual schedule is active");
   return card.toggleControl().then((ok) => {
-    assertTrue(!ok, "Deye control must not toggle while manual schedule is active");
-    assertEqual(calls.filter((call) => call.domain === "switch").length, 0, "no switch service call while manual schedule is active");
+    assertTrue(ok, "Deye control must toggle while manual schedule is active");
+    assertEqual(calls.filter((call) => call.domain === "switch").length, 1, "switch service call must be made while manual schedule is active");
+  });
+}
+
+function test_work_schedule_toggle_is_rendered_and_bound_on_the_page() {
+  const source = fs.readFileSync(componentCard, "utf8");
+  assertTrue(source.includes('data-work-schedule-toggle="1"'), "work schedule toggle must be rendered");
+  assertTrue(source.includes("Work schedule — ${workScheduleEnabled"), "work toggle label must reflect the active source");
+  const dashboard = methodBody(source, "bindDashboardControls(slots) {");
+  assertTrue(dashboard.includes("[data-work-schedule-toggle]"), "work toggle must be bound on the page");
+}
+
+function test_work_schedule_toggle_switches_to_the_opposite_source() {
+  const { card, calls } = makeCard();
+  return card.toggleWorkSchedule().then((ok) => {
+    assertTrue(ok, "work disable must call a source service");
+    assertEqual(serviceCalls(calls, "activate_manual_schedule").length, 1, "disabling work must activate manual");
+    assertEqual(serviceCalls(calls, "deactivate_manual_schedule").length, 0, "disabling work must not deactivate manual");
+  }).then(() => {
+    card.applyManualScheduleState({ active: true, rows: [manualRow()] });
+    return card.toggleWorkSchedule();
+  }).then((ok) => {
+    assertTrue(ok, "work enable must call a source service");
+    assertEqual(serviceCalls(calls, "deactivate_manual_schedule").length, 1, "enabling work must deactivate manual");
   });
 }
 
@@ -422,7 +486,7 @@ function test_both_card_copies_remain_identical() {
 
 const tests = [
   test_manual_backend_state_populates_draft,
-  test_manual_default_draft_covers_the_full_day,
+  test_manual_empty_backend_starts_with_no_rows,
   test_manual_validation_rejects_gaps_overlaps_and_boundaries,
   test_manual_validation_accepts_arbitrary_minute_contiguous_rows,
   test_manual_add_and_remove_rows_keep_the_chain_contiguous,
@@ -432,15 +496,20 @@ const tests = [
   test_manual_save_rejects_invalid_rows_before_calling_the_service,
   test_manual_activate_saves_then_activates_and_applies_response,
   test_manual_deactivate_calls_the_service_and_clears_active_state,
-  test_manual_init_from_tou_calls_the_service,
+  test_manual_empty_backend_auto_loads_tou_rows_once,
+  test_manual_existing_row_does_not_auto_load_tou_rows,
+  test_manual_tou_init_button_and_handler_are_removed_from_the_card,
   test_manual_tab_renders_rows_controls_and_active_status,
   test_manual_tab_exposes_fixed_last_midnight_boundary,
-  test_schedule_tabs_default_to_work_and_switch_to_manual,
+  test_schedule_tabs_default_to_manual_and_switch_to_work,
+  test_schedule_tabs_show_active_source_banner,
   test_manual_tab_uses_the_work_schedule_page_styling,
   test_manual_schedule_is_removed_from_the_settings_overlay,
   test_page_schedule_controls_are_bound_in_the_dashboard_binder,
-  test_manual_activation_is_disabled_while_deye_control_is_active,
-  test_deye_control_toggle_is_disabled_while_manual_schedule_is_active,
+  test_manual_activation_is_independent_of_deye_control,
+  test_deye_control_toggle_is_independent_of_manual_schedule,
+  test_work_schedule_toggle_is_rendered_and_bound_on_the_page,
+  test_work_schedule_toggle_switches_to_the_opposite_source,
   test_both_card_copies_remain_identical,
 ];
 

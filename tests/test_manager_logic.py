@@ -7955,10 +7955,14 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertTrue(all(removed.isdisjoint(update) for update in updates))
 
-    async def test_activation_overwrites_work_schedule_and_saves_snapshot(self):
+    async def test_activation_selects_manual_source_without_touching_work_slots(self):
         runtime = make_runtime()
         runtime.slots["0000_0030"].enabled = True
         runtime.slots["0000_0030"].sell_power = 1111
+        runtime.slots["1200_1230"].mode = const.MODE_CHARGE
+        before = {
+            key: manual_slot_signature(slot) for key, slot in runtime.slots.items()
+        }
         await runtime.async_save_manual_schedule([
             manual_row(to="12:00"),
             manual_row(
@@ -7977,13 +7981,18 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(state["active"])
         self.assertTrue(state["has_activation_snapshot"])
         self.assertTrue(runtime.manual_schedule_active)
-        self.assertEqual(runtime.slots["0000_0030"].mode, const.MODE_NORMAL_OPERATION)
-        self.assertEqual(runtime.slots["1130_1200"].mode, const.MODE_NORMAL_OPERATION)
-        self.assertEqual(runtime.slots["1200_1230"].mode, const.MODE_SELLING_FIRST)
-        self.assertEqual(runtime.slots["1200_1230"].sell_power, 4321)
-        self.assertEqual(runtime.slots["1200_1230"].tou_soc, 35)
-        self.assertEqual(runtime.slots["2330_0000"].mode, const.MODE_SELLING_FIRST)
-        self.assertEqual(runtime.slots["2330_0000"].sell_power, 4321)
+        self.assertEqual(
+            {key: manual_slot_signature(slot) for key, slot in runtime.slots.items()},
+            before,
+        )
+        effective = runtime.effective_slots()
+        self.assertEqual(effective["0000_0030"].mode, const.MODE_NORMAL_OPERATION)
+        self.assertEqual(effective["1130_1200"].mode, const.MODE_NORMAL_OPERATION)
+        self.assertEqual(effective["1200_1230"].mode, const.MODE_SELLING_FIRST)
+        self.assertEqual(effective["1200_1230"].sell_power, 4321)
+        self.assertEqual(effective["1200_1230"].tou_soc, 35)
+        self.assertEqual(effective["2330_0000"].mode, const.MODE_SELLING_FIRST)
+        self.assertEqual(effective["2330_0000"].sell_power, 4321)
         self.assertTrue(runtime.scheduler_enabled)
 
     async def test_activation_leaves_removed_fields_at_work_schedule_values(self):
@@ -8017,11 +8026,11 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
         await runtime.async_activate_manual_schedule()
         after = {
             key: tuple(getattr(slot, field) for field in removed)
-            for key, slot in runtime.slots.items()
+            for key, slot in runtime.effective_slots().items()
         }
         self.assertEqual(after, before)
 
-    async def test_deactivation_restores_the_pre_activation_work_schedule(self):
+    async def test_deactivation_returns_scheduler_to_the_work_schedule(self):
         runtime = make_runtime()
         runtime.slots["0000_0030"].enabled = True
         runtime.slots["0000_0030"].sell_power = 2222
@@ -8030,6 +8039,7 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
         before = {
             key: manual_slot_signature(slot) for key, slot in runtime.slots.items()
         }
+        runtime.scheduler_enabled = False
         await runtime.async_save_manual_schedule([
             manual_row(to="12:00"),
             manual_row(
@@ -8043,7 +8053,8 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
         ])
         await runtime.async_activate_manual_schedule()
         self.assertNotEqual(
-            manual_slot_signature(runtime.slots["0000_0030"]), before["0000_0030"]
+            manual_slot_signature(runtime.effective_slots()["0000_0030"]),
+            before["0000_0030"],
         )
 
         state = await runtime.async_deactivate_manual_schedule()
@@ -8052,9 +8063,43 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(state["has_activation_snapshot"])
         self.assertFalse(runtime.manual_schedule_active)
         after = {
-            key: manual_slot_signature(slot) for key, slot in runtime.slots.items()
+            key: manual_slot_signature(slot)
+            for key, slot in runtime.effective_slots().items()
         }
         self.assertEqual(after, before)
+        self.assertTrue(runtime.scheduler_enabled)
+
+    async def test_manual_activation_always_selects_the_manual_source(self):
+        runtime = make_runtime()
+        runtime.scheduler_enabled = False
+        await runtime.async_save_manual_schedule([
+            manual_row(enabled=False),
+        ])
+
+        await runtime.async_activate_manual_schedule()
+
+        self.assertTrue(runtime.manual_schedule_active)
+        self.assertTrue(runtime.scheduler_enabled)
+
+    async def test_saving_active_manual_rows_keeps_the_manual_source_selected(self):
+        runtime = make_runtime()
+        await runtime.async_save_manual_schedule([manual_row()])
+        await runtime.async_activate_manual_schedule()
+        runtime.scheduler_enabled = False
+
+        await runtime.async_save_manual_schedule([manual_row(enabled=False)])
+
+        self.assertTrue(runtime.manual_schedule_active)
+        self.assertTrue(runtime.scheduler_enabled)
+
+    async def test_deactivating_an_inactive_manual_source_selects_work(self):
+        runtime = make_runtime()
+        runtime.scheduler_enabled = False
+
+        await runtime.async_deactivate_manual_schedule()
+
+        self.assertFalse(runtime.manual_schedule_active)
+        self.assertTrue(runtime.scheduler_enabled)
 
     async def test_active_manual_schedule_blocks_ai_optimizer_future_and_manual_applies(self):
         runtime = make_runtime()
@@ -8083,16 +8128,16 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(runtime.slots["0000_0030"].sell_power, 1234)
 
-    async def test_active_save_rolls_back_rows_when_reapply_fails(self):
+    async def test_active_save_rolls_back_rows_when_validation_fails(self):
         runtime = make_runtime()
         await runtime.async_save_manual_schedule([manual_row(to="00:00")])
         await runtime.async_activate_manual_schedule()
         before = runtime.manual_schedule_state()["rows"]
 
-        async def fail(*_args, **_kwargs):
+        def fail(*_args, **_kwargs):
             raise RuntimeError("apply failed")
 
-        runtime.async_apply_schedule_patch = fail
+        runtime._validate_manual_tou_range_count = fail
         with self.assertRaisesRegex(RuntimeError, "apply failed"):
             await runtime.async_save_manual_schedule([
                 manual_row(to="06:00"),
@@ -8101,6 +8146,82 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(runtime.manual_schedule_state()["rows"], before)
         self.assertTrue(runtime.manual_schedule_active)
+
+    async def test_manual_source_drives_active_slot_and_tou_mapping(self):
+        runtime = make_runtime()
+        work_mapping = runtime.schedule_to_tou_mapping()
+        await runtime.async_save_manual_schedule([
+            manual_row(to="12:00", tou_soc=25),
+            manual_row(**{"from": "12:00", "tou_soc": 65, "charge_enabled": True}),
+        ])
+        await runtime.async_activate_manual_schedule()
+
+        previous_now = manager.ha_now
+        try:
+            manager.ha_now = lambda: datetime(2026, 7, 18, 13, 15, tzinfo=timezone.utc)
+            self.assertEqual(runtime.active_slot.tou_soc, 65)
+            self.assertTrue(runtime.active_slot.charge_enabled)
+        finally:
+            manager.ha_now = previous_now
+
+        self.assertNotEqual(runtime.schedule_to_tou_mapping(), work_mapping)
+        await runtime.async_deactivate_manual_schedule()
+        self.assertEqual(runtime.schedule_to_tou_mapping(), work_mapping)
+
+    async def test_save_while_active_changes_effective_slot_only(self):
+        runtime = make_runtime()
+        await runtime.async_save_manual_schedule([
+            manual_row(to="12:00"),
+            manual_row(**{"from": "12:00", "sell_power": 1000}),
+        ])
+        await runtime.async_activate_manual_schedule()
+        work_before = {
+            key: manual_slot_signature(slot) for key, slot in runtime.slots.items()
+        }
+
+        await runtime.async_save_manual_schedule([
+            manual_row(to="12:00"),
+            manual_row(**{"from": "12:00", "sell_power": 2345}),
+        ])
+
+        self.assertEqual(
+            {key: manual_slot_signature(slot) for key, slot in runtime.slots.items()},
+            work_before,
+        )
+        self.assertEqual(runtime.effective_slots()["1200_1230"].sell_power, 2345)
+
+    async def test_reverse_sync_does_not_write_work_slots_while_manual_active(self):
+        runtime = make_runtime()
+        await runtime.async_save_manual_schedule([manual_row(to="00:00")])
+        await runtime.async_activate_manual_schedule()
+        work_before = {
+            key: manual_slot_signature(slot) for key, slot in runtime.slots.items()
+        }
+
+        await runtime._async_reverse_sync_after_manual_tou_locked(None, [], {}, {})
+
+        self.assertEqual(runtime.reverse_sync_status, "skipped_manual_schedule")
+        self.assertEqual(
+            {key: manual_slot_signature(slot) for key, slot in runtime.slots.items()},
+            work_before,
+        )
+
+    async def test_activation_rejects_more_than_six_manual_tou_ranges(self):
+        runtime = make_runtime()
+        rows = []
+        for index in range(8):
+            start = index * 3
+            end = start + 3
+            rows.append(manual_row(**{
+                "from": f"{start:02d}:00",
+                "to": "00:00" if end == 24 else f"{end:02d}:00",
+                "tou_soc": 10 if index % 2 == 0 else 20,
+            }))
+        await runtime.async_save_manual_schedule(rows)
+
+        with self.assertRaisesRegex(ValueError, "at most 6"):
+            await runtime.async_activate_manual_schedule()
+        self.assertFalse(runtime.manual_schedule_active)
 
     async def test_init_from_tou_builds_six_rows_with_tou_values(self):
         runtime = make_runtime()
