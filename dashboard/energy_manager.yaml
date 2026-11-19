@@ -1,13 +1,13 @@
 title: Deye Energy
 # UI/storage: DEM registers its bundled card resource automatically.
-# YAML resources: add /deye_energy/deye-energy-card.js?v=0.8.0.45 as a module.
+# YAML resources: add /deye_energy/deye-energy-card.js?v=0.8.0.46 as a module.
 views:
   - title: Manager
     path: deye-energy
     icon: mdi:solar-power-variant
     cards:
       - type: custom:deye-energy-card
-        # Optional layout configuration (v=0.8.0.45)
+        # Optional layout configuration (v=0.8.0.46)
         # Remove the `layout:` block entirely to use the defaults.
         layout:
           # Layout mode:

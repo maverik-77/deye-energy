@@ -87,7 +87,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.45
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.46
       type: module
 ```
 

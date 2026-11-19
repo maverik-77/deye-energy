@@ -4878,7 +4878,7 @@ class DeyeEnergyRuntime:
             if not tou["ok"]
             else "OK"
         )
-        return {"integration_version": "0.8.0.45", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
+        return {"integration_version": "0.8.0.46", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
                 "inverter_provider": self.inverter_provider,
                 "inverter_device_id": self.data.get(CONF_INVERTER_DEVICE_ID),
                 "inverter_provider_label": provider_profile(self.data).label,

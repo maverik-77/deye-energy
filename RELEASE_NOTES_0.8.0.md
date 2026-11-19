@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.45`.
+Card resource revision: `v=0.8.0.46`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the
