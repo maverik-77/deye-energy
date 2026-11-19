@@ -1,11 +1,21 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.46`.
+Card resource revision: `v=0.8.0.47`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the
 [deye-energy-manager](https://github.com/pasierbrg/deye-energy-manager)
 0.8.0 release candidate, adapted to a Deye inverter integrated through MQTT.
+
+## Revision history
+
+- `v=0.8.0.47` — Energy status now supports single-phase inverters by default.
+  The Grid and House tiles show one L1 row; when the L1 power sensor is 0 or
+  unavailable, the row uses the `grid_power` / `load_power` total instead. Set
+  `layout.phase_count: 3` on the card to keep the previous L1/L2/L3 rows. Both
+  the desktop flow panel and the compact mobile panel follow this setting. The
+  30-minute work schedule and the TOU half-hour editor are unchanged.
+- `v=0.8.0.46` — dedicated full-width mobile Status layout.
 
 ## What is new in this edition
 

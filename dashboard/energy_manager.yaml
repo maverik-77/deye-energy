@@ -1,13 +1,13 @@
 title: Deye Energy
 # UI/storage: DEM registers its bundled card resource automatically.
-# YAML resources: add /deye_energy/deye-energy-card.js?v=0.8.0.46 as a module.
+# YAML resources: add /deye_energy/deye-energy-card.js?v=0.8.0.47 as a module.
 views:
   - title: Manager
     path: deye-energy
     icon: mdi:solar-power-variant
     cards:
       - type: custom:deye-energy-card
-        # Optional layout configuration (v=0.8.0.46)
+        # Optional layout configuration (v=0.8.0.47)
         # Remove the `layout:` block entirely to use the defaults.
         layout:
           # Layout mode:
@@ -33,6 +33,12 @@ views:
 
           # Dashboard width used in auto/fit/section modes (px)
           dashboard_width: 1280
+
+          # Inverter phase count for the Energy status phase rows:
+          #   1 - single phase (default): one L1 row, using the grid_power /
+          #       load_power total when the L1 sensor is 0 or unset
+          #   3 - three phase: separate L1, L2 and L3 rows
+          phase_count: 1
 
           # Mobile overrides
           mobile:

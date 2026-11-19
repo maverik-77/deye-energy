@@ -54,7 +54,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
 
     def test_card_sources_declare_current_resource_revision(self):
         for source in self.sources:
-            self.assertTrue(source.startswith("// Resource revision: v=0.8.0.46\n"))
+            self.assertTrue(source.startswith("// Resource revision: v=0.8.0.47\n"))
 
     def test_mapping_view_is_the_simple_24h_to_six_tou_ranges(self):
         for source in self.sources:
@@ -356,7 +356,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertIn("flow-daily-summary flow-daily-home", method)
         self.assertIn("Consumption today:", method)
         self.assertGreater(method.index('data-live="pv-daily"'), method.index('data-live="pv2-amps"'))
-        self.assertGreater(method.index('data-live="load-daily"'), method.index('data-live="load-l3-power"'))
+        self.assertGreater(method.index('data-live="load-daily"'), method.index('data-live="load-${phaseKey(label)}-power"'))
         self.assertIn(".flow-daily-summary{display:flex", method)
 
     def test_status_v23_contains_richer_svg_icons_and_inverter(self):
@@ -455,7 +455,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
     def test_documentation_uses_current_card_cache_revision(self):
         for name in ("README.md", "INSTALL.md"):
             source = (ROOT / name).read_text(encoding="utf-8")
-            self.assertIn("deye-energy-card.js?v=0.8.0.46", source)
+            self.assertIn("deye-energy-card.js?v=0.8.0.47", source)
             self.assertNotIn("deye-energy-card.js?v=22", source)
             self.assertNotIn("deye-energy-card.js?v=10", source)
             self.assertNotIn("deye-energy-card.js?v=09", source)

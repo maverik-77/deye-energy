@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.46
+// Resource revision: v=0.8.0.47
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -93,6 +93,7 @@ class DeyeEnergyCard extends HTMLElement {
     const defaults = {
       layout_mode: "auto",
       dashboard_width: 1280,
+      phase_count: 1,
       max_scale: 1,
       min_scale: 0.2,
       center_dashboard: true,
@@ -124,6 +125,7 @@ class DeyeEnergyCard extends HTMLElement {
       inverter_scale: 1,
       flow_animation_speed: 6,
     };
+    const phaseCount = asNumber(cfg.phase_count, defaults.phase_count, 1, 3);
     const mobileDefaults = defaults.mobile;
     const mobile = {
       mode: asString(cfg.mobile?.mode, mobileDefaults.mode, ["auto", "full", "section", "single", "grid", "fit"]),
@@ -136,6 +138,7 @@ class DeyeEnergyCard extends HTMLElement {
     return {
       layout_mode: asString(cfg.layout_mode, defaults.layout_mode, ["auto", "full", "section", "single", "grid", "fit"]),
       dashboard_width: asNumber(cfg.dashboard_width, defaults.dashboard_width, 320, 2400),
+      phase_count: phaseCount === 3 ? 3 : 1,
       max_scale: asNumber(cfg.max_scale, defaults.max_scale, 0.2, 3),
       min_scale: asNumber(cfg.min_scale, defaults.min_scale, 0.1, 1),
       center_dashboard: asBool(cfg.center_dashboard, defaults.center_dashboard),
@@ -513,6 +516,13 @@ class DeyeEnergyCard extends HTMLElement {
 
     const fmtNum = (v, d = 1) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : v.toFixed(d);
     const detailed = (key, fallback = null) => this.asNumber(this.state(this.entity("sensor", key)), fallback);
+    const singlePhase = this.layoutConfig().phase_count === 1;
+    const gridL1Live = singlePhase
+      ? this.singlePhaseValue(detailed("grid_l1_power"), detailed("grid_power"))
+      : detailed("grid_l1_power");
+    const loadL1Live = singlePhase
+      ? this.singlePhaseValue(detailed("load_l1_power"), detailed("load_power"))
+      : detailed("load_l1_power");
     const managerModeClass = this.modeTextClass(modeText);
     const currentModeMeta = currentModeValue ? this.modeMeta(currentModeValue, true) : { cls: "disabled" };
     const safeModeClass = (cls) => cls ? `mode-${cls}` : "";
@@ -528,7 +538,7 @@ class DeyeEnergyCard extends HTMLElement {
     this.setText("[data-live='pv2-amps']", fmtNum(detailed("pv2_current"), 1));
 
     this.setText("[data-live='grid-main']", gridMainText);
-    this.setText("[data-live='grid-l1-power']", formatKw(detailed("grid_l1_power")));
+    this.setText("[data-live='grid-l1-power']", formatKw(gridL1Live));
     this.setText("[data-live='grid-l1-volt']", fmtNum(detailed("grid_l1_voltage"), 1));
     this.setText("[data-live='grid-l2-power']", formatKw(detailed("grid_l2_power")));
     this.setText("[data-live='grid-l2-volt']", fmtNum(detailed("grid_l2_voltage"), 1));
@@ -548,7 +558,7 @@ class DeyeEnergyCard extends HTMLElement {
 
     this.setText("[data-live='load-main']", formatKw(loadValue));
     this.setText("[data-live='load-daily']", fmtNum(detailed("daily_load_consumption"), 2));
-    this.setText("[data-live='load-l1-power']", formatKw(detailed("load_l1_power")));
+    this.setText("[data-live='load-l1-power']", formatKw(loadL1Live));
     this.setText("[data-live='load-l2-power']", formatKw(detailed("load_l2_power")));
     this.setText("[data-live='load-l3-power']", formatKw(detailed("load_l3_power")));
 
@@ -722,6 +732,12 @@ class DeyeEnergyCard extends HTMLElement {
     if (!/^[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)$/.test(text)) return null;
     const parsed = Number(text.replace(",", "."));
     return Number.isFinite(parsed) && parsed >= 0 && parsed <= 100 ? parsed : null;
+  }
+
+  singlePhaseValue(phaseValue, totalValue) {
+    return phaseValue === null || phaseValue === undefined || Number.isNaN(phaseValue) || phaseValue === 0
+      ? totalValue
+      : phaseValue;
   }
 
   formatPrice(value) {
@@ -2861,7 +2877,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.46)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.47)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -4115,6 +4131,21 @@ class DeyeEnergyCard extends HTMLElement {
     const loadL2Power = st("load_l2_power");
     const loadL3Power = st("load_l3_power");
     const inverterTemp = st("inverter_ac_temperature");
+
+    const singlePhase = layout.phase_count === 1;
+    const phaseLabels = singlePhase ? ["L1"] : ["L1", "L2", "L3"];
+    const phaseKey = (label) => label.toLowerCase();
+    const gridPhasePower = (label) => {
+      if (label === "L2") return gridL2Power;
+      if (label === "L3") return gridL3Power;
+      return singlePhase ? this.singlePhaseValue(gridL1Power, gridPower) : gridL1Power;
+    };
+    const gridPhaseVoltage = (label) => (label === "L2" ? gridL2V : label === "L3" ? gridL3V : gridL1V);
+    const loadPhasePower = (label) => {
+      if (label === "L2") return loadL2Power;
+      if (label === "L3") return loadL3Power;
+      return singlePhase ? this.singlePhaseValue(loadL1Power, loadPower) : loadL1Power;
+    };
     const soldTodayKwh = this.asNumber(this.state(this.entity("sensor", "sold_energy_today")), 0) || 0;
     const soldTodayGbp = this.asNumber(this.state(this.entity("sensor", "sold_value_today")), 0) || 0;
 
@@ -4212,6 +4243,7 @@ class DeyeEnergyCard extends HTMLElement {
 .ms-tile-main .unit{font-size:14px;font-weight:700;color:#c7d7e1;margin-left:3px;text-shadow:none}
 .ms-tile-sub{font-size:13px;color:#b7c9d5;line-height:1.25;margin-top:3px}
 .ms-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px;padding-top:10px;border-top:1px solid rgba(95,148,177,.35)}
+.ms-detail-grid.single-phase{grid-template-columns:1fr}
 .ms-phase{min-width:0;text-align:left}
 .ms-phase-label{font-size:11px;color:#a9c1d0;letter-spacing:.2px;margin-bottom:3px}
 .ms-phase-value{font-size:15px;font-weight:850;color:#f2f8fc;line-height:1.15;overflow-wrap:anywhere}
@@ -4271,10 +4303,8 @@ class DeyeEnergyCard extends HTMLElement {
                 <div class="ms-tile-main" data-live="grid-main">${gridMain}</div>
               </div>
             </div>
-            <div class="ms-detail-grid">
-              ${msPhase("L1", `<span class="phase-accent" data-live="grid-l1-power">${fmtPower(gridL1Power)}</span>`, `<span data-live="grid-l1-volt">${fmtNumber(gridL1V, 1)}</span> V`)}
-              ${msPhase("L2", `<span class="phase-accent" data-live="grid-l2-power">${fmtPower(gridL2Power)}</span>`, `<span data-live="grid-l2-volt">${fmtNumber(gridL2V, 1)}</span> V`)}
-              ${msPhase("L3", `<span class="phase-accent" data-live="grid-l3-power">${fmtPower(gridL3Power)}</span>`, `<span data-live="grid-l3-volt">${fmtNumber(gridL3V, 1)}</span> V`)}
+            <div class="ms-detail-grid${singlePhase ? " single-phase" : ""}">
+              ${phaseLabels.map((label) => msPhase(label, `<span class="phase-accent" data-live="grid-${phaseKey(label)}-power">${fmtPower(gridPhasePower(label))}</span>`, `<span data-live="grid-${phaseKey(label)}-volt">${fmtNumber(gridPhaseVoltage(label), 1)}</span> V`)).join("")}
             </div>
             <div class="ms-foot">
               <span>Imported: <b class="bought"><span data-live="grid-bought">${fmtNumber(gridBought, 2)}</span> kWh</b></span>
@@ -4309,10 +4339,8 @@ class DeyeEnergyCard extends HTMLElement {
                 <div class="ms-tile-main" data-live="load-main">${fmtPower(loadPower)}</div>
               </div>
             </div>
-            <div class="ms-detail-grid">
-              ${msPhase("L1", `<span class="phase-accent" data-live="load-l1-power">${fmtPower(loadL1Power)}</span>`)}
-              ${msPhase("L2", `<span class="phase-accent" data-live="load-l2-power">${fmtPower(loadL2Power)}</span>`)}
-              ${msPhase("L3", `<span class="phase-accent" data-live="load-l3-power">${fmtPower(loadL3Power)}</span>`)}
+            <div class="ms-detail-grid${singlePhase ? " single-phase" : ""}">
+              ${phaseLabels.map((label) => msPhase(label, `<span class="phase-accent" data-live="load-${phaseKey(label)}-power">${fmtPower(loadPhasePower(label))}</span>`)).join("")}
             </div>
             <div class="ms-foot"><span>Consumption today</span><strong><span data-live="load-daily">${fmtNumber(loadDaily, 2)}</span> kWh</strong></div>
           </div>
@@ -4377,6 +4405,7 @@ class DeyeEnergyCard extends HTMLElement {
 .flow-tile-divider{border:0;border-top:1px solid rgba(95,148,177,.38);margin:12px 0}
 .flow-detail-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;text-align:center}
           .flow-detail-row.three-cols{grid-template-columns:repeat(3,1fr)}
+          .flow-detail-row.one-col{grid-template-columns:1fr}
 .flow-phase+.flow-phase{border-left:1px solid rgba(93,145,174,.34)}
 .flow-phase-label{font-size:12px;color:#a9c1d0;letter-spacing:.2px;margin-bottom:7px}
 .flow-phase-power{font-size:15px;font-weight:850;color:#f2f8fc;line-height:1.15}
@@ -4482,10 +4511,8 @@ class DeyeEnergyCard extends HTMLElement {
                     </div>
                   </div>
                   <hr class="flow-tile-divider">
-                  <div class="flow-detail-row three-cols">
-                    ${phaseRow("L1", `<span style="color:#c084fc" data-live="grid-l1-power">${fmtPower(gridL1Power)}</span>`, `<span data-live="grid-l1-volt">${fmtNumber(gridL1V, 1)}</span> V`)}
-                    ${phaseRow("L2", `<span style="color:#c084fc" data-live="grid-l2-power">${fmtPower(gridL2Power)}</span>`, `<span data-live="grid-l2-volt">${fmtNumber(gridL2V, 1)}</span> V`)}
-                    ${phaseRow("L3", `<span style="color:#c084fc" data-live="grid-l3-power">${fmtPower(gridL3Power)}</span>`, `<span data-live="grid-l3-volt">${fmtNumber(gridL3V, 1)}</span> V`)}
+                  <div class="flow-detail-row${singlePhase ? " one-col" : " three-cols"}">
+                    ${phaseLabels.map((label) => phaseRow(label, `<span style="color:#c084fc" data-live="grid-${phaseKey(label)}-power">${fmtPower(gridPhasePower(label))}</span>`, `<span data-live="grid-${phaseKey(label)}-volt">${fmtNumber(gridPhaseVoltage(label), 1)}</span> V`)).join("")}
                   </div>
                   <hr class="flow-tile-divider">
                   <div class="flow-tile-foot">
@@ -4536,10 +4563,8 @@ class DeyeEnergyCard extends HTMLElement {
                     </div>
                   </div>
                   <hr class="flow-tile-divider">
-                  <div class="flow-detail-row three-cols">
-                    ${phaseRow("L1", `<span style="color:#38bdf8" data-live="load-l1-power">${fmtPower(loadL1Power)}</span>`, "")}
-                    ${phaseRow("L2", `<span style="color:#38bdf8" data-live="load-l2-power">${fmtPower(loadL2Power)}</span>`, "")}
-                    ${phaseRow("L3", `<span style="color:#38bdf8" data-live="load-l3-power">${fmtPower(loadL3Power)}</span>`, "")}
+                  <div class="flow-detail-row${singlePhase ? " one-col" : " three-cols"}">
+                    ${phaseLabels.map((label) => phaseRow(label, `<span style="color:#38bdf8" data-live="load-${phaseKey(label)}-power">${fmtPower(loadPhasePower(label))}</span>`, "")).join("")}
                   </div>
                   <hr class="flow-tile-divider">
                   <div class="flow-daily-summary flow-daily-home">
