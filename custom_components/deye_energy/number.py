@@ -8,7 +8,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import ABSOLUTE_INVERTER_MAX_POWER_W, DEFAULT_INVERTER_MAX_POWER_W, DOMAIN, SLOTS
+from .const import ABSOLUTE_INVERTER_MAX_POWER_W, CURRENT_HELPER_MAX_A, DEFAULT_INVERTER_MAX_POWER_W, DOMAIN, SLOTS
 from .entity import DeyeEnergyEntity
 
 
@@ -85,6 +85,8 @@ class DeyeManagerNumber(DeyeEnergyEntity, NumberEntity, RestoreEntity):
     async def async_added_to_hass(self):
         self._sync_physical_range()
         if self.attr.startswith("charge_profile_") and self.runtime._charge_profile_loaded_from_store:
+            return
+        if self.attr.startswith("default_") and self.runtime._default_profile_loaded_from_store:
             return
         if (last_state := await self.async_get_last_state()) is not None:
             try:
@@ -239,29 +241,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         DeyeManagerNumber(runtime, "minimum_sell_soc", "Minimum sell SOC", "min_sell_soc", 0, 100, 1, "%"),
         DeyeManagerNumber(runtime, "minimum_sell_price", "Minimum sell price", "price_sell_threshold", 0, 5, 0.01, "GBP/kWh"),
         DeyeManagerNumber(runtime, "manual_sell_power", "Manual sell power", "manual_sell_power", 0, DEFAULT_INVERTER_MAX_POWER_W, 100, "W"),
-        DeyeManagerNumber(runtime, "manual_discharge_current", "Manual discharge current", "manual_discharge_current", 0, 240, 5, "A"),
-        DeyeManagerNumber(runtime, "manual_charge_current", "Manual charge current", "manual_charge_current", 0, 240, 5, "A"),
+        DeyeManagerNumber(runtime, "manual_discharge_current", "Manual discharge current", "manual_discharge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
+        DeyeManagerNumber(runtime, "manual_charge_current", "Manual charge current", "manual_charge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
         DeyeManagerNumber(runtime, "default_sell_power", "Default sell power", "default_sell_power", 0, DEFAULT_INVERTER_MAX_POWER_W, 100, "W"),
-        DeyeManagerNumber(runtime, "default_discharge_current", "Default discharge current", "default_discharge_current", 0, 240, 5, "A"),
-        DeyeManagerNumber(runtime, "default_charge_current", "Default charge current", "default_charge_current", 0, 240, 5, "A"),
-        DeyeManagerNumber(runtime, "default_grid_charge_current", "Default grid charge current", "default_grid_charge_current", 0, 240, 5, "A"),
-        DeyeManagerNumber(runtime, "charge_profile_charge_current", "Charge profile battery charge current", "charge_profile_charge_current", 0, 240, 5, "A"),
-        DeyeManagerNumber(runtime, "charge_profile_discharge_current", "Charge profile discharge current", "charge_profile_discharge_current", 0, 240, 5, "A"),
-        DeyeManagerNumber(runtime, "charge_profile_grid_charge_current", "Charge profile grid charge current", "charge_profile_grid_charge_current", 0, 240, 5, "A"),
+        DeyeManagerNumber(runtime, "default_discharge_current", "Default discharge current", "default_discharge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
+        DeyeManagerNumber(runtime, "default_charge_current", "Default charge current", "default_charge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
+        DeyeManagerNumber(runtime, "default_grid_charge_current", "Default grid charge current", "default_grid_charge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
+        DeyeManagerNumber(runtime, "charge_profile_charge_current", "Charge profile battery charge current", "charge_profile_charge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
+        DeyeManagerNumber(runtime, "charge_profile_discharge_current", "Charge profile discharge current", "charge_profile_discharge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
+        DeyeManagerNumber(runtime, "charge_profile_grid_charge_current", "Charge profile grid charge current", "charge_profile_grid_charge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
         DeyeManagerNumber(runtime, "charge_profile_target_soc", "Charge profile target SOC", "charge_profile_target_soc", 0, 100, 1, "%"),
         DeyeManagerNumber(runtime, "normal_profile_sell_power", "Normal profile sell power", "normal_profile_sell_power", 0, DEFAULT_INVERTER_MAX_POWER_W, 100, "W"),
-        DeyeManagerNumber(runtime, "normal_profile_discharge_current", "Normal profile discharge current", "normal_profile_discharge_current", 0, 240, 5, "A"),
-        DeyeManagerNumber(runtime, "normal_profile_charge_current", "Normal profile charge current", "normal_profile_charge_current", 0, 240, 5, "A"),
-        DeyeManagerNumber(runtime, "normal_profile_grid_charge_current", "Normal profile grid charge current", "normal_profile_grid_charge_current", 0, 240, 5, "A"),
+        DeyeManagerNumber(runtime, "normal_profile_discharge_current", "Normal profile discharge current", "normal_profile_discharge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
+        DeyeManagerNumber(runtime, "normal_profile_charge_current", "Normal profile charge current", "normal_profile_charge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
+        DeyeManagerNumber(runtime, "normal_profile_grid_charge_current", "Normal profile grid charge current", "normal_profile_grid_charge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
         DeyeManagerNumber(runtime, "normal_profile_tou_soc", "Normal profile Deye TOU SOC", "normal_profile_tou_soc", 0, 100, 1, "%"),
     ]
     for key, label, *_ in SLOTS:
         entities.extend(
             [
                 DeyeSlotNumber(runtime, key, label, "sell_power", "Sell power", DEFAULT_INVERTER_MAX_POWER_W, 100, "W"),
-                DeyeSlotNumber(runtime, key, label, "discharge_current", "Discharge current", 240, 5, "A"),
-                DeyeSlotNumber(runtime, key, label, "charge_current", "Charge current", 240, 5, "A"),
-                DeyeSlotNumber(runtime, key, label, "grid_charge_current", "Grid charge current", 240, 5, "A"),
+                DeyeSlotNumber(runtime, key, label, "discharge_current", "Discharge current", CURRENT_HELPER_MAX_A, 5, "A"),
+                DeyeSlotNumber(runtime, key, label, "charge_current", "Charge current", CURRENT_HELPER_MAX_A, 5, "A"),
+                DeyeSlotNumber(runtime, key, label, "grid_charge_current", "Grid charge current", CURRENT_HELPER_MAX_A, 5, "A"),
                 DeyeSlotNumber(runtime, key, label, "minimum_sell_soc", "Minimum sell SOC", 100, 1, "%"),
                 DeyeSlotNumber(runtime, key, label, "tou_soc", "Deye TOU battery SOC", 100, 1, "%"),
                 DeyeSlotNumber(runtime, key, label, "min_sell_price", "Minimum sell price", 5, 0.01, "GBP/kWh"),

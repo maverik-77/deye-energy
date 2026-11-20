@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.0.53-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.0.54-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -27,8 +27,8 @@ add-on profile) and to a UK-style tariff.
   a switch — disabling one selects the other. The master **Deye control** switch
   remains a separate hardware gate.
 - **Six physical Deye TOU ranges** mapped from the full-day schedule, with
-  boundaries on `:00` or `:30`, plus a dedicated editor for the inverter's
-  physical slots.
+  boundaries on `:00` or `:30`, editable inline in the **Deye Time Of Use**
+  table. Save validates the whole day; Rollback restores the inverter values.
 - **Energy status** with a backend-owned role catalog: each reading can use a
   source-entity override and can be hidden independently in both the desktop
   flow panel and the compact mobile panel.
@@ -73,12 +73,23 @@ MQTT discovery names (`select.deye_load_limit`, `number.deye_max_sell_power`,
 `number.deye_battery_max_charge_current`, `select.deye_prog1_time` …,
 `sensor.deye_battery_soc`, `sensor.deye_grid_power` and so on). TOU time
 options are exposed as `H:MM` (for example `0:00`, `23:30`) and the integration
-accepts that format. Battery current limits up to 320 A are accepted.
-Anything that does not match can be re-mapped in the configuration wizard.
+accepts that format. Physical battery current limits up to 320 A can be
+mapped; the editable current helpers are capped at 300 A. Anything that does
+not match can be re-mapped in the configuration wizard.
 
 The wizard performs a **read-only capability test** before anything is saved
 and lists which features (selling, charging, full TOU, Core/AI) are available
 for the selected entities.
+
+### Mirrored charge defaults
+
+A fresh install uses the values from the working Solar Assistant setup:
+290 A battery charge, grid-charge and discharge current, 0 W sell power, grid
+charging enabled and a 100% charge target. Existing installations receive a
+one-time `sa_defaults_v1` migration that replaces only the original
+60/80/60 A, grid-charge-disabled template; a profile you have edited since is
+kept as-is. Editable current helpers accept up to 300 A so the mirrored 290 A
+values can be saved.
 
 ## Quick start
 
@@ -100,7 +111,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.53
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.54
       type: module
 ```
 
@@ -165,18 +176,22 @@ ignored when older data is loaded or saved.
 
 ## Deye Time Of Use
 
-The Settings and diagnostics page maps the full day onto the six physical Deye
-TOU ranges and can edit each inverter slot directly. The editor opens from the
-dialog itself, shows actual / expected / status values, and validates the whole
-six-range day before saving.
+The **Deye Time Of Use** tab on the Settings and diagnostics page maps the full
+day onto six physical Deye ranges. All six rows are edited directly in the
+table — there is no separate overlay or second mapping tab. From and To times,
+grid charging and SOC are inline controls; the first From and last To are fixed
+at `00:00`, and each To follows the next row's From.
 
-- **Apply to Inverter** replaces the old Save button. It is enabled only when
-  the draft differs from the values read back from the inverter, so an unchanged
-  slot cannot trigger a write.
-- **Rollback** force-refreshes the TOU entities from the inverter, reloads the
-  live values, resets the draft and reports the result.
-- Both buttons are disabled for read-only providers, while a save is pending or
-  while Deye control is not Active.
+- **Save** validates the entire day before writing: it must start at `00:00`,
+  end at `00:00`, and have no gaps or overlaps between rows. SOC must be between
+  0 and 100%. Any error is shown in the table with the specific offending row.
+- **Rollback** force-refreshes the TOU entities from the inverter, discards all
+  local edits, rebuilds every row from the live values and reports the result.
+- Both buttons sit at the bottom of the table. Save is disabled for read-only
+  providers, while a save is pending or while Deye control is not Active;
+  Rollback is disabled while a save is pending.
+- The tab keeps the operation status and schedule-synchronisation summary, so
+  confirmed writes and reverse-sync changes remain visible.
 
 ## Octopus Energy, tariff and currency
 

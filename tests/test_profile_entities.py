@@ -19,7 +19,7 @@ class ProfileHelperEntityContractTests(unittest.TestCase):
 
     def test_missing_charge_current_number_is_created(self):
         self.assertIn(
-            'DeyeManagerNumber(runtime, "charge_profile_charge_current", "Charge profile battery charge current", "charge_profile_charge_current", 0, 240, 5, "A")',
+            'DeyeManagerNumber(runtime, "charge_profile_charge_current", "Charge profile battery charge current", "charge_profile_charge_current", 0, CURRENT_HELPER_MAX_A, 5, "A")',
             NUMBER_SOURCE,
         )
 

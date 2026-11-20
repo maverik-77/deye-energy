@@ -20,7 +20,7 @@ class ChargeProfileEntityContractTests(unittest.TestCase):
         self.assertIn("setattr(self.runtime, self.attr, value)", NUMBER_SOURCE)
         self.assertIn("self.runtime._charge_profile_loaded_from_store", NUMBER_SOURCE)
         self.assertIn(
-            'DeyeManagerNumber(runtime, "charge_profile_charge_current", "Charge profile battery charge current", "charge_profile_charge_current", 0, 240, 5, "A")',
+            'DeyeManagerNumber(runtime, "charge_profile_charge_current", "Charge profile battery charge current", "charge_profile_charge_current", 0, CURRENT_HELPER_MAX_A, 5, "A")',
             NUMBER_SOURCE,
         )
 

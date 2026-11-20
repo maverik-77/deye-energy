@@ -31,10 +31,11 @@ recorded at the bottom of README.md.
 - The work schedule uses 48 half-hour slots (keys such as `0530_0600`); hourly plan keys such as `05_06` still work and apply to both halves. Deye TOU ranges may start and end on :00 or :30.
 - Energy status power readouts use W below 10 kW and kW at or above it; the Sold today tile uses a pound icon.
 - Manual schedule rows no longer store a separate `tou_soc` value; legacy values are ignored.
+- Fresh installs and a one-time `sa_defaults_v1` migration use the mirrored Solar Assistant profile: 290 A battery charge, grid-charge and discharge current, 0 W sell power and grid charging enabled. Editable current helpers are capped at 300 A.
 - The README documents all current functionality, upstream attribution is consolidated at its end, and the banner no longer duplicates the badges shown below it.
 
 - Integration domain `deye_energy`, card `deye-energy-card`, resource revision
-  `v=0.8.0.53`.
+  `v=0.8.0.54`.
 - Existing `deye_addon` config entries migrate to the writable `sunsynk` provider.
 - Currency, number and date display use pounds and the `en-GB` locale.
 - Deye Time Of Use options in `H:MM` format are parsed; the battery current cap is

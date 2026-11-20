@@ -199,6 +199,15 @@ function test_energy_flow_panel_sold_today_uses_pound_icon() {
   assert.notStrictEqual(card.iconSvg("pound"), card.iconSvg("money"));
   assert.ok(icon.includes(card.iconSvg("pound")));
   assert.ok(!icon.includes(card.iconSvg("money")));
+  assert.ok(card.iconSvg("pound").includes('stroke="none">£</text>'));
+}
+
+function test_energy_flow_panel_sold_today_value_stays_on_one_line() {
+  const html = makeCard().energyFlowPanel();
+  assert.ok(html.includes(".flow-sold-copy>span:first-child{display:block"));
+  assert.ok(!html.includes(".flow-sold-copy span{display:block"));
+  assert.ok(html.includes(".flow-sold-value span{display:inline}"));
+  assert.match(html, /\.flow-sold-tile\{[^}]*min-width:300px/);
 }
 
 function setManualRows(card, rows) {
@@ -277,6 +286,7 @@ test_energy_flow_panel_shows_manual_schedule_source_captions();
 test_energy_flow_panel_shows_work_schedule_source_captions();
 test_energy_flow_panel_defaults_missing_schedule_source_to_work();
 test_energy_flow_panel_sold_today_uses_pound_icon();
+test_energy_flow_panel_sold_today_value_stays_on_one_line();
 test_active_slot_time_label_uses_manual_row_when_manual_active();
 test_active_slot_time_label_uses_work_slot_when_work_active();
 test_active_slot_time_label_falls_back_without_manual_rows();

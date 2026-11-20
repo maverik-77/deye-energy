@@ -26,7 +26,7 @@ function testManualOverrideAndMissedAreReadable() {
 }
 
 function testResourceRevision() {
-  assert(source.startsWith("// Resource revision: v=0.8.0.53"), "wrong resource revision");
+  assert(source.startsWith("// Resource revision: v=0.8.0.54"), "wrong resource revision");
 }
 
 [

@@ -498,6 +498,33 @@ class SafetyTests(unittest.TestCase):
     def test_default_control_confirmation_window_is_30_seconds(self):
         self.assertEqual(make_runtime().control_confirmation_timeout, 30.0)
 
+    def test_unavailable_control_entity_still_gates_inverter_link(self):
+        runtime = make_runtime()
+        entity_id = runtime._control_confirmation_entities()[0]
+        runtime.hass.states.values[entity_id].state = "unavailable"
+        self.assertIn(entity_id, runtime._inverter_link_issue())
+
+    def test_stale_unchanged_mqtt_control_entities_do_not_gate_inverter_link(self):
+        runtime = make_runtime()
+        stale_at = manager.ha_now() - timedelta(seconds=901)
+        for entity_id in runtime._control_confirmation_entities():
+            state = runtime.hass.states.get(entity_id)
+            state.last_reported = stale_at
+            state.last_updated = stale_at
+        self.assertEqual(runtime._inverter_link_issue(), "")
+
+    def test_stale_measurement_sensor_still_gates_inverter_link(self):
+        runtime = make_runtime()
+        sensor_id = "sensor.deye_grid_power"
+        runtime.hass.states.values[sensor_id] = FakeState("0", entity_id=sensor_id)
+        runtime.hass.states.values[sensor_id].last_reported = manager.ha_now() - timedelta(seconds=901)
+        with mock.patch.object(
+            manager.DeyeEnergyRuntime,
+            "_control_confirmation_entities",
+            return_value=[sensor_id],
+        ):
+            self.assertIn(sensor_id, runtime._inverter_link_issue())
+
     def test_required_entities_complete_includes_battery_soc(self):
         runtime = make_runtime()
         self.assertTrue(runtime.required_entities_complete)
@@ -3582,6 +3609,126 @@ class ChargeProfilePersistenceTests(unittest.TestCase):
         self.assertEqual(runtime.charge_profile_target_soc, 81)
         self.assertFalse(runtime.charge_profile_grid_enabled)
         self.assertTrue(runtime._charge_profile_loaded_from_store)
+
+    def test_dataclass_defaults_mirror_solar_assistant_configuration(self):
+        defaults = manager.DeyeEnergyRuntime.__dataclass_fields__
+        self.assertEqual(defaults["default_sell_power"].default, const.MIRRORED_MAX_SELL_POWER_W)
+        self.assertEqual(defaults["default_discharge_current"].default, const.MIRRORED_DISCHARGE_CURRENT_A)
+        self.assertEqual(defaults["default_charge_current"].default, const.MIRRORED_CHARGE_CURRENT_A)
+        self.assertEqual(defaults["default_grid_charge_current"].default, const.MIRRORED_GRID_CHARGE_CURRENT_A)
+        self.assertEqual(defaults["charge_profile_charge_current"].default, const.MIRRORED_CHARGE_CURRENT_A)
+        self.assertEqual(defaults["charge_profile_discharge_current"].default, const.MIRRORED_DISCHARGE_CURRENT_A)
+        self.assertEqual(defaults["charge_profile_grid_charge_current"].default, const.MIRRORED_GRID_CHARGE_CURRENT_A)
+        self.assertEqual(defaults["charge_profile_target_soc"].default, const.MIRRORED_CHARGE_PROFILE_TARGET_SOC)
+        self.assertTrue(defaults["charge_profile_grid_enabled"].default)
+
+    def test_legacy_profile_and_missing_default_profile_migrate_once(self):
+        store = self.MemoryStore({
+            "charge_profile": {
+                "charge_current": 60.0,
+                "discharge_current": 80.0,
+                "grid_charge_current": 60.0,
+                "target_soc": 100.0,
+                "grid_charge_enabled": False,
+            }
+        })
+        reloaded = self.load_from_store(store)
+
+        self.assertTrue(store.value["sa_defaults_v1"])
+        self.assertEqual(store.value["charge_profile"], {
+            "charge_current": const.MIRRORED_CHARGE_CURRENT_A,
+            "discharge_current": const.MIRRORED_DISCHARGE_CURRENT_A,
+            "grid_charge_current": const.MIRRORED_GRID_CHARGE_CURRENT_A,
+            "target_soc": const.MIRRORED_CHARGE_PROFILE_TARGET_SOC,
+            "grid_charge_enabled": const.MIRRORED_CHARGE_PROFILE_GRID_ENABLED,
+        })
+        self.assertEqual(store.value["default_profile"], {
+            "sell_power": const.MIRRORED_MAX_SELL_POWER_W,
+            "discharge_current": const.MIRRORED_DISCHARGE_CURRENT_A,
+            "charge_current": const.MIRRORED_CHARGE_CURRENT_A,
+            "grid_charge_current": const.MIRRORED_GRID_CHARGE_CURRENT_A,
+        })
+        self.assertTrue(reloaded._charge_profile_loaded_from_store)
+        self.assertTrue(reloaded._default_profile_loaded_from_store)
+        self.assertEqual(reloaded.charge_profile_charge_current, const.MIRRORED_CHARGE_CURRENT_A)
+        self.assertEqual(reloaded.charge_profile_discharge_current, const.MIRRORED_DISCHARGE_CURRENT_A)
+        self.assertEqual(reloaded.charge_profile_grid_charge_current, const.MIRRORED_GRID_CHARGE_CURRENT_A)
+        self.assertEqual(reloaded.charge_profile_target_soc, const.MIRRORED_CHARGE_PROFILE_TARGET_SOC)
+        self.assertTrue(reloaded.charge_profile_grid_enabled)
+        self.assertEqual(reloaded.default_sell_power, const.MIRRORED_MAX_SELL_POWER_W)
+        self.assertEqual(reloaded.default_discharge_current, const.MIRRORED_DISCHARGE_CURRENT_A)
+        self.assertEqual(reloaded.default_charge_current, const.MIRRORED_CHARGE_CURRENT_A)
+        self.assertEqual(reloaded.default_grid_charge_current, const.MIRRORED_GRID_CHARGE_CURRENT_A)
+
+    def test_saved_profiles_are_not_overwritten_by_migration(self):
+        charge_profile = {
+            "charge_current": 120.0,
+            "discharge_current": 35.0,
+            "grid_charge_current": 15.0,
+            "target_soc": 82.0,
+            "grid_charge_enabled": False,
+        }
+        default_profile = {
+            "sell_power": 250.0,
+            "discharge_current": 75.0,
+            "charge_current": 45.0,
+            "grid_charge_current": 25.0,
+        }
+        store = self.MemoryStore({
+            "charge_profile": charge_profile,
+            "default_profile": default_profile,
+        })
+        reloaded = self.load_from_store(store)
+
+        self.assertTrue(store.value["sa_defaults_v1"])
+        self.assertEqual(store.value["charge_profile"], charge_profile)
+        self.assertEqual(store.value["default_profile"], default_profile)
+        self.assertEqual(reloaded.charge_profile_charge_current, 120)
+        self.assertFalse(reloaded.charge_profile_grid_enabled)
+        self.assertEqual(reloaded.default_charge_current, 45)
+        self.assertEqual(reloaded.default_grid_charge_current, 25)
+
+    def test_migration_marker_preserves_legacy_profile_on_next_restart(self):
+        legacy_profile = {
+            "charge_current": 60.0,
+            "discharge_current": 80.0,
+            "grid_charge_current": 60.0,
+            "target_soc": 100.0,
+            "grid_charge_enabled": False,
+        }
+        store = self.MemoryStore({
+            "charge_profile": legacy_profile,
+            "sa_defaults_v1": True,
+        })
+        reloaded = self.load_from_store(store)
+
+        self.assertEqual(reloaded.charge_profile_charge_current, 60)
+        self.assertEqual(reloaded.charge_profile_discharge_current, 80)
+        self.assertFalse(reloaded.charge_profile_grid_enabled)
+
+    def test_default_profile_from_store_survives_restart(self):
+        default_profile = {
+            "sell_power": 0.0,
+            "discharge_current": 290.0,
+            "charge_current": 290.0,
+            "grid_charge_current": 290.0,
+        }
+        store = self.MemoryStore({
+            "default_profile": default_profile,
+            "sa_defaults_v1": True,
+        })
+        reloaded = self.load_from_store(store)
+
+        self.assertTrue(reloaded._default_profile_loaded_from_store)
+        self.assertEqual(reloaded.default_sell_power, 0)
+        self.assertEqual(reloaded.default_discharge_current, 290)
+        self.assertEqual(reloaded.default_charge_current, 290)
+        self.assertEqual(reloaded.default_grid_charge_current, 290)
+
+    def test_current_helper_ranges_use_shared_maximum(self):
+        source = (PACKAGE / "number.py").read_text(encoding="utf-8")
+        self.assertNotIn(', 240, 5, "A")', source)
+        self.assertIn(', CURRENT_HELPER_MAX_A, 5, "A")', source)
 
 
 class PlanExecutionArchiveTests(unittest.TestCase):

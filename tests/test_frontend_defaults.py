@@ -54,16 +54,14 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
 
     def test_card_sources_declare_current_resource_revision(self):
         for source in self.sources:
-            self.assertTrue(source.startswith("// Resource revision: v=0.8.0.53\n"))
+            self.assertTrue(source.startswith("// Resource revision: v=0.8.0.54\n"))
 
-    def test_mapping_view_is_the_simple_24h_to_six_tou_ranges(self):
+    def test_tou_table_is_the_simple_24h_to_six_tou_ranges(self):
         for source in self.sources:
-            self.assertIn(
-                "The full-day schedule is arranged into six ranges and written to Deye Time Of Use",
-                source,
-            )
-            self.assertIn("<th>Function</th>", source)
-            self.assertIn("<th>SOC</th>", source)
+            table = extract_method(source, "renderTouSettingsContent(slots)")
+            self.assertIn("Edit the six rows below directly", table)
+            self.assertIn("The first From and last To are fixed at 00:00", table)
+            self.assertIn("<th>SOC</th>", table)
             self.assertNotIn(
                 "Minimum sell SOC</strong> is a logical Manager protection",
                 source,
@@ -72,12 +70,14 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
             self.assertIn("const backendPlan = this.mappingPlanDiagnostics()", source)
             self.assertIn("No complete Deye Time Of Use mapping", source)
 
-    def test_physical_tou_view_uses_only_confirmed_backend_reads(self):
+    def test_tou_table_uses_only_confirmed_backend_reads(self):
         for source in self.sources:
+            rows_method = extract_method(source, "mappingRowsFromDiagnostics()")
+            self.assertIn("this.physicalTouDiagnostics()", rows_method)
+            self.assertIn("this.mappingPlanDiagnostics()", rows_method)
+            self.assertIn("this.mappingLiveValue(", rows_method)
             self.assertIn("touCapabilitiesDiagnostics()", source)
-            self.assertIn("touFieldDiagnostics(slot, field)", source)
-            self.assertIn("const current = physical?.fields?.[field] || {}", source)
-            self.assertIn("capability.supported !== true", source)
+            self.assertIn("mappingTouEntityIds()", source)
             self.assertNotIn("physical.actual_soc ?? this.numberState(tou.soc)", source)
 
     def test_apply_defaults_uses_one_backend_service_call_only(self):
@@ -180,9 +180,17 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
 
     def test_dashboard_has_common_scaling_logic(self):
         method = extract_method(self.sources[0], "scaleFlowPanel() {")
-        self.assertIn('if (this.querySelector(".mobile-status-panel")) return;', method)
-        self.assertIn("const baseWidth = parseFloat(scaler.dataset.baseWidth) || 1328", method)
-        self.assertIn("const baseHeight = parseFloat(scaler.dataset.baseHeight) || 768", method)
+        self.assertIn('const isMobile = !!this.querySelector(".mobile-status-panel");', method)
+        self.assertIn('this.querySelector(isMobile ? ".ms-flow-wrapper" : ".flow-wrapper")', method)
+        self.assertIn('this.querySelector(isMobile ? ".ms-flow-scaler" : ".flow-scaler")', method)
+        self.assertIn(
+            "const baseWidth = parseFloat(scaler.dataset.baseWidth) || (isMobile ? 422 : 1328)",
+            method,
+        )
+        self.assertIn(
+            "const baseHeight = parseFloat(scaler.dataset.baseHeight) || (isMobile ? 320 : 768)",
+            method,
+        )
         self.assertIn("Math.min(1, Math.max(available / baseWidth, 0.2))", method)
         self.assertIn("scaler.style.transform", method)
         self.assertIn("wrapper.style.height", method)
@@ -217,8 +225,8 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
     def test_flow_geometry_uses_tile_edges_and_four_inverter_ports(self):
         method = extract_between(self.sources[0], "flowGeometry({", "\n  energyFlowPanel()")
         for required in (
-            "const boardHeight = 600",
-            "const tileTopY = 145",
+            "boardHeight = 600,",
+            "const tileTopY = Math.round(boardHeight * (145 / 600))",
             "const tileBottomY = boardHeight - tileTopY",
             "pvTile: { x: tileWidth, y: tileTopY }",
             "gridTile: { x: tileWidth, y: tileBottomY }",
@@ -383,10 +391,22 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         panel = extract_method(source, "energyFlowPanel()")
         self.assertIn('pound: \'<svg viewBox="0 0 24 24">', icons)
         self.assertIn(
+            '<text x="12" y="17" text-anchor="middle" font-family="Arial, sans-serif" '
+            'font-size="15" font-weight="700" fill="currentColor" stroke="none">£</text>',
+            icons,
+        )
+        self.assertIn(
             'flow-sold-icon" style="color:#7ee22d">${this.iconSvg("pound")}',
             panel,
         )
         self.assertNotIn('this.iconSvg("money")', panel)
+
+    def test_sold_today_value_stays_on_one_line(self):
+        panel = extract_method(self.sources[0], "energyFlowPanel()")
+        self.assertIn(".flow-sold-copy>span:first-child{display:block", panel)
+        self.assertNotIn(".flow-sold-copy span{display:block", panel)
+        self.assertIn(".flow-sold-value span{display:inline}", panel)
+        self.assertIn("min-width:300px", panel)
 
     def test_status_v23_is_frontend_only_and_preserves_local_scaling(self):
         source = self.sources[0]
@@ -466,7 +486,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
     def test_documentation_uses_current_card_cache_revision(self):
         for name in ("README.md", "INSTALL.md"):
             source = (ROOT / name).read_text(encoding="utf-8")
-            self.assertIn("deye-energy-card.js?v=0.8.0.53", source)
+            self.assertIn("deye-energy-card.js?v=0.8.0.54", source)
             self.assertNotIn("deye-energy-card.js?v=22", source)
             self.assertNotIn("deye-energy-card.js?v=10", source)
             self.assertNotIn("deye-energy-card.js?v=09", source)
@@ -502,42 +522,39 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
 
     def test_card_has_explicit_direct_edit_path_for_physical_tou_entities(self):
         source = self.sources[0]
-        self.assertIn("data-open-tou", source)
-        self.assertIn("data-save-tou", source)
-        self.assertIn("async savePhysicalTouSlot(slot)", source)
-        tou_dialog = extract_method(source, "renderDialog(slots, touStarts)")
-        editor_field = extract_method(source, "touEditorFieldHtml(slot, field)")
-        for required in ('data-tou-field="${field}"', 'data-tou-field="soc"', 'data-tou-field="grid_charge"'):
-            self.assertIn(required, editor_field)
+        tou_table = extract_method(source, "renderTouSettingsContent(slots)")
         for required in (
-            "this.touCapabilityRow(idx)",
-            "this.touEditorFieldHtml(idx, field)",
-            "data-save-tou",
-            "Apply to Inverter",
-            "data-rollback-tou",
+            'data-mapping-field="${field}"',
+            'data-mapping-field="soc" data-mapping-slot=',
+            'data-mapping-field="grid_charge" data-mapping-slot=',
+            'data-refresh-mapping="1"',
+            'data-save-mapping="1"',
+            '"Rollback"',
+            '"Save"',
         ):
-            self.assertIn(required, tou_dialog)
+            self.assertIn(required, tou_table)
+        self.assertNotIn("data-open-tou", source)
+        self.assertNotIn("data-save-tou", source)
+        self.assertNotIn("async savePhysicalTouSlot(slot)", source)
 
     def test_tou_edit_and_rollback_controls_are_bound_inside_the_dialog(self):
         for source in self.sources:
             dialog = extract_method(source, "bindDialogControls(slots) {")
             dashboard = extract_method(source, "bindDashboardControls(slots) {")
-            self.assertIn("[data-open-tou]", dialog)
-            self.assertNotIn("[data-open-tou]", dashboard)
-            self.assertIn("[data-rollback-tou]", dialog)
-            self.assertIn("this.rollbackTouEditor(", dialog)
-            self.assertIn("this.updateTouEditorButtons(", dialog)
+            self.assertIn('root.querySelectorAll("[data-mapping-field]")', dialog)
+            self.assertIn("this.collectMappingDraft()", dialog)
+            self.assertIn('root.querySelectorAll("[data-save-mapping]")', dialog)
+            self.assertIn("this.saveMappingToInverter()", dialog)
+            self.assertIn('root.querySelectorAll("[data-refresh-mapping]")', dialog)
+            self.assertIn("this.rollbackTouTable()", dialog)
+            self.assertNotIn("[data-save-mapping]", dashboard)
 
-            rollback = extract_method(source, "async rollbackTouEditor(slot)")
-            self.assertIn("update_entity", rollback)
-            self.assertIn("mappingTouEntityIds()", rollback)
-            self.assertIn("this.touActualValues(slot)", rollback)
-            self.assertIn("this._touEditDraft =", rollback)
-
-            dirty = extract_method(source, "touEditorDirty(slot)")
-            self.assertNotIn("collectTouEditorDraft(", dirty)
-            self.assertIn("touEditorWritableFields(slot)", dirty)
-            self.assertIn("touFieldChanged(", dirty)
+            rollback = extract_method(source, "async rollbackTouTable()")
+            self.assertIn("this.refreshMappingFromInverter()", rollback)
+            self.assertIn("Restored all rows from the inverter.", rollback)
+            refresh = extract_between(source, "async refreshMappingFromInverter(", "collectMappingDraft()")
+            self.assertIn('"homeassistant", "update_entity"', refresh)
+            self.assertIn("mappingTouEntityIds()", refresh)
 
     def test_unconfirmed_logical_tou_soc_never_renders_as_zero(self):
         source = self.sources[0]
@@ -786,8 +803,9 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertIn('this.normalizeManagerMode(mode)', label_method)
 
     def test_card_labels_successful_rollback_as_restored(self):
-        status_label = extract_method(self.sources[0], "touStatusLabel(status)")
-        self.assertIn('rolled_back: "Restored"', status_label)
+        for source in self.sources:
+            rollback = extract_method(source, "async rollbackTouTable()")
+            self.assertIn('"Restored all rows from the inverter."', rollback)
 
     def test_card_uses_backend_normal_profile_labels(self):
         source = self.sources[0]
@@ -1146,10 +1164,13 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
                 dynamic,
             )
 
-            self.assertIn(".manual-schedule-table tr.time-current", source)
-            self.assertIn("@keyframes manual-time-current-row", source)
-            self.assertIn("@keyframes manual-time-current-cell", source)
-            self.assertIn("3.2s ease-in-out infinite", source)
+            self.assertIn(".manual-schedule-table tr.time-current td", source)
+            self.assertIn("@keyframes manual-time-current-text-glow", source)
+            self.assertIn("2.4s ease-in-out infinite", source)
+            self.assertIn("text-shadow:0 0 2px rgba(255,166,45,.18)", source)
+            self.assertIn("0 0 12px rgba(255,166,45,.95)", source)
+            self.assertNotIn("@keyframes manual-time-current-row", source)
+            self.assertNotIn("@keyframes manual-time-current-cell", source)
 
     def test_schedule_source_captions_are_live_in_both_status_layouts(self):
         source = self.sources[0]

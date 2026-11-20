@@ -153,7 +153,8 @@ function test_single_phase_value_uses_total_when_phase_missing_or_zero() {
 
 function test_mobile_single_phase_shows_ac_voltages_without_l1() {
   const html = panel(390);
-  assert.match(html, /ms-detail-grid single-phase/);
+  assert.match(html, /class="ms-detail-grid"/);
+  assert.match(html, /class="ms-flow-board"/);
   assert.match(html, /data-live="grid-ac-voltage">230\.0<\/span> V/);
   assert.match(html, /data-live="inverter-ac-voltage">231\.0<\/span> V/);
   assert.doesNotMatch(html, /data-live="grid-l1-power"/);
@@ -162,9 +163,9 @@ function test_mobile_single_phase_shows_ac_voltages_without_l1() {
   assert.doesNotMatch(html, /data-live="grid-l3-power"/);
   assert.doesNotMatch(html, /data-live="load-l2-power"/);
   assert.doesNotMatch(html, /data-live="load-l3-power"/);
-  assert.strictEqual(countOccurrences(html, 'class="ms-phase-label">L1<'), 0);
-  assert.strictEqual(countOccurrences(html, 'class="ms-phase-label">L2<'), 0);
-  assert.strictEqual(countOccurrences(html, 'class="ms-phase-label">L3<'), 0);
+  assert.strictEqual(countOccurrences(html, "<span>L1"), 0);
+  assert.strictEqual(countOccurrences(html, "<span>L2"), 0);
+  assert.strictEqual(countOccurrences(html, "<span>L3"), 0);
 }
 
 function test_desktop_single_phase_uses_one_column() {
@@ -184,7 +185,7 @@ function test_desktop_single_phase_uses_one_column() {
 function test_three_phase_opt_in_still_renders_all_phases() {
   const config = { layout: { phase_count: 3 } };
   const mobileHtml = panel(390, config);
-  assert.doesNotMatch(mobileHtml, /ms-detail-grid single-phase/);
+  assert.match(mobileHtml, /class="ms-detail-grid"/);
   for (const key of [
     "grid-l1-power",
     "grid-l2-power",
@@ -195,9 +196,9 @@ function test_three_phase_opt_in_still_renders_all_phases() {
   ]) {
     assert.ok(mobileHtml.includes(`data-live="${key}"`), `${key} must render in three-phase mode`);
   }
-  assert.strictEqual(countOccurrences(mobileHtml, 'class="ms-phase-label">L1<'), 2);
-  assert.strictEqual(countOccurrences(mobileHtml, 'class="ms-phase-label">L2<'), 2);
-  assert.strictEqual(countOccurrences(mobileHtml, 'class="ms-phase-label">L3<'), 2);
+  assert.strictEqual(countOccurrences(mobileHtml, "<span>L1"), 2);
+  assert.strictEqual(countOccurrences(mobileHtml, "<span>L2"), 2);
+  assert.strictEqual(countOccurrences(mobileHtml, "<span>L3"), 2);
 
   const desktopHtml = panel(1366, config);
   assert.strictEqual(countOccurrences(desktopHtml, 'class="flow-detail-row three-cols"'), 3);

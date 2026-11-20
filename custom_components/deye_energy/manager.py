@@ -26,7 +26,10 @@ _SOLCAST_TRACKING_STALE_SECONDS = 30 * 60
 # A dropped inverter connection leaves every mapped Deye control entity
 # unavailable. Pause the rule engine only after a short stable outage and resume
 # only after a short stable recovery, so a marginal link cannot flap the loop.
-# The freshness tolerance exceeds the add-on's slowest (300 s) report cycle.
+# MQTT-discovered number/select/switch entities publish only when their value
+# changes, so an unchanged control entity has no fresh last_reported. Freshness
+# is therefore checked only on measurement sensors; physical write confirmation
+# remains the final safety net for the control entities.
 _INVERTER_LINK_STALE_SECONDS = 600
 _INVERTER_LINK_UNAVAILABLE_TICKS = 2
 _INVERTER_LINK_AVAILABLE_TICKS = 2
@@ -118,8 +121,15 @@ from .const import (
     CONF_SELL_PRICE_CONTRACT,
     CONF_TARIFF_CATALOG_URL,
     CONTROL_MODES,
+    CURRENT_HELPER_MAX_A,
     DOMAIN,
     MANAGER_MODES,
+    MIRRORED_CHARGE_CURRENT_A,
+    MIRRORED_CHARGE_PROFILE_GRID_ENABLED,
+    MIRRORED_CHARGE_PROFILE_TARGET_SOC,
+    MIRRORED_DISCHARGE_CURRENT_A,
+    MIRRORED_GRID_CHARGE_CURRENT_A,
+    MIRRORED_MAX_SELL_POWER_W,
     MODE_SELLING_FIRST,
     MODE_CHARGE,
     MODE_NORMAL_OPERATION,
@@ -425,18 +435,18 @@ class DeyeEnergyRuntime:
     manual_charge_current: float = 60
     default_work_mode: str = MODE_NORMAL_OPERATION
     default_physical_work_mode: str | None = None
-    default_sell_power: float = 0
-    default_discharge_current: float = 0
-    default_charge_current: float = 0
-    default_grid_charge_current: float = 0
+    default_sell_power: float = MIRRORED_MAX_SELL_POWER_W
+    default_discharge_current: float = MIRRORED_DISCHARGE_CURRENT_A
+    default_charge_current: float = MIRRORED_CHARGE_CURRENT_A
+    default_grid_charge_current: float = MIRRORED_GRID_CHARGE_CURRENT_A
     # Separate values used exclusively by planned Charge slots.  They are
     # independent from the full default/recovery state above.
-    charge_profile_charge_current: float = 0
-    charge_profile_discharge_current: float = 0
-    charge_profile_grid_charge_current: float = 0
-    charge_profile_target_soc: float = 100
+    charge_profile_charge_current: float = MIRRORED_CHARGE_CURRENT_A
+    charge_profile_discharge_current: float = MIRRORED_DISCHARGE_CURRENT_A
+    charge_profile_grid_charge_current: float = MIRRORED_GRID_CHARGE_CURRENT_A
+    charge_profile_target_soc: float = MIRRORED_CHARGE_PROFILE_TARGET_SOC
     # The only permission to enable Deye Grid Charge for Charge slots.
-    charge_profile_grid_enabled: bool = False
+    charge_profile_grid_enabled: bool = MIRRORED_CHARGE_PROFILE_GRID_ENABLED
     # User-owned Normal Operation template.  The physical mode is mandatory
     # and accepts only the two zero-export variants supported by Deye.
     normal_profile_physical_work_mode: str | None = None
@@ -489,6 +499,7 @@ class DeyeEnergyRuntime:
     _stats_store: Store | None = None
     _ai_store: Store | None = None
     _charge_profile_loaded_from_store: bool = False
+    _default_profile_loaded_from_store: bool = False
     _solcast_store: Store | None = None
     _learning_store: Store | None = None
     _ai_save_task: Any = None
@@ -4919,7 +4930,7 @@ class DeyeEnergyRuntime:
             if not tou["ok"]
             else "OK"
         )
-        return {"integration_version": "0.8.0.53", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
+        return {"integration_version": "0.8.0.54", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
                 "inverter_provider": self.inverter_provider,
                 "inverter_device_id": self.data.get(CONF_INVERTER_DEVICE_ID),
                 "inverter_provider_label": provider_profile(self.data).label,
@@ -5149,6 +5160,38 @@ class DeyeEnergyRuntime:
                 if slot_key in self.slots and physical_mode in PHYSICAL_NORMAL_MODES:
                     self.slots[slot_key].physical_work_mode = str(physical_mode)
 
+        # One-time migration from the pre-Solar-Assistant defaults.  Only the
+        # exact legacy template is replaced; a profile the user saved later is
+        # preserved.  The marker prevents a later intentional return to those
+        # values from being migrated again.
+        if not data.get("sa_defaults_v1"):
+            legacy_profile = data.get("charge_profile")
+            if isinstance(legacy_profile, dict):
+                if (
+                    self.safe_float(legacy_profile.get("charge_current"), float("nan")) == 60.0
+                    and self.safe_float(legacy_profile.get("discharge_current"), float("nan")) == 80.0
+                    and self.safe_float(legacy_profile.get("grid_charge_current"), float("nan")) == 60.0
+                    and self.safe_float(legacy_profile.get("target_soc"), float("nan")) == 100.0
+                    and legacy_profile.get("grid_charge_enabled") is False
+                ):
+                    data["charge_profile"] = {
+                        "charge_current": MIRRORED_CHARGE_CURRENT_A,
+                        "discharge_current": MIRRORED_DISCHARGE_CURRENT_A,
+                        "grid_charge_current": MIRRORED_GRID_CHARGE_CURRENT_A,
+                        "target_soc": MIRRORED_CHARGE_PROFILE_TARGET_SOC,
+                        "grid_charge_enabled": MIRRORED_CHARGE_PROFILE_GRID_ENABLED,
+                    }
+                    migrated = True
+            if not isinstance(data.get("default_profile"), dict):
+                data["default_profile"] = {
+                    "sell_power": MIRRORED_MAX_SELL_POWER_W,
+                    "discharge_current": MIRRORED_DISCHARGE_CURRENT_A,
+                    "charge_current": MIRRORED_CHARGE_CURRENT_A,
+                    "grid_charge_current": MIRRORED_GRID_CHARGE_CURRENT_A,
+                }
+            data["sa_defaults_v1"] = True
+            migrated = True
+
         # The Charge template is one atomic user-owned record.  Loading all
         # fields together prevents individual RestoreEntity callbacks from
         # rebuilding a mixed profile after a restart.
@@ -5162,7 +5205,7 @@ class DeyeEnergyRuntime:
             }
             grid_enabled = raw_profile.get("grid_charge_enabled")
             currents_ok = all(
-                math.isfinite(value) and 0 <= value <= 240
+                math.isfinite(value) and 0 <= value <= CURRENT_HELPER_MAX_A
                 for key, value in numeric.items()
                 if key != "charge_profile_target_soc"
             )
@@ -5172,6 +5215,8 @@ class DeyeEnergyRuntime:
                     setattr(self, key, value)
                 self.charge_profile_grid_enabled = grid_enabled
                 self._charge_profile_loaded_from_store = True
+        else:
+            self._charge_profile_loaded_from_store = True
 
         raw_normal_profile = data.get("normal_profile")
         if isinstance(raw_normal_profile, dict):
@@ -5188,7 +5233,7 @@ class DeyeEnergyRuntime:
                 and math.isfinite(numeric["normal_profile_sell_power"])
                 and 0 <= numeric["normal_profile_sell_power"] <= self.effective_inverter_max_power_w
                 and all(
-                    math.isfinite(numeric[key]) and 0 <= numeric[key] <= 240
+                    math.isfinite(numeric[key]) and 0 <= numeric[key] <= CURRENT_HELPER_MAX_A
                     for key in (
                         "normal_profile_discharge_current",
                         "normal_profile_charge_current",
@@ -5203,6 +5248,28 @@ class DeyeEnergyRuntime:
                 for key, value in numeric.items():
                     setattr(self, key, value)
                 self._normal_profile_loaded_from_store = True
+        raw_default_profile = data.get("default_profile")
+        if isinstance(raw_default_profile, dict):
+            default_numeric = {
+                "default_sell_power": self.safe_float(raw_default_profile.get("sell_power"), float("nan")),
+                "default_discharge_current": self.safe_float(raw_default_profile.get("discharge_current"), float("nan")),
+                "default_charge_current": self.safe_float(raw_default_profile.get("charge_current"), float("nan")),
+                "default_grid_charge_current": self.safe_float(raw_default_profile.get("grid_charge_current"), float("nan")),
+            }
+            default_ok = (
+                math.isfinite(default_numeric["default_sell_power"])
+                and 0 <= default_numeric["default_sell_power"] <= self.effective_inverter_max_power_w
+                and all(
+                    math.isfinite(value) and 0 <= value <= CURRENT_HELPER_MAX_A
+                    for key, value in default_numeric.items()
+                    if key != "default_sell_power"
+                )
+            )
+            if default_ok:
+                for key, value in default_numeric.items():
+                    setattr(self, key, value)
+            self._default_profile_loaded_from_store = True
+
         raw_manual_tou = data.get("manual_tou_mapping")
         if isinstance(raw_manual_tou, (list, dict)):
             restored = self._deserialize_manual_tou_mapping(raw_manual_tou)
@@ -5264,6 +5331,13 @@ class DeyeEnergyRuntime:
                 "target_soc": self.charge_profile_target_soc,
                 "grid_charge_enabled": self.charge_profile_grid_enabled,
             },
+            "default_profile": {
+                "sell_power": self.default_sell_power,
+                "discharge_current": self.default_discharge_current,
+                "charge_current": self.default_charge_current,
+                "grid_charge_current": self.default_grid_charge_current,
+            },
+            "sa_defaults_v1": True,
             "normal_profile": {
                 "physical_work_mode": self.normal_profile_physical_work_mode,
                 "sell_power": self.normal_profile_sell_power,
@@ -5317,6 +5391,12 @@ class DeyeEnergyRuntime:
                 self.charge_profile_grid_charge_current,
                 self.charge_profile_target_soc,
                 self.charge_profile_grid_enabled,
+            ],
+            "default_profile": [
+                self.default_sell_power,
+                self.default_discharge_current,
+                self.default_charge_current,
+                self.default_grid_charge_current,
             ],
             "normal_profile": [
                 self.normal_profile_physical_work_mode,
@@ -10388,16 +10468,17 @@ class DeyeEnergyRuntime:
             }:
                 unavailable.append(entity_id)
                 continue
-            reported = getattr(state, "last_reported", None)
-            if not isinstance(reported, datetime):
-                reported = getattr(state, "last_updated", None)
-            if isinstance(reported, datetime):
-                try:
-                    age = (now - reported).total_seconds()
-                except TypeError:
-                    age = 0.0
-                if age > _INVERTER_LINK_STALE_SECONDS:
-                    stale.append(entity_id)
+            if entity_id.startswith("sensor."):
+                reported = getattr(state, "last_reported", None)
+                if not isinstance(reported, datetime):
+                    reported = getattr(state, "last_updated", None)
+                if isinstance(reported, datetime):
+                    try:
+                        age = (now - reported).total_seconds()
+                    except TypeError:
+                        age = 0.0
+                    if age > _INVERTER_LINK_STALE_SECONDS:
+                        stale.append(entity_id)
         if unavailable:
             return "entities unavailable: " + ", ".join(unavailable)
         if stale:

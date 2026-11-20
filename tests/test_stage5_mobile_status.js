@@ -121,11 +121,17 @@ function test_mobile_status_uses_compact_layout() {
   const html = panelAt(390);
   assert.match(html, /class="panel status-panel mobile-status-panel"/);
   assert.match(html, /ms-body/);
+  assert.match(html, /class="ms-flow-wrapper"/);
+  assert.match(html, /class="ms-flow-scaler"/);
+  assert.match(html, /class="ms-flow-board"/);
+  assert.match(html, /class="ms-flow-svg"/);
+  assert.match(html, /@keyframes mfFlowDash/);
+  for (const key of ["pv", "grid", "battery", "home"]) {
+    assert.ok(html.includes(`data-flow-line="${key}"`), `${key} animated flow path must survive mobile layout`);
+  }
   assert.doesNotMatch(html, /class="energy-flow-panel"/);
   assert.doesNotMatch(html, /class="flow-svg"/);
   assert.doesNotMatch(html, /class="flow-scaler"/);
-  assert.doesNotMatch(html, /flow-wrapper/);
-  assert.doesNotMatch(html, /transform:\s*scale/);
   assert.doesNotMatch(html, /width:\s*1328px/);
   assert.doesNotMatch(html, /height:\s*768px/);
 }
@@ -156,17 +162,20 @@ function test_mobile_status_keeps_live_data_hooks_and_content() {
   assert.match(html, /Deye inverter/);
 }
 
-function test_mobile_tiles_are_stacked_in_expected_order() {
+function test_mobile_flow_tiles_are_in_expected_order() {
   const html = panelAt(390);
-  const order = ["ms-pv", "ms-grid", "ms-battery", "ms-home"].map((name) =>
-    html.indexOf(`ms-tile ${name}`),
+  const order = ["ms-flow-pv", "ms-flow-grid", "ms-flow-battery", "ms-flow-home"].map((name) =>
+    html.indexOf(`ms-flow-tile ${name}`),
   );
-  assert.ok(order.every((index) => index >= 0), "all four mobile tiles must render");
+  assert.ok(order.every((index) => index >= 0), "all four mobile flow tiles must render");
   assert.deepStrictEqual(
     order,
     [...order].sort((a, b) => a - b),
-    "mobile tiles must be ordered PV -> Grid -> Battery -> House",
+    "mobile flow tiles must be ordered PV -> Grid -> Battery -> House",
   );
+  for (const title of ["PV details", "Grid details", "Battery details", "House details"]) {
+    assert.ok(html.includes(title), `${title} widget must render below the flow canvas`);
+  }
 }
 
 function test_desktop_status_keeps_the_flow_canvas() {
@@ -177,21 +186,21 @@ function test_desktop_status_keeps_the_flow_canvas() {
   assert.doesNotMatch(html, /mobile-status-panel/);
 }
 
-function test_mobile_scale_guard_is_present() {
+function test_mobile_flow_panel_is_scaled_by_common_logic() {
   const method = source.slice(
     source.indexOf("  scaleFlowPanel() {"),
     source.indexOf("  updateFlowLines() {"),
   );
-  assert.match(
-    method,
-    /if \(this\.querySelector\("\.mobile-status-panel"\)\) return;/,
-    "scaleFlowPanel must skip the desktop scaling path for the mobile panel",
-  );
+  assert.match(method, /const isMobile = !!this\.querySelector\("\.mobile-status-panel"\)/);
+  assert.match(method, /this\.querySelector\(isMobile \? "\.ms-flow-wrapper" : "\.flow-wrapper"\)/);
+  assert.match(method, /this\.querySelector\(isMobile \? "\.ms-flow-scaler" : "\.flow-scaler"\)/);
+  assert.match(method, /isMobile \? 422 : 1328/);
+  assert.match(method, /isMobile \? 320 : 768/);
 }
 
 test_mobile_status_uses_compact_layout();
 test_mobile_status_keeps_live_data_hooks_and_content();
-test_mobile_tiles_are_stacked_in_expected_order();
+test_mobile_flow_tiles_are_in_expected_order();
 test_desktop_status_keeps_the_flow_canvas();
-test_mobile_scale_guard_is_present();
+test_mobile_flow_panel_is_scaled_by_common_logic();
 console.log("mobile status layout tests passed");

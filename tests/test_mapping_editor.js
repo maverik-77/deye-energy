@@ -292,7 +292,7 @@ async function test_mapping_save_rejects_invalid_draft_before_any_write() {
 
 async function test_mapping_save_handles_read_only_provider_without_writes() {
   const { card, calls } = makeCard({ readOnly: true });
-  const html = card.renderMappingTab([]);
+  const html = card.renderTouSettingsContent([]);
   assertTrue(html.includes("read-only"), "read-only provider must explain that saving is unavailable");
   assertTrue(html.includes('data-save-mapping="1" disabled'), "read-only provider must disable the save button");
   const result = await card.saveMappingToInverter();
@@ -309,14 +309,15 @@ async function test_mapping_save_checks_service_and_backend_pending() {
   assertEqual(pending.calls.length, 0, "backend pending must not call anything");
 }
 
-function test_mapping_tab_renders_editable_fields_and_fixed_boundaries() {
+function test_tou_table_renders_editable_fields_and_fixed_boundaries() {
   const { card } = makeCard();
-  const html = card.renderMappingTab([]);
+  const html = card.renderTouSettingsContent([]);
   assertTrue(html.includes('data-mapping-field="start" data-mapping-slot="2"'), "middle From values must be editable");
   assertTrue(html.includes('data-mapping-field="end" data-mapping-slot="5"'), "middle To values must be editable");
   assertTrue(!html.includes('data-mapping-field="start" data-mapping-slot="1"'), "first From must be fixed at 00:00");
   assertTrue(!html.includes('data-mapping-field="end" data-mapping-slot="6"'), "last To must be fixed at 00:00");
-  assertTrue(html.includes('data-refresh-mapping="1"') && html.includes('data-save-mapping="1"'), "refresh and save actions must be present");
+  assertTrue(html.includes('data-refresh-mapping="1"') && html.includes('data-save-mapping="1"'), "rollback and save actions must be present");
+  assertTrue(html.includes(">Rollback<") && html.includes(">Save<"), "bottom actions must be labelled Rollback and Save");
 }
 
 function test_both_card_copies_remain_identical() {
@@ -335,7 +336,7 @@ const tests = [
   test_mapping_save_rejects_invalid_draft_before_any_write,
   test_mapping_save_handles_read_only_provider_without_writes,
   test_mapping_save_checks_service_and_backend_pending,
-  test_mapping_tab_renders_editable_fields_and_fixed_boundaries,
+  test_tou_table_renders_editable_fields_and_fixed_boundaries,
   test_both_card_copies_remain_identical,
 ];
 

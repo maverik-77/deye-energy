@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.53
+// Resource revision: v=0.8.0.54
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -12,13 +12,6 @@ class DeyeEnergyCard extends HTMLElement {
     this._chargeProfilePending = null;
     this._normalProfileDraft = {};
     this._normalProfilePending = null;
-    this._touEditDraft = null;
-    this._touEditOriginal = null;
-    this._touSaving = false;
-    this._touSaveError = "";
-    this._touAwaitingConfirmation = null;
-    this._touRollingBack = false;
-    this._touRollbackStatus = "";
     this._lastTouDiagnosticsSignature = "";
     this._mappingDraft = null;
     this._mappingSaveError = "";
@@ -292,7 +285,6 @@ class DeyeEnergyCard extends HTMLElement {
       }
       this.resetSlotEditor();
     }
-    if (this._dialog.type === "tou") this.resetTouEditor();
     if (this._dialog.type === "settings") this.resetMappingEditor();
     this._dialog = null;
     this._interacting = false;
@@ -308,9 +300,7 @@ class DeyeEnergyCard extends HTMLElement {
       const touSignature = this.touDiagnosticsSignature();
       if (touSignature !== this._lastTouDiagnosticsSignature) {
         this._lastTouDiagnosticsSignature = touSignature;
-        this.syncTouEditorAfterDiagnostics();
-        if (this._dialog?.type === "tou"
-          || (this._dialog?.type === "settings" && (this._settingsTab === "tou" || this._settingsTab === "mapping"))) {
+        if (this._dialog?.type === "settings" && this._settingsTab === "tou") {
           this.renderDialogOnly();
         }
       }
@@ -707,6 +697,12 @@ class DeyeEnergyCard extends HTMLElement {
 
   exists(entityId) {
     return Boolean(this._hass?.states?.[entityId]);
+  }
+
+  hasLiveState(entityId) {
+    const state = this._hass?.states?.[entityId]?.state;
+    return state !== undefined && state !== null && state !== "" &&
+      state !== "unknown" && state !== "unavailable";
   }
 
   configuredEntity(key, domain, fallbackSuffix) {
@@ -1345,9 +1341,9 @@ class DeyeEnergyCard extends HTMLElement {
     const list = Array.isArray(suffixes) ? suffixes : [suffixes];
     for (const suffix of list) {
       const direct = `${domain}.deye_energy_${suffix}`;
-      if (this.exists(direct)) return direct;
+      if (this.hasLiveState(direct)) return direct;
       const doubled = `${domain}.deye_energy_deye_energy_${suffix}`;
-      if (this.exists(doubled)) return doubled;
+      if (this.hasLiveState(doubled)) return doubled;
     }
     return "";
   }
@@ -1361,6 +1357,7 @@ class DeyeEnergyCard extends HTMLElement {
     for (const suffix of list) {
       const normalized = this.norm(suffix);
       const found = candidates.find((id) => {
+        if (!this.hasLiveState(id)) return false;
         const flatId = this.norm(id);
         const friendly = this.norm(this._hass.states[id]?.attributes?.friendly_name || "");
         return (flatId.includes("deyeenergy") && flatId.includes(normalized))
@@ -1772,8 +1769,8 @@ class DeyeEnergyCard extends HTMLElement {
       return "Select the physical Deye mode for Normal Operation.";
     }
     const limits = {
-      sell_power: [0, 100000], discharge_current: [0, 240], charge_current: [0, 240],
-      grid_charge_current: [0, 240], minimum_sell_soc: [0, 100], tou_soc: [0, 100],
+      sell_power: [0, 100000], discharge_current: [0, 300], charge_current: [0, 300],
+      grid_charge_current: [0, 300], minimum_sell_soc: [0, 100], tou_soc: [0, 100],
       min_sell_price: [0, 5],
     };
     for (const [field, [minimum, maximum]] of Object.entries(limits)) {
@@ -2090,105 +2087,6 @@ class DeyeEnergyCard extends HTMLElement {
     }
   }
 
-  async savePhysicalTouSlot(slot) {
-    if (this._touSaving || this.touWritePending()) {
-      this._touSaveError = "Saving Deye Time Of Use";
-      this.renderDialogOnly();
-      return false;
-    }
-    if (!this.hasService("deye_energy", "set_tou_slot")) {
-      this.failSave("tou_slot", new Error("The set_tou_slot service is unavailable"));
-      return false;
-    }
-    const capability = this.touCapabilityRow(slot);
-    if (!capability || capability.read_only === true) {
-      this._touSaveError = "This provider exposes Deye Time Of Use as read-only.";
-      this.renderDialogOnly();
-      return false;
-    }
-    if (this.touControlBlocked(capability)) {
-      this._touSaveError = "Deye control is disabled.";
-      this.renderDialogOnly();
-      return false;
-    }
-    this.collectTouEditorDraft(slot);
-    let payload;
-    try {
-      payload = this.buildTouPartialPayload(slot);
-    } catch (error) {
-      this._touSaveError = error?.message || String(error);
-      this.renderDialogOnly();
-      return false;
-    }
-    if (Object.keys(payload).length === 1) {
-      this._touSaveError = "No changes to save.";
-      this.renderDialogOnly();
-      return false;
-    }
-    this._touSaving = true;
-    this._touSaveError = "";
-    this.beginSave();
-    this.renderDialogOnly();
-    try {
-      await this.callService("deye_energy", "set_tou_slot", payload);
-      this._touSaving = false;
-      const status = this.touOperationStatus();
-      if (status === "confirmed") {
-        this.finishSave();
-        this.refreshTouEditorFromActual(slot);
-        this._touAwaitingConfirmation = null;
-      } else if (["rollback", "rollback_failed", "mismatch", "unavailable"].includes(status)) {
-        this._pendingSaves = Math.max(0, this._pendingSaves - 1);
-        this._saveHadError = true;
-        this._saveStatus = "error";
-        this._touSaveError = this.touOperationError() || this.touOperationStatusLabel(status);
-        this.refreshTouEditorFromActual(slot, false);
-      } else {
-        this._pendingSaves = Math.max(0, this._pendingSaves - 1);
-        this._saveStatus = "idle";
-        this._touAwaitingConfirmation = slot;
-      }
-      this.renderDialogOnly();
-      return true;
-    } catch (error) {
-      this._touSaving = false;
-      this._touSaveError = error?.message || "Could not save Deye Time Of Use.";
-      this.refreshTouEditorFromActual(slot, false);
-      this.failSave(`tou_slot_${slot}`, error);
-      return false;
-    }
-  }
-
-  async rollbackTouEditor(slot) {
-    if (this._touRollingBack || this._touSaving || this.touWritePending()) return false;
-    const entityIds = this.mappingTouEntityIds();
-    this._touRollingBack = true;
-    this._touSaveError = "";
-    this._touRollbackStatus = "Reading the current values from the inverter…";
-    this.renderDialogOnly();
-    try {
-      if (entityIds.length && this.hasService("homeassistant", "update_entity")) {
-        await this.callService("homeassistant", "update_entity", { entity_id: entityIds });
-      }
-      const actual = this.touActualValues(slot);
-      this.touFieldNames().forEach((field) => {
-        const live = this.mappingLiveValue(this.mappingEntityId(slot, field), field);
-        if (live !== null && live !== undefined) actual[field] = live;
-      });
-      this._touEditOriginal = { slot: Number(slot), values: { ...actual } };
-      this._touEditDraft = { slot: Number(slot), values: { ...actual } };
-      this._touAwaitingConfirmation = null;
-      this._touRollbackStatus = "Restored the values currently reported by the inverter.";
-    } catch (error) {
-      this._touSaveError = error?.message || "Could not read the inverter values.";
-      this._touRollbackStatus = "";
-    } finally {
-      this._touRollingBack = false;
-      this.renderDialogOnly();
-    }
-    return !this._touSaveError;
-  }
-
   hasService(domain, service) {
     return Boolean(this._hass?.services?.[domain]?.[service]);
   }
@@ -2333,9 +2231,9 @@ class DeyeEnergyCard extends HTMLElement {
       values[field.dataset.chargeProfileNumber] = value;
     }
     const currentRanges = {
-      charge_current: { min: 0, max: 240 },
-      discharge_current: { min: 0, max: 240 },
-      grid_charge_current: { min: 0, max: 240 },
+      charge_current: { min: 0, max: 300 },
+      discharge_current: { min: 0, max: 300 },
+      grid_charge_current: { min: 0, max: 300 },
       target_soc: { min: 0, max: 100 },
     };
     for (const [key, { min, max }] of Object.entries(currentRanges)) {
@@ -2597,7 +2495,7 @@ class DeyeEnergyCard extends HTMLElement {
     const entity = this._hass.states[entityId];
     const profile = this.chargeProfileValues();
     const profileKeys = { charge_current: "chargeCurrent", discharge_current: "dischargeCurrent", grid_charge_current: "gridChargeCurrent", target_soc: "targetSoc" };
-    const fallback = name === "target_soc" ? { min: 0, max: 100, step: 1 } : { min: 0, max: 240, step: 1 };
+    const fallback = name === "target_soc" ? { min: 0, max: 100, step: 1 } : { min: 0, max: 300, step: 1 };
     const current = entity && !["unknown", "unavailable", ""].includes(entity.state) ? entity.state : profile[profileKeys[name]];
     const value = Object.prototype.hasOwnProperty.call(this._chargeProfileDraft, name) ? this._chargeProfileDraft[name] : current;
     const rawMin = Number(entity?.attributes?.min);
@@ -2635,9 +2533,9 @@ class DeyeEnergyCard extends HTMLElement {
     };
     const fallback = {
       sell_power: { min: 0, max: this.effectiveInverterMaxPowerW(), step: 1 },
-      discharge_current: { min: 0, max: 240, step: 0.1 },
-      charge_current: { min: 0, max: 240, step: 0.1 },
-      grid_charge_current: { min: 0, max: 240, step: 0.1 },
+      discharge_current: { min: 0, max: 300, step: 0.1 },
+      charge_current: { min: 0, max: 300, step: 0.1 },
+      grid_charge_current: { min: 0, max: 300, step: 0.1 },
       tou_soc: { min: 0, max: 100, step: 1 },
     };
     const current = profile[profileKeys[name]];
@@ -3080,7 +2978,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.53)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.54)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -3841,29 +3739,6 @@ class DeyeEnergyCard extends HTMLElement {
     return this.touCapabilitiesDiagnostics().find((row) => Number(row.slot_index) === Number(slot)) || null;
   }
 
-  physicalTouRow(slot) {
-    return this.physicalTouDiagnostics().find((row) => Number(row.range) === Number(slot)) || null;
-  }
-
-  touFieldNames() {
-    return ["start", "end", "soc", "grid_charge"];
-  }
-
-  touFieldCapability(slot, field) {
-    return this.touCapabilityRow(slot)?.fields?.[field] || null;
-  }
-
-  touFieldDiagnostics(slot, field) {
-    const physical = this.physicalTouRow(slot);
-    const current = physical?.fields?.[field] || {};
-    return {
-      capability: this.touFieldCapability(slot, field) || current.capability || {},
-      actual: current.actual ?? null,
-      expected: current.expected ?? null,
-      status: String(current.status || "unavailable"),
-    };
-  }
-
   touWritePending() {
     return this.touTransactionDiagnostics().tou_write_pending === true;
   }
@@ -3873,31 +3748,11 @@ class DeyeEnergyCard extends HTMLElement {
     return String(transaction.operation_status || transaction.tou_operation_status || "idle");
   }
 
-  touOperationError() {
-    const transaction = this.touTransactionDiagnostics();
-    const reverse = this.touReverseSyncDiagnostics();
-    const value = reverse.reverse_sync_last_error && reverse.reverse_sync_last_error !== "none"
-      ? reverse.reverse_sync_last_error
-      : transaction.tou_last_error;
-    return value && value !== "none" ? String(value) : "";
-  }
-
   touControlBlocked(row = null) {
     const control = this.diagnosticsAttributes()?.control || {};
     return control.control_enabled === false
       || String(control.control_status || "") !== "Active"
       || row?.blocked_by_master_control === true;
-  }
-
-  touStatusLabel(status) {
-    return ({
-      unchanged: "No change",
-      waiting: "Waiting",
-      confirmed: "Confirmed",
-      rolled_back: "Restored",
-      mismatch: "Mismatch",
-      unavailable: "Unavailable",
-    })[String(status)] || "Unavailable";
   }
 
   touOperationStatusLabel(status = this.touOperationStatus()) {
@@ -3935,144 +3790,6 @@ class DeyeEnergyCard extends HTMLElement {
     });
   }
 
-  touActualValues(slot) {
-    const values = {};
-    this.touFieldNames().forEach((field) => {
-      const data = this.touFieldDiagnostics(slot, field);
-      if (data.capability.supported !== true) return;
-      values[field] = field === "grid_charge" ? Boolean(data.actual) : data.actual;
-    });
-    return values;
-  }
-
-  resetTouEditor() {
-    this._touEditDraft = null;
-    this._touEditOriginal = null;
-    this._touSaveError = "";
-    this._touAwaitingConfirmation = null;
-    this._touRollingBack = false;
-    this._touRollbackStatus = "";
-  }
-
-  openTouEditor(slot) {
-    const actual = this.touActualValues(slot);
-    this._touEditOriginal = { slot: Number(slot), values: { ...actual } };
-    this._touEditDraft = { slot: Number(slot), values: { ...actual } };
-    this._touSaveError = "";
-    this._dialog = { type: "tou", idx: Number(slot) };
-  }
-
-  ensureTouEditorDraft(slot) {
-    if (this._touEditDraft?.slot === Number(slot) && this._touEditOriginal?.slot === Number(slot)) return;
-    const actual = this.touActualValues(slot);
-    this._touEditOriginal = { slot: Number(slot), values: { ...actual } };
-    this._touEditDraft = { slot: Number(slot), values: { ...actual } };
-  }
-
-  refreshTouEditorFromActual(slot, clearError = true) {
-    const actual = this.touActualValues(slot);
-    this._touEditOriginal = { slot: Number(slot), values: { ...actual } };
-    this._touEditDraft = { slot: Number(slot), values: { ...actual } };
-    if (clearError) this._touSaveError = "";
-  }
-
-  syncTouEditorAfterDiagnostics() {
-    if (!this._touAwaitingConfirmation) return;
-    const slot = Number(this._touAwaitingConfirmation);
-    const status = this.touOperationStatus();
-    if (status === "confirmed") {
-      this.refreshTouEditorFromActual(slot);
-      this._touAwaitingConfirmation = null;
-      this._saveStatus = "saved";
-      this._saveMessage = "Deye Time Of Use save confirmed";
-    } else if (["rollback", "rollback_failed", "mismatch", "unavailable"].includes(status)) {
-      this.refreshTouEditorFromActual(slot, false);
-      this._touAwaitingConfirmation = null;
-      this._saveStatus = "error";
-      this._touSaveError = this.touOperationError() || this.touOperationStatusLabel(status);
-    }
-  }
-
-  collectTouEditorDraft(slot) {
-    this.ensureTouEditorDraft(slot);
-    const values = this._touEditDraft.values;
-    const controls = {
-      start: this.querySelector('[data-tou-field="start"]'),
-      end: this.querySelector('[data-tou-field="end"]'),
-      soc: this.querySelector('[data-tou-field="soc"]'),
-      grid_charge: this.querySelector('[data-tou-field="grid_charge"]'),
-    };
-    Object.entries(controls).forEach(([field, control]) => {
-      if (!control) return;
-      if (field === "grid_charge") values[field] = String(control.value) === "on";
-      else if (field === "soc") values[field] = this.asNumber(control.value);
-      else values[field] = String(control.value || "").slice(0, 5);
-    });
-    return values;
-  }
-
-  touFieldChanged(field, current, previous) {
-    if (field === "soc") return Number(current) !== Number(previous);
-    if (field === "grid_charge") return Boolean(current) !== Boolean(previous);
-    return String(current ?? "") !== String(previous ?? "");
-  }
-
-  touEditorWritableFields(slot) {
-    return this.touFieldNames().filter((field) => {
-      const capability = this.touFieldCapability(slot, field);
-      return capability?.supported === true && capability.writable === true;
-    });
-  }
-
-  touEditorDirty(slot) {
-    const draft = this._touEditDraft?.values || {};
-    const original = this._touEditOriginal?.values || {};
-    return this.touEditorWritableFields(slot).some((field) => this.touFieldChanged(field, draft[field], original[field]));
-  }
-
-  updateTouEditorButtons(slot) {
-    const capability = this.touCapabilityRow(slot);
-    const blocked = !capability
-      || capability.read_only === true
-      || this.touControlBlocked(capability)
-      || this._touSaving === true
-      || this._touRollingBack === true
-      || this.touWritePending();
-    const dirty = !blocked && this.touEditorDirty(slot);
-    this.querySelectorAll(`[data-save-tou="${Number(slot)}"]`).forEach((button) => {
-      button.textContent = this._touSaving ? "Saving…" : "Apply to Inverter";
-      button.disabled = blocked || !dirty;
-      button.setAttribute("aria-busy", this._touSaving ? "true" : "false");
-    });
-    this.querySelectorAll("[data-rollback-tou]").forEach((button) => {
-      button.disabled = blocked;
-      button.textContent = this._touRollingBack ? "Reading…" : "Rollback";
-    });
-  }
-
-  buildTouPartialPayload(slot) {
-    this.ensureTouEditorDraft(slot);
-    const payload = { slot: Number(slot) };
-    const draft = this._touEditDraft.values;
-    const original = this._touEditOriginal.values;
-    this.touFieldNames().forEach((field) => {
-      const capability = this.touFieldCapability(slot, field);
-      if (capability?.supported !== true || capability.writable !== true) return;
-      const current = draft[field];
-      if (!this.touFieldChanged(field, current, original[field])) return;
-      if ((field === "start" || field === "end") && this.minutesFromClock(current) === null) {
-        throw new Error("The From and To times must be valid HH:MM times.");
-      }
-      if (field === "soc" && (!Number.isFinite(Number(current)) || Number(current) < 0 || Number(current) > 100)) {
-        throw new Error("Deye TOU SOC must be between 0 and 100%.");
-      }
-      if (field === "grid_charge") payload.grid_charge = Boolean(current);
-      else if (field === "soc") payload.soc = Number(current);
-      else payload[field] = this.clockFromMinutes(this.minutesFromClock(current));
-    });
-    return payload;
-  }
-
   diagnosticsAttributes() {
     return this._hass?.states?.[this.entity("sensor", "diagnostics")]?.attributes || {};
   }
@@ -4092,17 +3809,7 @@ class DeyeEnergyCard extends HTMLElement {
     return Array.isArray(plan) ? plan : [];
   }
 
-  hasWritablePhysicalTou(slot = null) {
-    const rows = slot === null ? this.touCapabilitiesDiagnostics() : [this.touCapabilityRow(slot)].filter(Boolean);
-    return this.hasService("deye_energy", "set_tou_slot")
-      && !this._touSaving
-      && !this.touWritePending()
-      && rows.some((row) => row.read_only !== true
-        && !this.touControlBlocked(row)
-        && this.touFieldNames().some((field) => row.fields?.[field]?.writable === true));
-  }
-
-  // ---- 24 h mapping editor -------------------------------------------------
+  // ---- Deye Time Of Use table editor ---------------------------------------
 
   // Reverse of clockFromMinutes; accepts any valid HH:MM whole-minute time.
   minutesFromClock(value) {
@@ -4200,7 +3907,7 @@ class DeyeEnergyCard extends HTMLElement {
   }
 
   // Force the upstream integration to re-read the physical TOU entities, then
-  // redraw from the live states. Called every time the mapping tab is opened.
+  // redraw from the live states. Called every time the TOU tab is opened.
   async refreshMappingFromInverter(options = {}) {
     const keepStatus = options.keepStatus === true;
     const previousStatus = this._mappingStatus;
@@ -4213,11 +3920,19 @@ class DeyeEnergyCard extends HTMLElement {
         refreshError = error?.message || "Could not refresh the inverter values.";
       }
     }
-    // Opening the tab or pressing Refresh discards any unsaved draft so the
+    // Opening the tab or pressing Rollback discards any unsaved draft so the
     // next render is built from the freshly fetched inverter values.
     this.resetMappingEditor();
     if (refreshError) this._mappingSaveError = refreshError;
     else if (keepStatus) this._mappingStatus = previousStatus;
+    this.renderDialogOnly();
+  }
+
+  // Rollback discards every local edit and repopulates all six rows from the
+  // values currently reported by the inverter.
+  async rollbackTouTable() {
+    await this.refreshMappingFromInverter();
+    if (!this._mappingSaveError) this._mappingStatus = "Restored all rows from the inverter.";
     this.renderDialogOnly();
   }
 
@@ -4792,7 +4507,32 @@ class DeyeEnergyCard extends HTMLElement {
       ${message}`;
   }
 
-  renderMappingTab(slots) {
+  touGridLabel(value) {
+    const normalized = String(value ?? "").trim().toLowerCase();
+    if (["on", "grid", "allow grid", "both"].includes(normalized)) return "yes";
+    if (["off", "disabled", "no grid or gen"].includes(normalized)) return "no";
+    return value ? String(value) : "missing";
+  }
+
+  renderTouReverseSyncSummary() {
+    const reverse = this.touReverseSyncDiagnostics();
+    const changed = Array.isArray(reverse.reverse_sync_changed_hours)
+      ? reverse.reverse_sync_changed_hours.join(", ")
+      : "";
+    const roundTrip = reverse.reverse_sync_round_trip_ok === true
+      ? "Match"
+      : reverse.reverse_sync_round_trip_ok === false ? "Mismatch" : "No data";
+    const error = reverse.reverse_sync_last_error && reverse.reverse_sync_last_error !== "none"
+      ? `<div class="bad">${this.escapeHtml(String(reverse.reverse_sync_last_error))}</div>`
+      : "";
+    return `<div class="hint tou-reverse-sync" data-tou-reverse-sync>
+      <div>Schedule synchronisation: <strong>${this.touReverseStatusLabel(reverse.reverse_sync_status)}</strong></div>
+      <div>Changed hours: <strong>${changed || "None"}</strong></div>
+      <div>Round-trip: <strong>${roundTrip}</strong></div>${error}
+    </div>`;
+  }
+
+  renderTouSettingsContent(slots) {
     const rows = this.ensureMappingDraft();
     const boundaryField = (row, field) => (field === "start" && Number(row.slot) === 1)
       || (field === "end" && Number(row.slot) === rows.length);
@@ -4815,117 +4555,19 @@ class DeyeEnergyCard extends HTMLElement {
       : this._mappingStatus
         ? `<div class="good" data-mapping-status>${this.escapeHtml(this._mappingStatus)}</div>`
         : "";
-    const readOnlyHint = writable ? "" : `<div class="hint">This provider exposes Deye Time Of Use as read-only; the mapping cannot be saved.</div>`;
-    return `<div class="hint">${this.mapWarning(slots)}. The full-day schedule is arranged into six ranges and written to Deye Time Of Use. Values are re-read from the inverter each time this page is opened. The first From and last To are fixed at 00:00; each To follows the next range's From.</div>
-      ${readOnlyHint}
-      <table class="settings-table mapping-table"><thead><tr><th>Deye slot</th><th>From</th><th>To</th><th>Grid charging</th><th>SOC</th></tr></thead><tbody>${rowHtml}</tbody></table>
+    const readOnlyHint = writable ? "" : `<div class="hint">This provider exposes Deye Time Of Use as read-only; the table cannot be saved.</div>`;
+    const blockedHint = this.touControlBlocked() ? `<div class="hint">Deye control is disabled.</div>` : "";
+    const pendingHint = this.touWritePending() ? `<div class="hint">Saving Deye Time Of Use</div>` : "";
+    return `<div class="hint">${this.mapWarning(slots)}. Edit the six rows below directly. The first From and last To are fixed at 00:00; each To follows the next row's From. Save validates that the day starts at 00:00, ends at 00:00 and has no gaps or overlaps.</div>
+      ${readOnlyHint}${blockedHint}${pendingHint}
+      <div class="hint">Operation status: <strong>${this.touOperationStatusLabel()}</strong></div>
+      <table class="settings-table mapping-table" data-tou-capabilities-table><thead><tr><th>Slot</th><th>From</th><th>To</th><th>Grid charging</th><th>SOC</th></tr></thead><tbody>${rowHtml}</tbody></table>
+      ${this.renderTouReverseSyncSummary()}
       <div class="dialog-actions">
-        <button type="button" data-refresh-mapping="1">Refresh from inverter</button>
-        <button type="button" class="primary" data-save-mapping="1" ${writable && !this._mappingSaving ? "" : "disabled"}>${this._mappingSaving ? "Saving…" : "Save to inverter"}</button>
+        <button type="button" data-refresh-mapping="1" ${this._mappingSaving ? "disabled" : ""}>${this._mappingSaving ? "Reading…" : "Rollback"}</button>
+        <button type="button" class="primary" data-save-mapping="1" ${writable && !this._mappingSaving ? "" : "disabled"}>${this._mappingSaving ? "Saving…" : "Save"}</button>
       </div>
       ${message}`;
-  }
-
-  touGridLabel(value) {
-    const normalized = String(value ?? "").trim().toLowerCase();
-    if (["on", "grid", "allow grid", "both"].includes(normalized)) return "yes";
-    if (["off", "disabled", "no grid or gen"].includes(normalized)) return "no";
-    return value ? String(value) : "missing";
-  }
-
-  touFieldLabel(field) {
-    return ({
-      start: "From",
-      end: "Do",
-      soc: "SOC Deye TOU",
-      grid_charge: "Grid charging",
-    })[field] || field;
-  }
-
-  formatTouFieldValue(field, value) {
-    if (value === null || value === undefined || value === "") return "Unavailable";
-    if (field === "grid_charge") return Boolean(value) ? "Yes" : "No";
-    if (field === "soc") return `${this.escapeHtml(String(value))}%`;
-    return this.escapeHtml(String(value).slice(0, 5));
-  }
-
-  touEditorFieldHtml(slot, field) {
-    const data = this.touFieldDiagnostics(slot, field);
-    const capability = data.capability;
-    if (capability.supported !== true) return "";
-    const currentAvailable = capability.current_available !== false && data.actual !== null;
-    const draftValue = this._touEditDraft?.values?.[field];
-    const writable = capability.writable === true;
-    let control;
-    if (!currentAvailable) {
-      control = `<span class="bad" data-tou-unavailable="${field}">Unavailable</span>`;
-    } else if (!writable) {
-      control = `<span data-tou-readonly="${field}">${this.formatTouFieldValue(field, data.actual)}</span>`;
-    } else if (field === "start" || field === "end") {
-      control = `<input data-tou-field="${field}" type="time" step="60" value="${this.escapeHtml(this.normalizeMappingClock(draftValue ?? data.actual))}">`;
-    } else if (field === "soc") {
-      control = `<input data-tou-field="soc" type="number" min="0" max="100" step="1" value="${this.escapeHtml(String(draftValue ?? data.actual))}"><span class="unit">%</span>`;
-    } else {
-      control = `<select data-tou-field="grid_charge"><option value="off" ${Boolean(draftValue ?? data.actual) ? "" : "selected"}>NO</option><option value="on" ${Boolean(draftValue ?? data.actual) ? "selected" : ""}>YES</option></select>`;
-    }
-    const expected = data.expected === null || data.expected === undefined
-      ? ""
-      : `<span>Expected value: <strong>${this.formatTouFieldValue(field, data.expected)}</strong></span>`;
-    return `<div class="settings-row tou-editor-field" data-tou-editor-field="${field}">
-      <label>${this.touFieldLabel(field)}</label><div>${control}</div>
-      <div class="hint tou-field-state"><span>Current value: <strong>${this.formatTouFieldValue(field, data.actual)}</strong></span>${expected}<span>Status: <strong>${this.touStatusLabel(data.status)}</strong></span></div>
-    </div>`;
-  }
-
-  renderTouReverseSyncSummary() {
-    const reverse = this.touReverseSyncDiagnostics();
-    const changed = Array.isArray(reverse.reverse_sync_changed_hours)
-      ? reverse.reverse_sync_changed_hours.join(", ")
-      : "";
-    const roundTrip = reverse.reverse_sync_round_trip_ok === true
-      ? "Match"
-      : reverse.reverse_sync_round_trip_ok === false ? "Mismatch" : "No data";
-    const error = reverse.reverse_sync_last_error && reverse.reverse_sync_last_error !== "none"
-      ? `<div class="bad">${this.escapeHtml(String(reverse.reverse_sync_last_error))}</div>`
-      : "";
-    return `<div class="hint tou-reverse-sync" data-tou-reverse-sync>
-      <div>Schedule synchronisation: <strong>${this.touReverseStatusLabel(reverse.reverse_sync_status)}</strong></div>
-      <div>Changed hours: <strong>${changed || "None"}</strong></div>
-      <div>Round-trip: <strong>${roundTrip}</strong></div>${error}
-    </div>`;
-  }
-
-  renderTouSettingsContent() {
-    const capabilityRows = this.touCapabilitiesDiagnostics();
-    const supportedFields = this.touFieldNames().filter((field) => capabilityRows.some((row) => row.fields?.[field]?.supported === true));
-    if (!supportedFields.length) {
-      return `<div class="hint">No Deye Time Of Use fields available for this provider.</div>${this.renderTouReverseSyncSummary()}`;
-    }
-    const headers = supportedFields.map((field) => `<th>${this.touFieldLabel(field)}</th>`).join("");
-    const rows = capabilityRows.map((capability) => {
-      const slot = Number(capability.slot_index);
-      const cells = supportedFields.map((field) => {
-        const data = this.touFieldDiagnostics(slot, field);
-        return `<td>${data.capability.supported === true ? this.formatTouFieldValue(field, data.actual) : "—"}</td>`;
-      }).join("");
-      const hasReadable = supportedFields.some((field) => capability.fields?.[field]?.readable === true || capability.fields?.[field]?.current_available === false);
-      const action = hasReadable
-        ? `<button class="icon-only" data-open-tou="${slot}" title="${capability.read_only === true ? "Show physical slot" : "Edit physical slot"}">${this.iconSvg(capability.read_only === true ? "info" : "edit")}</button>`
-        : "No reading";
-      return `<tr><td>${slot}</td>${cells}<td>${action}</td></tr>`;
-    }).join("");
-    const readOnly = capabilityRows.length > 0 && capabilityRows.every((row) => row.read_only === true);
-    const blocked = capabilityRows.some((row) => this.touControlBlocked(row));
-    const pending = this.touWritePending();
-    const note = readOnly
-      ? "This provider exposes Deye Time Of Use as read-only."
-      : blocked
-        ? "Deye control is disabled."
-        : pending ? "Saving Deye Time Of Use" : "Fields are rendered according to the capabilities provided by the backend.";
-    return `<div class="hint">${note}</div>
-      <div class="hint">Operation status: <strong>${this.touOperationStatusLabel()}</strong></div>
-      <table class="settings-table" data-tou-capabilities-table><thead><tr><th>Slot</th>${headers}<th>Action</th></tr></thead><tbody>${rows}</tbody></table>
-      ${this.renderTouReverseSyncSummary()}`;
   }
 
   resetBulkEditState() {
@@ -5070,14 +4712,14 @@ class DeyeEnergyCard extends HTMLElement {
     tileGap = 28,
     inverterColumnWidth = 640,
     inverterVisualWidth = 190,
+    boardHeight = 600,
   } = {}) {
-    const boardHeight = 600;
     const boardWidth = tileWidth * 2 + inverterColumnWidth + tileGap * 2;
     const inverterCenterX = tileWidth + tileGap + inverterColumnWidth / 2;
     const inverterVisualHeight = inverterVisualWidth * (250 / 190);
     const inverterCenterY = boardHeight / 2;
     const inverterPortOffsetY = inverterVisualHeight * 0.22;
-    const tileTopY = 145;
+    const tileTopY = Math.round(boardHeight * (145 / 600));
     const tileBottomY = boardHeight - tileTopY;
     const points = {
       pvTile: { x: tileWidth, y: tileTopY },
@@ -5275,6 +4917,32 @@ class DeyeEnergyCard extends HTMLElement {
     </svg>`;
 
     if (layout.is_mobile) {
+      const mfTileWidth = 118;
+      const mfTileGap = 10;
+      const mfInverterColumn = 150;
+      const mfInverterVisual = 92;
+      const mfBoardHeight = 320;
+      const mfGeo = this.flowGeometry({
+        tileWidth: mfTileWidth,
+        tileGap: mfTileGap,
+        inverterColumnWidth: mfInverterColumn,
+        inverterVisualWidth: mfInverterVisual,
+        boardHeight: mfBoardHeight,
+      });
+      const mfBoardWidth = mfGeo.boardWidth;
+      const mfPanelWidth = mfBoardWidth + 16;
+      const mfActive = {
+        pv: pvPower > 1,
+        gridImport: gridPower > 1,
+        gridExport: gridPower < -1,
+        batteryDischarge: batteryPower > 1,
+        batteryCharge: batteryPower < -1,
+        load: loadPower > 1,
+      };
+      const mfBatPath = mfActive.batteryCharge ? mfGeo.paths.inverterToBattery : mfGeo.paths.batteryToInverter;
+      const mfGridPath = mfActive.gridExport ? mfGeo.paths.inverterToGrid : mfGeo.paths.gridToInverter;
+      const mfFlowMarker = (key, isActive) => isActive ? ` marker-end="url(#mf-arrow-${key})"` : "";
+      const mfDetailRow = (label, value, role) => `<div class="ms-detail-row${role ? esHidden(role) : ""}"><span>${label}</span><strong>${value}</strong></div>`;
       const msPhase = (label, value, sub = "", hidden = false) => `
         <div class="ms-phase${hidden ? " es-hidden" : ""}">
           <div class="ms-phase-label">${label}</div>
@@ -5318,6 +4986,46 @@ class DeyeEnergyCard extends HTMLElement {
 .ms-foot .positive{color:#4ade80}
 .ms-foot .bought{color:#c084fc}
 .ms-foot .sold{color:#4ade80}
+.ms-flow-wrapper{position:relative;width:100%;max-width:${mfPanelWidth}px;margin:0 auto;overflow:hidden}
+.ms-flow-scaler{width:${mfPanelWidth}px;transform-origin:top left;transform:scale(1);line-height:1}
+.ms-flow-board{position:relative;display:grid;grid-template-columns:${mfTileWidth}px ${mfInverterColumn}px ${mfTileWidth}px;grid-template-rows:${mfBoardHeight}px;gap:0 ${mfTileGap}px;align-items:center;justify-items:center;width:${mfBoardWidth}px;height:${mfBoardHeight}px}
+.ms-flow-tile{position:relative;z-index:3;width:${mfTileWidth}px;height:154px;box-sizing:border-box;border:1.5px solid rgba(86,149,184,.48);border-radius:12px;background:radial-gradient(circle at 22% 0%,rgba(26,100,151,.13),transparent 38%),linear-gradient(180deg,rgba(6,21,34,.985),rgba(4,16,26,.99));padding:8px;box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 8px 18px rgba(0,0,0,.3);overflow:hidden}
+.ms-flow-pv{grid-column:1;grid-row:1;justify-self:start;align-self:start}
+.ms-flow-grid{grid-column:1;grid-row:1;justify-self:start;align-self:end}
+.ms-flow-battery{grid-column:3;grid-row:1;justify-self:end;align-self:start}
+.ms-flow-home{grid-column:3;grid-row:1;justify-self:end;align-self:end}
+.ms-flow-head{display:flex;align-items:flex-start;gap:6px}
+.ms-flow-icon{width:26px;height:26px;flex:0 0 26px;display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 0 5px currentColor)}
+.ms-flow-icon svg{width:25px;height:25px}
+.ms-flow-heading{min-width:0;flex:1;padding-top:1px}
+.ms-flow-title{font-size:11px;font-weight:800;color:#f3f8fc;line-height:1.15;white-space:normal}
+.ms-flow-main{font-size:17px;font-weight:900;line-height:1.05;margin-top:4px;letter-spacing:-.3px;text-shadow:0 0 8px currentColor;overflow-wrap:anywhere}
+.ms-flow-main .unit{font-size:10px;font-weight:700;color:#c7d7e1;margin-left:2px;text-shadow:none}
+.ms-flow-sub{font-size:10px;color:#b7c9d5;line-height:1.2;margin-top:3px;overflow-wrap:anywhere}
+.ms-flow-pv .ms-flow-main{color:#fbbf24}
+.ms-flow-grid .ms-flow-main{color:#c084fc}
+.ms-flow-battery .ms-flow-main{color:#4ade80}
+.ms-flow-home .ms-flow-main{color:#38bdf8}
+.ms-flow-inverter{grid-column:2;grid-row:1;align-self:center;justify-self:center;text-align:center;position:relative;z-index:3;width:${mfInverterColumn}px;box-sizing:border-box}
+.ms-flow-inverter .flow-inverter-svg{width:${mfInverterVisual}px;height:auto;display:block;margin:0 auto}
+.ms-flow-inv-name{font-size:11px;font-weight:850;color:#f2f7fb;margin-top:4px;text-shadow:0 2px 5px rgba(0,0,0,.8)}
+.ms-flow-inv-temp{display:flex;align-items:center;justify-content:center;gap:3px;font-size:11px;font-weight:800;color:#23b9ff;margin-top:3px}
+.ms-flow-inv-temp svg{width:12px;height:12px}
+.ms-flow-sold{margin-top:6px;padding:5px 6px;border:1px solid rgba(89,151,181,.4);border-radius:8px;background:linear-gradient(180deg,rgba(7,24,35,.96),rgba(4,15,24,.98))}
+.ms-flow-sold>span{display:block;font-size:9px;color:#8fb0c3;text-transform:uppercase;letter-spacing:.3px}
+.ms-flow-sold strong{display:block;font-size:10px;font-weight:850;color:#eaf4f9;margin-top:2px;overflow-wrap:anywhere}
+.ms-flow-svg{position:absolute;top:0;left:0;width:100%;height:100%;z-index:1;overflow:visible;pointer-events:none}
+.ms-flow-svg .flow-line{fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;filter:url(#mfFlowGlow23)}
+.ms-flow-svg .flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34;filter:url(#mfFlowGlowSoft23)}
+.ms-flow-svg .flow-active{stroke-dasharray:1 22;stroke-width:7!important;animation:mfFlowDash ${flowDuration}s linear infinite}
+@keyframes mfFlowDash{to{stroke-dashoffset:-${flowOffset}}}
+.ms-detail-grid{margin-top:10px}
+.ms-detail-tile{min-width:0;padding:9px 10px;border:1px solid rgba(89,146,174,.4);border-radius:10px;background:linear-gradient(180deg,rgba(6,21,33,.97),rgba(4,15,24,.99))}
+.ms-detail-title{font-size:11px;font-weight:850;color:#9fc4d8;text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px}
+.ms-detail-row{display:flex;align-items:baseline;justify-content:space-between;gap:6px;font-size:11px;color:#aebfca;line-height:1.4}
+.ms-detail-row strong{font-size:12px;font-weight:850;color:#f1f7fb;text-align:right;overflow-wrap:anywhere}
+.ms-detail-row .positive,.ms-detail-row .sold{color:#4ade80}
+.ms-detail-row .bought{color:#c084fc}
 .ms-inverter{display:flex;align-items:center;gap:12px;width:100%;box-sizing:border-box;margin-top:6px;padding:10px 13px;border:1px solid rgba(89,151,181,.4);border-radius:12px;background:linear-gradient(180deg,rgba(7,24,35,.96),rgba(4,15,24,.98))}
 .ms-inverter-icon{width:40px;height:56px;flex:0 0 40px;display:flex;align-items:center;justify-content:center}
 .ms-inverter-icon svg{width:40px;height:auto;display:block}
@@ -5338,80 +5046,114 @@ class DeyeEnergyCard extends HTMLElement {
 .es-hidden{display:none!important}
         </style>
         <div class="ms-body">
-          <div class="ms-tile ms-pv">
-            <div class="ms-tile-head">
-              <div class="ms-tile-icon" style="color:#fbbf24">${this.iconSvg("pv2")}</div>
-              <div class="ms-tile-heading">
-                <div class="ms-tile-title">PV (Production)</div>
-                <div class="ms-tile-main${esHidden("pv_power")}" data-live="pv-main">${fmtPower(pvPower)}</div>
+          <div class="ms-flow-wrapper">
+            <div class="ms-flow-scaler" data-base-width="${mfPanelWidth}" data-base-height="${mfBoardHeight}" data-board-height="${mfBoardHeight}" data-tile-width="${mfTileWidth}" data-tile-gap="${mfTileGap}" data-inverter-column-width="${mfInverterColumn}" data-inverter-visual-width="${mfInverterVisual}">
+              <div class="ms-flow-board">
+                <div class="ms-flow-tile ms-flow-pv">
+                  <div class="ms-flow-head">
+                    <div class="ms-flow-icon" style="color:#fbbf24">${this.iconSvg("pv2")}</div>
+                    <div class="ms-flow-heading">
+                      <div class="ms-flow-title">PV (Production)</div>
+                      <div class="ms-flow-main${esHidden("pv_power")}" data-live="pv-main">${fmtPower(pvPower)}</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="ms-flow-tile ms-flow-grid">
+                  <div class="ms-flow-head">
+                    <div class="ms-flow-icon" style="color:#c084fc">${this.iconSvg("grid2")}</div>
+                    <div class="ms-flow-heading">
+                      <div class="ms-flow-title">Grid</div>
+                      <div class="ms-flow-main${esHidden("grid_power")}" data-live="grid-main">${gridMain}</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="ms-flow-tile ms-flow-battery">
+                  <div class="ms-flow-head">
+                    <div class="ms-flow-icon" data-live-html="battery-icon">${this.batteryLevelSvg(batterySoc)}</div>
+                    <div class="ms-flow-heading">
+                      <div class="ms-flow-title">Battery</div>
+                      <div class="ms-flow-main${esHidden("battery_soc")}"><span data-live="battery-soc-value">${socMain}</span><span class="unit">% SOC</span></div>
+                      <div class="ms-flow-sub${esHidden("battery_power")}" data-live="battery-direction" style="color:#4ade80">${batteryDirection}</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="ms-flow-tile ms-flow-home">
+                  <div class="ms-flow-head">
+                    <div class="ms-flow-icon" style="color:#38bdf8">${this.iconSvg("home2")}</div>
+                    <div class="ms-flow-heading">
+                      <div class="ms-flow-title">House (Loads)</div>
+                      <div class="ms-flow-main" data-live="load-main">${fmtPower(loadPower)}</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="ms-flow-inverter">
+                  ${inverterSvg}
+                  <div class="ms-flow-inv-name">Deye inverter</div>
+                  <div class="ms-flow-inv-temp${esHidden("inverter_ac_temperature")}">${this.iconSvg("thermometer")}<span data-live="inverter-temp">${inverterTemp === null ? "—" : `${Math.round(inverterTemp)}`}</span> °C</div>
+                  <div class="ms-flow-sold${esAllHidden("sold_energy_today", "sold_value_today") ? " es-hidden" : ""}">
+                    <span>Sold today</span>
+                    <strong data-live="sold-today-line">${esSpan("sold_energy_today", `<span data-live="sold-today-kwh">${fmtNumber(soldTodayKwh, 2)} kWh</span>`)} / ${esSpan("sold_value_today", `<span data-live="sold-today-gbp">${fmtNumber(soldTodayGbp, 2)} GBP</span>`)}</strong>
+                  </div>
+                </div>
+                <svg class="ms-flow-svg" viewBox="0 0 ${mfBoardWidth} ${mfBoardHeight}" preserveAspectRatio="xMidYMid meet">
+                  <defs>
+                    <filter id="mfFlowGlow23" x="-35%" y="-35%" width="170%" height="170%">
+                      <feGaussianBlur stdDeviation="2.6" result="blur"/>
+                      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                    </filter>
+                    <filter id="mfFlowGlowSoft23" x="-25%" y="-25%" width="150%" height="150%">
+                      <feGaussianBlur stdDeviation="2" result="blur"/>
+                      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                    </filter>
+                    <marker id="mf-arrow-pv" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="3.4" markerHeight="3.4" orient="auto-start-reverse"><path d="M0 0 10 5 0 10 2.7 5Z" fill="#fbbf24" stroke="none"/></marker>
+                    <marker id="mf-arrow-grid" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="3.4" markerHeight="3.4" orient="auto-start-reverse"><path d="M0 0 10 5 0 10 2.7 5Z" fill="#c084fc" stroke="none"/></marker>
+                    <marker id="mf-arrow-battery" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="3.4" markerHeight="3.4" orient="auto-start-reverse"><path d="M0 0 10 5 0 10 2.7 5Z" fill="#4ade80" stroke="none"/></marker>
+                    <marker id="mf-arrow-home" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="3.4" markerHeight="3.4" orient="auto-start-reverse"><path d="M0 0 10 5 0 10 2.7 5Z" fill="#38bdf8" stroke="none"/></marker>
+                  </defs>
+                  <path data-flow-line-bg="pv" d="${mfGeo.paths.pvToInverter}" class="flow-line-bg" stroke="#fbbf24" />
+                  <path data-flow-line="pv" d="${mfGeo.paths.pvToInverter}" stroke="#fbbf24" class="${lineClass(mfActive.pv)}" stroke-width="4" stroke-opacity="${mfActive.pv ? 0.96 : 0.18}"${mfFlowMarker("pv", mfActive.pv)} />
+                  <path data-flow-line-bg="battery" d="${mfBatPath}" class="flow-line-bg" stroke="#4ade80" />
+                  <path data-flow-line="battery" d="${mfBatPath}" stroke="#4ade80" class="${lineClass(mfActive.batteryDischarge || mfActive.batteryCharge)}" stroke-width="4" stroke-opacity="${mfActive.batteryDischarge || mfActive.batteryCharge ? 0.96 : 0.18}"${mfFlowMarker("battery", mfActive.batteryDischarge || mfActive.batteryCharge)} />
+                  <path data-flow-line-bg="grid" d="${mfGridPath}" class="flow-line-bg" stroke="#c084fc" />
+                  <path data-flow-line="grid" d="${mfGridPath}" stroke="#c084fc" class="${lineClass(mfActive.gridImport || mfActive.gridExport)}" stroke-width="4" stroke-opacity="${mfActive.gridImport || mfActive.gridExport ? 0.96 : 0.18}"${mfFlowMarker("grid", mfActive.gridImport || mfActive.gridExport)} />
+                  <path data-flow-line-bg="home" d="${mfGeo.paths.inverterToHome}" class="flow-line-bg" stroke="#38bdf8" />
+                  <path data-flow-line="home" d="${mfGeo.paths.inverterToHome}" stroke="#38bdf8" class="${lineClass(mfActive.load)}" stroke-width="4" stroke-opacity="${mfActive.load ? 0.96 : 0.18}"${mfFlowMarker("home", mfActive.load)} />
+                </svg>
               </div>
             </div>
-            <div class="ms-detail-grid">
-              ${msPhase("PV1", esSpan("pv1_power", `<span class="phase-accent" data-live="pv1-power">${fmtPower(pv1Power)}</span>`), `${esSpan("pv1_voltage", `<span data-live="pv1-volts">${fmtNumber(pv1V, 1)}</span>`)} V | ${esSpan("pv1_current", `<span data-live="pv1-amps">${fmtNumber(pv1A, 1)}</span>`)} A`, esAllHidden("pv1_power", "pv1_voltage", "pv1_current"))}
-              ${msPhase("PV2", esSpan("pv2_power", `<span class="phase-accent" data-live="pv2-power">${fmtPower(pv2Power)}</span>`), `${esSpan("pv2_voltage", `<span data-live="pv2-volts">${fmtNumber(pv2V, 1)}</span>`)} V | ${esSpan("pv2_current", `<span data-live="pv2-amps">${fmtNumber(pv2A, 1)}</span>`)} A`, esAllHidden("pv2_power", "pv2_voltage", "pv2_current"))}
-            </div>
-            <div class="ms-foot${esHidden("daily_pv_production")}"><span>Produced today</span><strong><span data-live="pv-daily">${fmtNumber(pvDaily, 2)}</span> kWh</strong></div>
           </div>
-          ${msArrow}
-          <div class="ms-tile ms-grid">
-            <div class="ms-tile-head">
-              <div class="ms-tile-icon" style="color:#c084fc">${this.iconSvg("grid2")}</div>
-              <div class="ms-tile-heading">
-                <div class="ms-tile-title">Grid</div>
-                <div class="ms-tile-main${esHidden("grid_power")}" data-live="grid-main">${gridMain}</div>
-              </div>
+          <div class="ms-detail-grid">
+            <div class="ms-detail-tile">
+              <div class="ms-detail-title">PV details</div>
+              ${mfDetailRow("PV1 power", esSpan("pv1_power", `<span style="color:#fbbf24" data-live="pv1-power">${fmtPower(pv1Power)}</span>`), null)}
+              ${mfDetailRow("PV2 power", esSpan("pv2_power", `<span style="color:#fbbf24" data-live="pv2-power">${fmtPower(pv2Power)}</span>`), null)}
+              ${mfDetailRow("PV1 V / A", `${esSpan("pv1_voltage", `<span data-live="pv1-volts">${fmtNumber(pv1V, 1)}</span>`)} V / ${esSpan("pv1_current", `<span data-live="pv1-amps">${fmtNumber(pv1A, 1)}</span>`)} A`, null)}
+              ${mfDetailRow("PV2 V / A", `${esSpan("pv2_voltage", `<span data-live="pv2-volts">${fmtNumber(pv2V, 1)}</span>`)} V / ${esSpan("pv2_current", `<span data-live="pv2-amps">${fmtNumber(pv2A, 1)}</span>`)} A`, null)}
+              ${mfDetailRow("Produced today", `<span data-live="pv-daily">${fmtNumber(pvDaily, 2)}</span> kWh`, "daily_pv_production")}
             </div>
-            <div class="ms-detail-grid${singlePhase ? " single-phase" : ""}">
+            <div class="ms-detail-tile">
+              <div class="ms-detail-title">Grid details</div>
               ${singlePhase
-                ? `<div class="ms-phase${esHidden("grid_l1_voltage")}"><div class="ms-phase-value">${gridVoltageValue}</div></div>`
-                : phaseLabels.map((label) => msPhase(label, esSpan(`grid_${phaseKey(label)}_power`, `<span class="phase-accent" data-live="grid-${phaseKey(label)}-power">${fmtPower(gridPhasePower(label))}</span>`), `${esSpan(`grid_${phaseKey(label)}_voltage`, `<span data-live="grid-${phaseKey(label)}-volt">${fmtNumber(gridPhaseVoltage(label), 1)}</span>`)} V`, esAllHidden(`grid_${phaseKey(label)}_power`, `grid_${phaseKey(label)}_voltage`))).join("")}
+                ? mfDetailRow("AC voltage", `<span data-live="grid-ac-voltage">${fmtNumber(gridAcVoltage, 1)}</span> V`, "grid_l1_voltage")
+                : phaseLabels.map((label) => mfDetailRow(`${label} power / V`, `${esSpan(`grid_${phaseKey(label)}_power`, `<span data-live="grid-${phaseKey(label)}-power">${fmtPower(gridPhasePower(label))}</span>`)} / ${esSpan(`grid_${phaseKey(label)}_voltage`, `<span data-live="grid-${phaseKey(label)}-volt">${fmtNumber(gridPhaseVoltage(label), 1)}</span>`)} V`, null)).join("")}
+              ${mfDetailRow("Imported today", `<span class="bought" data-live="grid-bought">${fmtNumber(gridBought, 2)}</span> kWh`, "daily_energy_bought")}
+              ${mfDetailRow("Exported today", `<span class="sold" data-live="grid-sold">${fmtNumber(gridSold, 2)}</span> kWh`, "daily_energy_sold")}
+              ${mfDetailRow("Frequency", `<span data-live="grid-frequency">${fmtNumber(frequency, 2)}</span> Hz`, "load_frequency")}
             </div>
-            <div class="ms-foot">
-              <span${esHidden("daily_energy_bought")}>Imported: <b class="bought"><span data-live="grid-bought">${fmtNumber(gridBought, 2)}</span> kWh</b></span>
-              <span${esHidden("daily_energy_sold")}>Exported: <b class="sold"><span data-live="grid-sold">${fmtNumber(gridSold, 2)}</span> kWh</b></span>
-              <span${esHidden("load_frequency")}>Freq: <span data-live="grid-frequency">${fmtNumber(frequency, 2)}</span> Hz</span>
+            <div class="ms-detail-tile">
+              <div class="ms-detail-title">Battery details</div>
+              ${mfDetailRow("Voltage", `<span data-live="battery-voltage">${fmtNumber(batteryVoltage, 1)}</span> V`, "battery_bms_voltage")}
+              ${mfDetailRow("Current", `<span data-live="battery-current">${fmtNumber(batteryCurrent, 1)}</span> A`, "battery_current")}
+              ${mfDetailRow("Temp.", `<span data-live="battery-temp">${fmtNumber(batteryTemp, 1)}</span> °C`, "battery_temperature")}
+              ${mfDetailRow("Charge today", `<span class="positive" data-live="battery-charge-daily">${fmtNumber(batteryChargeDaily, 2)}</span> kWh`, "daily_battery_charge")}
+              ${mfDetailRow("Discharge today", `<span class="positive" data-live="battery-discharge-daily">${fmtNumber(batteryDischargeDaily, 2)}</span> kWh`, "daily_battery_discharge")}
             </div>
-          </div>
-          ${msArrow}
-          <div class="ms-tile ms-battery">
-            <div class="ms-tile-head">
-              <div class="ms-tile-icon" data-live-html="battery-icon">${this.batteryLevelSvg(batterySoc)}</div>
-              <div class="ms-tile-heading">
-                <div class="ms-tile-title">Battery</div>
-                <div class="ms-tile-main${esHidden("battery_soc")}"><span data-live="battery-soc-value">${socMain}</span><span class="unit">% SOC</span></div>
-                <div class="ms-tile-sub${esHidden("battery_power")}" data-live="battery-direction" style="color:#4ade80">${batteryDirection}</div>
-              </div>
-            </div>
-            <div class="ms-detail-grid">
-              ${msPhase("Voltage", `<span data-live="battery-voltage">${fmtNumber(batteryVoltage, 1)}</span> V`, "", !this.energyStatusVisible("battery_bms_voltage"))}
-              ${msPhase("Current", `<span data-live="battery-current">${fmtNumber(batteryCurrent, 1)}</span> A`, "", !this.energyStatusVisible("battery_current"))}
-              ${msPhase("Temp.", `<span data-live="battery-temp">${fmtNumber(batteryTemp, 1)}</span> °C`, "", !this.energyStatusVisible("battery_temperature"))}
-              ${msPhase("Charge today", `<span class="positive"><span data-live="battery-charge-daily">${fmtNumber(batteryChargeDaily, 2)}</span> kWh</span>`, "", !this.energyStatusVisible("daily_battery_charge"))}
-              ${msPhase("Discharge today", `<span class="positive"><span data-live="battery-discharge-daily">${fmtNumber(batteryDischargeDaily, 2)}</span> kWh</span>`, "", !this.energyStatusVisible("daily_battery_discharge"))}
-            </div>
-          </div>
-          ${msArrow}
-          <div class="ms-tile ms-home">
-            <div class="ms-tile-head">
-              <div class="ms-tile-icon" style="color:#38bdf8">${this.iconSvg("home2")}</div>
-              <div class="ms-tile-heading">
-                <div class="ms-tile-title">House (Loads)</div>
-                <div class="ms-tile-main" data-live="load-main">${fmtPower(loadPower)}</div>
-              </div>
-            </div>
-            <div class="ms-detail-grid${singlePhase ? " single-phase" : ""}">
+            <div class="ms-detail-tile">
+              <div class="ms-detail-title">House details</div>
               ${singlePhase
-                ? `<div class="ms-phase"><div class="ms-phase-value">${inverterVoltageValue}</div></div>`
-                : phaseLabels.map((label) => msPhase(label, esSpan(`load_${phaseKey(label)}_power`, `<span class="phase-accent" data-live="load-${phaseKey(label)}-power">${fmtPower(loadPhasePower(label))}</span>`), "", esAllHidden(`load_${phaseKey(label)}_power`))).join("")}
-            </div>
-            <div class="ms-foot${esHidden("daily_load_consumption")}"><span>Consumption today</span><strong><span data-live="load-daily">${fmtNumber(loadDaily, 2)}</span> kWh</strong></div>
-          </div>
-          <div class="ms-inverter">
-            <div class="ms-inverter-icon">${inverterSvg}</div>
-            <div class="ms-inverter-copy">
-              <div class="ms-inverter-name">Deye inverter</div>
-              <div class="ms-inverter-temp${esHidden("inverter_ac_temperature")}">${this.iconSvg("thermometer")}<span data-live="inverter-temp">${inverterTemp === null ? "—" : `${Math.round(inverterTemp)}`}</span> °C</div>
-              <div class="ms-inverter-sold${esAllHidden("sold_energy_today", "sold_value_today") ? " es-hidden" : ""}"><span>Sold today</span><strong data-live="sold-today-line">${esSpan("sold_energy_today", `<span data-live="sold-today-kwh">${fmtNumber(soldTodayKwh, 2)} kWh</span>`)} / ${esSpan("sold_value_today", `<span data-live="sold-today-gbp">${fmtNumber(soldTodayGbp, 2)} GBP</span>`)}</strong></div>
+                ? mfDetailRow("AC voltage", `<span data-live="inverter-ac-voltage">${fmtNumber(inverterAcVoltage, 1)}</span> V`, "inverter_ac_voltage")
+                : phaseLabels.map((label) => mfDetailRow(`${label} power`, esSpan(`load_${phaseKey(label)}_power`, `<span style="color:#38bdf8" data-live="load-${phaseKey(label)}-power">${fmtPower(loadPhasePower(label))}</span>`), null)).join("")}
+              ${mfDetailRow("Consumption today", `<span data-live="load-daily">${fmtNumber(loadDaily, 2)}</span> kWh`, "daily_load_consumption")}
             </div>
           </div>
           <div class="ms-status-grid">
@@ -5486,11 +5228,12 @@ class DeyeEnergyCard extends HTMLElement {
 .flow-inverter-name{font-size:17px;font-weight:850;color:#f2f7fb;margin-top:7px;text-shadow:0 2px 6px rgba(0,0,0,.8)}
 .flow-inverter-temp{display:flex;align-items:center;justify-content:center;gap:5px;font-size:16px;font-weight:800;color:#23b9ff;margin-top:7px;text-shadow:0 0 8px rgba(35,185,255,.48)}
 .flow-inverter-temp svg{width:18px;height:18px}
-.flow-sold-tile{display:grid;grid-template-columns:38px 1fr;gap:10px;align-items:center;padding:8px 14px;margin:14px auto 0;border:1px solid rgba(89,151,181,.4);border-radius:11px;background:linear-gradient(180deg,rgba(7,24,35,.96),rgba(4,15,24,.98));min-width:260px;box-shadow:0 8px 18px rgba(0,0,0,.3),inset 0 1px 0 rgba(255,255,255,.025)}
+.flow-sold-tile{display:grid;grid-template-columns:38px 1fr;gap:10px;align-items:center;padding:8px 14px;margin:14px auto 0;border:1px solid rgba(89,151,181,.4);border-radius:11px;background:linear-gradient(180deg,rgba(7,24,35,.96),rgba(4,15,24,.98));min-width:300px;box-shadow:0 8px 18px rgba(0,0,0,.3),inset 0 1px 0 rgba(255,255,255,.025)}
 .flow-sold-icon{width:34px;height:34px;display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 0 6px rgba(126,226,45,.5))}
 .flow-sold-icon svg{width:30px;height:30px}
           .flow-sold-copy{text-align:left;min-width:0}
-.flow-sold-copy span{display:block;font-size:11px;color:#8fb0c3;text-transform:uppercase;letter-spacing:.45px;line-height:1.1}
+.flow-sold-copy>span:first-child{display:block;font-size:11px;color:#8fb0c3;text-transform:uppercase;letter-spacing:.45px;line-height:1.1}
+.flow-sold-value span{display:inline}
 .flow-sold-value{display:block;font-size:16px;font-weight:850;color:#f2f8fc;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .flow-svg{position:absolute;top:0;left:0;width:100%;height:100%;z-index:1;overflow:visible;pointer-events:none}
 .flow-line{fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;filter:url(#flowGlow23)}
@@ -5708,9 +5451,9 @@ class DeyeEnergyCard extends HTMLElement {
   }
 
   scaleFlowPanel() {
-    if (this.querySelector(".mobile-status-panel")) return;
-    const wrapper = this.querySelector(".flow-wrapper");
-    const scaler = this.querySelector(".flow-scaler");
+    const isMobile = !!this.querySelector(".mobile-status-panel");
+    const wrapper = this.querySelector(isMobile ? ".ms-flow-wrapper" : ".flow-wrapper");
+    const scaler = this.querySelector(isMobile ? ".ms-flow-scaler" : ".flow-scaler");
     if (!wrapper || !scaler) return;
     if (this._flowResizeObserver && this._flowObservedWrapper !== wrapper) {
       this._flowResizeObserver.disconnect();
@@ -5718,8 +5461,8 @@ class DeyeEnergyCard extends HTMLElement {
       this._flowObservedWidth = wrapper.clientWidth || 0;
       this._flowResizeObserver.observe(wrapper);
     }
-    const baseWidth = parseFloat(scaler.dataset.baseWidth) || 1328;
-    const baseHeight = parseFloat(scaler.dataset.baseHeight) || 768;
+    const baseWidth = parseFloat(scaler.dataset.baseWidth) || (isMobile ? 422 : 1328);
+    const baseHeight = parseFloat(scaler.dataset.baseHeight) || (isMobile ? 320 : 768);
     const available = wrapper.clientWidth || this.clientWidth || baseWidth;
     const scale = Math.min(1, Math.max(available / baseWidth, 0.2));
     scaler.style.transform = `scale(${scale})`;
@@ -5978,7 +5721,7 @@ class DeyeEnergyCard extends HTMLElement {
       chart: '<svg viewBox="0 0 24 24"><path d="M4 20V10m6 10V4m6 16v-7m4 7H2"/></svg>',
       zap: '<svg viewBox="0 0 24 24"><path d="M13 2 5 13h6l-1 9 8-12h-6z"/></svg>',
       money: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15 8.5c-.8-.7-1.8-1-3-1-1.7 0-3 .9-3 2s1 1.8 3 2.2 3 1.1 3 2.3-1.3 2-3 2c-1.3 0-2.5-.4-3.3-1.2M12 5v14"/></svg>',
-      pound: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 18h7M8.5 9h6"/><path d="M9 5v13"/><path d="M15 9c0-2.2-1.6-4-3.8-4S8 6.7 8 9c0 2 3 2.2 3 4.5 0 1.4-1 2.5-2.5 2.5"/></svg>',
+      pound: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><text x="12" y="17" text-anchor="middle" font-family="Arial, sans-serif" font-size="15" font-weight="700" fill="currentColor" stroke="none">£</text></svg>',
       calendar: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 10h18M8 14h.01m4 0h.01m4 0h.01M8 18h.01m4 0h.01"/></svg>',
       weather: '<svg viewBox="0 0 24 24"><circle cx="8" cy="8" r="3"/><path d="M8 2v2M2 8h2M3.8 3.8l1.4 1.4M13 8h2M10.8 5.2l1.4-1.4"/><path d="M7 19h10a4 4 0 0 0 0-8 6 6 0 0 0-11.3 2A3 3 0 0 0 7 19z"/></svg>',
     };
@@ -8439,9 +8182,7 @@ class DeyeEnergyCard extends HTMLElement {
           <button class="wide-action" data-save-normal-profile="1">Save Normal Operation settings</button>
           <div class="hint defaults-status ${this._defaultsStatus}" data-defaults-status ${this._defaultsMessage ? "" : "hidden"}>${this.escapeHtml(this._defaultsMessage)}</div>`;
       } else if (tab === "tou") {
-        body = this.renderTouSettingsContent();
-      } else if (tab === "mapping") {
-        body = this.renderMappingTab(slots);
+        body = this.renderTouSettingsContent(slots);
       } else if (tab === "energy-status") {
         body = this.renderEnergyStatusTab();
       } else if (tab === "ai") {
@@ -8461,7 +8202,6 @@ class DeyeEnergyCard extends HTMLElement {
             <nav class="settings-nav">
               ${tabButton("defaults", "Mode settings")}
               ${tabButton("tou", "Deye Time Of Use")}
-              ${tabButton("mapping", "24 h mapping")}
               ${tabButton("energy-status", "Energy status sensors")}
               ${tabButton("ai", "AI and analysis")}
               ${tabButton("tariff", "Tariff and distribution")}
@@ -8496,52 +8236,6 @@ class DeyeEnergyCard extends HTMLElement {
             <div class="preview-box"><strong>Preview changes</strong><br>Starting values are taken from the first selected hour. Uncheck any field you do not want to change.</div>
           </div>
           <div class="dialog-actions"><button type="button" data-close-dialog="1">Cancel</button><button class="primary" data-apply-multi="1">Apply changes</button></div>
-        </section>
-      </div>`;
-    }
-
-    if (this._dialog.type === "tou") {
-      const idx = Number(this._dialog.idx);
-      const capability = this.touCapabilityRow(idx);
-      const supportedFields = this.touFieldNames().filter((field) => capability?.fields?.[field]?.supported === true);
-      this.ensureTouEditorDraft(idx);
-      const hasWritableField = supportedFields.some((field) => capability.fields?.[field]?.writable === true);
-      const readOnly = capability?.read_only === true || !hasWritableField;
-      const blockedByControl = this.touControlBlocked(capability);
-      const pending = this._touSaving || this.touWritePending();
-      const blockMessage = blockedByControl
-        ? "Deye control is disabled."
-        : pending ? "Saving Deye Time Of Use" : "";
-      const fields = supportedFields.map((field) => this.touEditorFieldHtml(idx, field)).join("");
-      const noFields = !supportedFields.length
-        ? `<div class="hint">No Deye Time Of Use fields available for this provider.</div>`
-        : "";
-      const readOnlyMessage = capability?.read_only === true
-        ? `<div class="hint">This provider exposes Deye Time Of Use as read-only.</div>`
-        : "";
-      const dirty = !readOnly && supportedFields.length > 0 && this.touEditorDirty(idx);
-      const saveButton = !readOnly && supportedFields.length
-        ? `<button class="primary" type="button" data-save-tou="${idx}" ${blockedByControl || pending || !dirty ? "disabled" : ""} title="${this.escapeHtml(blockMessage || (!dirty ? "No changes to apply." : ""))}">${pending ? "Saving…" : "Apply to Inverter"}</button>`
-        : "";
-      const rollbackButton = supportedFields.length
-        ? `<button type="button" data-rollback-tou="${idx}" ${readOnly || blockedByControl || pending || this._touRollingBack ? "disabled" : ""}>${this._touRollingBack ? "Reading…" : "Rollback"}</button>`
-        : "";
-      const rollbackStatus = this._touRollbackStatus
-        ? `<div class="hint" data-tou-rollback-status>${this.escapeHtml(this._touRollbackStatus)}</div>`
-        : "";
-      const error = this._touSaveError || (["rollback", "rollback_failed", "mismatch", "unavailable"].includes(this.touOperationStatus()) ? this.touOperationError() : "");
-      return `<div class="overlay" data-close-dialog="1">
-        <section class="dialog" data-dialog-box="1">
-          <div class="dialog-head"><strong>Deye Time Of Use - slot ${idx}</strong><button type="button" data-close-dialog="1">${this.iconSvg("close")}</button></div>
-          <div class="dialog-body">
-            ${noFields}${readOnlyMessage}${fields}
-            <div class="hint">Operation status: <strong>${this.touOperationStatusLabel()}</strong></div>
-            ${blockMessage ? `<div class="hint">${blockMessage}</div>` : ""}
-            ${error ? `<div class="bad" data-tou-save-error>${this.escapeHtml(String(error))}</div>` : ""}
-            ${rollbackStatus}
-            ${this.renderTouReverseSyncSummary()}
-          </div>
-          <div class="dialog-actions"><button type="button" data-close-dialog="1">${readOnly ? "Close" : "Cancel"}</button>${rollbackButton}${saveButton}</div>
         </section>
       </div>`;
     }
@@ -8839,7 +8533,7 @@ class DeyeEnergyCard extends HTMLElement {
                      <div class="foot-actions">
                        <button data-schedule-clear="1">${this.iconSvg("close")} Deselect</button>
                        <button class="primary" data-open-multi="1" ${selectedCount ? "" : "disabled"}>${this.iconSvg("edit")} Edit selected (${selectedCount})</button>
-                       <button data-open-settings="mapping">${this.iconSvg("copy")} Deye mapping</button>
+                       <button data-open-settings="tou">${this.iconSvg("copy")} Deye Time Of Use</button>
                      </div>
                    </div>
                  </div>
@@ -8881,7 +8575,7 @@ class DeyeEnergyCard extends HTMLElement {
           .pill{border:0;border-radius:999px;min-width:42px;padding:3px 9px;font-weight:900;cursor:pointer;background:#233849;color:#d9edf5}.pill.on{background:linear-gradient(90deg,#0a68d7,#159bff);color:#fff}.pill.off{background:#263e51;color:#d9edf5}.pill.missing{opacity:.62}
           .schedule-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--line);padding:7px 12px}.schedule-foot strong{color:#2ea7ff}.foot-actions{display:flex;gap:9px;flex-wrap:wrap}.foot-actions button{border:1px solid rgba(100,145,170,.42);border-radius:8px;background:rgba(7,17,27,.72);color:#eaf7ff;min-height:32px;padding:0 12px;display:inline-flex;align-items:center;gap:8px;cursor:pointer}.foot-actions .primary{background:linear-gradient(180deg,#0b7eee,#075bc0);border-color:#159bff}
           .bulk-panel{border:1px solid rgba(107,157,182,.28);border-radius:8px;background:linear-gradient(180deg,rgba(10,29,45,.95),rgba(7,21,33,.96));padding:20px}.bulk-panel h3{margin:0 0 16px;font-size:20px}.range-box{border:1px solid rgba(21,155,255,.35);border-radius:8px;background:rgba(0,81,145,.18);padding:14px;margin-bottom:16px;color:#2ea7ff}.range-box span,.range-box small{display:block;margin-top:5px}.apply-row{display:grid;grid-template-columns:24px 1fr 1.25fr;gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}.apply-row input[type="checkbox"]{width:20px;height:20px;accent-color:var(--blue)}.preview-box{margin-top:12px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03);padding:12px;color:#cbdce5}.bulk-actions{display:flex;justify-content:space-between;gap:10px;margin-top:16px}.bulk-actions .primary{background:linear-gradient(180deg,#72d13b,#41a91d);border-color:#75e247;color:#041007}
-          input,select{width:100%;min-width:0;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:8px}option,select option{background:#fff!important;color:#111!important}.field{position:relative;display:block}.field input{padding-right:42px}.field span{position:absolute;right:10px;top:50%;transform:translateY(-50%);font-weight:800;color:#d8ecf7}.row{min-height:38px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border-top:1px solid var(--line)}.row strong{text-align:right}.settings-row{min-height:40px;display:grid;grid-template-columns:1fr 260px;gap:12px;align-items:center;padding:9px 12px;border-top:1px solid var(--line)}.settings-row>input[type="checkbox"]{justify-self:end;width:20px;height:20px;accent-color:var(--blue)}.settings-row select,.settings-row .compact-field{max-width:260px;justify-self:end}.tou-editor-field{grid-template-columns:minmax(150px,1fr) minmax(180px,260px)}.tou-field-state{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:8px 18px;margin:0}.tou-reverse-sync{display:grid;gap:5px}.hint{padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03);color:#c7d9e2;margin-bottom:12px}.wide-action{width:100%;min-height:38px;border:1px solid rgba(100,145,170,.45);border-radius:8px;background:#173a57;color:#fff;font-weight:800;cursor:pointer}.wide-action:disabled{opacity:.45;cursor:not-allowed}.settings-table{width:100%;border-collapse:collapse}.settings-table th,.settings-table td{padding:8px;border-top:1px solid var(--line);text-align:left}.settings-tabs{display:flex;gap:8px;padding:10px;border-bottom:1px solid var(--line);overflow-x:auto}.settings-tabs button{border:1px solid var(--line2);border-radius:7px;background:rgba(255,255,255,.03);color:#dfeef6;padding:8px 10px;white-space:nowrap}.settings-tabs button.active{border-color:var(--blue);color:#fff;background:rgba(21,155,255,.22)}.overlay{position:fixed;inset:0;background:rgba(0,0,0,.68);display:flex;align-items:center;justify-content:center;z-index:20;padding:16px}.dialog{width:min(760px,100%);max-height:92vh;overflow:auto;border:1px solid rgba(107,157,182,.45);border-radius:12px;background:radial-gradient(circle at 16% 0%,rgba(22,91,139,.2),transparent 36%),linear-gradient(180deg,#071b2a,#061420);box-shadow:0 25px 70px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.04)}.settings-dialog{width:min(880px,100%)}.dialog-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;background:linear-gradient(180deg,rgba(14,50,70,.9),rgba(10,30,44,.86));border-bottom:1px solid rgba(107,157,182,.28)}.dialog-head strong{font-size:19px}.dialog-head button{border:0;background:transparent;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center}.dialog-head button svg{pointer-events:none}.dialog-body{padding:14px}.dialog-actions{display:flex;justify-content:flex-end;gap:10px;padding:0 14px 14px}.dialog-actions button{border:1px solid var(--line2);border-radius:8px;background:#173a57;color:#fff;min-height:38px;padding:0 16px}.dialog-actions button:disabled{opacity:.45;cursor:not-allowed}.ai-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.ai-card{border:1px solid var(--line);border-radius:9px;background:rgba(255,255,255,.03);padding:12px}.ai-card h3{margin:0 0 8px;color:#7ee22d}.ai-proposal,.ai-history{grid-column:1/-1}.ai-proposal-scroll,.ai-history-scroll{overflow:auto;max-height:300px;margin-bottom:10px}.ai-proposal .mini-table,.ai-history .mini-table{min-width:620px}
+          input,select{width:100%;min-width:0;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:8px}option,select option{background:#fff!important;color:#111!important}.field{position:relative;display:block}.field input{padding-right:42px}.field span{position:absolute;right:10px;top:50%;transform:translateY(-50%);font-weight:800;color:#d8ecf7}.row{min-height:38px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border-top:1px solid var(--line)}.row strong{text-align:right}.settings-row{min-height:40px;display:grid;grid-template-columns:1fr 260px;gap:12px;align-items:center;padding:9px 12px;border-top:1px solid var(--line)}.settings-row>input[type="checkbox"]{justify-self:end;width:20px;height:20px;accent-color:var(--blue)}.settings-row select,.settings-row .compact-field{max-width:260px;justify-self:end}.tou-reverse-sync{display:grid;gap:5px}.hint{padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03);color:#c7d9e2;margin-bottom:12px}.wide-action{width:100%;min-height:38px;border:1px solid rgba(100,145,170,.45);border-radius:8px;background:#173a57;color:#fff;font-weight:800;cursor:pointer}.wide-action:disabled{opacity:.45;cursor:not-allowed}.settings-table{width:100%;border-collapse:collapse}.settings-table th,.settings-table td{padding:8px;border-top:1px solid var(--line);text-align:left}.settings-tabs{display:flex;gap:8px;padding:10px;border-bottom:1px solid var(--line);overflow-x:auto}.settings-tabs button{border:1px solid var(--line2);border-radius:7px;background:rgba(255,255,255,.03);color:#dfeef6;padding:8px 10px;white-space:nowrap}.settings-tabs button.active{border-color:var(--blue);color:#fff;background:rgba(21,155,255,.22)}.overlay{position:fixed;inset:0;background:rgba(0,0,0,.68);display:flex;align-items:center;justify-content:center;z-index:20;padding:16px}.dialog{width:min(760px,100%);max-height:92vh;overflow:auto;border:1px solid rgba(107,157,182,.45);border-radius:12px;background:radial-gradient(circle at 16% 0%,rgba(22,91,139,.2),transparent 36%),linear-gradient(180deg,#071b2a,#061420);box-shadow:0 25px 70px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.04)}.settings-dialog{width:min(880px,100%)}.dialog-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;background:linear-gradient(180deg,rgba(14,50,70,.9),rgba(10,30,44,.86));border-bottom:1px solid rgba(107,157,182,.28)}.dialog-head strong{font-size:19px}.dialog-head button{border:0;background:transparent;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center}.dialog-head button svg{pointer-events:none}.dialog-body{padding:14px}.dialog-actions{display:flex;justify-content:flex-end;gap:10px;padding:0 14px 14px}.dialog-actions button{border:1px solid var(--line2);border-radius:8px;background:#173a57;color:#fff;min-height:38px;padding:0 16px}.dialog-actions button:disabled{opacity:.45;cursor:not-allowed}.ai-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.ai-card{border:1px solid var(--line);border-radius:9px;background:rgba(255,255,255,.03);padding:12px}.ai-card h3{margin:0 0 8px;color:#7ee22d}.ai-proposal,.ai-history{grid-column:1/-1}.ai-proposal-scroll,.ai-history-scroll{overflow:auto;max-height:300px;margin-bottom:10px}.ai-proposal .mini-table,.ai-history .mini-table{min-width:620px}
            .history-toolbar{display:grid;grid-template-columns:repeat(3,minmax(130px,1fr)) repeat(3,auto);gap:8px;align-items:end;margin-bottom:12px}.history-toolbar label{display:grid;gap:4px;color:#a9c1d0;font-size:11px}.history-toolbar button,.danger-action{min-height:38px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 12px;cursor:pointer}.history-section{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);margin-bottom:12px;overflow:hidden}.history-section h3{margin:0;padding:10px 12px;color:var(--green);background:rgba(18,42,59,.74)}.history-scroll{max-height:270px;overflow:auto;overscroll-behavior:contain}.history-scroll .settings-table{min-width:780px}.history-scroll details summary{cursor:pointer;color:var(--blue)}.history-scroll pre{max-width:520px;max-height:220px;overflow:auto;white-space:pre-wrap;color:#cfe1ea}.history-rating{display:inline-flex;gap:3px;margin-top:4px}.history-rating button{width:25px;height:24px;border:1px solid var(--line2);border-radius:5px;background:rgba(255,255,255,.03);color:#b9ced9;cursor:pointer}.history-rating button.active{background:var(--green);color:#041007;border-color:var(--green)}.danger-action{background:rgba(138,24,42,.28);border-color:rgba(255,77,99,.55);color:#ff9cab}
            .analysis-history-scroll{overflow-x:hidden}.history-scroll .analysis-history-table{width:100%;min-width:0;table-layout:fixed}.analysis-history-table th,.analysis-history-table td{overflow-wrap:anywhere}.analysis-history-table th:nth-child(1){width:19%}.analysis-history-table th:nth-child(2){width:14%}.analysis-history-table th:nth-child(3){width:20%}.analysis-history-table th:nth-child(4){width:32%}.analysis-history-table th:nth-child(5){width:15%}.analysis-detail-row td{padding:0 10px 8px!important;background:rgba(3,14,23,.45)}.analysis-record{width:100%}.analysis-record summary{padding:8px 2px;font-weight:800;cursor:pointer;color:var(--blue)}.analysis-details{display:grid;gap:10px;padding:2px 0 10px}.analysis-detail-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.analysis-detail-grid>div,.analysis-price-groups section,.analysis-explanation{border:1px solid var(--line);border-radius:7px;background:rgba(255,255,255,.025);padding:9px}.analysis-detail-grid span,.analysis-explanation span{display:block;margin-bottom:4px;color:#9db7c6;font-size:10px}.analysis-detail-grid strong,.analysis-explanation strong{display:block;overflow-wrap:anywhere}.analysis-price-groups{display:grid;grid-template-columns:1fr 1fr;gap:8px}.analysis-price-groups h4{margin:0 0 6px;color:var(--green)}.analysis-price-groups ul{list-style:none;margin:0;padding:0}.analysis-price-groups li{display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-top:1px solid var(--line)}
            .settings-dialog{width:min(1180px,96vw)!important;height:min(820px,92vh);max-height:92vh!important;overflow:hidden!important;display:grid;grid-template-rows:auto minmax(0,1fr)}.settings-layout{min-height:0;display:grid;grid-template-columns:220px minmax(0,1fr)}.settings-nav{padding:12px;border-right:1px solid var(--line);background:rgba(4,15,24,.58);display:flex;flex-direction:column;gap:7px;overflow-y:auto}.settings-nav button{width:100%;min-height:42px;border:1px solid var(--line2);border-radius:7px;background:rgba(255,255,255,.025);color:#dfeef6;padding:8px 10px;text-align:left;cursor:pointer}.settings-nav button.active{border-color:var(--blue);color:#fff;background:rgba(21,155,255,.22)}.settings-content{min-width:0;overflow:auto;overscroll-behavior:contain;padding:14px}.diagnostic-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-bottom:12px}.diagnostic-summary>div{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03);padding:11px}.diagnostic-summary span{display:block;color:#9db7c6;font-size:11px}.diagnostic-summary strong{display:block;margin-top:5px;overflow-wrap:anywhere}.diagnostic-section{border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:12px;background:rgba(255,255,255,.025)}.diagnostic-section h3{margin:0;padding:10px 12px;background:rgba(18,42,59,.78);color:#dff4ff}.diagnostic-entities{max-height:260px;overflow:auto}.diag-badge{display:inline-flex;border-radius:999px;padding:3px 9px;font-weight:800}.diag-badge.ok{color:var(--green);background:rgba(53,214,111,.12)}.diag-badge.error{color:#ff8b98;background:rgba(255,77,99,.13)}.diagnostic-actions{display:flex;flex-wrap:wrap;gap:8px;padding:12px}.diagnostic-actions button{min-height:38px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 13px;cursor:pointer}.diagnostic-actions button.danger{background:rgba(138,24,42,.28);border-color:rgba(255,77,99,.55);color:#ff9cab}.diagnostic-actions button.resume{background:rgba(38,112,64,.55);border-color:rgba(103,229,100,.65)}.tou-diagnostics{padding:12px;display:flex;gap:10px;align-items:center;overflow-wrap:anywhere}.schedule-attempt{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;padding:12px}.schedule-attempt>div{border:1px solid var(--line);border-radius:7px;padding:9px;overflow-wrap:anywhere}.schedule-attempt .schedule-attempt-message{grid-column:span 3}.schedule-attempt span{display:block;font-size:11px;color:#9db7c6}.schedule-attempt strong{display:block;margin-top:4px}.schedule-attempt ul{margin:6px 0 0;padding:0;list-style:none}.schedule-attempt li{display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:2px 0}.schedule-attempt.failed{background:rgba(145,28,48,.08)}
@@ -8924,7 +8618,7 @@ class DeyeEnergyCard extends HTMLElement {
             @media(max-width:620px){.ai-execution-toolbar,.ai-execution-date{width:100%}.ai-execution-date{display:grid;grid-template-columns:minmax(0,1fr) auto}.ai-exec-kpi{min-width:calc(50% - 4px)}.ai-execution-chart{padding:8px}.ai-execution-toolbar .ai-day-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}}
 @media(max-width:620px){.ai-execution-toolbar,.ai-execution-date{width:100%}.ai-execution-date{display:grid;grid-template-columns:minmax(0,1fr) auto}.ai-exec-kpi{min-width:calc(50% - 4px)}.ai-execution-chart{padding:8px}.ai-execution-toolbar .ai-day-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}}
            .ai-explanation-view{display:grid;gap:12px}.ai-explanation-view>h2{margin:0}.ai-explanation-profile details,.ai-shadow,.ai-help{margin-top:10px}.ai-explanation-profile summary,.ai-shadow summary,.ai-help summary{cursor:pointer;color:#dff3fc;font-weight:800}.ai-decision-summary{line-height:1.55}.ai-explanation-balance{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0}.ai-explanation-balance>div{border:1px solid rgba(103,158,184,.2);border-radius:6px;padding:9px;background:rgba(3,16,25,.45)}.ai-explanation-balance span{display:block;color:#93adbc;font-size:10px}.ai-explanation-balance strong{display:block;margin-top:4px}.ai-explanation-list{display:grid;gap:7px;padding-left:18px}.ai-explanation-list li{padding:6px 0;border-top:1px solid rgba(103,158,184,.15)}.ai-explanation-list strong{display:block;color:#7ee22d}.ai-explanation-list span{display:block;margin-top:3px;color:#b9d0dc;line-height:1.4}.ai-help dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:7px 12px}.ai-help dt{color:#7ee22d;font-weight:800}.ai-help dd{margin:0;color:#b9d0dc}@media(max-width:620px){.ai-explanation-balance{grid-template-columns:minmax(0,1fr)}.ai-help dl{grid-template-columns:minmax(0,1fr)}}
-           .manual-schedule-table{min-width:820px}.manual-schedule-table .time-col{white-space:nowrap}.manual-schedule-table tr.editing{background:rgba(21,155,255,.09)}.manual-schedule-table tr.disabled{opacity:.72}.manual-schedule-table tr.editing td{border-top-color:rgba(21,155,255,.38)}.manual-schedule-table input,.manual-schedule-table select{width:100%;min-width:90px;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:5px 6px}.manual-schedule-table input[type=checkbox]{width:auto;min-width:0;accent-color:var(--blue)}.manual-action-cell{display:flex;gap:6px;align-items:center}.manual-schedule-table .icon-only.active{border-color:var(--blue);color:#2ea7ff;background:rgba(8,53,92,.55)}.manual-schedule-table .icon-only.remove:hover{border-color:rgba(255,77,99,.7);color:#ff9cab}.manual-schedule-table .icon-only:disabled{opacity:.35;cursor:not-allowed}.manual-row-actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}.manual-row-actions button{min-height:36px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 12px;cursor:pointer}.manual-row-actions button:disabled{opacity:.45;cursor:not-allowed}.manual-schedule-table tr.time-current{animation:manual-time-current-row 3.2s ease-in-out infinite}.manual-schedule-table tr.time-current td{animation:manual-time-current-cell 3.2s ease-in-out infinite}@keyframes manual-time-current-row{0%,100%{background:rgba(37,105,151,.18)}50%{background:rgba(37,105,151,.46)}}@keyframes manual-time-current-cell{0%,100%{box-shadow:inset 0 0 0 1px rgba(87,185,255,.22),inset 0 0 6px rgba(87,185,255,.08);text-shadow:none}50%{box-shadow:inset 0 0 0 1px rgba(87,185,255,.7),inset 0 0 14px rgba(87,185,255,.32);text-shadow:0 0 8px rgba(87,185,255,.7)}}
+           .manual-schedule-table{min-width:820px}.manual-schedule-table .time-col{white-space:nowrap}.manual-schedule-table tr.editing{background:rgba(21,155,255,.09)}.manual-schedule-table tr.disabled{opacity:.72}.manual-schedule-table tr.editing td{border-top-color:rgba(21,155,255,.38)}.manual-schedule-table input,.manual-schedule-table select{width:100%;min-width:90px;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:5px 6px}.manual-schedule-table input[type=checkbox]{width:auto;min-width:0;accent-color:var(--blue)}.manual-action-cell{display:flex;gap:6px;align-items:center}.manual-schedule-table .icon-only.active{border-color:var(--blue);color:#2ea7ff;background:rgba(8,53,92,.55)}.manual-schedule-table .icon-only.remove:hover{border-color:rgba(255,77,99,.7);color:#ff9cab}.manual-schedule-table .icon-only:disabled{opacity:.35;cursor:not-allowed}.manual-row-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.manual-row-actions button{min-height:36px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 12px;cursor:pointer}.manual-row-actions button:disabled{opacity:.45;cursor:not-allowed}.manual-schedule-table tr.time-current td{animation:manual-time-current-text-glow 2.4s ease-in-out infinite}@keyframes manual-time-current-text-glow{0%,100%{text-shadow:0 0 2px rgba(255,166,45,.18)}50%{text-shadow:0 0 5px rgba(255,166,45,.7),0 0 12px rgba(255,166,45,.95),0 0 22px rgba(255,166,45,.55)}}
            </style>
             <div class="dem-v073" style="${demStyle}">
             ${statusSection}
@@ -9039,7 +8733,7 @@ class DeyeEnergyCard extends HTMLElement {
       this._dialog = { type: "settings" };
       this.resetMappingEditor();
       this.render();
-      if (this._settingsTab === "mapping") this.refreshMappingFromInverter();
+      if (this._settingsTab === "tou") this.refreshMappingFromInverter();
     }));
     root.querySelectorAll("[data-toggle-selection]").forEach((el) => el.addEventListener("click", () => {
       this._selectionMode = !this._selectionMode;
@@ -9160,39 +8854,13 @@ class DeyeEnergyCard extends HTMLElement {
       this.applyProfileToSlotDraft("Charging", true);
       this.renderDialogOnly();
     }));
-    root.querySelectorAll("[data-tou-field]").forEach((el) => {
-      const update = () => {
-        if (this._dialog?.type === "tou") {
-          this.collectTouEditorDraft(Number(this._dialog.idx));
-          this.updateTouEditorButtons(Number(this._dialog.idx));
-        }
-      };
-      el.addEventListener("change", update);
-      if (el.tagName !== "SELECT") el.addEventListener("input", update);
-    });
-    root.querySelectorAll("[data-open-tou]").forEach((el) => el.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      this.captureScrollPositions();
-      this.openTouEditor(Number(el.dataset.openTou));
-      this.render();
-    }));
-    root.querySelectorAll("[data-save-tou]").forEach((el) => el.addEventListener("click", () => {
-      this.savePhysicalTouSlot(Number(el.dataset.saveTou));
-    }));
-    root.querySelectorAll("[data-rollback-tou]").forEach((el) => el.addEventListener("click", () => {
-      this.rollbackTouEditor(Number(el.dataset.rollbackTou));
-    }));
-    if (this._dialog?.type === "tou") this.updateTouEditorButtons(Number(this._dialog.idx));
     root.querySelectorAll("[data-mapping-field]").forEach((el) => {
       const update = () => this.collectMappingDraft();
       el.addEventListener("change", update);
       if (el.tagName !== "SELECT") el.addEventListener("input", update);
     });
     root.querySelectorAll("[data-refresh-mapping]").forEach((el) => el.addEventListener("click", () => {
-      this.resetMappingEditor();
-      this.renderDialogOnly();
-      this.refreshMappingFromInverter();
+      this.rollbackTouTable();
     }));
     root.querySelectorAll("[data-save-mapping]").forEach((el) => el.addEventListener("click", () => {
       this.saveMappingToInverter();
@@ -9208,9 +8876,9 @@ class DeyeEnergyCard extends HTMLElement {
     root.querySelectorAll("[data-settings-tab]").forEach((el) => el.addEventListener("click", () => {
       this._settingsTab = el.dataset.settingsTab;
       this._tariffDraft = null;
-      if (this._settingsTab === "mapping") this.resetMappingEditor();
+      if (this._settingsTab === "tou") this.resetMappingEditor();
       this.renderDialogOnly();
-      if (this._settingsTab === "mapping") this.refreshMappingFromInverter();
+      if (this._settingsTab === "tou") this.refreshMappingFromInverter();
     }));
     root.querySelectorAll("[data-ai-settings-section]").forEach((el) => el.addEventListener("click", () => {
       this.collectAiProfiles();

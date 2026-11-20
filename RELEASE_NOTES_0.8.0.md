@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.53`.
+Card resource revision: `v=0.8.0.54`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the original
@@ -9,6 +9,7 @@ integrated through MQTT. Attribution is recorded at the bottom of README.md.
 
 ## Revision history
 
+- `v=0.8.0.54` — Fresh installs and a one-time `sa_defaults_v1` migration now mirror the working Solar Assistant profile: 290 A battery charge, grid-charge and discharge current, 0 W sell power and grid charging enabled. Current helpers accept up to 300 A, restored charge-profile helpers no longer overwrite the persisted profile after a restart, and the README documents the new defaults.
 - `v=0.8.0.53` — README now documents the Energy status sensor editor, source
   captions, W/kW power formatting, manual schedule editing and current-row
   pulse, TOU Apply/Rollback and the £ Sold-today icon. The banner no longer

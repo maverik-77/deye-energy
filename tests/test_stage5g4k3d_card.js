@@ -98,5 +98,5 @@ check(custom.includes("Advanced / Custom — custom source settings"), "Custom s
 
 const snapshot = card.configurationSnapshot();
 check(!Object.prototype.hasOwnProperty.call(snapshot.tariff_settings, "price_source"), "legacy price_source must not be exported in normal UI DTO");
-check(source.startsWith("// Resource revision: v=0.8.0.53"), "resource revision must be v=0.8.0.53");
+check(source.startsWith("// Resource revision: v=0.8.0.54"), "resource revision must be v=0.8.0.54");
 console.log("stage5g4k3d UX and semantics card OK");
