@@ -14,8 +14,6 @@ const CARD = fs.readFileSync(
 const ALL_GROUPS = [
   "specification",
   "grid",
-  "auxiliary",
-  "battery_type",
   "battery_charging",
   "work_mode",
   "work_mode_detail",

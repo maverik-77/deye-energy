@@ -402,7 +402,7 @@ def test_revision_is_single_backend_source_and_matches_unchanged_card():
     first_line = component_card.read_text(encoding="utf-8").splitlines()[0]
     assert first_line == f"// Resource revision: v={frontend.CARD_RESOURCE_REVISION}"
     assert frontend.CARD_RESOURCE_URL == (
-        "/deye_energy/deye-energy-card.js?v=0.8.0.55"
+        "/deye_energy/deye-energy-card.js?v=0.8.0.56"
     )
 
 
@@ -427,7 +427,7 @@ def test_hacs_manifest_and_packaged_brand_assets_are_valid():
     manifest = json.loads((PACKAGE / "manifest.json").read_text(encoding="utf-8"))
     assert hacs["name"] == manifest["name"] == "Deye Energy"
     assert manifest["domain"] == "deye_energy"
-    assert manifest["version"] == "0.8.0.55"
+    assert manifest["version"] == "0.8.0.56"
     assert manifest["documentation"] == "https://github.com/maverik-77/deye-energy"
     assert manifest["issue_tracker"].endswith("/deye-energy/issues")
 

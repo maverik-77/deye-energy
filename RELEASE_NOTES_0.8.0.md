@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.55`.
+Card resource revision: `v=0.8.0.56`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the original
@@ -9,6 +9,11 @@ integrated through MQTT. Attribution is recorded at the bottom of README.md.
 
 ## Revision history
 
+- `v=0.8.0.56` — Mapped inverter configuration start/stop battery discharge
+  capacities and grid voltage/frequency to direct-MQTT Deye entities (with grid
+  V/f shown as live read-only sensors), removed unmapped Sunsynk/`inverters_1`
+  inverter-config fields and empty Auxiliary/Battery type groups from the UI,
+  and fixed Energy status PV-toggle flow re-render when PV is disabled.
 - `v=0.8.0.55` — Added the **Inverter configuration** tab and response-only
   services to own direct inverter fields (including battery/grid current
   limits) separately from schedules/profiles/defaults/optimizer paths. Added a

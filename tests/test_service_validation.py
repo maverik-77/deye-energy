@@ -490,8 +490,6 @@ class ServiceJsonValidationTests(unittest.TestCase):
             [
                 "specification",
                 "grid",
-                "auxiliary",
-                "battery_type",
                 "battery_charging",
                 "work_mode",
                 "work_mode_detail",

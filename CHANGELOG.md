@@ -6,6 +6,28 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.56] - 2026-11-20
+
+### Changed
+
+- **Inverter configuration** now targets the direct-MQTT Deye device mappings
+  for the fields provided: `start_battery_discharge_capacity` →
+  `number.deye_battery_restart_capacity`, `stop_battery_discharge_capacity` →
+  `number.deye_battery_shutdown_capacity`, and grid voltage/frequency are shown
+  as live read-only sensors from `sensor.deye_grid_voltage` /
+  `sensor.deye_grid_frequency` (replacing writable grid V/f limit fields).
+- Removed inverter-configuration fields/groups with no direct-MQTT mapping from
+  the UI (including `inverters_1_*`-backed auxiliary, battery-type, battery
+  charge-voltage, remote/off-grid/grid-charge/output-shutdown/start-grid-charge,
+  solar-export-when-full and energy-pattern fields), dropping now-empty
+  Auxiliary and Battery type groups.
+
+### Fixed
+
+- Energy status PV-flow re-render: when PV generation is toggled, the card now
+  detects Energy status display changes and reschedules a render so
+  grid↔inverter flow/glow and layout rebuild correctly when PV is disabled.
+
 ## [0.8.0.55] - 2026-11-20
 
 ### Added

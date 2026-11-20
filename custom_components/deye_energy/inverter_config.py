@@ -31,8 +31,6 @@ from .const import (
 INVERTER_CONFIG_GROUPS: tuple[tuple[str, str], ...] = (
     ("specification", "Specification"),
     ("grid", "Grid"),
-    ("auxiliary", "Auxiliary"),
-    ("battery_type", "Battery type"),
     ("battery_charging", "Battery charging"),
     ("work_mode", "Work mode"),
     ("work_mode_detail", "Work mode detail"),
@@ -78,63 +76,16 @@ INVERTER_CONFIG_FIELDS: tuple[InverterConfigField, ...] = (
     # Grid.
     InverterConfigField("grid_type", "Grid type", "grid", writable=False),
     InverterConfigField(
-        "grid_voltage_high", "Grid voltage high", "grid",
-        entity_id="number.inverters_1_grid_voltage_high", unit="V",
+        "grid_voltage", "Grid voltage", "grid",
+        entity_id="sensor.deye_grid_voltage", writable=False, unit="V", kind="sensor",
     ),
     InverterConfigField(
-        "grid_voltage_low", "Grid voltage low", "grid",
-        entity_id="number.inverters_1_grid_voltage_low", unit="V",
-    ),
-    InverterConfigField("grid_frequency", "Grid frequency", "grid", writable=False, unit="Hz"),
-    InverterConfigField(
-        "grid_frequency_high", "Grid frequency high", "grid",
-        entity_id="number.inverters_1_grid_frequency_high", unit="Hz",
-    ),
-    InverterConfigField(
-        "grid_frequency_low", "Grid frequency low", "grid",
-        entity_id="number.inverters_1_grid_frequency_low", unit="Hz",
-    ),
-    InverterConfigField(
-        "grid_peak_shaving", "Grid peak shaving", "grid",
-        entity_id="select.inverters_1_grid_peak_shaving",
+        "grid_frequency", "Grid frequency", "grid",
+        entity_id="sensor.deye_grid_frequency", writable=False, unit="Hz", kind="sensor",
     ),
     InverterConfigField(
         "grid_peak_shaving_power", "Grid peak shaving power", "grid",
         entity_id="number.deye_grid_peak_shaving_power", unit="W",
-    ),
-    # Auxiliary.
-    InverterConfigField(
-        "auxiliary_port", "Auxiliary port", "auxiliary",
-        entity_id="select.inverters_1_auxiliary_port",
-    ),
-    InverterConfigField(
-        "auxiliary_pv_export_cutoff", "Auxiliary PV export cutoff", "auxiliary",
-        entity_id="select.inverters_1_auxiliary_pv_export_cutoff",
-    ),
-    InverterConfigField(
-        "ac_couple_stop_capacity", "AC couple stop capacity", "auxiliary",
-        entity_id="number.inverters_1_ac_couple_stop_capacity", unit="%",
-    ),
-    InverterConfigField(
-        "ac_couple_start_capacity", "AC couple start capacity", "auxiliary",
-        entity_id="number.inverters_1_ac_couple_start_capacity", unit="%",
-    ),
-    # Battery type.
-    InverterConfigField(
-        "battery_type", "Battery type", "battery_type",
-        entity_id="select.inverters_1_battery_type",
-    ),
-    InverterConfigField(
-        "lithium_protocol", "Lithium protocol", "battery_type",
-        entity_id="select.inverters_1_lithium_protocol",
-    ),
-    InverterConfigField(
-        "battery_operation", "Battery operation", "battery_type",
-        entity_id="select.inverters_1_battery_operation",
-    ),
-    InverterConfigField(
-        "battery_capacity", "Battery capacity", "battery_type",
-        entity_id="number.inverters_1_battery_capacity", unit="Ah",
     ),
     # Battery charging.  The three direct-only current fields are here.
     InverterConfigField(
@@ -149,59 +100,19 @@ INVERTER_CONFIG_FIELDS: tuple[InverterConfigField, ...] = (
         "max_grid_charge_current", "Max grid charge current", "battery_charging",
         entity_id=DEFAULT_GRID_CHARGE_CURRENT, config_key=CONF_GRID_CHARGE_CURRENT_NUMBER, unit="A",
     ),
-    InverterConfigField(
-        "battery_float_charge_voltage", "Battery float charge voltage", "battery_charging",
-        entity_id="number.inverters_1_battery_float_charge_voltage", unit="V",
-    ),
-    InverterConfigField(
-        "battery_absorption_charge_voltage", "Battery absorption charge voltage", "battery_charging",
-        entity_id="number.inverters_1_battery_absorption_charge_voltage", unit="V",
-    ),
-    InverterConfigField(
-        "battery_equalization_charge_voltage", "Battery equalization charge voltage", "battery_charging",
-        entity_id="number.inverters_1_battery_equalization_charge_voltage", unit="V",
-    ),
     # Work mode.
     InverterConfigField(
-        "remote_switch", "Remote switch", "work_mode",
-        entity_id="select.inverters_1_remote_switch",
-    ),
-    InverterConfigField(
-        "force_off_grid", "Force off grid", "work_mode",
-        entity_id="select.inverters_1_force_off_grid",
-    ),
-    InverterConfigField(
-        "grid_charge", "Grid charge", "work_mode",
-        entity_id="select.inverters_1_grid_charge",
-    ),
-    InverterConfigField(
-        "output_shutdown_capacity", "Output shutdown capacity", "work_mode",
-        entity_id="number.inverters_1_output_shutdown_capacity", unit="%",
-    ),
-    InverterConfigField(
         "stop_battery_discharge_capacity", "Stop battery discharge capacity", "work_mode",
-        entity_id="number.inverters_1_stop_battery_discharge_capacity", unit="%",
+        entity_id="number.deye_battery_shutdown_capacity", unit="%",
     ),
     InverterConfigField(
         "start_battery_discharge_capacity", "Start battery discharge capacity", "work_mode",
-        entity_id="number.inverters_1_start_battery_discharge_capacity", unit="%",
-    ),
-    InverterConfigField(
-        "start_grid_charge_capacity", "Start grid charge capacity", "work_mode",
-        entity_id="number.inverters_1_start_grid_charge_capacity", unit="%",
+        entity_id="number.deye_battery_restart_capacity", unit="%",
     ),
     # Work mode detail.
     InverterConfigField(
         "work_mode", "Work mode", "work_mode_detail",
         entity_id=DEFAULT_WORK_MODE_SELECT, config_key=CONF_WORK_MODE_SELECT,
-    ),
-    InverterConfigField(
-        "solar_export_when_battery_full", "Solar export when battery full", "work_mode_detail",
-        entity_id="select.inverters_1_solar_export_when_battery_full",
-    ),
-    InverterConfigField(
-        "energy_pattern", "Energy pattern", "work_mode_detail",
-        entity_id="select.inverters_1_energy_pattern",
     ),
     InverterConfigField(
         "max_sell_power", "Max sell power", "work_mode_detail",
