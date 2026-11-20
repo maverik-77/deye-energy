@@ -17,11 +17,14 @@ ENTITY_SOURCE = (ROOT / "custom_components" / "deye_energy" / "entity.py").read_
 class ProfileHelperEntityContractTests(unittest.TestCase):
     """Ensure profile helper entities are created, enabled and publish runtime values."""
 
-    def test_missing_charge_current_number_is_created(self):
-        self.assertIn(
-            'DeyeManagerNumber(runtime, "charge_profile_charge_current", "Charge profile battery charge current", "charge_profile_charge_current", 0, CURRENT_HELPER_MAX_A, 5, "A")',
-            NUMBER_SOURCE,
-        )
+    def test_charge_profile_has_no_battery_current_helper_number(self):
+        for helper in (
+            "charge_profile_charge_current",
+            "charge_profile_discharge_current",
+            "charge_profile_grid_charge_current",
+            "CURRENT_HELPER_MAX_A",
+        ):
+            self.assertNotIn(helper, NUMBER_SOURCE)
 
     def test_missing_normal_profile_tou_soc_number_is_created(self):
         self.assertIn(
@@ -90,13 +93,13 @@ class ProfileHelperEntityContractTests(unittest.TestCase):
         self.assertNotIn("async_update_entity", migration)
 
     def test_charge_entities_publish_runtime_values(self):
+        self.assertIn('"charge_profile_target_soc"', NUMBER_SOURCE)
         for attr in (
             "charge_profile_charge_current",
             "charge_profile_discharge_current",
             "charge_profile_grid_charge_current",
-            "charge_profile_target_soc",
         ):
-            self.assertIn(f'"{attr}"', NUMBER_SOURCE)
+            self.assertNotIn(f'"{attr}"', NUMBER_SOURCE)
         self.assertIn("value = getattr(self.runtime, self.attr)", NUMBER_SOURCE)
         self.assertIn("return value", NUMBER_SOURCE)
 
@@ -118,12 +121,15 @@ class ProfileHelperEntityContractTests(unittest.TestCase):
     def test_normal_profile_entities_publish_runtime_values(self):
         for attr in (
             "normal_profile_sell_power",
-            "normal_profile_discharge_current",
-            "normal_profile_charge_current",
-            "normal_profile_grid_charge_current",
             "normal_profile_tou_soc",
         ):
             self.assertIn(f'"{attr}"', NUMBER_SOURCE)
+        for attr in (
+            "normal_profile_discharge_current",
+            "normal_profile_charge_current",
+            "normal_profile_grid_charge_current",
+        ):
+            self.assertNotIn(f'"{attr}"', NUMBER_SOURCE)
         self.assertIn("value = getattr(self.runtime, self.attr)", NUMBER_SOURCE)
         self.assertIn("return value", NUMBER_SOURCE)
 
@@ -155,8 +161,10 @@ class ProfileHelperEntityContractTests(unittest.TestCase):
         # The number helper builds a full profile dict from current runtime values
         # and only replaces the edited field.
         self.assertIn("field_map[self.attr]: value", NUMBER_SOURCE)
-        for key in ("sell_power", "discharge_current", "charge_current", "grid_charge_current", "tou_soc"):
+        for key in ("sell_power", "tou_soc"):
             self.assertIn(f'"{key}": self.runtime.normal_profile_{key}', NUMBER_SOURCE)
+        for key in ("discharge_current", "charge_current", "grid_charge_current"):
+            self.assertNotIn(f'"{key}": self.runtime.normal_profile_{key}', NUMBER_SOURCE)
 
     def test_charge_profile_number_edit_calls_save_charge_profile(self):
         self.assertIn("await self.runtime.async_save_charge_profile({", NUMBER_SOURCE)

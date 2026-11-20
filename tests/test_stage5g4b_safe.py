@@ -49,9 +49,6 @@ def _flat_market() -> dict:
                 "sell_power_w": 0,
                 "charge_enabled": False,
                 "charge_power_w": 0,
-                "charge_current_a": 0,
-                "grid_charge_current_a": 0,
-                "discharge_current_a": 0,
                 "tou_soc": 15,
                 "minimum_sell_soc": 20,
             }
@@ -244,7 +241,7 @@ def test_core_action_contract_keeps_sell_guards_diagnostic_not_executable():
     assert set(update) == {"slot_key", "enabled", "mode", "sell_power"}
 
 
-def test_charge_action_contract_converts_final_power_to_current():
+def test_charge_action_contract_stays_power_free():
     values = _flat_market()
     values["soc"] = 30
     values["battery_voltage_v"] = 50
@@ -280,12 +277,10 @@ def test_charge_action_contract_converts_final_power_to_current():
 
     row = optimizer.build_energy_plan(values, "balanced")["rows"][2]
     update = row["action_contract"]["schedule_update"]
-    expected_current = row["planned_power_w"] / 50
 
-    assert update["charge_current"] == pytest.approx(expected_current, abs=0.01)
-    assert update["grid_charge_current"] == pytest.approx(expected_current, abs=0.01)
     assert update["tou_soc"] == pytest.approx(50)
     assert update["charge_enabled"] is True
+    assert set(update) == {"slot_key", "enabled", "mode", "tou_soc", "charge_enabled"}
 
 
 def test_ai_fingerprint_tracks_material_profile_change_but_ignores_row_noise():
@@ -495,8 +490,5 @@ def test_charge_core_schedule_update_reaches_manager_logical_target_one_to_one()
     slot = runtime.slots[update["slot_key"]]
 
     assert slot.mode == update["mode"]
-    assert slot.charge_current == pytest.approx(update["charge_current"])
-    assert slot.grid_charge_current == pytest.approx(update["grid_charge_current"])
-    assert slot.discharge_current == pytest.approx(update["discharge_current"])
     assert slot.tou_soc == pytest.approx(update["tou_soc"])
     assert slot.charge_enabled is True

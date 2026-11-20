@@ -1,4 +1,4 @@
-"""Stage 5G.4J.6 regressions for the power-only Core Sell contract."""
+"""Stage 5G.4J.6 regressions for the current-free Core Sell contract."""
 
 from __future__ import annotations
 
@@ -12,18 +12,15 @@ from test_stage5g4b_safe import _flat_market, _sale_profile, optimizer
 
 
 TODAY = manager.ha_now().date().isoformat()
+CURRENT_FIELDS = ("charge_current", "discharge_current", "grid_charge_current")
 
 
-def _sell_contract(power_w: float, voltage_v: float = 52.0) -> dict:
+def _sell_contract(power_w: float) -> dict:
     start = datetime(2026, 8, 21, 18, tzinfo=timezone.utc)
     return optimizer._core_action_contract(
         {
-            "battery_voltage_v": voltage_v,
             "baseline_schedule": [
                 {
-                    "discharge_current_a": 120,
-                    "charge_current_a": 80,
-                    "grid_charge_current_a": 60,
                     "minimum_sell_soc": 20,
                     "tou_soc": 15,
                 }
@@ -48,11 +45,8 @@ def _sell_contract(power_w: float, voltage_v: float = 52.0) -> dict:
     )
 
 
-@pytest.mark.parametrize(
-    ("power_w", "expected_current"),
-    [(4000, 4000 / 52), (130, 130 / 52)],
-)
-def test_sell_contract_keeps_current_diagnostic_only(power_w, expected_current):
+@pytest.mark.parametrize("power_w", [4000, 130])
+def test_sell_contract_is_power_only_and_contains_no_current_fields(power_w):
     contract = _sell_contract(power_w)
 
     assert contract["schedule_update"] == {
@@ -61,25 +55,22 @@ def test_sell_contract_keeps_current_diagnostic_only(power_w, expected_current):
         "mode": const.MODE_SELLING_FIRST,
         "sell_power": power_w,
     }
-    assert contract["discharge_current"] is None
-    assert contract["estimated_battery_current_a"] == pytest.approx(expected_current)
-    assert "discharge_current" not in contract["schedule_update"]
-    assert contract["conversion"]["basis"] == (
-        "diagnostic_sell_power_divided_by_battery_voltage"
-    )
+    assert contract["deployment_ready"] is True
+    assert all(field not in contract for field in CURRENT_FIELDS)
+    assert all(field not in contract["schedule_update"] for field in CURRENT_FIELDS)
+    assert all(field not in contract["constraints"] for field in CURRENT_FIELDS)
 
 
-def _apply_legacy_ai_sell(runtime, power_w: float, legacy_current: float) -> None:
-    slot_key = runtime.active_slot_key()
+def _apply_legacy_ai_sell(runtime, power_w: float) -> None:
     asyncio.run(
         runtime.async_apply_schedule_patch(
             [
                 {
-                    "slot_key": slot_key,
+                    "slot_key": runtime.active_slot_key(),
                     "enabled": True,
                     "mode": const.MODE_SELLING_FIRST,
                     "sell_power": power_w,
-                    "discharge_current": legacy_current,
+                    "discharge_current": 76.9,
                     "charge_current": 2,
                     "grid_charge_current": 2,
                     "minimum_sell_soc": 99,
@@ -93,82 +84,44 @@ def _apply_legacy_ai_sell(runtime, power_w: float, legacy_current: float) -> Non
     )
 
 
-@pytest.mark.parametrize(
-    ("power_w", "legacy_current"),
-    [(4000, 4000 / 52), (130, 130 / 52)],
-)
-def test_apply_today_sell_ignores_legacy_current_and_preserves_user_120a(
-    power_w, legacy_current
-):
+@pytest.mark.parametrize("power_w", [4000, 130])
+def test_apply_today_ignores_legacy_current_fields(power_w):
     runtime = make_runtime()
-    runtime.normal_profile_discharge_current = 120
-    runtime._normal_profile_loaded_from_store = True
     active = runtime.active_slot
-    active.discharge_current = 120
     old_minimum = active.minimum_sell_soc
     old_tou = active.tou_soc
+    old_charge = active.charge_enabled
 
-    _apply_legacy_ai_sell(runtime, power_w, legacy_current)
+    _apply_legacy_ai_sell(runtime, power_w)
 
     active = runtime.active_slot
     assert active.mode == const.MODE_SELLING_FIRST
     assert active.sell_power == power_w
-    assert active.discharge_current == 120
-    assert runtime.target_discharge_current == 120
+    assert active.ai_sell_power_only is True
     assert active.minimum_sell_soc == old_minimum
     assert active.tou_soc == old_tou
-    assert active.charge_enabled is False
-    assert active.ai_sell_power_only is True
+    assert active.charge_enabled == old_charge
 
 
-def test_normal_sell_normal_cycle_keeps_user_current_stable():
+def test_regular_schedule_patch_rejects_current_fields():
     runtime = make_runtime()
-    runtime.normal_profile_discharge_current = 120
-    runtime._normal_profile_loaded_from_store = True
-    runtime.active_slot.discharge_current = 120
-
-    assert runtime.target_discharge_current == 120
-    _apply_legacy_ai_sell(runtime, 4000, 4000 / 52)
-    assert runtime.target_discharge_current == 120
-
-    asyncio.run(
-        runtime.async_apply_schedule_patch(
-            [{"slot_key": runtime.active_slot_key(), "mode": const.MODE_NORMAL_OPERATION}]
+    with pytest.raises(ValueError, match="Unsupported schedule fields"):
+        asyncio.run(
+            runtime.async_apply_schedule_patch(
+                [
+                    {
+                        "slot_key": runtime.active_slot_key(),
+                        "mode": const.MODE_SELLING_FIRST,
+                        "sell_power": 4000,
+                        "discharge_current": 90,
+                    }
+                ]
+            )
         )
-    )
-    assert runtime.active_slot.ai_sell_power_only is False
-    assert runtime.target_discharge_current == 120
 
 
-def test_manual_sell_current_patch_remains_supported():
+def test_future_plan_validation_rejects_current_fields():
     runtime = make_runtime()
-    runtime.normal_profile_discharge_current = 120
-    runtime._normal_profile_loaded_from_store = True
-    runtime.active_slot.discharge_current = 120
-    _apply_legacy_ai_sell(runtime, 4000, 4000 / 52)
-
-    asyncio.run(
-        runtime.async_apply_schedule_patch(
-            [
-                {
-                    "slot_key": runtime.active_slot_key(),
-                    "mode": const.MODE_SELLING_FIRST,
-                    "discharge_current": 90,
-                }
-            ]
-        )
-    )
-
-    assert runtime.active_slot.ai_sell_power_only is False
-    assert runtime.active_slot.discharge_current == 90
-    assert runtime.target_discharge_current == 90
-
-
-def test_legacy_tomorrow_sell_is_sanitized_and_deploys_as_power_only():
-    runtime = make_runtime()
-    runtime.normal_profile_discharge_current = 120
-    runtime._normal_profile_loaded_from_store = True
-    runtime.active_slot.discharge_current = 120
     legacy = {
         "slot_key": runtime.active_slot_key(),
         "enabled": True,
@@ -177,33 +130,76 @@ def test_legacy_tomorrow_sell_is_sanitized_and_deploys_as_power_only():
         "discharge_current": 2.5,
         "charge_current": 2.5,
         "grid_charge_current": 2.5,
-        "minimum_sell_soc": 99,
-        "tou_soc": 99,
-        "charge_enabled": True,
     }
+    with pytest.raises(ValueError, match="Unsupported plan fields"):
+        runtime._validate_future_plan_updates([legacy])
 
-    normalized = runtime._validate_future_plan_updates([legacy])
-    assert normalized == [
-        {
-            "slot_key": runtime.active_slot_key(),
-            "enabled": True,
-            "mode": const.MODE_SELLING_FIRST,
-            "sell_power": 130,
-            "minimum_sell_soc": 99,
-        }
-    ]
-    asyncio.run(runtime.async_apply_schedule_patch(normalized, ai_source=True))
 
+def test_ai_sell_contract_executes_as_mode_and_power_only():
+    runtime = make_runtime()
+    slot_key = runtime.active_slot_key()
+    active = runtime.active_slot
+    old_minimum = active.minimum_sell_soc
+    old_tou = active.tou_soc
+    old_charge = active.charge_enabled
+    asyncio.run(
+        runtime.async_apply_schedule_patch(
+            [
+                {
+                    "slot_key": slot_key,
+                    "enabled": True,
+                    "mode": const.MODE_SELLING_FIRST,
+                    "sell_power": 4000,
+                    "minimum_sell_soc": 99,
+                    "tou_soc": 99,
+                    "charge_enabled": True,
+                }
+            ],
+            replace_day=True,
+            date=TODAY,
+        )
+    )
+
+    active = runtime.active_slot
+    assert active.mode == const.MODE_SELLING_FIRST
+    assert active.sell_power == 4000
+    assert active.minimum_sell_soc == old_minimum
+    assert active.tou_soc == old_tou
+    assert active.charge_enabled == old_charge
+    assert active.ai_sell_power_only is True
+
+
+def test_normal_cycle_clears_ai_sell_power_only_marker():
+    runtime = make_runtime()
+    slot_key = runtime.active_slot_key()
+    asyncio.run(
+        runtime.async_apply_schedule_patch(
+            [
+                {
+                    "slot_key": slot_key,
+                    "enabled": True,
+                    "mode": const.MODE_SELLING_FIRST,
+                    "sell_power": 4000,
+                }
+            ],
+            replace_day=True,
+            date=TODAY,
+        )
+    )
     assert runtime.active_slot.ai_sell_power_only is True
-    assert runtime.active_slot.discharge_current == 120
-    assert runtime.target_discharge_current == 120
+
+    asyncio.run(
+        runtime.async_apply_schedule_patch(
+            [{"slot_key": slot_key, "mode": const.MODE_NORMAL_OPERATION}]
+        )
+    )
+    assert runtime.active_slot.ai_sell_power_only is False
 
 
-def test_user_current_times_voltage_remains_a_feasibility_input():
+def test_direct_battery_power_limit_remains_the_only_feasibility_input():
     values = _flat_market()
     values.update(
         soc=100,
-        battery_voltage_v=52,
         battery_discharge_limit_w=60 * 52,
         effective_power_limit_w=10000,
         grid_export_limit_w=10000,
@@ -222,7 +218,7 @@ def test_user_current_times_voltage_remains_a_feasibility_input():
 
     assert row["battery_to_home_kwh"] + row["battery_to_grid_kwh"] <= 3.12 + 1e-6
     assert row["planned_power_w"] <= 3120
-    assert "discharge_current" not in row["action_contract"]["schedule_update"]
+    assert all(field not in row["action_contract"]["schedule_update"] for field in CURRENT_FIELDS)
 
 
 @pytest.mark.parametrize(
@@ -237,55 +233,41 @@ def test_user_current_times_voltage_remains_a_feasibility_input():
 def test_writable_providers_share_power_only_ai_sell_contract(provider):
     runtime = make_runtime()
     runtime.data[const.CONF_INVERTER_PROVIDER] = provider
-    runtime.normal_profile_discharge_current = 120
-    runtime._normal_profile_loaded_from_store = True
-    runtime.active_slot.discharge_current = 120
-
-    _apply_legacy_ai_sell(runtime, 4000, 4000 / 52)
-
-    assert runtime.active_slot.ai_sell_power_only is True
-    assert runtime.active_slot.sell_power == 4000
-    assert runtime.target_discharge_current == 120
-
-
-def test_read_only_provider_cannot_write_global_current():
-    runtime = make_runtime()
-    runtime.data[const.CONF_INVERTER_PROVIDER] = const.PROVIDER_DEYE_ADDON
-    runtime.normal_profile_discharge_current = 120
-    runtime._normal_profile_loaded_from_store = True
-    runtime.active_slot.discharge_current = 120
-    _apply_legacy_ai_sell(runtime, 4000, 4000 / 52)
-    runtime.control_enabled = True
-    runtime.control_status = "Active"
-    runtime.hass.services.calls.clear()
-
-    assert asyncio.run(runtime.async_apply_targets()) is False
-    assert not any(
-        call[:2] == ("number", "set_value")
-        and call[2].get("entity_id") == runtime.discharge_current_number
-        for call in runtime.hass.services.calls
+    contract = _sell_contract(4000)
+    asyncio.run(
+        runtime.async_apply_schedule_patch(
+            [{**contract["schedule_update"], "slot_key": runtime.active_slot_key()}],
+            ai_source=True,
+        )
     )
 
+    active = runtime.active_slot
+    assert active.ai_sell_power_only is True
+    assert active.mode == const.MODE_SELLING_FIRST
+    assert active.sell_power == 4000
 
-def test_ai_sell_at_matching_120a_does_not_emit_global_current_write():
+
+def test_control_paths_never_write_direct_current_entities():
     runtime = make_runtime()
-    runtime.normal_profile_discharge_current = 120
-    runtime._normal_profile_loaded_from_store = True
-    runtime.active_slot.discharge_current = 120
-    _apply_legacy_ai_sell(runtime, 4000, 4000 / 52)
     runtime.control_enabled = True
     runtime.control_status = "Active"
-    runtime.hass.states.values[runtime.discharge_current_number] = FakeState("120")
-    runtime.hass.states.values[runtime.charge_current_number] = FakeState("120")
-    runtime.hass.states.values[runtime.grid_charge_current_number] = FakeState("60")
+    runtime.hass.states.values[const.DEFAULT_DISCHARGE_CURRENT] = FakeState("120")
+    runtime.hass.states.values[const.DEFAULT_CHARGE_CURRENT] = FakeState("120")
+    runtime.hass.states.values[const.DEFAULT_GRID_CHARGE_CURRENT] = FakeState("60")
     runtime.hass.services.calls.clear()
 
     assert asyncio.run(runtime.async_apply_targets()) is True
-    assert not any(
-        call[:2] == ("number", "set_value")
-        and call[2].get("entity_id") == runtime.discharge_current_number
+    direct_current_entities = {
+        const.DEFAULT_DISCHARGE_CURRENT,
+        const.DEFAULT_CHARGE_CURRENT,
+        const.DEFAULT_GRID_CHARGE_CURRENT,
+    }
+    assert not [
+        call
         for call in runtime.hass.services.calls
-    )
+        if call[:2] == ("number", "set_value")
+        and call[2].get("entity_id") in direct_current_entities
+    ]
 
 
 def test_ai_sell_power_only_marker_survives_slot_mode_restore():

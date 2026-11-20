@@ -107,9 +107,6 @@ function makeCard(options = {}) {
   card.normalProfileStoredValues = () => ({
     physical_work_mode: "Zero Export To Load",
     sell_power: 3000,
-    discharge_current: 80,
-    charge_current: 25,
-    grid_charge_current: 35,
     tou_soc: 45,
   });
   card.normalProfileModeOptions = () => [

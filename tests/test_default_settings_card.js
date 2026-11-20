@@ -48,9 +48,6 @@ function makeCard(options = LEWA_OPTIONS) {
       mode: "Normal Operation",
       physical_work_mode: "Zero Export To Load",
       sell_power: 3000,
-      discharge_current: 80,
-      charge_current: 70,
-      grid_charge_current: 40,
     },
     normal_profile: { physical_work_mode: "Zero Export To Load" },
   };
@@ -63,9 +60,6 @@ function makeCard(options = LEWA_OPTIONS) {
       "sensor.deye_energy_manager_status": { state: "idle", attributes: attrs },
       "select.deye_energy_default_work_mode": { state: "Normal Operation", attributes: { options: ["Normal Operation", "Selling"] } },
       "number.deye_energy_default_sell_power": numberState(3000),
-      "number.deye_energy_default_discharge_current": numberState(80),
-      "number.deye_energy_default_charge_current": numberState(70),
-      "number.deye_energy_default_grid_charge_current": numberState(40),
     },
     services: { deye_energy: { save_default_settings: true } },
     callService: async (domain, service, data) => { calls.push({ domain, service, data }); },
@@ -89,12 +83,8 @@ async function saveDefaultPayload(mode, physical = "Zero Export To Load", option
     if (selector === '[data-raw="default-physical-work-mode"]') return { value: physical };
     return null;
   };
-  card.querySelectorAll = (selector) => selector === "[data-default-profile-number]" ? [
-    defaultInput("sell_power", 3000),
-    defaultInput("discharge_current", 80),
-    defaultInput("charge_current", 70),
-    defaultInput("grid_charge_current", 40),
-  ] : [];
+  card.querySelectorAll = (selector) => selector === "[data-default-profile-number]"
+    ? [defaultInput("sell_power", 3000)] : [];
   const ok = await card.saveDefaultSettings();
   if (!ok) throw card._testError || new Error("saveDefaultSettings failed");
   return calls[0].data;
@@ -120,6 +110,13 @@ async function test_default_settings_card_keeps_physical_normal_variant_separate
   const payload = await saveDefaultPayload("Normal Operation", "Zero Export To CT");
   assertEqual(payload.mode, "Normal Operation", "logical mode must stay canonical");
   assertEqual(payload.physical_work_mode, "Zero Export To CT", "physical variant must use its own field");
+}
+async function test_default_settings_payload_has_no_current_limits() {
+  const payload = await saveDefaultPayload("Normal Operation");
+  ["charge_current", "discharge_current", "grid_charge_current"].forEach((field) => {
+    assertTrue(!(field in payload), `default settings must not save ${field}`);
+  });
+  assertEqual(payload.sell_power, 3000, "default maximum sell power must remain editable");
 }
 function test_normal_profile_card_uses_backend_provider_options() {
   assertEqual(makeCard(SUNSYNK_OPTIONS).card.normalProfileModeOptions(), SUNSYNK_OPTIONS.map((row) => [row.value, row.label]), "card must use backend metadata");
@@ -148,6 +145,7 @@ const tests = [
   test_default_settings_card_sends_normal_operation,
   test_default_settings_card_sends_selling,
   test_default_settings_card_keeps_physical_normal_variant_separate,
+  test_default_settings_payload_has_no_current_limits,
   test_normal_profile_card_uses_backend_provider_options,
   test_normal_profile_card_lewa_reka_uses_load_ct_labels,
   test_normal_profile_card_sunsynk_uses_essentials_zero_export_labels,

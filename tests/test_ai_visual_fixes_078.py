@@ -472,9 +472,12 @@ class AiVisualSourceTests(unittest.TestCase):
         self.assertIn("update.sell_power", method)
         self.assertIn('if (charging)', method)
         self.assertIn("this.chargeProfileStoredValues()", method)
-        self.assertIn("charge_current: profile.charge_current", method)
-        self.assertIn("discharge_current: profile.discharge_current", method)
-        self.assertIn("grid_charge_current: profile.grid_charge_current", method)
+        for forbidden in (
+            "charge_current: profile.charge_current",
+            "discharge_current: profile.discharge_current",
+            "grid_charge_current: profile.grid_charge_current",
+        ):
+            self.assertNotIn(forbidden, method)
         self.assertIn("tou_soc: profile.target_soc", method)
         contract_path, legacy_path = method.split('    const selling = row.action === "sell";', 1)
         self.assertIn("row?.action_contract?.schedule_update", contract_path)

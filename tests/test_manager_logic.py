@@ -239,9 +239,6 @@ def make_runtime(soc="50", price="0.50", default_mode=None):
     states = {
         const.DEFAULT_WORK_MODE_SELECT: FakeState(const.MODE_ZERO_EXPORT),
         const.DEFAULT_MAX_SELL_POWER: FakeState("0"),
-        const.DEFAULT_DISCHARGE_CURRENT: FakeState("0"),
-        const.DEFAULT_CHARGE_CURRENT: FakeState("0"),
-        const.DEFAULT_GRID_CHARGE_CURRENT: FakeState("0"),
     }
     for idx in range(1, 7):
         states[f"time.deye_inverter_time_of_use_{idx}_start"] = FakeState("00:00:00")
@@ -258,9 +255,6 @@ def make_runtime(soc="50", price="0.50", default_mode=None):
             const.CONF_INVERTER_PROVIDER: const.PROVIDER_LEWA_REKA,
             const.CONF_WORK_MODE_SELECT: const.DEFAULT_WORK_MODE_SELECT,
             const.CONF_MAX_SELL_POWER_NUMBER: const.DEFAULT_MAX_SELL_POWER,
-            const.CONF_DISCHARGE_CURRENT_NUMBER: const.DEFAULT_DISCHARGE_CURRENT,
-            const.CONF_CHARGE_CURRENT_NUMBER: const.DEFAULT_CHARGE_CURRENT,
-            const.CONF_GRID_CHARGE_CURRENT_NUMBER: const.DEFAULT_GRID_CHARGE_CURRENT,
             const.CONF_BATTERY_SOC_SENSOR: const.DEFAULT_BATTERY_SOC,
             const.CONF_PRICE_SENSOR: "sensor.octopus_export_current_rate",
             **{
@@ -276,9 +270,6 @@ def make_runtime(soc="50", price="0.50", default_mode=None):
     )
     runtime.default_work_mode = default_mode or const.MODE_NORMAL_OPERATION
     runtime.default_sell_power = const.DEFAULT_INVERTER_MAX_POWER_W
-    runtime.default_discharge_current = 120
-    runtime.default_charge_current = 120
-    runtime.default_grid_charge_current = 60
     # The regular fixture represents a configuration whose physical TOU SOC
     # values have already been confirmed. Dedicated migration coverage below
     # verifies the intentionally unconfirmed ``None`` state.
@@ -289,9 +280,6 @@ def make_runtime(soc="50", price="0.50", default_mode=None):
 
 CONTROL_NUMBERS = {
     const.DEFAULT_MAX_SELL_POWER: const.DEFAULT_INVERTER_MAX_POWER_W,
-    const.DEFAULT_DISCHARGE_CURRENT: 120,
-    const.DEFAULT_CHARGE_CURRENT: 120,
-    const.DEFAULT_GRID_CHARGE_CURRENT: 60,
 }
 
 
@@ -315,7 +303,6 @@ def configure_selling_slot(runtime):
     active.enabled = True
     active.mode = const.MODE_SELLING_FIRST
     active.sell_power = 5000
-    active.discharge_current = 120
     # Provide a default physical TOU SOC so schedule apply tests are not blocked
     # by an unconfirmed SOC.  Tests that explicitly need tou_soc=None can reset it.
     active.tou_soc = 10
@@ -534,11 +521,15 @@ class SafetyTests(unittest.TestCase):
         self.assertFalse(runtime.required_entities_complete)
         self.assertTrue(runtime.data_available)
 
-    def test_required_entities_complete_false_when_charge_current_missing(self):
+    def test_required_entities_do_not_include_direct_current_limits(self):
         runtime = make_runtime()
-        del runtime.hass.states.values[const.DEFAULT_CHARGE_CURRENT]
-        self.assertFalse(runtime.required_entities_complete)
-        self.assertFalse(runtime.data_available)
+        self.assertTrue(runtime.required_entities_complete)
+        for entity_id in (
+            const.DEFAULT_DISCHARGE_CURRENT,
+            const.DEFAULT_CHARGE_CURRENT,
+            const.DEFAULT_GRID_CHARGE_CURRENT,
+        ):
+            self.assertNotIn(entity_id, str(runtime._control_confirmation_entities()))
 
     def test_read_only_provider_fails_closed_even_with_old_control_entities(self):
         runtime = make_runtime()
@@ -556,12 +547,7 @@ class SafetyTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "does not support inverter control"):
             runtime._validate_control_plan(
-                const.MODE_NORMAL_OPERATION,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-            )
+                const.MODE_NORMAL_OPERATION, 0.0)
         self.assertEqual(runtime.hass.services.calls, [])
 
     def test_missing_soc_blocks_selling(self):
@@ -612,9 +598,6 @@ class NotifyUpdateTests(unittest.TestCase):
         active.mode = const.MODE_NORMAL_OPERATION
         active.physical_work_mode = const.MODE_ZERO_EXPORT
         active.sell_power = 0
-        active.discharge_current = 0
-        active.charge_current = 0
-        active.grid_charge_current = 0
         active.tou_soc = 20
         counts = []
         original_notify = runtime.notify_update
@@ -653,9 +636,6 @@ class MappingAndTransactionTests(unittest.TestCase):
         self.assertEqual(runtime.control_mode, "Stop Sell")
         self.assert_safe_defaults(runtime)
         self.assertEqual(runtime.default_sell_power, const.DEFAULT_INVERTER_MAX_POWER_W)
-        self.assertEqual(runtime.default_discharge_current, 120)
-        self.assertEqual(runtime.default_charge_current, 120)
-        self.assertEqual(runtime.default_grid_charge_current, 60)
         runtime.hass.services.calls.clear()
         asyncio.run(runtime.async_tick())
         self.assertEqual(runtime.control_mode, "Stop Sell")
@@ -688,9 +668,6 @@ class MappingAndTransactionTests(unittest.TestCase):
     def test_user_selected_zero_defaults_are_respected(self):
         runtime = make_runtime()
         runtime.default_sell_power = 0
-        runtime.default_discharge_current = 0
-        runtime.default_charge_current = 0
-        runtime.default_grid_charge_current = 0
         asyncio.run(runtime.async_request_stop())
         calls = control_number_calls(runtime)
         self.assertEqual({call[2]["value"] for call in calls}, {0})
@@ -698,14 +675,10 @@ class MappingAndTransactionTests(unittest.TestCase):
     def test_partial_safe_default_failure_is_reported_as_critical(self):
         runtime = make_runtime(default_mode=const.MODE_NORMAL_OPERATION)
         runtime.normal_profile_physical_work_mode = const.MODE_ZERO_EXPORT_CT
-        runtime.hass.services.fail_once(
-            "number",
-            "set_value",
-            entity_id=const.DEFAULT_CHARGE_CURRENT,
-        )
+        runtime.hass.services.fail_once("number", "set_value")
         self.assertFalse(asyncio.run(runtime.async_apply_safe_defaults("Test awarii")))
         self.assertIn("CRITICAL", runtime.last_error)
-        self.assertIn("Maximum Battery Charge Current", runtime.last_error)
+        self.assertIn("Max Sell Power", runtime.last_error)
         select_calls = [call for call in runtime.hass.services.calls if call[:2] == ("select", "select_option")]
         self.assertTrue(select_calls)
         self.assertTrue(all(call[2]["option"] == const.MODE_ZERO_EXPORT_CT for call in select_calls))
@@ -782,24 +755,31 @@ class MappingAndTransactionTests(unittest.TestCase):
     def test_direct_selling_is_blocked_without_soc(self):
         runtime = make_runtime(soc=None)
         with self.assertRaises(ValueError):
-            asyncio.run(runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000, 120, 0))
+            asyncio.run(runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000))
         self.assert_safe_defaults(runtime)
 
-    def test_apply_settings_uses_custom_grid_charge_current(self):
+    def test_apply_settings_does_not_write_direct_current_limits(self):
         runtime = make_runtime()
-        runtime.default_grid_charge_current = 30
-        asyncio.run(runtime.async_apply_settings(const.MODE_NORMAL_OPERATION, 0, 120, 120, 60))
-        grid_calls = [call for call in runtime.hass.services.calls if call[:2] == ("number", "set_value") and call[2].get("entity_id") == const.DEFAULT_GRID_CHARGE_CURRENT]
-        self.assertTrue(grid_calls)
-        self.assertEqual(grid_calls[-1][2]["value"], 60)
+        asyncio.run(runtime.async_apply_settings(const.MODE_NORMAL_OPERATION, 0))
+        written = {call[2].get("entity_id") for call in runtime.hass.services.calls}
+        for entity_id in (
+            const.DEFAULT_DISCHARGE_CURRENT,
+            const.DEFAULT_CHARGE_CURRENT,
+            const.DEFAULT_GRID_CHARGE_CURRENT,
+        ):
+            self.assertNotIn(entity_id, written)
 
-    def test_apply_settings_uses_default_grid_charge_current_when_omitted(self):
+    def test_apply_settings_leaves_direct_current_states_unchanged(self):
         runtime = make_runtime()
-        runtime.default_grid_charge_current = 45
-        asyncio.run(runtime.async_apply_settings(const.MODE_NORMAL_OPERATION, 0, 120, 120))
-        grid_calls = [call for call in runtime.hass.services.calls if call[:2] == ("number", "set_value") and call[2].get("entity_id") == const.DEFAULT_GRID_CHARGE_CURRENT]
-        self.assertTrue(grid_calls)
-        self.assertEqual(grid_calls[-1][2]["value"], 45)
+        direct_currents = {
+            const.DEFAULT_DISCHARGE_CURRENT: FakeState("30"),
+            const.DEFAULT_CHARGE_CURRENT: FakeState("45"),
+            const.DEFAULT_GRID_CHARGE_CURRENT: FakeState("60"),
+        }
+        runtime.hass.states.values.update(direct_currents)
+        asyncio.run(runtime.async_apply_settings(const.MODE_NORMAL_OPERATION, 0))
+        for entity_id, original in direct_currents.items():
+            self.assertIs(runtime.hass.states.get(entity_id), original)
 
     def test_more_than_six_segments_is_rejected(self):
         runtime = make_runtime()
@@ -888,7 +868,6 @@ class MappingAndTransactionTests(unittest.TestCase):
                         "enabled": True,
                         "mode": const.MODE_SELLING_FIRST,
                         "sell_power": 5000,
-                        "discharge_current": 120,
                     }
                 ]
             )
@@ -1015,7 +994,7 @@ class MappingAndTransactionTests(unittest.TestCase):
 
     def test_direct_settings_do_not_use_transitional_zeroes(self):
         runtime = make_runtime()
-        asyncio.run(runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000, 120, 120))
+        asyncio.run(runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000))
         self.assertFalse(any(call[2]["value"] == 0 for call in control_number_calls(runtime)))
         select_calls = [call for call in runtime.hass.services.calls if call[:2] == ("select", "select_option")]
         self.assertEqual(len(select_calls), 1)
@@ -1059,16 +1038,12 @@ class MappingAndTransactionTests(unittest.TestCase):
     def test_restore_defaults_raises_when_full_set_is_not_confirmed(self):
         runtime = make_runtime(default_mode=const.MODE_NORMAL_OPERATION)
         runtime.normal_profile_physical_work_mode = const.MODE_ZERO_EXPORT_CT
-        runtime.hass.services.fail_once(
-            "number",
-            "set_value",
-            entity_id=const.DEFAULT_CHARGE_CURRENT,
-        )
+        runtime.hass.services.fail_once("number", "set_value")
 
         with self.assertRaisesRegex(RuntimeError, "CRITICAL"):
             asyncio.run(runtime.async_restore_defaults())
 
-        self.assertIn("Maximum Battery Charge Current", runtime.last_error)
+        self.assertIn("Max Sell Power", runtime.last_error)
         self.assertNotEqual(runtime.last_error, "")
 
 
@@ -1101,39 +1076,31 @@ class ApplySettingsTransactionTests(unittest.TestCase):
         runtime = make_runtime()
         runtime.hass.states.values[const.DEFAULT_WORK_MODE_SELECT] = FakeState("Selling First")
         runtime.hass.states.values[const.DEFAULT_MAX_SELL_POWER] = FakeState("5000")
-        runtime.hass.states.values[const.DEFAULT_DISCHARGE_CURRENT] = FakeState("120")
-        runtime.hass.states.values[const.DEFAULT_CHARGE_CURRENT] = FakeState("120")
-        runtime.hass.states.values[const.DEFAULT_GRID_CHARGE_CURRENT] = FakeState("60")
 
-        asyncio.run(runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000, 120, 120, 60))
+        asyncio.run(runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000))
 
         self.assertEqual(runtime.last_action, "Direct settings applied")
         self.assertEqual(runtime.last_error, "")
 
     def test_apply_settings_rejects_unreadable_snapshot_entities(self):
         runtime = make_runtime()
-        # A non-numeric number state is still "available" for sell_allowed, but
-        # the snapshot parser cannot read it, so the transaction aborts early.
-        runtime.hass.states.values[const.DEFAULT_CHARGE_CURRENT] = FakeState("not_a_number")
+        # A non-numeric sell-power state is still "available" for sell_allowed,
+        # but the snapshot parser cannot read it, so the transaction aborts early.
+        runtime.hass.states.values[const.DEFAULT_MAX_SELL_POWER] = FakeState("not_a_number")
 
         with self.assertRaisesRegex(RuntimeError, "snapshot"):
-            asyncio.run(runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000, 120, 120, 60))
+            asyncio.run(runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000))
 
     def test_apply_settings_rolls_back_on_write_failure(self):
         runtime = make_runtime()
-        runtime.hass.services.fail_once(
-            "number", "set_value", entity_id=const.DEFAULT_CHARGE_CURRENT
-        )
+        runtime.hass.services.fail_once("number", "set_value")
         original_values = {
             const.DEFAULT_WORK_MODE_SELECT: str(runtime.hass.states.get(const.DEFAULT_WORK_MODE_SELECT).state),
             const.DEFAULT_MAX_SELL_POWER: str(runtime.hass.states.get(const.DEFAULT_MAX_SELL_POWER).state),
-            const.DEFAULT_DISCHARGE_CURRENT: str(runtime.hass.states.get(const.DEFAULT_DISCHARGE_CURRENT).state),
-            const.DEFAULT_CHARGE_CURRENT: str(runtime.hass.states.get(const.DEFAULT_CHARGE_CURRENT).state),
-            const.DEFAULT_GRID_CHARGE_CURRENT: str(runtime.hass.states.get(const.DEFAULT_GRID_CHARGE_CURRENT).state),
         }
 
         with self.assertRaises(RuntimeError):
-            asyncio.run(runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000, 120, 120, 60))
+            asyncio.run(runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000))
 
         self.assertIn("Changes rolled back", runtime.last_action)
         for entity_id, expected in original_values.items():
@@ -1155,13 +1122,10 @@ class ApplySettingsTransactionTests(unittest.TestCase):
         original_values = {
             const.DEFAULT_WORK_MODE_SELECT: str(runtime.hass.states.get(const.DEFAULT_WORK_MODE_SELECT).state),
             const.DEFAULT_MAX_SELL_POWER: str(runtime.hass.states.get(const.DEFAULT_MAX_SELL_POWER).state),
-            const.DEFAULT_DISCHARGE_CURRENT: str(runtime.hass.states.get(const.DEFAULT_DISCHARGE_CURRENT).state),
-            const.DEFAULT_CHARGE_CURRENT: str(runtime.hass.states.get(const.DEFAULT_CHARGE_CURRENT).state),
-            const.DEFAULT_GRID_CHARGE_CURRENT: str(runtime.hass.states.get(const.DEFAULT_GRID_CHARGE_CURRENT).state),
         }
 
         with self.assertRaisesRegex(RuntimeError, "Unconfirmed settings"):
-            asyncio.run(runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000, 120, 120, 60))
+            asyncio.run(runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000))
 
         self.assertIn("Changes rolled back", runtime.last_action)
         for entity_id, expected in original_values.items():
@@ -1224,9 +1188,6 @@ class ApplySettingsTransactionTests(unittest.TestCase):
         expected = {
             const.DEFAULT_WORK_MODE_SELECT: "Selling First",
             const.DEFAULT_MAX_SELL_POWER: "5000",
-            const.DEFAULT_DISCHARGE_CURRENT: "120",
-            const.DEFAULT_CHARGE_CURRENT: "120",
-            const.DEFAULT_GRID_CHARGE_CURRENT: "60",
         }
 
         def restore_states(fake_time):
@@ -1237,7 +1198,7 @@ class ApplySettingsTransactionTests(unittest.TestCase):
         async def _scenario():
             await self._run_under_fake_time(
                 runtime,
-                runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000, 120, 120, 60),
+                runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000),
                 restore_states,
             )
 
@@ -1263,8 +1224,8 @@ class ApplySettingsTransactionTests(unittest.TestCase):
         runtime.control_confirmation_timeout = 0.5
 
         # Ignore the initial work mode write so the confirmation loop fails and
-        # triggers rollback; number writes still update states so we can observe
-        # partial restoration.
+        # triggers rollback; the number write still updates state so we can
+        # observe partial restoration.
         runtime.hass.services.ignore_once(
             "select", "select_option",
             entity_id=const.DEFAULT_WORK_MODE_SELECT,
@@ -1274,39 +1235,25 @@ class ApplySettingsTransactionTests(unittest.TestCase):
         original_restore = runtime._async_restore_raw_entity
 
         async def failing_restore(entity_id: str, raw_value: str) -> None:
-            if entity_id == const.DEFAULT_CHARGE_CURRENT:
-                raise RuntimeError("Injected rollback failure for Maximum Battery Charge Current")
+            if entity_id == const.DEFAULT_WORK_MODE_SELECT:
+                raise RuntimeError("Injected rollback failure for System Work Mode")
             await original_restore(entity_id, raw_value)
 
         runtime._async_restore_raw_entity = failing_restore
 
         with self.assertRaises(RuntimeError):
-            asyncio.run(runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000, 120, 120, 60))
+            asyncio.run(runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000))
 
         self.assertIn("Default settings applied", runtime.last_action)
-        self.assertIn("Maximum Battery Charge Current", runtime.last_error)
-        # Entities restored before the failing one received rollback commands.
+        self.assertIn("System Work Mode", runtime.last_error)
+        # The number was restored before the failing work mode write.
         max_sell_rollback = [
             c for c in runtime.hass.services.calls
             if c[:2] == ("number", "set_value")
             and c[2].get("entity_id") == const.DEFAULT_MAX_SELL_POWER
             and c[2].get("value") == 0
         ]
-        discharge_rollback = [
-            c for c in runtime.hass.services.calls
-            if c[:2] == ("number", "set_value")
-            and c[2].get("entity_id") == const.DEFAULT_DISCHARGE_CURRENT
-            and c[2].get("value") == 0
-        ]
-        charge_rollback = [
-            c for c in runtime.hass.services.calls
-            if c[:2] == ("number", "set_value")
-            and c[2].get("entity_id") == const.DEFAULT_CHARGE_CURRENT
-            and c[2].get("value") == 0
-        ]
         self.assertTrue(max_sell_rollback)
-        self.assertTrue(discharge_rollback)
-        self.assertFalse(charge_rollback)
 
     def test_emergency_stop_aborts_pending_confirmation(self):
         runtime = make_runtime()
@@ -1319,7 +1266,7 @@ class ApplySettingsTransactionTests(unittest.TestCase):
         runtime._async_wait_for_control_confirmation = _wait_with_emergency
 
         with self.assertRaisesRegex(RuntimeError, "emergency stop"):
-            asyncio.run(runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000, 120, 120, 60))
+            asyncio.run(runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000))
 
         self.assertTrue(runtime.emergency_stop)
 
@@ -1338,7 +1285,7 @@ class ApplySettingsTransactionTests(unittest.TestCase):
 
         async def _scenario():
             apply_task = asyncio.create_task(
-                runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000, 120, 120, 60)
+                runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000)
             )
             await asyncio.sleep(0.1)
             self.assertFalse(runtime.emergency_stop)
@@ -1388,7 +1335,7 @@ class ApplySettingsTransactionTests(unittest.TestCase):
 
         async def _scenario():
             apply_task = asyncio.create_task(
-                runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000, 120, 120, 60)
+                runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000)
             )
             await asyncio.sleep(0.05)
             apply_task.cancel()
@@ -1407,9 +1354,6 @@ class ApplySettingsTransactionTests(unittest.TestCase):
 class GridAndSlotSafetyTests(unittest.TestCase):
     def configure_charge_slot(self, runtime, grid: bool):
         runtime.scheduler_enabled = True
-        runtime.charge_profile_charge_current = 120
-        runtime.charge_profile_discharge_current = 120
-        runtime.charge_profile_grid_charge_current = 60
         runtime.charge_profile_target_soc = 90
         slot = runtime.slots[runtime.active_slot_key()]
         slot.enabled = True
@@ -1418,9 +1362,6 @@ class GridAndSlotSafetyTests(unittest.TestCase):
         # This represents a slot immediately after selecting Charge: the
         # profile has been copied once and the slot is now authoritative.
         slot.charge_enabled = grid
-        slot.charge_current = 120
-        slot.discharge_current = 120
-        slot.grid_charge_current = 60
         slot.tou_soc = 90
         slot.minimum_sell_soc = 90
         return slot
@@ -1437,10 +1378,13 @@ class GridAndSlotSafetyTests(unittest.TestCase):
         self.configure_charge_slot(runtime, grid=False)
         self.assertTrue(asyncio.run(runtime.async_apply_targets()))
         self.assertEqual(self.grid_switch_calls(runtime), [])
-        self.assertEqual(
-            runtime.hass.states.get(const.DEFAULT_GRID_CHARGE_CURRENT).state,
-            "60",
-        )
+        written = {call[2].get("entity_id") for call in runtime.hass.services.calls}
+        for entity_id in (
+            const.DEFAULT_DISCHARGE_CURRENT,
+            const.DEFAULT_CHARGE_CURRENT,
+            const.DEFAULT_GRID_CHARGE_CURRENT,
+        ):
+            self.assertNotIn(entity_id, written)
 
     def test_grid_no_repairs_an_externally_enabled_tou_grid_charge(self):
         runtime = make_runtime()
@@ -1473,11 +1417,8 @@ class GridAndSlotSafetyTests(unittest.TestCase):
         slot.enabled = True
         slot.mode = const.MODE_NORMAL_OPERATION
         slot.physical_work_mode = const.MODE_ZERO_EXPORT_CT
-        slot.charge_current = 120
-        slot.grid_charge_current = 0
         self.assertTrue(asyncio.run(runtime.async_apply_targets()))
         self.assertEqual(runtime.hass.states.get(const.DEFAULT_WORK_MODE_SELECT).state, const.MODE_ZERO_EXPORT_CT)
-        self.assertEqual(runtime.hass.states.get(const.DEFAULT_CHARGE_CURRENT).state, "120")
         self.assertEqual(self.grid_switch_calls(runtime), [])
 
     def test_zero_export_does_not_require_price_or_sale_soc(self):
@@ -1486,7 +1427,6 @@ class GridAndSlotSafetyTests(unittest.TestCase):
         slot.enabled = True
         slot.mode = const.MODE_NORMAL_OPERATION
         slot.physical_work_mode = const.MODE_ZERO_EXPORT
-        slot.charge_current = 120
         self.assertTrue(asyncio.run(runtime.async_apply_targets()))
         self.assertEqual(runtime.hass.states.get(const.DEFAULT_WORK_MODE_SELECT).state, const.MODE_ZERO_EXPORT)
 
@@ -1504,20 +1444,12 @@ class GridAndSlotSafetyTests(unittest.TestCase):
         runtime = make_runtime(default_mode=const.MODE_NORMAL_OPERATION)
         runtime.normal_profile_physical_work_mode = const.MODE_ZERO_EXPORT_CT
         slot = self.configure_charge_slot(runtime, grid=False)
-        slot.charge_current = 95
-        slot.discharge_current = 35
-        slot.grid_charge_current = 55
         slot.tou_soc = 88
         # Later changes of the template must not overwrite the slot.
-        runtime.charge_profile_charge_current = 95
-        runtime.charge_profile_discharge_current = 25
-        runtime.charge_profile_grid_charge_current = 45
         runtime.charge_profile_target_soc = 78
 
         self.assertTrue(asyncio.run(runtime.async_apply_targets()))
         self.assertEqual(runtime.hass.states.get(const.DEFAULT_WORK_MODE_SELECT).state, const.MODE_ZERO_EXPORT_CT)
-        self.assertEqual(runtime.hass.states.get(const.DEFAULT_CHARGE_CURRENT).state, "95")
-        self.assertEqual(runtime.hass.states.get(const.DEFAULT_DISCHARGE_CURRENT).state, "35")
         tou_soc_values = [
             runtime.hass.states.get(f"number.deye_inverter_time_of_use_{idx}_soc").state
             for idx in range(1, 7)
@@ -1530,16 +1462,10 @@ class GridAndSlotSafetyTests(unittest.TestCase):
         before_slot = dict(vars(slot))
         calls_before = list(runtime.hass.services.calls)
         asyncio.run(runtime.async_save_charge_profile({
-            "charge_current": 120,
-            "discharge_current": 30,
-            "grid_charge_current": 40,
             "target_soc": 85,
             "grid_charge_enabled": True,
         }))
 
-        self.assertEqual(runtime.charge_profile_charge_current, 120)
-        self.assertEqual(runtime.charge_profile_discharge_current, 30)
-        self.assertEqual(runtime.charge_profile_grid_charge_current, 40)
         self.assertEqual(runtime.charge_profile_target_soc, 85)
         self.assertTrue(runtime.charge_profile_grid_enabled)
         self.assertEqual(vars(slot), before_slot)
@@ -1552,15 +1478,11 @@ class GridAndSlotSafetyTests(unittest.TestCase):
         calls_before = list(runtime.hass.services.calls)
 
         asyncio.run(runtime.async_save_charge_profile({
-            "charge_current": 120,
-            "discharge_current": 30,
-            "grid_charge_current": 40,
             "target_soc": 85,
             "grid_charge_enabled": True,
         }))
 
         self.assertEqual(runtime.hass.services.calls, calls_before)
-        self.assertEqual(runtime.charge_profile_charge_current, 120)
         self.assertEqual(
             runtime.last_action,
             "Charging settings template saved",
@@ -1583,17 +1505,11 @@ class GridAndSlotSafetyTests(unittest.TestCase):
             if physical:
                 slot.physical_work_mode = physical
             slot.sell_power = 4321
-            slot.discharge_current = 45
-            slot.charge_current = 55
-            slot.grid_charge_current = 65
             slot.minimum_sell_soc = 25
             slot.tou_soc = 35
             protected.append((slot, dict(vars(slot))))
 
         asyncio.run(runtime.async_save_charge_profile({
-            "charge_current": 120,
-            "discharge_current": 30,
-            "grid_charge_current": 40,
             "target_soc": 85,
             "grid_charge_enabled": True,
         }))
@@ -1603,9 +1519,6 @@ class GridAndSlotSafetyTests(unittest.TestCase):
 
     def test_selecting_charge_copies_template_once_and_keeps_manual_override(self):
         runtime = make_runtime()
-        runtime.charge_profile_charge_current = 101
-        runtime.charge_profile_discharge_current = 31
-        runtime.charge_profile_grid_charge_current = 41
         runtime.charge_profile_target_soc = 81
         runtime.charge_profile_grid_enabled = True
         slot_key = runtime.active_slot_key()
@@ -1613,31 +1526,20 @@ class GridAndSlotSafetyTests(unittest.TestCase):
         slot.mode = const.MODE_NORMAL_OPERATION
 
         runtime.set_work_mode_for_slot(slot_key, const.MODE_CHARGE)
-        self.assertEqual(slot.charge_current, 101)
-        self.assertEqual(slot.discharge_current, 31)
-        self.assertEqual(slot.grid_charge_current, 41)
         self.assertEqual(slot.tou_soc, 81)
         self.assertTrue(slot.charge_enabled)
 
-        slot.charge_current = 77
         slot.tou_soc = 66
         asyncio.run(runtime.async_save_charge_profile({
-            "charge_current": 120,
-            "discharge_current": 40,
-            "grid_charge_current": 50,
             "target_soc": 90,
             "grid_charge_enabled": False,
         }))
         runtime.set_work_mode_for_slot(slot_key, const.MODE_CHARGE)
-        self.assertEqual(slot.charge_current, 77)
         self.assertEqual(slot.tou_soc, 66)
         self.assertTrue(slot.charge_enabled)
 
     def test_existing_charge_slots_keep_independent_manual_values(self):
         runtime = make_runtime()
-        runtime.charge_profile_charge_current = 105
-        runtime.charge_profile_discharge_current = 35
-        runtime.charge_profile_grid_charge_current = 45
         runtime.charge_profile_target_soc = 82
         runtime.charge_profile_grid_enabled = True
         charge_slots = runtime.slots.hourly()[:2]
@@ -1645,9 +1547,6 @@ class GridAndSlotSafetyTests(unittest.TestCase):
             slot.enabled = True
             slot.mode = const.MODE_CHARGE
             slot.charge_enabled = index == 0
-            slot.charge_current = 5 + index
-            slot.discharge_current = 6 + index
-            slot.grid_charge_current = 7 + index
             slot.tou_soc = 8 + index
 
         segments = runtime._tou_mapping.slots
@@ -1664,7 +1563,6 @@ class GridAndSlotSafetyTests(unittest.TestCase):
         charge_slot.enabled = True
         charge_slot.mode = const.MODE_CHARGE
         charge_slot.charge_enabled = True
-        charge_slot.grid_charge_current = 40
         charge_slot.tou_soc = 80
 
         segments = runtime._tou_mapping.slots
@@ -1678,9 +1576,6 @@ class GridAndSlotSafetyTests(unittest.TestCase):
         async def run_both():
             await asyncio.gather(
                 runtime.async_save_charge_profile({
-                    "charge_current": 120,
-                    "discharge_current": 30,
-                    "grid_charge_current": 40,
                     "target_soc": 85,
                     "grid_charge_enabled": True,
                 }),
@@ -1740,9 +1635,6 @@ class NormalProfileTests(unittest.TestCase):
     def configure_normal_profile(self, runtime):
         runtime.normal_profile_physical_work_mode = const.MODE_ZERO_EXPORT_CT
         runtime.normal_profile_sell_power = 2500
-        runtime.normal_profile_discharge_current = 80
-        runtime.normal_profile_charge_current = 90
-        runtime.normal_profile_grid_charge_current = 10
         runtime.normal_profile_tou_soc = 75
 
     def test_selecting_normal_operation_copies_template_once(self):
@@ -1756,9 +1648,6 @@ class NormalProfileTests(unittest.TestCase):
         self.assertEqual(slot.mode, const.MODE_NORMAL_OPERATION)
         self.assertEqual(slot.physical_work_mode, const.MODE_ZERO_EXPORT_CT)
         self.assertEqual(slot.sell_power, 2500)
-        self.assertEqual(slot.discharge_current, 80)
-        self.assertEqual(slot.charge_current, 90)
-        self.assertEqual(slot.grid_charge_current, 10)
         self.assertEqual(slot.tou_soc, 75)
 
     def test_manual_slot_values_survive_template_change(self):
@@ -1816,9 +1705,6 @@ class NormalProfileTests(unittest.TestCase):
             asyncio.run(runtime.async_save_normal_profile({
                 "physical_work_mode": const.MODE_NORMAL_OPERATION,
                 "sell_power": 1000,
-                "discharge_current": 50,
-                "charge_current": 50,
-                "grid_charge_current": 10,
                 "tou_soc": 50,
             }))
 
@@ -1838,9 +1724,6 @@ class NormalProfileTests(unittest.TestCase):
             asyncio.run(runtime.async_save_normal_profile({
             "physical_work_mode": const.MODE_ZERO_EXPORT,
                 "sell_power": 1000,
-                "discharge_current": 50,
-                "charge_current": 50,
-                "grid_charge_current": 10,
                 "tou_soc": None,
             }))
 
@@ -1849,9 +1732,6 @@ class ChargeProfileSlotReloadTests(unittest.TestCase):
     """Regression coverage for copying the Charge template into slots."""
 
     def _configure_charge_profile(self, runtime):
-        runtime.charge_profile_charge_current = 120
-        runtime.charge_profile_discharge_current = 120
-        runtime.charge_profile_grid_charge_current = 60
         runtime.charge_profile_target_soc = 80
         runtime.charge_profile_grid_enabled = True
 
@@ -1861,9 +1741,6 @@ class ChargeProfileSlotReloadTests(unittest.TestCase):
         slot_key = runtime.active_slot_key()
         slot = runtime.slots[slot_key]
         slot.mode = const.MODE_CHARGE
-        slot.charge_current = 5
-        slot.discharge_current = 6
-        slot.grid_charge_current = 7
         slot.tou_soc = 10
         slot.charge_enabled = False
 
@@ -1874,9 +1751,6 @@ class ChargeProfileSlotReloadTests(unittest.TestCase):
         }]))
 
         self.assertEqual(slot.mode, const.MODE_CHARGE)
-        self.assertEqual(slot.charge_current, 120)
-        self.assertEqual(slot.discharge_current, 120)
-        self.assertEqual(slot.grid_charge_current, 60)
         self.assertEqual(slot.tou_soc, 80)
         self.assertTrue(slot.charge_enabled)
 
@@ -1888,8 +1762,6 @@ class ChargeProfileSlotReloadTests(unittest.TestCase):
         second = runtime.slots[keys[1]]
         first.mode = const.MODE_CHARGE
         second.mode = const.MODE_CHARGE
-        first.charge_current = 5
-        second.charge_current = 7
 
         asyncio.run(runtime.async_apply_schedule_patch([{
             "slot_key": keys[0],
@@ -1897,8 +1769,6 @@ class ChargeProfileSlotReloadTests(unittest.TestCase):
             "force_copy_charge_profile": True,
         }]))
 
-        self.assertEqual(first.charge_current, 120)
-        self.assertEqual(second.charge_current, 7)
 
     def test_new_charge_slot_copies_full_template_from_runtime(self):
         runtime = make_runtime()
@@ -1909,9 +1779,6 @@ class ChargeProfileSlotReloadTests(unittest.TestCase):
         slot.tou_soc = 30
 
         runtime.set_work_mode_for_slot(slot_key, const.MODE_CHARGE)
-        self.assertEqual(slot.charge_current, 120)
-        self.assertEqual(slot.discharge_current, 120)
-        self.assertEqual(slot.grid_charge_current, 60)
         self.assertEqual(slot.tou_soc, 80)
         self.assertTrue(slot.charge_enabled)
 
@@ -2246,9 +2113,6 @@ class TouSocMappingTests(unittest.TestCase):
         slot.mode = const.MODE_NORMAL_OPERATION
         slot.physical_work_mode = const.MODE_ZERO_EXPORT_CT
         slot.sell_power = 5000
-        slot.charge_current = 120
-        slot.discharge_current = 30
-        slot.grid_charge_current = 60
         slot.minimum_sell_soc = 90
         after = runtime._tou_mapping.slots
         self.assertEqual(
@@ -2471,7 +2335,6 @@ class SellingTouSocSeparationTests(unittest.TestCase):
         active.tou_soc = tou_soc
         runtime.default_work_mode = const.MODE_NORMAL_OPERATION
         runtime.default_sell_power = 250
-        runtime.default_discharge_current = 75
         return active
 
     def test_blocked_sale_uses_default_work_mode(self):
@@ -2491,14 +2354,17 @@ class SellingTouSocSeparationTests(unittest.TestCase):
             "250",
         )
 
-    def test_blocked_sale_preserves_nonzero_default_discharge_current(self):
+    def test_blocked_sale_does_not_write_direct_current_limits(self):
         runtime = make_runtime(soc="30")
         self._configure_blocked_selling_slot(runtime, min_sell=35)
         self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        self.assertEqual(
-            runtime.hass.states.get(const.DEFAULT_DISCHARGE_CURRENT).state,
-            "75",
-        )
+        written = {call[2].get("entity_id") for call in runtime.hass.services.calls}
+        for entity_id in (
+            const.DEFAULT_DISCHARGE_CURRENT,
+            const.DEFAULT_CHARGE_CURRENT,
+            const.DEFAULT_GRID_CHARGE_CURRENT,
+        ):
+            self.assertNotIn(entity_id, written)
 
     def test_reverse_sync_updates_selling_tou_soc_not_minimum_sell_soc(self):
         runtime = make_runtime()
@@ -3388,9 +3254,6 @@ class ProviderProfileValidationTests(unittest.TestCase):
             "mode": mode,
             "physical_work_mode": physical_mode,
             "sell_power": 3000,
-            "discharge_current": 80,
-            "charge_current": 70,
-            "grid_charge_current": 40,
         }
 
     @staticmethod
@@ -3398,9 +3261,6 @@ class ProviderProfileValidationTests(unittest.TestCase):
         return {
             "physical_work_mode": physical_mode,
             "sell_power": 3000,
-            "discharge_current": 80,
-            "charge_current": 70,
-            "grid_charge_current": 40,
             "tou_soc": 20,
         }
 
@@ -3517,12 +3377,8 @@ class ChargeProfilePersistenceTests(unittest.TestCase):
             return self.value
 
     @staticmethod
-    def profile(grid_enabled=True, charge_current=120, discharge_current=35,
-                grid_charge_current=60, target_soc=90):
+    def profile(grid_enabled=True, target_soc=90, **legacy_current_fields):
         return {
-            "charge_current": charge_current,
-            "discharge_current": discharge_current,
-            "grid_charge_current": grid_charge_current,
             "target_soc": target_soc,
             "grid_charge_enabled": grid_enabled,
         }
@@ -3544,19 +3400,19 @@ class ChargeProfilePersistenceTests(unittest.TestCase):
         asyncio.run(runtime.async_save_charge_profile(self.profile()))
 
         self.assertEqual(store.value["charge_profile"], {
-            "charge_current": 120.0,
-            "discharge_current": 35.0,
-            "grid_charge_current": 60.0,
             "target_soc": 90.0,
             "grid_charge_enabled": True,
         })
         reloaded = self.load_from_store(store)
         self.assertTrue(reloaded._charge_profile_loaded_from_store)
         self.assertTrue(reloaded.charge_profile_grid_enabled)
-        self.assertEqual(reloaded.charge_profile_charge_current, 120)
-        self.assertEqual(reloaded.charge_profile_discharge_current, 35)
-        self.assertEqual(reloaded.charge_profile_grid_charge_current, 60)
         self.assertEqual(reloaded.charge_profile_target_soc, 90)
+        for field in (
+            "charge_profile_charge_current",
+            "charge_profile_discharge_current",
+            "charge_profile_grid_charge_current",
+        ):
+            self.assertFalse(hasattr(reloaded, field))
 
     def test_complete_profile_with_grid_no_and_different_values_survives_restart(self):
         store = self.MemoryStore()
@@ -3572,9 +3428,6 @@ class ChargeProfilePersistenceTests(unittest.TestCase):
 
         reloaded = self.load_from_store(store)
         self.assertFalse(reloaded.charge_profile_grid_enabled)
-        self.assertEqual(reloaded.charge_profile_charge_current, 75)
-        self.assertEqual(reloaded.charge_profile_discharge_current, 25)
-        self.assertEqual(reloaded.charge_profile_grid_charge_current, 15)
         self.assertEqual(reloaded.charge_profile_target_soc, 82)
 
     def test_invalid_profile_keeps_previous_runtime_and_stored_record(self):
@@ -3585,16 +3438,12 @@ class ChargeProfilePersistenceTests(unittest.TestCase):
         stored_before = dict(store.value["charge_profile"])
 
         with self.assertRaises(ValueError):
-            asyncio.run(runtime.async_save_charge_profile(self.profile(charge_current=float("nan"))))
+            asyncio.run(runtime.async_save_charge_profile(self.profile(target_soc=float("nan"))))
 
-        self.assertEqual(runtime.charge_profile_charge_current, 120)
         self.assertEqual(store.value["charge_profile"], stored_before)
 
     def test_failed_durable_write_rolls_back_complete_runtime_profile(self):
         runtime = make_runtime()
-        runtime.charge_profile_charge_current = 101
-        runtime.charge_profile_discharge_current = 31
-        runtime.charge_profile_grid_charge_current = 41
         runtime.charge_profile_target_soc = 81
         runtime.charge_profile_grid_enabled = False
         runtime._charge_profile_loaded_from_store = True
@@ -3603,9 +3452,6 @@ class ChargeProfilePersistenceTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "storage unavailable"):
             asyncio.run(runtime.async_save_charge_profile(self.profile()))
 
-        self.assertEqual(runtime.charge_profile_charge_current, 101)
-        self.assertEqual(runtime.charge_profile_discharge_current, 31)
-        self.assertEqual(runtime.charge_profile_grid_charge_current, 41)
         self.assertEqual(runtime.charge_profile_target_soc, 81)
         self.assertFalse(runtime.charge_profile_grid_enabled)
         self.assertTrue(runtime._charge_profile_loaded_from_store)
@@ -3613,66 +3459,35 @@ class ChargeProfilePersistenceTests(unittest.TestCase):
     def test_dataclass_defaults_mirror_solar_assistant_configuration(self):
         defaults = manager.DeyeEnergyRuntime.__dataclass_fields__
         self.assertEqual(defaults["default_sell_power"].default, const.MIRRORED_MAX_SELL_POWER_W)
-        self.assertEqual(defaults["default_discharge_current"].default, const.MIRRORED_DISCHARGE_CURRENT_A)
-        self.assertEqual(defaults["default_charge_current"].default, const.MIRRORED_CHARGE_CURRENT_A)
-        self.assertEqual(defaults["default_grid_charge_current"].default, const.MIRRORED_GRID_CHARGE_CURRENT_A)
-        self.assertEqual(defaults["charge_profile_charge_current"].default, const.MIRRORED_CHARGE_CURRENT_A)
-        self.assertEqual(defaults["charge_profile_discharge_current"].default, const.MIRRORED_DISCHARGE_CURRENT_A)
-        self.assertEqual(defaults["charge_profile_grid_charge_current"].default, const.MIRRORED_GRID_CHARGE_CURRENT_A)
         self.assertEqual(defaults["charge_profile_target_soc"].default, const.MIRRORED_CHARGE_PROFILE_TARGET_SOC)
         self.assertTrue(defaults["charge_profile_grid_enabled"].default)
 
-    def test_legacy_profile_and_missing_default_profile_migrate_once(self):
-        store = self.MemoryStore({
-            "charge_profile": {
-                "charge_current": 60.0,
-                "discharge_current": 80.0,
-                "grid_charge_current": 60.0,
-                "target_soc": 100.0,
-                "grid_charge_enabled": False,
-            }
-        })
+    def test_legacy_profile_and_missing_default_profile_get_migration_marker(self):
+        legacy_profile = {
+            "target_soc": 100.0,
+            "grid_charge_enabled": False,
+        }
+        store = self.MemoryStore({"charge_profile": legacy_profile})
         reloaded = self.load_from_store(store)
 
         self.assertTrue(store.value["sa_defaults_v1"])
-        self.assertEqual(store.value["charge_profile"], {
-            "charge_current": const.MIRRORED_CHARGE_CURRENT_A,
-            "discharge_current": const.MIRRORED_DISCHARGE_CURRENT_A,
-            "grid_charge_current": const.MIRRORED_GRID_CHARGE_CURRENT_A,
-            "target_soc": const.MIRRORED_CHARGE_PROFILE_TARGET_SOC,
-            "grid_charge_enabled": const.MIRRORED_CHARGE_PROFILE_GRID_ENABLED,
-        })
+        self.assertEqual(store.value["charge_profile"], legacy_profile)
         self.assertEqual(store.value["default_profile"], {
-            "sell_power": const.MIRRORED_MAX_SELL_POWER_W,
-            "discharge_current": const.MIRRORED_DISCHARGE_CURRENT_A,
-            "charge_current": const.MIRRORED_CHARGE_CURRENT_A,
-            "grid_charge_current": const.MIRRORED_GRID_CHARGE_CURRENT_A,
+            "sell_power": reloaded.default_sell_power,
         })
         self.assertTrue(reloaded._charge_profile_loaded_from_store)
-        self.assertTrue(reloaded._default_profile_loaded_from_store)
-        self.assertEqual(reloaded.charge_profile_charge_current, const.MIRRORED_CHARGE_CURRENT_A)
-        self.assertEqual(reloaded.charge_profile_discharge_current, const.MIRRORED_DISCHARGE_CURRENT_A)
-        self.assertEqual(reloaded.charge_profile_grid_charge_current, const.MIRRORED_GRID_CHARGE_CURRENT_A)
-        self.assertEqual(reloaded.charge_profile_target_soc, const.MIRRORED_CHARGE_PROFILE_TARGET_SOC)
-        self.assertTrue(reloaded.charge_profile_grid_enabled)
-        self.assertEqual(reloaded.default_sell_power, const.MIRRORED_MAX_SELL_POWER_W)
-        self.assertEqual(reloaded.default_discharge_current, const.MIRRORED_DISCHARGE_CURRENT_A)
-        self.assertEqual(reloaded.default_charge_current, const.MIRRORED_CHARGE_CURRENT_A)
-        self.assertEqual(reloaded.default_grid_charge_current, const.MIRRORED_GRID_CHARGE_CURRENT_A)
+        self.assertFalse(reloaded._default_profile_loaded_from_store)
+        self.assertEqual(reloaded.charge_profile_target_soc, 100.0)
+        self.assertFalse(reloaded.charge_profile_grid_enabled)
+        self.assertEqual(reloaded.default_sell_power, const.DEFAULT_INVERTER_MAX_POWER_W)
 
     def test_saved_profiles_are_not_overwritten_by_migration(self):
         charge_profile = {
-            "charge_current": 120.0,
-            "discharge_current": 35.0,
-            "grid_charge_current": 15.0,
             "target_soc": 82.0,
             "grid_charge_enabled": False,
         }
         default_profile = {
             "sell_power": 250.0,
-            "discharge_current": 75.0,
-            "charge_current": 45.0,
-            "grid_charge_current": 25.0,
         }
         store = self.MemoryStore({
             "charge_profile": charge_profile,
@@ -3683,16 +3498,12 @@ class ChargeProfilePersistenceTests(unittest.TestCase):
         self.assertTrue(store.value["sa_defaults_v1"])
         self.assertEqual(store.value["charge_profile"], charge_profile)
         self.assertEqual(store.value["default_profile"], default_profile)
-        self.assertEqual(reloaded.charge_profile_charge_current, 120)
+        self.assertEqual(reloaded.charge_profile_target_soc, 82)
         self.assertFalse(reloaded.charge_profile_grid_enabled)
-        self.assertEqual(reloaded.default_charge_current, 45)
-        self.assertEqual(reloaded.default_grid_charge_current, 25)
+        self.assertEqual(reloaded.default_sell_power, 250)
 
     def test_migration_marker_preserves_legacy_profile_on_next_restart(self):
         legacy_profile = {
-            "charge_current": 60.0,
-            "discharge_current": 80.0,
-            "grid_charge_current": 60.0,
             "target_soc": 100.0,
             "grid_charge_enabled": False,
         }
@@ -3702,16 +3513,12 @@ class ChargeProfilePersistenceTests(unittest.TestCase):
         })
         reloaded = self.load_from_store(store)
 
-        self.assertEqual(reloaded.charge_profile_charge_current, 60)
-        self.assertEqual(reloaded.charge_profile_discharge_current, 80)
+        self.assertEqual(reloaded.charge_profile_target_soc, 100)
         self.assertFalse(reloaded.charge_profile_grid_enabled)
 
     def test_default_profile_from_store_survives_restart(self):
         default_profile = {
             "sell_power": 0.0,
-            "discharge_current": 290.0,
-            "charge_current": 290.0,
-            "grid_charge_current": 290.0,
         }
         store = self.MemoryStore({
             "default_profile": default_profile,
@@ -3721,14 +3528,10 @@ class ChargeProfilePersistenceTests(unittest.TestCase):
 
         self.assertTrue(reloaded._default_profile_loaded_from_store)
         self.assertEqual(reloaded.default_sell_power, 0)
-        self.assertEqual(reloaded.default_discharge_current, 290)
-        self.assertEqual(reloaded.default_charge_current, 290)
-        self.assertEqual(reloaded.default_grid_charge_current, 290)
 
-    def test_current_helper_ranges_use_shared_maximum(self):
+    def test_number_entities_have_no_helper_current_range(self):
         source = (PACKAGE / "number.py").read_text(encoding="utf-8")
         self.assertNotIn(', 240, 5, "A")', source)
-        self.assertIn(', CURRENT_HELPER_MAX_A, 5, "A")', source)
 
 
 class PlanExecutionArchiveTests(unittest.TestCase):
@@ -3865,8 +3668,6 @@ class FuturePlanTests(unittest.TestCase):
         update = {
             "slot_key": "0500_0530", "enabled": True,
             "mode": const.MODE_SELLING_FIRST, "sell_power": 5000,
-            "discharge_current": 120, "charge_current": 0,
-            "grid_charge_current": 0, "minimum_sell_soc": 20, "min_sell_price": 0.9,
         }
         asyncio.run(runtime.async_save_future_plan({
             "date": "2026-07-19", "strategy": "balanced",
@@ -3944,7 +3745,7 @@ class FuturePlanTests(unittest.TestCase):
             "updates": [{
                 "slot_key": "0500_0530", "enabled": True,
                 "mode": const.MODE_SELLING_FIRST,
-                "sell_power": 5000, "discharge_current": 120, "min_sell_price": 0.9,
+                "min_sell_price": 0.9,
             }],
             "slot_validations": {
                 "0500_0530": {"profile_id": "morning_sale"},
@@ -4570,7 +4371,7 @@ class InverterMaxPowerTests(unittest.IsolatedAsyncioTestCase):
             "0", attributes={"max": 12000, "unit_of_measurement": "W"}
         )
         with self.assertRaisesRegex(ValueError, "8000"):
-            await runtime.async_apply_settings(const.MODE_SELLING_FIRST, 10000, 120, 120, 60)
+            await runtime.async_apply_settings(const.MODE_SELLING_FIRST, 10000)
 
     async def test_apply_targets_caps_sell_power_to_effective_limit(self):
         runtime = make_runtime()
@@ -5237,9 +5038,6 @@ class ControlMasterTests(unittest.IsolatedAsyncioTestCase):
         calls = (
             runtime.async_set_work_mode(const.MODE_SELLING_FIRST),
             runtime.async_set_number(runtime.max_sell_power_number, 5000),
-            runtime.async_set_number(runtime.charge_current_number, 80),
-            runtime.async_set_number(runtime.discharge_current_number, 80),
-            runtime.async_set_number(runtime.grid_charge_current_number, 40),
             runtime.async_set_switch("switch.deye_inverter_time_of_use_1_grid_charge", True),
             runtime.async_set_time("time.deye_inverter_time_of_use_1_start", "01:00"),
         )
@@ -5252,7 +5050,7 @@ class ControlMasterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_rollback_scope_allows_only_exact_original_transaction_snapshot(self):
         runtime = make_runtime()
-        entity_id = runtime.charge_current_number
+        entity_id = runtime.max_sell_power_number
         switch_id = "switch.deye_inverter_time_of_use_1_grid_charge"
         snapshot = {
             entity_id: runtime.hass.states.get(entity_id).state,
@@ -5294,8 +5092,6 @@ class ControlMasterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(runtime.control_enabled)
         self.assertIsNot(first_cleanup_event, runtime._control_cleanup_event)
-        with self.assertRaises(manager.ControlDisabledError):
-            await runtime.async_set_number(runtime.charge_current_number, 10)
         with self.assertRaisesRegex(manager.ControlDisabledError, "being disabled"):
             await runtime.async_enable_control()
         self.assertFalse(disable_task.done())
@@ -5435,9 +5231,6 @@ class ControlMasterTests(unittest.IsolatedAsyncioTestCase):
             for entity_id in (
                 runtime.work_mode_select,
                 runtime.max_sell_power_number,
-                runtime.discharge_current_number,
-                runtime.charge_current_number,
-                runtime.grid_charge_current_number,
             )
         }
         confirming = asyncio.Event()
@@ -5450,8 +5243,7 @@ class ControlMasterTests(unittest.IsolatedAsyncioTestCase):
 
         runtime._async_wait_for_control_confirmation = wait_until_disabled
         apply_task = asyncio.create_task(runtime.async_apply_settings(
-            const.MODE_SELLING_FIRST, 5000, 40, 50, 30
-        ))
+            const.MODE_SELLING_FIRST, 5000))
         await confirming.wait()
         disable_task = asyncio.create_task(runtime.async_disable_control())
 
@@ -6282,9 +6074,6 @@ class TouReverseSync5C2Tests(unittest.IsolatedAsyncioTestCase):
         "enabled",
         "minimum_sell_soc",
         "sell_power",
-        "charge_current",
-        "grid_charge_current",
-        "discharge_current",
         "min_sell_price",
         "physical_work_mode",
     )
@@ -6320,9 +6109,6 @@ class TouReverseSync5C2Tests(unittest.IsolatedAsyncioTestCase):
             slot.enabled = hour % 2 == 0
             slot.minimum_sell_soc = 35 + (hour % 5)
             slot.sell_power = 1000 + hour
-            slot.charge_current = 40 + hour
-            slot.grid_charge_current = 20 + hour
-            slot.discharge_current = 60 + hour
             slot.min_sell_price = round(0.2 + hour / 100, 2)
             slot.physical_work_mode = const.MODE_ZERO_EXPORT_CT
             slot.tou_soc = 99
@@ -6407,14 +6193,12 @@ class TouReverseSync5C2Tests(unittest.IsolatedAsyncioTestCase):
         await runtime.async_set_physical_tou_slot(2, grid_charge=False)
         self.assertEqual([slot.mode for slot in runtime.slots.values()], before)
 
-    async def test_manual_grid_charge_does_not_change_currents(self):
+    async def test_slot_settings_have_no_current_fields(self):
         runtime = self._runtime()
-        before = [(slot.charge_current, slot.grid_charge_current, slot.discharge_current) for slot in runtime.slots.values()]
         await runtime.async_set_physical_tou_slot(2, grid_charge=False)
-        self.assertEqual(
-            [(slot.charge_current, slot.grid_charge_current, slot.discharge_current) for slot in runtime.slots.values()],
-            before,
-        )
+        for slot in runtime.slots.values():
+            for field in ("charge_current", "grid_charge_current", "discharge_current"):
+                self.assertFalse(hasattr(slot, field))
 
     async def test_reverse_sync_updates_all_hours_in_grid_range(self):
         runtime = self._runtime()
@@ -6463,14 +6247,17 @@ class TouReverseSync5C2Tests(unittest.IsolatedAsyncioTestCase):
     async def test_tou_reverse_sync_preserves_sell_power(self):
         await self._assert_preserved("sell_power")
 
-    async def test_tou_reverse_sync_preserves_charge_current(self):
-        await self._assert_preserved("charge_current")
+    async def test_slot_settings_have_no_charge_current_field(self):
+        runtime = self._runtime()
+        self.assertFalse(hasattr(runtime.active_slot, "charge_current"))
 
-    async def test_tou_reverse_sync_preserves_grid_charge_current(self):
-        await self._assert_preserved("grid_charge_current")
+    async def test_slot_settings_have_no_grid_charge_current_field(self):
+        runtime = self._runtime()
+        self.assertFalse(hasattr(runtime.active_slot, "grid_charge_current"))
 
-    async def test_tou_reverse_sync_preserves_discharge_current(self):
-        await self._assert_preserved("discharge_current")
+    async def test_slot_settings_have_no_discharge_current_field(self):
+        runtime = self._runtime()
+        self.assertFalse(hasattr(runtime.active_slot, "discharge_current"))
 
     async def test_tou_reverse_sync_preserves_minimum_sell_soc(self):
         await self._assert_preserved("minimum_sell_soc")
@@ -7116,25 +6903,18 @@ class ControlReenableReconciliation5F5Tests(unittest.IsolatedAsyncioTestCase):
     def _set_physical(runtime, *, mode, sell, discharge, charge, grid):
         runtime.hass.states.values[runtime.work_mode_select] = FakeState(mode)
         runtime.hass.states.values[runtime.max_sell_power_number] = FakeState(str(sell))
-        runtime.hass.states.values[runtime.discharge_current_number] = FakeState(str(discharge))
-        runtime.hass.states.values[runtime.charge_current_number] = FakeState(str(charge))
-        runtime.hass.states.values[runtime.grid_charge_current_number] = FakeState(str(grid))
 
     @staticmethod
     def _control_calls(runtime):
         ids = {
             runtime.work_mode_select,
             runtime.max_sell_power_number,
-            runtime.discharge_current_number,
-            runtime.charge_current_number,
-            runtime.grid_charge_current_number,
         }
         return [call for call in runtime.hass.services.calls if call[2].get("entity_id") in ids]
 
     async def test_reenable_control_immediately_applies_current_schedule_slot(self):
         runtime = self._prepare_runtime()
         slot = configure_selling_slot(runtime)
-        slot.charge_current = 75
         slot.charge_enabled = False
         self._set_physical(runtime, mode=const.MODE_ZERO_EXPORT, sell=1234, discharge=25, charge=15, grid=10)
         runtime.hass.services.calls.clear()
@@ -7147,8 +6927,6 @@ class ControlReenableReconciliation5F5Tests(unittest.IsolatedAsyncioTestCase):
             runtime.hass.states.get(runtime.work_mode_select).state,
         ))
         self.assertEqual(float(runtime.hass.states.get(runtime.max_sell_power_number).state), 5000)
-        self.assertEqual(float(runtime.hass.states.get(runtime.discharge_current_number).state), 120)
-        self.assertEqual(float(runtime.hass.states.get(runtime.charge_current_number).state), 75)
         self.assertTrue(self._control_calls(runtime))
 
     async def test_reenable_control_does_not_wait_for_periodic_manager_tick(self):
@@ -7169,8 +6947,6 @@ class ControlReenableReconciliation5F5Tests(unittest.IsolatedAsyncioTestCase):
         slot.mode = const.MODE_NORMAL_OPERATION
         slot.physical_work_mode = const.MODE_ZERO_EXPORT_CT
         slot.sell_power = 3100
-        slot.discharge_current = 55
-        slot.charge_current = 45
         self._set_physical(runtime, mode="Selling First", sell=9000, discharge=90, charge=90, grid=5)
 
         await self._enable_and_wait(runtime)
@@ -7182,8 +6958,6 @@ class ControlReenableReconciliation5F5Tests(unittest.IsolatedAsyncioTestCase):
             const.MODE_ZERO_EXPORT_CT,
         ))
         self.assertEqual(float(runtime.hass.states.get(runtime.max_sell_power_number).state), 3100)
-        self.assertEqual(float(runtime.hass.states.get(runtime.discharge_current_number).state), 55)
-        self.assertEqual(float(runtime.hass.states.get(runtime.charge_current_number).state), 45)
 
     async def test_reenable_control_applies_current_charge_slot(self):
         runtime = self._prepare_runtime()
@@ -7192,9 +6966,6 @@ class ControlReenableReconciliation5F5Tests(unittest.IsolatedAsyncioTestCase):
         slot.enabled = True
         slot.mode = const.MODE_CHARGE
         slot.charge_enabled = True
-        slot.charge_current = 88
-        slot.discharge_current = 44
-        slot.grid_charge_current = 33
         slot.tou_soc = 90
         self._set_physical(runtime, mode="Selling First", sell=1000, discharge=10, charge=10, grid=10)
 
@@ -7206,9 +6977,6 @@ class ControlReenableReconciliation5F5Tests(unittest.IsolatedAsyncioTestCase):
             runtime.hass.states.get(runtime.work_mode_select).state,
             runtime.default_normal_physical_work_mode(),
         ))
-        self.assertEqual(float(runtime.hass.states.get(runtime.discharge_current_number).state), 44)
-        self.assertEqual(float(runtime.hass.states.get(runtime.charge_current_number).state), 88)
-        self.assertEqual(float(runtime.hass.states.get(runtime.grid_charge_current_number).state), 33)
         self.assertTrue(any(
             call[:2] == ("switch", "turn_on") and "_grid_charge" in str(call[2].get("entity_id"))
             for call in runtime.hass.services.calls
@@ -7217,8 +6985,6 @@ class ControlReenableReconciliation5F5Tests(unittest.IsolatedAsyncioTestCase):
     async def test_reenable_control_applies_current_selling_slot(self):
         runtime = self._prepare_runtime()
         slot = configure_selling_slot(runtime)
-        slot.discharge_current = 111
-        slot.charge_current = 66
         self._set_physical(runtime, mode=const.MODE_ZERO_EXPORT, sell=2500, discharge=22, charge=33, grid=12)
 
         await self._enable_and_wait(runtime)
@@ -7229,8 +6995,6 @@ class ControlReenableReconciliation5F5Tests(unittest.IsolatedAsyncioTestCase):
             runtime.hass.states.get(runtime.work_mode_select).state,
         ))
         self.assertEqual(float(runtime.hass.states.get(runtime.max_sell_power_number).state), 5000)
-        self.assertEqual(float(runtime.hass.states.get(runtime.discharge_current_number).state), 111)
-        self.assertEqual(float(runtime.hass.states.get(runtime.charge_current_number).state), 66)
 
     async def test_reenable_control_uses_standard_defaults_for_disabled_slot(self):
         runtime = self._prepare_runtime()
@@ -7247,7 +7011,6 @@ class ControlReenableReconciliation5F5Tests(unittest.IsolatedAsyncioTestCase):
             runtime.default_normal_physical_work_mode(),
         ))
         self.assertEqual(float(runtime.hass.states.get(runtime.max_sell_power_number).state), runtime.default_sell_power)
-        self.assertEqual(float(runtime.hass.states.get(runtime.discharge_current_number).state), runtime.default_discharge_current)
 
     async def test_reenable_control_respects_minimum_sell_soc(self):
         runtime = self._prepare_runtime(make_runtime(soc="20"))
@@ -7292,7 +7055,7 @@ class ControlReenableReconciliation5F5Tests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(runtime._schedule_reconcile_task)
         self.assertEqual(runtime.hass.services.calls, [])
 
-    async def test_reenable_control_writes_only_changed_current_slot_targets(self):
+    async def test_reenable_control_ignores_removed_current_slot_fields(self):
         runtime = self._prepare_runtime()
         configure_selling_slot(runtime)
         self._set_physical(runtime, mode="Selling First", sell=5000, discharge=5, charge=120, grid=60)
@@ -7300,10 +7063,7 @@ class ControlReenableReconciliation5F5Tests(unittest.IsolatedAsyncioTestCase):
 
         await self._enable_and_wait(runtime)
 
-        calls = self._control_calls(runtime)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][2]["entity_id"], runtime.discharge_current_number)
-        self.assertEqual(float(calls[0][2]["value"]), 120)
+        self.assertEqual(self._control_calls(runtime), [])
 
     async def test_reenable_control_reconciles_external_tou_change(self):
         runtime = self._prepare_runtime(TouExternalReconciliation5DTests._runtime())
@@ -7401,12 +7161,11 @@ class ManagerActionSemantics5F6Tests(unittest.IsolatedAsyncioTestCase):
         slot.enabled = True
         slot.mode = const.MODE_CHARGE
         slot.charge_enabled = True
-        slot.charge_current = 88
         slot.tou_soc = 90
 
         self.assertEqual(
             runtime._planned_manager_action_text(),
-            "Charging from grid — 88 A, target SOC 90%",
+            "Charging from grid — target SOC 90%",
         )
 
     async def test_executed_action_reports_no_change_when_targets_already_match(self):
@@ -7959,10 +7718,7 @@ def manual_slot_signature(slot):
         slot.mode,
         slot.physical_work_mode,
         slot.sell_power,
-        slot.discharge_current,
         slot.charge_enabled,
-        slot.charge_current,
-        slot.grid_charge_current,
         slot.minimum_sell_soc,
         slot.tou_soc,
         slot.min_sell_price,
@@ -8145,24 +7901,18 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_activation_leaves_removed_fields_at_work_schedule_values(self):
         runtime = make_runtime()
-        removed = (
-            "physical_work_mode", "discharge_current", "charge_current",
-            "grid_charge_current", "min_sell_price",
-        )
+        removed = ("physical_work_mode", "min_sell_price")
         for key in ("0000_0030", "1130_1200", "1200_1230", "2330_0000"):
             slot = runtime.slots[key]
             slot.physical_work_mode = const.MODE_ZERO_EXPORT
-            slot.discharge_current = 111
-            slot.charge_current = 112
-            slot.grid_charge_current = 113
             slot.min_sell_price = 1.25
         before = {
             key: tuple(getattr(slot, field) for field in removed)
             for key, slot in runtime.slots.items()
         }
         # The second row switches slots to Selling, which would normally clear
-        # the physical mode or copy a profile into the currents.  The manual
-        # schedule must leave all five fields at their work-schedule values.
+        # the physical mode or change the sell price.  The manual schedule must
+        # leave both removed fields at their work-schedule values.
         await runtime.async_save_manual_schedule([
             manual_row(to="12:00"),
             manual_row(**{

@@ -437,30 +437,86 @@ class ServiceJsonValidationTests(unittest.TestCase):
         self.assertIn("supports_response=SupportsResponse.ONLY", source)
         self.assertIn("return runtime.plan_execution_day", source)
 
-    def test_apply_settings_schema_accepts_optional_charge_current(self):
-        result = init.APPLY_SCHEMA({
-            "mode": "Selling",
-            "sell_power": 3000,
-            "discharge_current": 80,
-        })
-        self.assertNotIn("charge_current", result)
+    @staticmethod
+    def _schema_keys(schema):
+        return {key.key if hasattr(key, "key") else key for key in schema.schema}
 
-    def test_apply_settings_schema_accepts_optional_grid_charge_current(self):
-        result = init.APPLY_SCHEMA({
-            "mode": "Selling",
-            "sell_power": 3000,
-            "discharge_current": 80,
-            "grid_charge_current": 60,
-        })
-        self.assertEqual(result.get("grid_charge_current"), 60)
+    def test_apply_settings_schema_has_no_current_fields(self):
+        self.assertEqual(self._schema_keys(init.APPLY_SCHEMA), {"mode", "sell_power"})
+
+    def test_manual_sell_schema_has_no_current_fields(self):
+        self.assertEqual(self._schema_keys(init.MANUAL_SELL_SCHEMA), {"sell_power"})
+
+    def test_profile_and_default_schemas_have_no_current_fields(self):
+        for schema in (
+            init.CHARGE_PROFILE_SCHEMA,
+            init.NORMAL_PROFILE_SCHEMA,
+            init.DEFAULT_SETTINGS_SCHEMA,
+        ):
+            for key in self._schema_keys(schema):
+                self.assertNotIn("current", key)
 
     def test_apply_settings_schema_rejects_unknown_mode(self):
         with self.assertRaises(Exception):
-            init.APPLY_SCHEMA({
-                "mode": "Nieznany Mode",
-                "sell_power": 3000,
-                "discharge_current": 80,
-            })
+            init.APPLY_SCHEMA({"mode": "Nieznany Mode", "sell_power": 3000})
+
+    def test_inverter_configuration_schemas(self):
+        self.assertEqual(init.INVERTER_CONFIG_SCHEMA({}), {})
+        payload = init.APPLY_INVERTER_CONFIG_SCHEMA(
+            {"group": "battery_charging", "values": {"max_charge_current": 120}}
+        )
+        self.assertEqual(payload["group"], "battery_charging")
+        with self.assertRaises(Exception):
+            init.APPLY_INVERTER_CONFIG_SCHEMA({"group": "not_a_group", "values": {}})
+        with self.assertRaises(Exception):
+            init.APPLY_INVERTER_CONFIG_SCHEMA({"group": "battery_charging"})
+
+    def test_inverter_configuration_services_are_response_only(self):
+        source = (PACKAGE / "__init__.py").read_text(encoding="utf-8")
+        self.assertIn('"get_inverter_configuration"', source)
+        self.assertIn('"apply_inverter_configuration_group"', source)
+        self.assertIn("return runtime.read_inverter_configuration()", source)
+        self.assertIn(
+            "return await runtime.async_apply_inverter_configuration_group(",
+            source,
+        )
+        self.assertIn("get_inverter_configuration", init.SERVICE_NAMES)
+        self.assertIn("apply_inverter_configuration_group", init.SERVICE_NAMES)
+
+    def test_inverter_config_catalog_groups_and_direct_currents(self):
+        catalog = sys.modules[f"{package.__name__}.inverter_config"]
+        self.assertEqual(
+            [key for key, _label in catalog.INVERTER_CONFIG_GROUPS],
+            [
+                "specification",
+                "grid",
+                "auxiliary",
+                "battery_type",
+                "battery_charging",
+                "work_mode",
+                "work_mode_detail",
+            ],
+        )
+        currents = {
+            field.key for field in catalog.fields_for_group("battery_charging")
+            if field.key in {
+                "max_charge_current",
+                "max_discharge_current",
+                "max_grid_charge_current",
+            }
+        }
+        self.assertEqual(
+            currents,
+            {"max_charge_current", "max_discharge_current", "max_grid_charge_current"},
+        )
+
+    def test_services_yaml_has_no_current_fields_in_managed_paths(self):
+        text = (PACKAGE / "services.yaml").read_text(encoding="utf-8")
+        for field in ("discharge_current", "charge_current", "grid_charge_current"):
+            self.assertNotIn(f"    {field}:", text)
+        self.assertIn("get_inverter_configuration:", text)
+        self.assertIn("apply_inverter_configuration_group:", text)
+        self.assertNotIn("max: 320", text)
 
     def test_default_settings_card_to_schema_to_runtime(self):
         """Use the real card payload, service schema and runtime validation."""
@@ -475,6 +531,9 @@ class ServiceJsonValidationTests(unittest.TestCase):
         )
         payloads = json.loads(completed.stdout)
         self.assertEqual([item["mode"] for item in payloads], ["Normal Operation", "Selling"])
+        for payload in payloads:
+            for key in payload:
+                self.assertNotIn("current", key)
 
         class State:
             def __init__(self, state, attributes=None):

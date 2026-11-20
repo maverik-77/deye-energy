@@ -222,15 +222,18 @@ def test_card_disables_apply_during_learning_dry_run():
 
 
 def test_ai_charge_proposal_preview_lists_all_changed_fields():
-    for token in ("charge_current", "discharge_current", "grid_charge_current", "charge_enabled", "tou_soc"):
+    for token in ("charge_enabled", "tou_soc"):
         assert token in CARD_SOURCE
+    for token in ("charge_current", "discharge_current", "grid_charge_current"):
+        assert token not in CARD_SOURCE
     assert "Grid Charge" in CARD_SOURCE
 
 
 def test_ai_charge_proposal_apply_matches_previewed_fields():
     method = CARD_SOURCE[CARD_SOURCE.index("  aiRowUpdate("):CARD_SOURCE.index("  async applyAiDayPlan(")]
-    for mapping in ("profile.charge_current", "profile.discharge_current", "profile.grid_charge_current", "profile.target_soc"):
-        assert mapping in method
+    assert "profile.target_soc" in method
+    for mapping in ("profile.charge_current", "profile.discharge_current", "profile.grid_charge_current"):
+        assert mapping not in method
 
 
 def test_today_view_explains_no_profitable_proposals():

@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.54`.
+Card resource revision: `v=0.8.0.55`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the original
@@ -9,6 +9,15 @@ integrated through MQTT. Attribution is recorded at the bottom of README.md.
 
 ## Revision history
 
+- `v=0.8.0.55` — Added the **Inverter configuration** tab and response-only
+  services to own direct inverter fields (including battery/grid current
+  limits) separately from schedules/profiles/defaults/optimizer paths. Added a
+  **PV generation** toggle in Energy status sensors (`pv_enabled`) with
+  PV-disabled Energy status/layout/flow behavior and exclusion of PV/forecasts
+  from optimizer/planner/AI analysis/state where applicable. Fixed card
+  connect/disconnect lifecycle handling (duplicate interaction listeners and
+  pending timer cleanup) and corrected PV-disabled Solcast/learning/AI analysis
+  leakage.
 - `v=0.8.0.54` — Fresh installs and a one-time `sa_defaults_v1` migration now mirror the working Solar Assistant profile: 290 A battery charge, grid-charge and discharge current, 0 W sell power and grid charging enabled. Current helpers accept up to 300 A, restored charge-profile helpers no longer overwrite the persisted profile after a restart, and the README documents the new defaults.
 - `v=0.8.0.53` — README now documents the Energy status sensor editor, source
   captions, W/kW power formatting, manual schedule editing and current-row

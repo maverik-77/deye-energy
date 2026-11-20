@@ -50,9 +50,6 @@ function makeHass(overrides = {}) {
   return {
     states: {
       "sensor.deye_energy_manager_status": managerStatus,
-      "number.deye_energy_charge_profile_charge_current": overrides.chargeCurrentEntity || { state: "unavailable", attributes: {} },
-      "number.deye_energy_charge_profile_discharge_current": overrides.dischargeCurrentEntity || { state: "unavailable", attributes: {} },
-      "number.deye_energy_charge_profile_grid_charge_current": overrides.gridChargeCurrentEntity || { state: "unavailable", attributes: {} },
       "number.deye_energy_charge_profile_target_soc": overrides.targetSocEntity || { state: "unavailable", attributes: {} },
       "switch.deye_energy_charge_profile_grid_enabled": overrides.gridEnabledEntity || { state: "unavailable", attributes: {} },
     },
@@ -100,9 +97,6 @@ function fakeSelect(value) {
       attributes: {
         charge_profile: {
           grid_charge_enabled: true,
-          charge_current: 120,
-          discharge_current: 120,
-          grid_charge_current: 60,
           target_soc: 80,
         },
       },
@@ -120,9 +114,6 @@ function fakeSelect(value) {
       attributes: {
         charge_profile: {
           grid_charge_enabled: false,
-          charge_current: 0,
-          discharge_current: 0,
-          grid_charge_current: 0,
           target_soc: 100,
         },
       },
@@ -140,9 +131,6 @@ function fakeSelect(value) {
       attributes: {
         charge_profile: {
           grid_charge_enabled: false,
-          charge_current: 0,
-          discharge_current: 0,
-          grid_charge_current: 0,
           target_soc: 100,
         },
       },
@@ -154,12 +142,7 @@ function fakeSelect(value) {
   };
   card.querySelectorAll = (selector) => {
     if (selector === "[data-charge-profile-number]") {
-      return [
-        fakeInput("charge_current", "120"),
-        fakeInput("discharge_current", "120"),
-        fakeInput("grid_charge_current", "60"),
-        fakeInput("target_soc", "80"),
-      ];
+      return [fakeInput("target_soc", "80")];
     }
     return [];
   };
@@ -176,7 +159,9 @@ function fakeSelect(value) {
     assertEqual(calls[0].service, "save_charge_profile", "service must be save_charge_profile");
     assertEqual(calls[0].data.target_soc, 80, "saved target_soc must be 80");
     assertEqual(calls[0].data.grid_charge_enabled, true, "saved grid_charge_enabled must be true");
-    assertEqual(calls[0].data.charge_current, 120, "saved charge_current must be 120");
+    ["charge_current", "discharge_current", "grid_charge_current"].forEach((field) => {
+      assertTrue(!(field in calls[0].data), `charging template must not save ${field}`);
+    });
     assertEqual(card._chargeProfilePending.target_soc, 80, "pending state must store target_soc 80");
     assertEqual(Object.keys(card._chargeProfileDraft).length, 0, "draft must be cleared after successful save");
   })();
@@ -190,9 +175,6 @@ function fakeSelect(value) {
       attributes: {
         charge_profile: {
           grid_charge_enabled: true,
-          charge_current: 120,
-          discharge_current: 120,
-          grid_charge_current: 60,
           target_soc: 80,
         },
       },
@@ -200,9 +182,6 @@ function fakeSelect(value) {
   });
   card._chargeProfilePending = {
     grid_charge_enabled: true,
-    charge_current: 120,
-    discharge_current: 120,
-    grid_charge_current: 60,
     target_soc: 80,
   };
   card.checkChargeProfilePending();

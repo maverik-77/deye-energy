@@ -72,18 +72,6 @@ function makeHass(overrides = {}) {
         state: "unavailable",
         attributes: {},
       },
-      "number.deye_energy_normal_profile_discharge_current": overrides.dischargeEntity || {
-        state: "unavailable",
-        attributes: {},
-      },
-      "number.deye_energy_normal_profile_charge_current": overrides.chargeEntity || {
-        state: "unavailable",
-        attributes: {},
-      },
-      "number.deye_energy_normal_profile_grid_charge_current": overrides.gridEntity || {
-        state: "unavailable",
-        attributes: {},
-      },
       "select.deye_energy_normal_profile_mode": overrides.modeEntity || {
         state: "unavailable",
         attributes: {},
@@ -134,9 +122,6 @@ function fakeSelect(value) {
         normal_profile: {
           physical_work_mode: "Zero Export To Load",
           sell_power: 1000,
-          discharge_current: 50,
-          charge_current: 50,
-          grid_charge_current: 10,
           tou_soc: null,
         },
       },
@@ -155,9 +140,6 @@ function fakeSelect(value) {
         normal_profile: {
           physical_work_mode: "Zero Export To Load",
           sell_power: 1000,
-          discharge_current: 50,
-          charge_current: 50,
-          grid_charge_current: 10,
           tou_soc: "",
         },
       },
@@ -222,13 +204,7 @@ function fakeSelect(value) {
   };
   card.querySelectorAll = (selector) => {
     if (selector === "[data-normal-profile-number]") {
-      return [
-        fakeInput("sell_power", "2000"),
-        fakeInput("discharge_current", "60"),
-        fakeInput("charge_current", "70"),
-        fakeInput("grid_charge_current", "10"),
-        fakeInput("tou_soc", "25"),
-      ];
+      return [fakeInput("sell_power", "2000"), fakeInput("tou_soc", "25")];
     }
     return [];
   };
@@ -245,6 +221,9 @@ function fakeSelect(value) {
     assertEqual(calls[0].service, "save_normal_profile", "service must be save_normal_profile");
     assertEqual(calls[0].data.tou_soc, 25, "saved tou_soc must be 25");
     assertEqual(calls[0].data.physical_work_mode, "Zero Export To CT", "saved mode must be CT");
+    ["charge_current", "discharge_current", "grid_charge_current"].forEach((field) => {
+      assertTrue(!(field in calls[0].data), `normal operation template must not save ${field}`);
+    });
     assertEqual(card._normalProfilePending.tou_soc, 25, "pending state must store tou_soc 25");
     assertEqual(card._normalProfilePending.physical_work_mode, "Zero Export To CT", "pending state must store CT");
     assertEqual(Object.keys(card._normalProfileDraft).length, 0, "draft must be cleared after successful save");
@@ -260,9 +239,6 @@ function fakeSelect(value) {
         normal_profile: {
           physical_work_mode: "Zero Export To Load",
           sell_power: 1000,
-          discharge_current: 50,
-          charge_current: 50,
-          grid_charge_current: 10,
           tou_soc: 0,
         },
       },
@@ -273,9 +249,6 @@ function fakeSelect(value) {
   card._normalProfilePending = {
     physical_work_mode: "Zero Export To CT",
     sell_power: 2000,
-    discharge_current: 60,
-    charge_current: 70,
-    grid_charge_current: 10,
     tou_soc: 25,
   };
   assertEqual(card.normalProfileMode(), "Zero Export To CT", "pending CT must override old manager_status Load");
@@ -291,9 +264,6 @@ function fakeSelect(value) {
         normal_profile: {
           physical_work_mode: "Zero Export To CT",
           sell_power: 2000,
-          discharge_current: 60,
-          charge_current: 70,
-          grid_charge_current: 10,
           tou_soc: 25,
         },
       },
@@ -302,9 +272,6 @@ function fakeSelect(value) {
   card._normalProfilePending = {
     physical_work_mode: "Zero Export To CT",
     sell_power: 2000,
-    discharge_current: 60,
-    charge_current: 70,
-    grid_charge_current: 10,
     tou_soc: 25,
   };
   card.checkNormalProfilePending();
@@ -325,9 +292,6 @@ function fakeSelect(value) {
   card._normalProfilePending = {
     physical_work_mode: "Zero Export To CT",
     sell_power: 2000,
-    discharge_current: 60,
-    charge_current: 70,
-    grid_charge_current: 10,
     tou_soc: 25,
   };
   assertEqual(card.normalProfileMode(), "Zero Export To CT", "CT must remain visible while pending");
@@ -349,17 +313,11 @@ function fakeSelect(value) {
   card._normalProfilePending = {
     physical_work_mode: "Zero Export To CT",
     sell_power: 2000,
-    discharge_current: 60,
-    charge_current: 70,
-    grid_charge_current: 10,
     tou_soc: 25,
   };
   const modeSelect = fakeSelect("Zero Export To Load");
   const inputs = {
     sell_power: fakeInput("sell_power", "1000"),
-    discharge_current: fakeInput("discharge_current", "50"),
-    charge_current: fakeInput("charge_current", "50"),
-    grid_charge_current: fakeInput("grid_charge_current", "10"),
     tou_soc: fakeInput("tou_soc", "0"),
   };
   card.querySelector = (selector) => {
@@ -390,7 +348,7 @@ function fakeSelect(value) {
   });
   card._dialog = { type: "settings" };
   card._normalProfileDraft.tou_soc = "30";
-  card._normalProfilePending = { physical_work_mode: "Zero Export To CT", sell_power: 2000, discharge_current: 60, charge_current: 70, grid_charge_current: 10, tou_soc: 25 };
+  card._normalProfilePending = { physical_work_mode: "Zero Export To CT", sell_power: 2000, tou_soc: 25 };
   const inputs = { tou_soc: fakeInput("tou_soc", "30") };
   card.querySelector = () => null;
   card.querySelectorAll = (selector) => (selector === "[data-normal-profile-number]" ? [inputs.tou_soc] : []);

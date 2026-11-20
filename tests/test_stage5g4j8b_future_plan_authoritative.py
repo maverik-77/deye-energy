@@ -45,10 +45,7 @@ def sell(slot_key: str, power: float = 2917) -> dict:
         "enabled": True,
         "mode": const.MODE_SELLING_FIRST,
         "sell_power": power,
-        # Legacy/extraneous executable fields must never survive a Sell intent.
-        "discharge_current": 120,
-        "charge_current": 80,
-        "grid_charge_current": 60,
+        # Independent SOC and Grid Charge fields must never survive a Sell intent.
         "tou_soc": 20,
         "charge_enabled": True,
     }
@@ -59,9 +56,6 @@ def charge(slot_key: str) -> dict:
         "slot_key": slot_key,
         "enabled": True,
         "mode": const.MODE_CHARGE,
-        "charge_current": 80,
-        "discharge_current": 30,
-        "grid_charge_current": 40,
         "tou_soc": 85,
         "charge_enabled": True,
     }
@@ -153,7 +147,6 @@ def test_jit_materializes_only_current_normal_and_clears_ghost_action():
         runtime.slots[key].enabled = True
         runtime.slots[key].mode = const.MODE_CHARGE
         runtime.slots[key].charge_enabled = True
-        runtime.slots[key].charge_current = 99
     save_tomorrow(
         runtime,
         [sell("1900_1930")],
@@ -170,7 +163,6 @@ def test_jit_materializes_only_current_normal_and_clears_ghost_action():
 
     assert runtime.slots["0500_0530"].mode == const.MODE_NORMAL_OPERATION
     assert runtime.slots["0500_0530"].charge_enabled is False
-    assert runtime.slots["0500_0530"].charge_current == runtime.normal_profile_charge_current
     # No catch-ahead: the next hour is still untouched until its own JIT tick.
     assert runtime.slots["0600_0630"].mode == const.MODE_CHARGE
     assert runtime.slots["0600_0630"].charge_enabled is True

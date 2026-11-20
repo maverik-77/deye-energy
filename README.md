@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.0.54-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.0.55-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -60,7 +60,7 @@ add-on profile) and to a UK-style tariff.
 
 | Profile | How the inverter reaches Home Assistant |
 |---|---|
-| **Sunsynk** (default) | Sunsynk / Deye add-on publishing over **MQTT** discovery. Full control of work mode, sell power, battery currents and the six TOU slots. |
+| **Sunsynk** (default) | Sunsynk / Deye add-on publishing over **MQTT** discovery. Full control of work mode, sell power and the six TOU slots; battery current limits are set separately in **Inverter configuration**. |
 | Deye add-on (read-only) | `kbialek/deye-inverter-mqtt` readings only; control is refused (fail closed). |
 | Solarman | Solarman integration entities. |
 | Lewa-Reka | ESPHome Deye Inverter. |
@@ -73,9 +73,10 @@ MQTT discovery names (`select.deye_load_limit`, `number.deye_max_sell_power`,
 `number.deye_battery_max_charge_current`, `select.deye_prog1_time` …,
 `sensor.deye_battery_soc`, `sensor.deye_grid_power` and so on). TOU time
 options are exposed as `H:MM` (for example `0:00`, `23:30`) and the integration
-accepts that format. Physical battery current limits up to 320 A can be
-mapped; the editable current helpers are capped at 300 A. Anything that does
-not match can be re-mapped in the configuration wizard.
+accepts that format. Physical battery current number entities can be mapped in
+the configuration wizard; the **Inverter configuration** settings tab validates
+each value against the live entity's own range. Anything that does not match can
+be re-mapped in the configuration wizard.
 
 The wizard performs a **read-only capability test** before anything is saved
 and lists which features (selling, charging, full TOU, Core/AI) are available
@@ -83,13 +84,38 @@ for the selected entities.
 
 ### Mirrored charge defaults
 
-A fresh install uses the values from the working Solar Assistant setup:
-290 A battery charge, grid-charge and discharge current, 0 W sell power, grid
-charging enabled and a 100% charge target. Existing installations receive a
-one-time `sa_defaults_v1` migration that replaces only the original
-60/80/60 A, grid-charge-disabled template; a profile you have edited since is
-kept as-is. Editable current helpers accept up to 300 A so the mirrored 290 A
-values can be saved.
+A fresh install uses the non-current values from the working Solar Assistant
+setup: 0 W sell power, grid charging enabled and a 100% charge target. Existing
+installations receive a one-time `sa_defaults_v1` migration that replaces only
+the original grid-charge-disabled template; a profile you have edited since is
+kept as-is. Battery charge, discharge and grid-charge currents are no longer
+part of any profile or schedule. Set them directly in the **Inverter
+configuration** settings tab, which calls
+`deye_energy.apply_inverter_configuration_group` and writes only the three
+configured physical number entities. A positive grid-charge current is only a
+limit; Grid Charge permission remains a separate TOU setting.
+
+### Inverter configuration
+
+**Settings → Inverter configuration** mirrors the Solar Assistant configuration
+page in seven groups: Specification, Grid, Auxiliary, Battery type, Battery
+charging, Work mode and Work mode detail. Live values are read from the mapped
+Home Assistant entities when the tab opens and again after every group apply.
+A field whose entity is missing, unavailable or has no usable metadata is shown
+as **Not mapped** or **Unavailable** and stays read-only; the backend refuses to
+write it.
+
+Each group has its own **Apply** button. All values in the group are prevalidated
+against the live entity's own `min`, `max`, `step` or `options` before anything
+is written; writes then run sequentially and stop at the first failure (there is
+no rollback). Two response-only services expose the same behaviour:
+`deye_energy.get_inverter_configuration` and
+`deye_energy.apply_inverter_configuration_group` (fields `group` and `values`).
+
+The three battery/grid current limits live in **Battery charging** and are the
+only direct write path for those entities. Work Schedule, profiles, defaults,
+manual sell/charge, optimizer plans and automatic reconciliation never write
+them.
 
 ## Quick start
 
@@ -111,7 +137,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.54
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.55
       type: module
 ```
 
@@ -126,13 +152,20 @@ Battery, Home, Inverter and Values.
 Open **Settings → Energy status sensors** to change how readings are sourced
 and displayed:
 
+- use **Enable PV generation** (`pv_enabled`, default on) to include or exclude
+  PV from the system. When disabled, PV is removed from the Energy status
+  desktop/mobile layout and treated as unavailable/zero in Energy status flows,
+  telemetry, forecasts, optimizer/planner inputs and AI/plan analysis/state.
+  When enabled, behavior and layout are unchanged.
 - enter a source entity for a role to override its automatic mapping; leave it
   blank to keep the current entity;
-- untick **Visible** to hide that reading from the Energy status page;
+- untick **Visible** to hide that reading from the Energy status page. PV sensor
+  mappings/visibility rows remain configurable but are ignored while PV
+  generation is disabled;
 - select **Save sensor display** to persist the choices through the
-  `deye_energy.save_energy_status_display` service. Unknown roles are rejected.
-  The updated integration must be installed and Home Assistant restarted before
-  this editor is available.
+  `deye_energy.save_energy_status_display` service (`pv_enabled`, `mappings`,
+  `visibility`). Unknown roles are rejected. The updated integration must be
+  installed and Home Assistant restarted before this editor is available.
 
 Additional presentation details:
 
@@ -157,8 +190,9 @@ minute, cover the complete 24 hours and are stored independently of the work
 schedule. When activated:
 
 - the current work schedule is snapshotted and restored on deactivation;
-- manual rows do not overwrite physical work-mode, charge/discharge current,
-  grid-charge current or minimum sell-price fields;
+- manual rows do not overwrite physical work-mode or minimum sell-price fields;
+- battery charge, discharge and grid-charge currents are not part of any
+  schedule and are changed only through **Inverter configuration**;
 - AI, Optimizer and FuturePlan applies are blocked until manual mode is off;
 - the status banner offers **Disable here** to return to the work schedule.
 

@@ -4,6 +4,55 @@ All notable changes to Deye Energy. Versions before 0.8.0 are the history of the
 upstream Deye Energy Manager project and are not repeated here. Attribution is
 recorded at the bottom of README.md.
 
+## [Unreleased]
+
+## [0.8.0.55] - 2026-11-20
+
+### Added
+
+- **Inverter configuration** settings tab mirroring the Solar Assistant
+  configuration page: Specification, Grid, Auxiliary, Battery type, Battery
+  charging, Work mode and Work mode detail. Live values are loaded on page load,
+  on tab open and after each group apply. Unmapped, unavailable or
+  metadata-less fields display as **Not mapped** / **Unavailable** and are
+  read-only.
+- Response-only services `deye_energy.get_inverter_configuration` and
+  `deye_energy.apply_inverter_configuration_group`. A group apply prevalidates
+  every supplied value against the live entity's `min`, `max`, `step` or
+  `options`, then writes sequentially and stops at the first failure without
+  rollback.
+- **PV generation** toggle in **Settings → Energy status sensors**
+  (`pv_enabled`, default `true`). PV sensor mappings/visibility rows remain
+  configurable but are ignored while PV generation is disabled.
+
+### Changed
+
+- Battery charge, discharge and grid-charge currents are now owned exclusively
+  by the Inverter configuration tab and are no longer managed by Work Schedule,
+  profiles, defaults, manual sell/charge, optimizer plans or automatic
+  reconciliation. Grid charge current is only a limit; Grid Charge permission
+  remains a separate TOU setting.
+- When PV generation is disabled, PV is removed from the Energy status
+  desktop/mobile layouts and treated as unavailable/zero in Energy status flows,
+  telemetry, optimizer/planner inputs, forecasts, simulations and AI/plan
+  analysis/state. When PV generation is enabled, existing behavior and layout
+  are unchanged.
+
+### Fixed
+
+- Card lifecycle/connect-disconnect handling: prevented duplicate interaction
+  listeners on reconnect and cleared pending interaction/save timers on
+  disconnect.
+- PV-disabled Solcast/learning/AI analysis surfaces: current-day metrics,
+  forecast readings, daily/learning summaries and AI snapshot Solcast context no
+  longer leak active PV/forecast analysis when PV generation is disabled.
+
+### Removed
+
+- Current helper number entities, per-slot current fields, and the superseded
+  `set_current_limits` design.
+- Unused Energy status role-group helper code in the card.
+
 ## [0.8.0]
 
 ### Added

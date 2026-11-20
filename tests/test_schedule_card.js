@@ -81,8 +81,6 @@ function makeBulkCard() {
     "multi-active": "on",
     "multi-mode": "Selling",
     "multi-sell-power": "5100",
-    "multi-discharge-current": "90",
-    "multi-charge-current": "45",
     "multi-min-soc": "30",
     "multi-min-sell-price": "0.45",
   };
@@ -90,8 +88,6 @@ function makeBulkCard() {
     active: true,
     mode: true,
     sellPower: false,
-    dischargeCurrent: false,
-    chargeCurrent: false,
     minSoc: true,
     minSellPrice: false,
   };
@@ -182,7 +178,9 @@ function makeBulkCard() {
     assertEqual(captured[0].enabled, true, "checked active state must be sent");
     assertEqual(captured[0].minimum_sell_soc, "30", "checked SOC must be sent");
     assertTrue(!Object.prototype.hasOwnProperty.call(captured[0], "sell_power"), "unchecked sell power must not be sent");
-    assertTrue(!Object.prototype.hasOwnProperty.call(captured[0], "charge_current"), "unchecked charge current must not be sent");
+    ["charge_current", "discharge_current", "grid_charge_current"].forEach((field) => {
+      assertTrue(!Object.prototype.hasOwnProperty.call(captured[0], field), `bulk edit must never send ${field}`);
+    });
   }
 
   // A save in progress blocks a second call, and an error keeps the form and selection.

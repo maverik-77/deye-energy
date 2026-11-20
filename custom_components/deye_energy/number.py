@@ -8,7 +8,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import ABSOLUTE_INVERTER_MAX_POWER_W, CURRENT_HELPER_MAX_A, DEFAULT_INVERTER_MAX_POWER_W, DOMAIN, SLOTS
+from .const import ABSOLUTE_INVERTER_MAX_POWER_W, DEFAULT_INVERTER_MAX_POWER_W, DOMAIN, SLOTS
 from .entity import DeyeEnergyEntity
 
 
@@ -51,17 +51,8 @@ class DeyeManagerNumber(DeyeEnergyEntity, NumberEntity, RestoreEntity):
         """Return the mapped Deye entity that owns this helper's limits."""
         sources = {
             "default_sell_power": self.runtime.max_sell_power_number,
-            "default_discharge_current": self.runtime.discharge_current_number,
-            "default_charge_current": self.runtime.charge_current_number,
-            "default_grid_charge_current": self.runtime.grid_charge_current_number,
-            "charge_profile_charge_current": self.runtime.charge_current_number,
-            "charge_profile_discharge_current": self.runtime.discharge_current_number,
-            "charge_profile_grid_charge_current": self.runtime.grid_charge_current_number,
             "charge_profile_target_soc": self.runtime._tou_entity(1, "soc"),
             "normal_profile_sell_power": self.runtime.max_sell_power_number,
-            "normal_profile_discharge_current": self.runtime.discharge_current_number,
-            "normal_profile_charge_current": self.runtime.charge_current_number,
-            "normal_profile_grid_charge_current": self.runtime.grid_charge_current_number,
             "normal_profile_tou_soc": self.runtime._tou_entity(1, "soc"),
         }
         return sources.get(self.attr)
@@ -123,17 +114,11 @@ class DeyeManagerNumber(DeyeEnergyEntity, NumberEntity, RestoreEntity):
                 return
             field_map = {
                 "normal_profile_sell_power": "sell_power",
-                "normal_profile_discharge_current": "discharge_current",
-                "normal_profile_charge_current": "charge_current",
-                "normal_profile_grid_charge_current": "grid_charge_current",
                 "normal_profile_tou_soc": "tou_soc",
             }
             values = {
                 "physical_work_mode": physical_mode,
                 "sell_power": self.runtime.normal_profile_sell_power,
-                "discharge_current": self.runtime.normal_profile_discharge_current,
-                "charge_current": self.runtime.normal_profile_charge_current,
-                "grid_charge_current": self.runtime.normal_profile_grid_charge_current,
                 "tou_soc": self.runtime.normal_profile_tou_soc,
                 field_map[self.attr]: value,
             }
@@ -149,9 +134,6 @@ class DeyeManagerNumber(DeyeEnergyEntity, NumberEntity, RestoreEntity):
         if self.attr.startswith("charge_profile_"):
             try:
                 await self.runtime.async_save_charge_profile({
-                    "charge_current": self.runtime.charge_profile_charge_current,
-                    "discharge_current": self.runtime.charge_profile_discharge_current,
-                    "grid_charge_current": self.runtime.charge_profile_grid_charge_current,
                     "target_soc": self.runtime.charge_profile_target_soc,
                     "grid_charge_enabled": self.runtime.charge_profile_grid_enabled,
                 })
@@ -225,10 +207,6 @@ class DeyeSlotNumber(DeyeEnergyEntity, NumberEntity, RestoreEntity):
             )
         if self.attr == "sell_power":
             self.runtime.validate_manual_sell_power_w(self.name, value)
-        if self.attr == "discharge_current":
-            # A direct helper edit explicitly transfers ownership of this
-            # current back to the user/manual schedule contract.
-            self.runtime.slots[self.slot_key].ai_sell_power_only = False
         setattr(self.runtime.slots[self.slot_key], self.attr, value)
         self.runtime.mark_config_saved()
         self.runtime.notify_update()
@@ -241,29 +219,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         DeyeManagerNumber(runtime, "minimum_sell_soc", "Minimum sell SOC", "min_sell_soc", 0, 100, 1, "%"),
         DeyeManagerNumber(runtime, "minimum_sell_price", "Minimum sell price", "price_sell_threshold", 0, 5, 0.01, "GBP/kWh"),
         DeyeManagerNumber(runtime, "manual_sell_power", "Manual sell power", "manual_sell_power", 0, DEFAULT_INVERTER_MAX_POWER_W, 100, "W"),
-        DeyeManagerNumber(runtime, "manual_discharge_current", "Manual discharge current", "manual_discharge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
-        DeyeManagerNumber(runtime, "manual_charge_current", "Manual charge current", "manual_charge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
         DeyeManagerNumber(runtime, "default_sell_power", "Default sell power", "default_sell_power", 0, DEFAULT_INVERTER_MAX_POWER_W, 100, "W"),
-        DeyeManagerNumber(runtime, "default_discharge_current", "Default discharge current", "default_discharge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
-        DeyeManagerNumber(runtime, "default_charge_current", "Default charge current", "default_charge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
-        DeyeManagerNumber(runtime, "default_grid_charge_current", "Default grid charge current", "default_grid_charge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
-        DeyeManagerNumber(runtime, "charge_profile_charge_current", "Charge profile battery charge current", "charge_profile_charge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
-        DeyeManagerNumber(runtime, "charge_profile_discharge_current", "Charge profile discharge current", "charge_profile_discharge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
-        DeyeManagerNumber(runtime, "charge_profile_grid_charge_current", "Charge profile grid charge current", "charge_profile_grid_charge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
         DeyeManagerNumber(runtime, "charge_profile_target_soc", "Charge profile target SOC", "charge_profile_target_soc", 0, 100, 1, "%"),
         DeyeManagerNumber(runtime, "normal_profile_sell_power", "Normal profile sell power", "normal_profile_sell_power", 0, DEFAULT_INVERTER_MAX_POWER_W, 100, "W"),
-        DeyeManagerNumber(runtime, "normal_profile_discharge_current", "Normal profile discharge current", "normal_profile_discharge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
-        DeyeManagerNumber(runtime, "normal_profile_charge_current", "Normal profile charge current", "normal_profile_charge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
-        DeyeManagerNumber(runtime, "normal_profile_grid_charge_current", "Normal profile grid charge current", "normal_profile_grid_charge_current", 0, CURRENT_HELPER_MAX_A, 5, "A"),
         DeyeManagerNumber(runtime, "normal_profile_tou_soc", "Normal profile Deye TOU SOC", "normal_profile_tou_soc", 0, 100, 1, "%"),
     ]
     for key, label, *_ in SLOTS:
         entities.extend(
             [
                 DeyeSlotNumber(runtime, key, label, "sell_power", "Sell power", DEFAULT_INVERTER_MAX_POWER_W, 100, "W"),
-                DeyeSlotNumber(runtime, key, label, "discharge_current", "Discharge current", CURRENT_HELPER_MAX_A, 5, "A"),
-                DeyeSlotNumber(runtime, key, label, "charge_current", "Charge current", CURRENT_HELPER_MAX_A, 5, "A"),
-                DeyeSlotNumber(runtime, key, label, "grid_charge_current", "Grid charge current", CURRENT_HELPER_MAX_A, 5, "A"),
                 DeyeSlotNumber(runtime, key, label, "minimum_sell_soc", "Minimum sell SOC", 100, 1, "%"),
                 DeyeSlotNumber(runtime, key, label, "tou_soc", "Deye TOU battery SOC", 100, 1, "%"),
                 DeyeSlotNumber(runtime, key, label, "min_sell_price", "Minimum sell price", 5, 0.01, "GBP/kWh"),

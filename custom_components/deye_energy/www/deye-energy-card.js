@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.54
+// Resource revision: v=0.8.0.55
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -25,6 +25,14 @@ class DeyeEnergyCard extends HTMLElement {
     this._slotDiscardPrompt = false;
     this._slotAwaitingRefresh = null;
     this._defaultSettingsDraft = {};
+    this._inverterConfig = null;
+    this._inverterConfigLoading = false;
+    this._inverterConfigLoaded = false;
+    this._inverterConfigLoadAttempted = false;
+    this._inverterConfigError = "";
+    this._inverterConfigDrafts = {};
+    this._inverterConfigSaving = {};
+    this._inverterConfigMessages = {};
     this._scrollTops = {};
     this._pageScrollTops = [];
     this._interactionRelease = null;
@@ -235,9 +243,18 @@ class DeyeEnergyCard extends HTMLElement {
       };
       this.ownerDocument?.addEventListener("keydown", this._dialogEscapeHandler);
     }
-    this.addEventListener("wheel", () => this.holdInteraction(900), { passive: true });
-    this.addEventListener("touchstart", () => this.holdInteraction(1300), { passive: true });
-    this.addEventListener("touchmove", () => this.holdInteraction(1300), { passive: true });
+    if (!this._wheelInteractionHandler) {
+      this._wheelInteractionHandler = () => this.holdInteraction(900);
+      this.addEventListener("wheel", this._wheelInteractionHandler, { passive: true });
+    }
+    if (!this._touchStartInteractionHandler) {
+      this._touchStartInteractionHandler = () => this.holdInteraction(1300);
+      this.addEventListener("touchstart", this._touchStartInteractionHandler, { passive: true });
+    }
+    if (!this._touchMoveInteractionHandler) {
+      this._touchMoveInteractionHandler = () => this.holdInteraction(1300);
+      this.addEventListener("touchmove", this._touchMoveInteractionHandler, { passive: true });
+    }
     if (!this._flowResizeHandler) {
       this._flowResizeHandler = () => this.scaleFlowPanel();
       window.addEventListener("resize", this._flowResizeHandler);
@@ -251,11 +268,17 @@ class DeyeEnergyCard extends HTMLElement {
         this.scaleFlowPanel();
       });
     }
-    this.addEventListener("focusin", () => {
-      window.clearTimeout(this._interactionRelease);
-      this._interacting = true;
-    });
-    this.addEventListener("focusout", () => this.releaseInteraction(350));
+    if (!this._focusInInteractionHandler) {
+      this._focusInInteractionHandler = () => {
+        window.clearTimeout(this._interactionRelease);
+        this._interacting = true;
+      };
+      this.addEventListener("focusin", this._focusInInteractionHandler);
+    }
+    if (!this._focusOutInteractionHandler) {
+      this._focusOutInteractionHandler = () => this.releaseInteraction(350);
+      this.addEventListener("focusout", this._focusOutInteractionHandler);
+    }
   }
 
   disconnectedCallback() {
@@ -272,6 +295,29 @@ class DeyeEnergyCard extends HTMLElement {
       this.ownerDocument?.removeEventListener("keydown", this._dialogEscapeHandler);
       this._dialogEscapeHandler = null;
     }
+    if (this._wheelInteractionHandler) {
+      this.removeEventListener("wheel", this._wheelInteractionHandler);
+      this._wheelInteractionHandler = null;
+    }
+    if (this._touchStartInteractionHandler) {
+      this.removeEventListener("touchstart", this._touchStartInteractionHandler);
+      this._touchStartInteractionHandler = null;
+    }
+    if (this._touchMoveInteractionHandler) {
+      this.removeEventListener("touchmove", this._touchMoveInteractionHandler);
+      this._touchMoveInteractionHandler = null;
+    }
+    if (this._focusInInteractionHandler) {
+      this.removeEventListener("focusin", this._focusInInteractionHandler);
+      this._focusInInteractionHandler = null;
+    }
+    if (this._focusOutInteractionHandler) {
+      this.removeEventListener("focusout", this._focusOutInteractionHandler);
+      this._focusOutInteractionHandler = null;
+    }
+    window.clearTimeout(this._interactionRelease);
+    window.clearTimeout(this._saveStatusTimer);
+    window.clearTimeout(this._aiSettingsSaveTimer);
   }
 
   closeDialog() {
@@ -294,6 +340,10 @@ class DeyeEnergyCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    if (!this._inverterConfigLoadAttempted && this.hasService("deye_energy", "get_inverter_configuration")) {
+      this._inverterConfigLoadAttempted = true;
+      this.loadInverterConfiguration(true);
+    }
     this.maybeAutoLoadManualScheduleFromTou();
     this.syncSlotEditorAfterHass();
     if (this._isRendered) {
@@ -511,7 +561,8 @@ class DeyeEnergyCard extends HTMLElement {
       this.saveAiAnalysis(this.aiSuggestions(slots));
     }
 
-    const pvValue = this.asNumber(this.state(this.energyStatusEntity("pv_power")), 0) || 0;
+    const pvEnabled = this.pvGenerationEnabled();
+    const pvValue = pvEnabled ? (this.asNumber(this.state(this.energyStatusEntity("pv_power")), 0) || 0) : 0;
     const gridValue = this.asNumber(this.state(this.energyStatusEntity("grid_power")), 0) || 0;
     const batteryValue = this.asNumber(this.state(this.energyStatusEntity("battery_power")), 0) || 0;
     const loadValue = this.calculatedHouseLoad(pvValue, gridValue, batteryValue);
@@ -523,7 +574,12 @@ class DeyeEnergyCard extends HTMLElement {
     const batteryDirectionText = batteryValue < -1 ? `Charging ${formatKw(Math.abs(batteryValue))}` : batteryValue > 1 ? `Discharging ${formatKw(batteryValue)}` : `Idle`;
 
     const fmtNum = (v, d = 1) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : v.toFixed(d);
-    const detailed = (key, fallback = null) => this.asNumber(this.state(this.energyStatusEntity(key)), fallback);
+    const detailed = (key, fallback = null) => {
+      if (!pvEnabled && (key === "pv_power" || key === "daily_pv_production" || key.startsWith("pv1_") || key.startsWith("pv2_"))) {
+        return fallback !== null ? fallback : (key === "pv_power" || key === "daily_pv_production" ? 0 : null);
+      }
+      return this.asNumber(this.state(this.energyStatusEntity(key)), fallback);
+    };
     const singlePhase = this.layoutConfig().phase_count === 1;
     const gridL1Live = singlePhase
       ? this.singlePhaseValue(detailed("grid_l1_power"), detailed("grid_power"))
@@ -606,13 +662,8 @@ class DeyeEnergyCard extends HTMLElement {
 
     this.setText("[data-live='target-mode']", this.state(this.entity("sensor", "target_mode")));
     this.setText("[data-live='target-sell-power']", `${this.state(this.entity("sensor", "target_sell_power"))} W`);
-    this.setText("[data-live='target-discharge']", `${this.state(this.entity("sensor", "target_discharge_current"))} A`);
-    this.setText("[data-live='target-charge']", `${this.state(this.entity("sensor", "target_charge_current"))} A`);
     this.setText("[data-live='current-mode']", this.state(this.entity("sensor", "current_work_mode")));
     this.setText("[data-live='current-sell-power']", `${this.state(this.entity("sensor", "current_sell_power"))} W`);
-    this.setText("[data-live='current-discharge']", `${this.state(this.entity("sensor", "current_discharge_current"))} A`);
-    this.setText("[data-live='current-charge']", `${this.state(this.entity("sensor", "current_charge_current"))} A`);
-    this.setText("[data-live='current-grid-charge']", `${this.state(this.entity("sensor", "current_grid_charge_current"))} A`);
 
     const slowEntities = [sellPriceToday, sellPriceTomorrow, buyPriceToday, buyPriceTomorrow, this.entity("sensor", "ai_state"),
       solcastToday, solcastTomorrow, solcastDay3, solcastDay4, solcastDay5, solcastDay6,
@@ -635,13 +686,8 @@ class DeyeEnergyCard extends HTMLElement {
 
     this.setText("[data-live='target-mode']", this.state(this.entity("sensor", "target_mode")));
     this.setText("[data-live='target-sell-power']", `${this.state(this.entity("sensor", "target_sell_power"))} W`);
-    this.setText("[data-live='target-discharge']", `${this.state(this.entity("sensor", "target_discharge_current"))} A`);
-    this.setText("[data-live='target-charge']", `${this.state(this.entity("sensor", "target_charge_current"))} A`);
     this.setText("[data-live='current-mode']", this.state(this.entity("sensor", "current_work_mode")));
     this.setText("[data-live='current-sell-power']", `${this.state(this.entity("sensor", "current_sell_power"))} W`);
-    this.setText("[data-live='current-discharge']", `${this.state(this.entity("sensor", "current_discharge_current"))} A`);
-    this.setText("[data-live='current-charge']", `${this.state(this.entity("sensor", "current_charge_current"))} A`);
-    this.setText("[data-live='current-grid-charge']", `${this.state(this.entity("sensor", "current_grid_charge_current"))} A`);
 
     const canonicalBuyNow = this.canonicalPriceMaps("buy")[0].get(currentHour);
     this.setText("[data-live='buy-now']", `${this.formatPrice(canonicalBuyNow)} GBP/kWh`);
@@ -734,6 +780,11 @@ class DeyeEnergyCard extends HTMLElement {
     const mapping = this.energyStatusDisplay().mappings?.[role];
     if (typeof mapping === "string" && mapping.trim()) return mapping.trim();
     return this.configuredEntity(role, "sensor", role);
+  }
+
+  pvGenerationEnabled() {
+    const display = this.energyStatusDisplay();
+    return !Object.prototype.hasOwnProperty.call(display, "pv_enabled") || Boolean(display.pv_enabled);
   }
 
   firstExistingEntity(...ids) {
@@ -1436,9 +1487,6 @@ class DeyeEnergyCard extends HTMLElement {
       sellEnabled: this.slotEntity("switch", key, label, [`slot_${key}_enabled`, `${key}_enabled`, `slot_${key}`, key], [], ["charge"]),
       mode: this.slotEntity("select", key, label, [`slot_${key}_mode`, `${key}_mode`], ["mode"]),
       sellPower: this.slotEntity("number", key, label, [`slot_${key}_sell_power`, `${key}_sell_power`], ["sell", "power"]),
-      dischargeCurrent: this.slotEntity("number", key, label, [`slot_${key}_discharge_current`, `${key}_discharge_current`], ["discharge", "current"]),
-      chargeCurrent: this.slotEntity("number", key, label, [`slot_${key}_charge_current`, `${key}_charge_current`], ["charge", "current"], ["discharge"]),
-      gridChargeCurrent: this.slotEntity("number", key, label, [`slot_${key}_grid_charge_current`, `${key}_grid_charge_current`], ["grid", "charge", "current"]),
       chargeEnabled: this.slotEntity("switch", key, label, [`slot_${key}_charge_enabled`, `${key}_charge_enabled`], ["charge"], ["slot", "enabled"]),
       minimumSellSoc: this.slotEntity("number", key, label, [`slot_${key}_minimum_sell_soc`, `${key}_minimum_sell_soc`], ["minimum", "sell", "soc"]),
       touSoc: this.slotEntity("number", key, label, [`slot_${key}_tou_soc`, `${key}_tou_soc`], ["tou", "battery", "soc"]),
@@ -1632,10 +1680,7 @@ class DeyeEnergyCard extends HTMLElement {
       mode,
       physical_work_mode: physicalMode,
       sell_power: this.asNumber(this.numberState(entities.sellPower, 0)) ?? 0,
-      discharge_current: this.asNumber(this.numberState(entities.dischargeCurrent, 0)) ?? 0,
       charge_enabled: this.displayState(entities.chargeEnabled, "off") === "on",
-      charge_current: this.asNumber(this.numberState(entities.chargeCurrent, 0)) ?? 0,
-      grid_charge_current: this.asNumber(this.numberState(entities.gridChargeCurrent, 0)) ?? 0,
       minimum_sell_soc: this.asNumber(this.numberState(entities.minimumSellSoc, 0)) ?? 0,
       tou_soc: this.asNumber(this.numberState(entities.touSoc, "")),
       min_sell_price: this.asNumber(this.numberState(entities.minSellPrice, 0)) ?? 0,
@@ -1644,16 +1689,14 @@ class DeyeEnergyCard extends HTMLElement {
 
   slotEditFields() {
     return [
-      "enabled", "mode", "physical_work_mode", "sell_power", "discharge_current",
-      "charge_enabled", "charge_current", "grid_charge_current",
+      "enabled", "mode", "physical_work_mode", "sell_power", "charge_enabled",
       "minimum_sell_soc", "tou_soc", "min_sell_price",
     ];
   }
 
   slotNumericFields() {
     return [
-      "sell_power", "discharge_current", "charge_current", "grid_charge_current",
-      "minimum_sell_soc", "tou_soc", "min_sell_price",
+      "sell_power", "minimum_sell_soc", "tou_soc", "min_sell_price",
     ];
   }
 
@@ -1731,17 +1774,12 @@ class DeyeEnergyCard extends HTMLElement {
     const values = this._slotEditDraft.values;
     if (mode === "Normal Operation") {
       const profile = this.normalProfileStoredValues();
-      ["physical_work_mode", "sell_power", "discharge_current", "charge_current", "grid_charge_current", "tou_soc"].forEach((field) => {
+      ["physical_work_mode", "sell_power", "tou_soc"].forEach((field) => {
         if (profile[field] !== undefined && profile[field] !== null) values[field] = this.normalizeSlotEditValue(field, profile[field]);
       });
     } else if (mode === "Charging") {
       const profile = this.chargeProfileStoredValues();
-      const mapping = {
-        charge_current: "charge_current",
-        discharge_current: "discharge_current",
-        grid_charge_current: "grid_charge_current",
-        target_soc: "tou_soc",
-      };
+      const mapping = { target_soc: "tou_soc" };
       Object.entries(mapping).forEach(([source, target]) => {
         if (profile[source] !== undefined && profile[source] !== null) values[target] = this.normalizeSlotEditValue(target, profile[source]);
       });
@@ -1769,8 +1807,7 @@ class DeyeEnergyCard extends HTMLElement {
       return "Select the physical Deye mode for Normal Operation.";
     }
     const limits = {
-      sell_power: [0, 100000], discharge_current: [0, 300], charge_current: [0, 300],
-      grid_charge_current: [0, 300], minimum_sell_soc: [0, 100], tou_soc: [0, 100],
+      sell_power: [0, 100000], minimum_sell_soc: [0, 100], tou_soc: [0, 100],
       min_sell_price: [0, 5],
     };
     for (const [field, [minimum, maximum]] of Object.entries(limits)) {
@@ -1948,9 +1985,6 @@ class DeyeEnergyCard extends HTMLElement {
 
   chargeProfileValues() {
     return {
-      chargeCurrent: this.chargeProfileNumericValue("charge_profile_charge_current", "charge_current"),
-      dischargeCurrent: this.chargeProfileNumericValue("charge_profile_discharge_current", "discharge_current"),
-      gridChargeCurrent: this.chargeProfileNumericValue("charge_profile_grid_charge_current", "grid_charge_current"),
       targetSoc: this.chargeProfileNumericValue("charge_profile_target_soc", "target_soc"),
       gridEnabled: this.chargeProfileGridEnabled(),
     };
@@ -1959,9 +1993,6 @@ class DeyeEnergyCard extends HTMLElement {
   normalProfileValues() {
     return {
       sellPower: this.normalProfileNumericValue("normal_profile_sell_power", "sell_power"),
-      dischargeCurrent: this.normalProfileNumericValue("normal_profile_discharge_current", "discharge_current"),
-      chargeCurrent: this.normalProfileNumericValue("normal_profile_charge_current", "charge_current"),
-      gridChargeCurrent: this.normalProfileNumericValue("normal_profile_grid_charge_current", "grid_charge_current"),
       touSoc: this.normalProfileNumericValue("normal_profile_tou_soc", "tou_soc"),
     };
   }
@@ -1981,7 +2012,7 @@ class DeyeEnergyCard extends HTMLElement {
 
   _normalProfilePendingMatches(statusProfile) {
     if (!this._normalProfilePending || !statusProfile || typeof statusProfile !== "object") return false;
-    const keys = ["physical_work_mode", "sell_power", "discharge_current", "charge_current", "grid_charge_current", "tou_soc"];
+    const keys = ["physical_work_mode", "sell_power", "tou_soc"];
     for (const key of keys) {
       const pending = this._normalProfilePending[key];
       const stored = statusProfile[key];
@@ -2009,7 +2040,7 @@ class DeyeEnergyCard extends HTMLElement {
 
   _chargeProfilePendingMatches(statusProfile) {
     if (!this._chargeProfilePending || !statusProfile || typeof statusProfile !== "object") return false;
-    const keys = ["grid_charge_enabled", "charge_current", "discharge_current", "grid_charge_current", "target_soc"];
+    const keys = ["grid_charge_enabled", "target_soc"];
     for (const key of keys) {
       const pending = this._chargeProfilePending[key];
       const stored = statusProfile[key];
@@ -2047,16 +2078,6 @@ class DeyeEnergyCard extends HTMLElement {
       const value = this.normalProfileNumericValue(`normal_profile_${key}`, key);
       if (value !== el.value) el.value = value;
     });
-  }
-
-  chargeProfileValues() {
-    return {
-      chargeCurrent: this.chargeProfileNumericValue("charge_profile_charge_current", "charge_current"),
-      dischargeCurrent: this.chargeProfileNumericValue("charge_profile_discharge_current", "discharge_current"),
-      gridChargeCurrent: this.chargeProfileNumericValue("charge_profile_grid_charge_current", "grid_charge_current"),
-      targetSoc: this.chargeProfileNumericValue("charge_profile_target_soc", "target_soc"),
-      gridEnabled: this.chargeProfileGridEnabled(),
-    };
   }
 
   callService(domain, service, data = {}) {
@@ -2230,13 +2251,8 @@ class DeyeEnergyCard extends HTMLElement {
       }
       values[field.dataset.chargeProfileNumber] = value;
     }
-    const currentRanges = {
-      charge_current: { min: 0, max: 300 },
-      discharge_current: { min: 0, max: 300 },
-      grid_charge_current: { min: 0, max: 300 },
-      target_soc: { min: 0, max: 100 },
-    };
-    for (const [key, { min, max }] of Object.entries(currentRanges)) {
+    const profileRanges = { target_soc: { min: 0, max: 100 } };
+    for (const [key, { min, max }] of Object.entries(profileRanges)) {
       if (!(key in values) || values[key] < min || values[key] > max) {
         this.failSave("charge_profile", new Error(`Value ${key} must be between ${min} and ${max}`));
         return false;
@@ -2252,9 +2268,6 @@ class DeyeEnergyCard extends HTMLElement {
       // Helper entities are optional for the template save.  Optimistically
       // update only the ones that actually exist so the UI feels snappy.
       const helpers = {
-        charge_current: this.entity("number", "charge_profile_charge_current"),
-        discharge_current: this.entity("number", "charge_profile_discharge_current"),
-        grid_charge_current: this.entity("number", "charge_profile_grid_charge_current"),
         target_soc: this.entity("number", "charge_profile_target_soc"),
         grid_charge_enabled: this.entity("switch", "charge_profile_grid_enabled"),
       };
@@ -2494,8 +2507,8 @@ class DeyeEnergyCard extends HTMLElement {
   chargeProfileInput(name, entityId, unit = "") {
     const entity = this._hass.states[entityId];
     const profile = this.chargeProfileValues();
-    const profileKeys = { charge_current: "chargeCurrent", discharge_current: "dischargeCurrent", grid_charge_current: "gridChargeCurrent", target_soc: "targetSoc" };
-    const fallback = name === "target_soc" ? { min: 0, max: 100, step: 1 } : { min: 0, max: 300, step: 1 };
+    const profileKeys = { target_soc: "targetSoc" };
+    const fallback = { min: 0, max: 100, step: 1 };
     const current = entity && !["unknown", "unavailable", ""].includes(entity.state) ? entity.state : profile[profileKeys[name]];
     const value = Object.prototype.hasOwnProperty.call(this._chargeProfileDraft, name) ? this._chargeProfileDraft[name] : current;
     const rawMin = Number(entity?.attributes?.min);
@@ -2526,16 +2539,10 @@ class DeyeEnergyCard extends HTMLElement {
     const profile = this.normalProfileValues();
     const profileKeys = {
       sell_power: "sellPower",
-      discharge_current: "dischargeCurrent",
-      charge_current: "chargeCurrent",
-      grid_charge_current: "gridChargeCurrent",
       tou_soc: "touSoc",
     };
     const fallback = {
       sell_power: { min: 0, max: this.effectiveInverterMaxPowerW(), step: 1 },
-      discharge_current: { min: 0, max: 300, step: 0.1 },
-      charge_current: { min: 0, max: 300, step: 0.1 },
-      grid_charge_current: { min: 0, max: 300, step: 0.1 },
       tou_soc: { min: 0, max: 100, step: 1 },
     };
     const current = profile[profileKeys[name]];
@@ -2627,9 +2634,6 @@ class DeyeEnergyCard extends HTMLElement {
       minimumAutoSellPowerW: 1000,
       priceEquivalenceBand: 0.05,
       gridExportLimit: 5000,
-      maxDischargeCurrent: 120,
-      maxChargeCurrent: 120,
-      maxGridChargeCurrent: 60,
       allowGridCharge: true,
       allowBatterySell: true,
       allowDeyeMode: true,
@@ -2942,8 +2946,7 @@ class DeyeEnergyCard extends HTMLElement {
     const diagnosticValue = (value) => value === null || value === undefined || value === "" ? "missing" : String(value);
     const renderValues = (values) => Object.entries(values || {}).map(([label, value]) => `<li><span>${this.escapeHtml(label)}</span><strong>${this.escapeHtml(String(value))}</strong></li>`).join("") || "<li>No data</li>";
     const attemptSection = attempt?.status ? `<section class="diagnostic-section"><h3>Last schedule apply attempt</h3><div class="schedule-attempt ${attempt.status === "failed" ? "failed" : "ok"}"><div><span>Result</span><strong>${attempt.status === "failed" ? "Failed" : attempt.status === "applied" ? "Confirmed" : "In progress"}</strong></div><div><span>Time / slot</span><strong>${this.formatAppliedAt(attempt.at)} \u00b7 ${this.escapeHtml(attempt.slot || "missing")}</strong></div><div><span>Stage</span><strong>${this.escapeHtml(attempt.stage || "missing")}</strong></div><div class="schedule-attempt-message"><span>Details</span><strong>${this.escapeHtml(attempt.message || "No additional information")}</strong></div><div><span>Expected</span><ul>${renderValues(attempt.expected)}</ul></div><div><span>Read back</span><ul>${renderValues(attempt.actual)}</ul></div></div></section>` : "";
-    const currentRows = Object.entries(activeControl.currents || {}).map(([name, value]) => `<tr><td>${this.escapeHtml(name)}</td><td>${this.escapeHtml(diagnosticValue(value))}</td></tr>`).join("") || `<tr><td colspan="2">No current data</td></tr>`;
-    const activeControlSection = `<section class="diagnostic-section"><h3>SOC and active slot parameters</h3><div class="schedule-attempt"><div><span>Slot / mode</span><strong>${this.escapeHtml(diagnosticValue(activeControl.slot))} \u00b7 ${this.escapeHtml(diagnosticValue(activeControl.mode))}</strong></div><div><span>Sell-stop threshold</span><strong>${this.escapeHtml(diagnosticValue(activeControl.minimum_sell_soc))}%</strong></div><div><span>Physical Deye TOU SOC</span><strong>${this.escapeHtml(diagnosticValue(activeControl.tou_soc))}%</strong></div><div><span>Charging profile target SOC</span><strong>${this.escapeHtml(diagnosticValue(activeControl.charge_profile_target_soc))}%</strong></div><div><span>Effective TOU SOC</span><strong>${this.escapeHtml(diagnosticValue(activeControl.effective_tou_soc))}%</strong></div><div><span>Physical range / SOC reading</span><strong>${this.escapeHtml(diagnosticValue(activeControl.physical_range))} \u00b7 ${this.escapeHtml(diagnosticValue(activeControl.physical_soc_actual))}%</strong></div><div><span>Grid Charge expected / read back</span><strong>${activeControl.grid_charge_expected ? "YES" : "NO"} \u00b7 ${this.escapeHtml(diagnosticValue(activeControl.grid_charge_actual))}</strong></div><div><span>Selling blocked by SOC</span><strong>${activeControl.sale_blocked_by_soc ? "YES" : "NO"}</strong></div><div><span>Default discharge current after selling stops</span><strong>${this.escapeHtml(diagnosticValue(activeControl.default_discharge_current_after_stop))} A</strong></div><div><span>Manager forces 0 A</span><strong>${activeControl.manager_does_not_force_zero_a ? "NO" : "YES"}</strong></div><div class="schedule-attempt-message"><span>Currents expected and read back</span><table class="settings-table"><tbody>${currentRows}</tbody></table></div></div></section>`;
+    const activeControlSection = `<section class="diagnostic-section"><h3>SOC and active slot parameters</h3><div class="schedule-attempt"><div><span>Slot / mode</span><strong>${this.escapeHtml(diagnosticValue(activeControl.slot))} \u00b7 ${this.escapeHtml(diagnosticValue(activeControl.mode))}</strong></div><div><span>Sell-stop threshold</span><strong>${this.escapeHtml(diagnosticValue(activeControl.minimum_sell_soc))}%</strong></div><div><span>Physical Deye TOU SOC</span><strong>${this.escapeHtml(diagnosticValue(activeControl.tou_soc))}%</strong></div><div><span>Charging profile target SOC</span><strong>${this.escapeHtml(diagnosticValue(activeControl.charge_profile_target_soc))}%</strong></div><div><span>Effective TOU SOC</span><strong>${this.escapeHtml(diagnosticValue(activeControl.effective_tou_soc))}%</strong></div><div><span>Physical range / SOC reading</span><strong>${this.escapeHtml(diagnosticValue(activeControl.physical_range))} \u00b7 ${this.escapeHtml(diagnosticValue(activeControl.physical_soc_actual))}%</strong></div><div><span>Grid Charge expected / read back</span><strong>${activeControl.grid_charge_expected ? "YES" : "NO"} \u00b7 ${this.escapeHtml(diagnosticValue(activeControl.grid_charge_actual))}</strong></div><div><span>Selling blocked by SOC</span><strong>${activeControl.sale_blocked_by_soc ? "YES" : "NO"}</strong></div></div></section>`;
     const powerLimits = activeControl.power_limits || {};
     const powerLimitsSection = `<section class="diagnostic-section"><h3>Selling power limits</h3><div class="schedule-attempt"><div><span>Target / capped power</span><strong>${diagnosticValue(powerLimits.target_sell_power_w)} W / ${diagnosticValue(powerLimits.applied_sell_power_w)} W</strong></div><div><span>Configured limit</span><strong>${diagnosticValue(powerLimits.configured_inverter_max_power_w)} W</strong></div><div><span>Detected entity limit</span><strong>${diagnosticValue(powerLimits.detected_entity_max_power_w)} W</strong></div><div><span>Effective limit</span><strong>${diagnosticValue(powerLimits.effective_inverter_max_power_w)} W</strong></div></div></section>`;
     const physicalRows = physicalTou.map((row) => `<tr class="${row.actual_active ? "active" : ""}"><td>${this.escapeHtml(diagnosticValue(row.range))}</td><td>${this.escapeHtml(diagnosticValue(row.expected_start))}\u2013${this.escapeHtml(diagnosticValue(row.expected_end))}</td><td>${this.escapeHtml(diagnosticValue(row.actual_start))}\u2013${this.escapeHtml(diagnosticValue(row.actual_end))}</td><td>${this.escapeHtml(diagnosticValue(row.expected_soc))}% / ${this.escapeHtml(diagnosticValue(row.actual_soc))}%</td><td>${row.expected_grid_charge ? "YES" : "NO"} / ${this.escapeHtml(this.touGridLabel(row.actual_grid_charge))}</td></tr>`).join("") || `<tr><td colspan="5">No physical mapping data</td></tr>`;
@@ -2978,7 +2981,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.54)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.55)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -3216,10 +3219,13 @@ class DeyeEnergyCard extends HTMLElement {
       return `<h3>Energy status sensors</h3>
         <div class="hint">This editor needs the updated Deye Energy integration. Install the update and restart Home Assistant, then reopen Settings.</div>`;
     }
+    const pvEnabled = !Object.prototype.hasOwnProperty.call(display, "pv_enabled") || Boolean(display.pv_enabled);
     const draft = this._energyStatusDraft || {
+      pv_enabled: pvEnabled,
       mappings: display.mappings && typeof display.mappings === "object" ? display.mappings : {},
       visibility: display.visibility && typeof display.visibility === "object" ? display.visibility : {},
     };
+    if (!Object.prototype.hasOwnProperty.call(draft, "pv_enabled")) draft.pv_enabled = pvEnabled;
     const groups = new Map();
     roles.forEach((role) => {
       if (!role || typeof role.key !== "string" || !role.key) return;
@@ -3250,9 +3256,20 @@ class DeyeEnergyCard extends HTMLElement {
 .energy-status-row input[type="text"]{width:100%;box-sizing:border-box}
 .energy-status-visible{white-space:nowrap;display:flex;align-items:center;gap:5px}
 .energy-status-actions{display:flex;align-items:center;gap:10px;margin-top:12px}
+.energy-status-general{margin-bottom:12px}
+.energy-status-toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid rgba(95,148,177,.28);border-radius:8px;background:rgba(255,255,255,.02)}
+.energy-status-toggle label{display:flex;align-items:center;gap:10px;cursor:pointer;font-weight:700;color:#eaf4f9}
+.energy-status-toggle input{width:18px;height:18px}
       </style>
       <h3>Energy status sensors</h3>
-      <div class="hint">Leave a source entity blank to keep the current automatic mapping. Uncheck Visible to hide that reading from the Energy status page.</div>
+      <section class="diagnostic-section energy-status-general">
+        <h3>PV generation</h3>
+        <div class="energy-status-toggle">
+          <label><input type="checkbox" data-energy-pv-enabled="1"${draft.pv_enabled ? " checked" : ""}> Enable PV generation</label>
+          <span class="hint" style="margin:0;padding:0;border:0;background:transparent">When disabled, PV is removed from Energy status and excluded from AI/plan calculations.</span>
+        </div>
+      </section>
+      <div class="hint">Leave a source entity blank to keep the current automatic mapping. Uncheck Visible to hide that reading from the Energy status page. PV sensor rows are ignored while PV generation is disabled.</div>
       ${sections}
       <div class="energy-status-actions"><button type="button" data-save-energy-status="1">Save sensor display</button></div>
       <div class="hint${this._energyStatusMessage ? " defaults-status saved" : ""}" data-energy-status-status>${this.escapeHtml(this._energyStatusMessage)}</div>`;
@@ -3270,7 +3287,9 @@ class DeyeEnergyCard extends HTMLElement {
       if (value) mappings[role.key] = value;
       visibility[role.key] = checkbox ? Boolean(checkbox.checked) : true;
     });
-    this._energyStatusDraft = { mappings, visibility };
+    const pvField = this.querySelector('[data-energy-pv-enabled="1"]');
+    const pv_enabled = pvField ? pvField.checked : this.pvGenerationEnabled();
+    this._energyStatusDraft = { pv_enabled, mappings, visibility };
     return this._energyStatusDraft;
   }
 
@@ -3700,14 +3719,12 @@ class DeyeEnergyCard extends HTMLElement {
         active: value("multi-active", "on"),
         mode: this.normalizeManagerMode(value("multi-mode", "Selling")),
         sellPower: value("multi-sell-power", 5000),
-        dischargeCurrent: value("multi-discharge-current", 120),
-        chargeCurrent: value("multi-charge-current", 0),
         minSoc: value("multi-min-soc", 40),
         minSellPrice: value("multi-min-sell-price", 0),
       },
       fields: {},
     };
-    ["active", "mode", "sellPower", "dischargeCurrent", "chargeCurrent", "minSoc", "minSellPrice"].forEach((name) => {
+    ["active", "mode", "sellPower", "minSoc", "minSellPrice"].forEach((name) => {
       state.fields[name] = checked(name);
     });
     this._bulkEditDraft = { ...state.values };
@@ -4592,16 +4609,12 @@ class DeyeEnergyCard extends HTMLElement {
     const activeValue = form.values.active === "on";
     const mode = this.normalizeManagerMode(form.values.mode);
     const sellPower = form.values.sellPower;
-    const dischargeCurrent = form.values.dischargeCurrent;
-    const chargeCurrent = form.values.chargeCurrent;
     const minSoc = form.values.minSoc;
     const minSellPrice = form.values.minSellPrice;
 
     const updates = selected.map(([key]) => {
       const update = { slot_key: key };
       if (checked("sellPower")) update.sell_power = sellPower;
-      if (checked("dischargeCurrent")) update.discharge_current = dischargeCurrent;
-      if (checked("chargeCurrent")) update.charge_current = chargeCurrent;
       if (checked("minSoc")) update.minimum_sell_soc = minSoc;
       if (checked("minSellPrice")) update.min_sell_price = minSellPrice;
       if (checked("mode")) update.mode = mode;
@@ -4713,6 +4726,7 @@ class DeyeEnergyCard extends HTMLElement {
     inverterColumnWidth = 640,
     inverterVisualWidth = 190,
     boardHeight = 600,
+    pvEnabled = true,
   } = {}) {
     const boardWidth = tileWidth * 2 + inverterColumnWidth + tileGap * 2;
     const inverterCenterX = tileWidth + tileGap + inverterColumnWidth / 2;
@@ -4721,34 +4735,36 @@ class DeyeEnergyCard extends HTMLElement {
     const inverterPortOffsetY = inverterVisualHeight * 0.22;
     const tileTopY = Math.round(boardHeight * (145 / 600));
     const tileBottomY = boardHeight - tileTopY;
+    const hasPv = pvEnabled !== false;
+    const gridTileY = hasPv ? tileBottomY : inverterCenterY;
     const points = {
-      pvTile: { x: tileWidth, y: tileTopY },
-      gridTile: { x: tileWidth, y: tileBottomY },
+      pvTile: hasPv ? { x: tileWidth, y: tileTopY } : null,
+      gridTile: { x: tileWidth, y: gridTileY },
       batteryTile: { x: boardWidth - tileWidth, y: tileTopY },
       homeTile: { x: boardWidth - tileWidth, y: tileBottomY },
-      pvPort: { x: inverterCenterX - inverterVisualWidth / 2, y: inverterCenterY - inverterPortOffsetY },
-      gridPort: { x: inverterCenterX - inverterVisualWidth / 2, y: inverterCenterY + inverterPortOffsetY },
+      pvPort: hasPv ? { x: inverterCenterX - inverterVisualWidth / 2, y: inverterCenterY - inverterPortOffsetY } : null,
+      gridPort: {
+        x: inverterCenterX - inverterVisualWidth / 2,
+        y: hasPv ? inverterCenterY + inverterPortOffsetY : inverterCenterY,
+      },
       batteryPort: { x: inverterCenterX + inverterVisualWidth / 2, y: inverterCenterY - inverterPortOffsetY },
       homePort: { x: inverterCenterX + inverterVisualWidth / 2, y: inverterCenterY + inverterPortOffsetY },
     };
     const coordinate = (value) => Number(value.toFixed(2));
     const curve = (start, end) => {
+      if (!start || !end) return "";
       const controlOffset = (end.x - start.x) * 0.45;
       return `M${coordinate(start.x)},${coordinate(start.y)} C${coordinate(start.x + controlOffset)},${coordinate(start.y)} ${coordinate(end.x - controlOffset)},${coordinate(end.y)} ${coordinate(end.x)},${coordinate(end.y)}`;
     };
-    return {
-      boardWidth,
-      boardHeight,
-      points,
-      paths: {
-        pvToInverter: curve(points.pvTile, points.pvPort),
-        batteryToInverter: curve(points.batteryTile, points.batteryPort),
-        inverterToBattery: curve(points.batteryPort, points.batteryTile),
-        gridToInverter: curve(points.gridTile, points.gridPort),
-        inverterToGrid: curve(points.gridPort, points.gridTile),
-        inverterToHome: curve(points.homePort, points.homeTile),
-      },
+    const paths = {
+      pvToInverter: hasPv ? curve(points.pvTile, points.pvPort) : "",
+      batteryToInverter: curve(points.batteryTile, points.batteryPort),
+      inverterToBattery: curve(points.batteryPort, points.batteryTile),
+      gridToInverter: curve(points.gridTile, points.gridPort),
+      inverterToGrid: curve(points.gridPort, points.gridTile),
+      inverterToHome: curve(points.homePort, points.homeTile),
     };
+    return { boardWidth, boardHeight, points, paths, pvEnabled: hasPv };
   }
 
   energyFlowPanel() {
@@ -4765,13 +4781,14 @@ class DeyeEnergyCard extends HTMLElement {
     const plannedAction = this.state(this.entity("sensor", "planned_manager_action"), statusAttrs.planned_manager_action || "—");
     const executedAction = this.state(this.entity("sensor", "executed_manager_action"), statusAttrs.executed_manager_action || "—");
     const layout = this.effectiveLayout();
+    const pvEnabled = this.pvGenerationEnabled();
     const tileWidth = layout.energy_tile_width;
     const tileGap = layout.energy_tile_gap;
     const inverterScale = layout.inverter_scale;
     const flowSpeed = layout.flow_animation_speed;
     const inverterColumnWidth = Math.round(640 * inverterScale);
     const inverterVisualWidth = Math.round(190 * inverterScale);
-    const geometry = this.flowGeometry({ tileWidth, tileGap, inverterColumnWidth, inverterVisualWidth });
+    const geometry = this.flowGeometry({ tileWidth, tileGap, inverterColumnWidth, inverterVisualWidth, pvEnabled });
     const boardWidth = geometry.boardWidth;
     const panelWidth = boardWidth + 32;
     const panelHeight = geometry.boardHeight + 168;
@@ -4790,14 +4807,14 @@ class DeyeEnergyCard extends HTMLElement {
     const esHidden = (role) => (this.energyStatusVisible(role) ? "" : " es-hidden");
     const esAllHidden = (...roles) => roles.every((role) => !this.energyStatusVisible(role));
     const esSpan = (role, html) => `<span${esHidden(role)}>${html}</span>`;
-    const pvPower = st("pv_power", 0) || 0;
-    const pvDaily = st("daily_pv_production", 0) || 0;
-    const pv1Power = st("pv1_power");
-    const pv1V = st("pv1_voltage");
-    const pv1A = st("pv1_current");
-    const pv2Power = st("pv2_power");
-    const pv2V = st("pv2_voltage");
-    const pv2A = st("pv2_current");
+    const pvPower = pvEnabled ? (st("pv_power", 0) || 0) : 0;
+    const pvDaily = pvEnabled ? (st("daily_pv_production", 0) || 0) : 0;
+    const pv1Power = pvEnabled ? st("pv1_power") : null;
+    const pv1V = pvEnabled ? st("pv1_voltage") : null;
+    const pv1A = pvEnabled ? st("pv1_current") : null;
+    const pv2Power = pvEnabled ? st("pv2_power") : null;
+    const pv2V = pvEnabled ? st("pv2_voltage") : null;
+    const pv2A = pvEnabled ? st("pv2_current") : null;
 
     const gridPower = st("grid_power", 0) || 0;
     const gridL1Power = st("grid_l1_power");
@@ -4847,7 +4864,7 @@ class DeyeEnergyCard extends HTMLElement {
     const soldTodayGbp = this.asNumber(this.state(this.energyStatusEntity("sold_value_today")), 0) || 0;
 
     const active = {
-      pv: pvPower > 1,
+      pv: pvEnabled && pvPower > 1,
       gridImport: gridPower > 1,
       gridExport: gridPower < -1,
       batteryDischarge: batteryPower > 1,
@@ -4921,18 +4938,19 @@ class DeyeEnergyCard extends HTMLElement {
       const mfTileGap = 10;
       const mfInverterColumn = 150;
       const mfInverterVisual = 92;
-      const mfBoardHeight = 320;
+      const mfBoardHeight = 232;
       const mfGeo = this.flowGeometry({
         tileWidth: mfTileWidth,
         tileGap: mfTileGap,
         inverterColumnWidth: mfInverterColumn,
         inverterVisualWidth: mfInverterVisual,
         boardHeight: mfBoardHeight,
+        pvEnabled,
       });
       const mfBoardWidth = mfGeo.boardWidth;
       const mfPanelWidth = mfBoardWidth + 16;
       const mfActive = {
-        pv: pvPower > 1,
+        pv: pvEnabled && pvPower > 1,
         gridImport: gridPower > 1,
         gridExport: gridPower < -1,
         batteryDischarge: batteryPower > 1,
@@ -4989,7 +5007,7 @@ class DeyeEnergyCard extends HTMLElement {
 .ms-flow-wrapper{position:relative;width:100%;max-width:${mfPanelWidth}px;margin:0 auto;overflow:hidden}
 .ms-flow-scaler{width:${mfPanelWidth}px;transform-origin:top left;transform:scale(1);line-height:1}
 .ms-flow-board{position:relative;display:grid;grid-template-columns:${mfTileWidth}px ${mfInverterColumn}px ${mfTileWidth}px;grid-template-rows:${mfBoardHeight}px;gap:0 ${mfTileGap}px;align-items:center;justify-items:center;width:${mfBoardWidth}px;height:${mfBoardHeight}px}
-.ms-flow-tile{position:relative;z-index:3;width:${mfTileWidth}px;height:154px;box-sizing:border-box;border:1.5px solid rgba(86,149,184,.48);border-radius:12px;background:radial-gradient(circle at 22% 0%,rgba(26,100,151,.13),transparent 38%),linear-gradient(180deg,rgba(6,21,34,.985),rgba(4,16,26,.99));padding:8px;box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 8px 18px rgba(0,0,0,.3);overflow:hidden}
+.ms-flow-tile{position:relative;z-index:3;width:${mfTileWidth}px;height:108px;box-sizing:border-box;border:1.5px solid rgba(86,149,184,.48);border-radius:12px;background:radial-gradient(circle at 22% 0%,rgba(26,100,151,.13),transparent 38%),linear-gradient(180deg,rgba(6,21,34,.985),rgba(4,16,26,.99));padding:7px 8px;box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 8px 18px rgba(0,0,0,.3);overflow:hidden}
 .ms-flow-pv{grid-column:1;grid-row:1;justify-self:start;align-self:start}
 .ms-flow-grid{grid-column:1;grid-row:1;justify-self:start;align-self:end}
 .ms-flow-battery{grid-column:3;grid-row:1;justify-self:end;align-self:start}
@@ -4998,20 +5016,20 @@ class DeyeEnergyCard extends HTMLElement {
 .ms-flow-icon{width:26px;height:26px;flex:0 0 26px;display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 0 5px currentColor)}
 .ms-flow-icon svg{width:25px;height:25px}
 .ms-flow-heading{min-width:0;flex:1;padding-top:1px}
-.ms-flow-title{font-size:11px;font-weight:800;color:#f3f8fc;line-height:1.15;white-space:normal}
-.ms-flow-main{font-size:17px;font-weight:900;line-height:1.05;margin-top:4px;letter-spacing:-.3px;text-shadow:0 0 8px currentColor;overflow-wrap:anywhere}
+.ms-flow-title{font-size:11px;font-weight:800;color:#f3f8fc;line-height:1.1;white-space:normal}
+.ms-flow-main{font-size:17px;font-weight:900;line-height:1;margin-top:2px;letter-spacing:-.3px;text-shadow:0 0 8px currentColor;overflow-wrap:anywhere}
 .ms-flow-main .unit{font-size:10px;font-weight:700;color:#c7d7e1;margin-left:2px;text-shadow:none}
-.ms-flow-sub{font-size:10px;color:#b7c9d5;line-height:1.2;margin-top:3px;overflow-wrap:anywhere}
+.ms-flow-sub{font-size:10px;color:#b7c9d5;line-height:1.15;margin-top:2px;overflow-wrap:anywhere}
 .ms-flow-pv .ms-flow-main{color:#fbbf24}
 .ms-flow-grid .ms-flow-main{color:#c084fc}
 .ms-flow-battery .ms-flow-main{color:#4ade80}
 .ms-flow-home .ms-flow-main{color:#38bdf8}
 .ms-flow-inverter{grid-column:2;grid-row:1;align-self:center;justify-self:center;text-align:center;position:relative;z-index:3;width:${mfInverterColumn}px;box-sizing:border-box}
 .ms-flow-inverter .flow-inverter-svg{width:${mfInverterVisual}px;height:auto;display:block;margin:0 auto}
-.ms-flow-inv-name{font-size:11px;font-weight:850;color:#f2f7fb;margin-top:4px;text-shadow:0 2px 5px rgba(0,0,0,.8)}
-.ms-flow-inv-temp{display:flex;align-items:center;justify-content:center;gap:3px;font-size:11px;font-weight:800;color:#23b9ff;margin-top:3px}
+.ms-flow-inv-name{font-size:11px;font-weight:850;color:#f2f7fb;margin-top:2px;text-shadow:0 2px 5px rgba(0,0,0,.8)}
+.ms-flow-inv-temp{display:flex;align-items:center;justify-content:center;gap:3px;font-size:11px;font-weight:800;color:#23b9ff;margin-top:2px}
 .ms-flow-inv-temp svg{width:12px;height:12px}
-.ms-flow-sold{margin-top:6px;padding:5px 6px;border:1px solid rgba(89,151,181,.4);border-radius:8px;background:linear-gradient(180deg,rgba(7,24,35,.96),rgba(4,15,24,.98))}
+.ms-flow-sold{margin-top:4px;padding:4px 6px;border:1px solid rgba(89,151,181,.4);border-radius:8px;background:linear-gradient(180deg,rgba(7,24,35,.96),rgba(4,15,24,.98))}
 .ms-flow-sold>span{display:block;font-size:9px;color:#8fb0c3;text-transform:uppercase;letter-spacing:.3px}
 .ms-flow-sold strong{display:block;font-size:10px;font-weight:850;color:#eaf4f9;margin-top:2px;overflow-wrap:anywhere}
 .ms-flow-svg{position:absolute;top:0;left:0;width:100%;height:100%;z-index:1;overflow:visible;pointer-events:none}
@@ -5019,7 +5037,7 @@ class DeyeEnergyCard extends HTMLElement {
 .ms-flow-svg .flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34;filter:url(#mfFlowGlowSoft23)}
 .ms-flow-svg .flow-active{stroke-dasharray:1 22;stroke-width:7!important;animation:mfFlowDash ${flowDuration}s linear infinite}
 @keyframes mfFlowDash{to{stroke-dashoffset:-${flowOffset}}}
-.ms-detail-grid{margin-top:10px}
+.ms-detail-grid{margin-top:8px}
 .ms-detail-tile{min-width:0;padding:9px 10px;border:1px solid rgba(89,146,174,.4);border-radius:10px;background:linear-gradient(180deg,rgba(6,21,33,.97),rgba(4,15,24,.99))}
 .ms-detail-title{font-size:11px;font-weight:850;color:#9fc4d8;text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px}
 .ms-detail-row{display:flex;align-items:baseline;justify-content:space-between;gap:6px;font-size:11px;color:#aebfca;line-height:1.4}
@@ -5035,21 +5053,21 @@ class DeyeEnergyCard extends HTMLElement {
 .ms-inverter-temp svg{width:15px;height:15px;vertical-align:-3px}
 .ms-inverter-sold{font-size:12px;color:#9fb9c8}
 .ms-inverter-sold strong{display:block;font-size:13px;color:#eaf4f9;margin-top:2px;overflow-wrap:anywhere}
-.ms-status-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;box-sizing:border-box;margin-top:12px}
+.ms-status-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;box-sizing:border-box;margin-top:10px}
 .ms-status-tile{min-width:0;padding:10px 11px;border:1px solid rgba(89,146,174,.4);border-radius:10px;background:linear-gradient(180deg,rgba(6,21,33,.97),rgba(4,15,24,.99))}
 .ms-status-tile>span{display:block;font-size:11px;color:#9fb9c8;margin-bottom:5px}
 .ms-status-tile>strong{display:block;font-size:14px;font-weight:850;color:#f1f7fb;line-height:1.2;overflow-wrap:anywhere}
 .ms-status-tile .ms-sub{display:block;font-size:11px;color:#aebfca;margin-top:5px;line-height:1.25}
 .ms-status-tile .slot-time{color:#fbbf24}
 .mode-selling{color:#7ee22d}.mode-normal{color:#4ade80}.mode-charge{color:#f6a619}.mode-disabled{color:#b9c9d4}.mode-zero,.mode-ct{color:#38bdf8}
-.ms-footer{text-align:center;width:100%;margin-top:12px;font-size:12px;color:#89a6b7}
+.ms-footer{text-align:center;width:100%;margin-top:10px;font-size:12px;color:#89a6b7}
 .es-hidden{display:none!important}
         </style>
         <div class="ms-body">
           <div class="ms-flow-wrapper">
             <div class="ms-flow-scaler" data-base-width="${mfPanelWidth}" data-base-height="${mfBoardHeight}" data-board-height="${mfBoardHeight}" data-tile-width="${mfTileWidth}" data-tile-gap="${mfTileGap}" data-inverter-column-width="${mfInverterColumn}" data-inverter-visual-width="${mfInverterVisual}">
               <div class="ms-flow-board">
-                <div class="ms-flow-tile ms-flow-pv">
+                ${pvEnabled ? `<div class="ms-flow-tile ms-flow-pv">
                   <div class="ms-flow-head">
                     <div class="ms-flow-icon" style="color:#fbbf24">${this.iconSvg("pv2")}</div>
                     <div class="ms-flow-heading">
@@ -5057,8 +5075,8 @@ class DeyeEnergyCard extends HTMLElement {
                       <div class="ms-flow-main${esHidden("pv_power")}" data-live="pv-main">${fmtPower(pvPower)}</div>
                     </div>
                   </div>
-                </div>
-                <div class="ms-flow-tile ms-flow-grid">
+                </div>` : ""}
+                <div class="ms-flow-tile ms-flow-grid"${!pvEnabled ? ' style="align-self:center"' : ""}>
                   <div class="ms-flow-head">
                     <div class="ms-flow-icon" style="color:#c084fc">${this.iconSvg("grid2")}</div>
                     <div class="ms-flow-heading">
@@ -5110,8 +5128,8 @@ class DeyeEnergyCard extends HTMLElement {
                     <marker id="mf-arrow-battery" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="3.4" markerHeight="3.4" orient="auto-start-reverse"><path d="M0 0 10 5 0 10 2.7 5Z" fill="#4ade80" stroke="none"/></marker>
                     <marker id="mf-arrow-home" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="3.4" markerHeight="3.4" orient="auto-start-reverse"><path d="M0 0 10 5 0 10 2.7 5Z" fill="#38bdf8" stroke="none"/></marker>
                   </defs>
-                  <path data-flow-line-bg="pv" d="${mfGeo.paths.pvToInverter}" class="flow-line-bg" stroke="#fbbf24" />
-                  <path data-flow-line="pv" d="${mfGeo.paths.pvToInverter}" stroke="#fbbf24" class="${lineClass(mfActive.pv)}" stroke-width="4" stroke-opacity="${mfActive.pv ? 0.96 : 0.18}"${mfFlowMarker("pv", mfActive.pv)} />
+                  ${pvEnabled ? `<path data-flow-line-bg="pv" d="${mfGeo.paths.pvToInverter}" class="flow-line-bg" stroke="#fbbf24" />
+                  <path data-flow-line="pv" d="${mfGeo.paths.pvToInverter}" stroke="#fbbf24" class="${lineClass(mfActive.pv)}" stroke-width="4" stroke-opacity="${mfActive.pv ? 0.96 : 0.18}"${mfFlowMarker("pv", mfActive.pv)} />` : ""}
                   <path data-flow-line-bg="battery" d="${mfBatPath}" class="flow-line-bg" stroke="#4ade80" />
                   <path data-flow-line="battery" d="${mfBatPath}" stroke="#4ade80" class="${lineClass(mfActive.batteryDischarge || mfActive.batteryCharge)}" stroke-width="4" stroke-opacity="${mfActive.batteryDischarge || mfActive.batteryCharge ? 0.96 : 0.18}"${mfFlowMarker("battery", mfActive.batteryDischarge || mfActive.batteryCharge)} />
                   <path data-flow-line-bg="grid" d="${mfGridPath}" class="flow-line-bg" stroke="#c084fc" />
@@ -5123,14 +5141,14 @@ class DeyeEnergyCard extends HTMLElement {
             </div>
           </div>
           <div class="ms-detail-grid">
-            <div class="ms-detail-tile">
+            ${pvEnabled ? `<div class="ms-detail-tile">
               <div class="ms-detail-title">PV details</div>
               ${mfDetailRow("PV1 power", esSpan("pv1_power", `<span style="color:#fbbf24" data-live="pv1-power">${fmtPower(pv1Power)}</span>`), null)}
               ${mfDetailRow("PV2 power", esSpan("pv2_power", `<span style="color:#fbbf24" data-live="pv2-power">${fmtPower(pv2Power)}</span>`), null)}
               ${mfDetailRow("PV1 V / A", `${esSpan("pv1_voltage", `<span data-live="pv1-volts">${fmtNumber(pv1V, 1)}</span>`)} V / ${esSpan("pv1_current", `<span data-live="pv1-amps">${fmtNumber(pv1A, 1)}</span>`)} A`, null)}
               ${mfDetailRow("PV2 V / A", `${esSpan("pv2_voltage", `<span data-live="pv2-volts">${fmtNumber(pv2V, 1)}</span>`)} V / ${esSpan("pv2_current", `<span data-live="pv2-amps">${fmtNumber(pv2A, 1)}</span>`)} A`, null)}
               ${mfDetailRow("Produced today", `<span data-live="pv-daily">${fmtNumber(pvDaily, 2)}</span> kWh`, "daily_pv_production")}
-            </div>
+            </div>` : ""}
             <div class="ms-detail-tile">
               <div class="ms-detail-title">Grid details</div>
               ${singlePhase
@@ -5288,10 +5306,10 @@ class DeyeEnergyCard extends HTMLElement {
             .ai-crisp-legend .sell i{background:#69d438}.ai-crisp-legend .charge i{background:#35aee8}.ai-crisp-legend .tariff i{background:#9f863d}
            </style>
         <div class="flow-wrapper">
-          <div class="flow-scaler" data-base-width="${panelWidth}" data-base-height="${panelHeight}" data-tile-width="${tileWidth}" data-tile-gap="${tileGap}" data-inverter-column-width="${inverterColumnWidth}" data-inverter-visual-width="${inverterVisualWidth}">
+          <div class="flow-scaler" data-base-width="${panelWidth}" data-base-height="${panelHeight}" data-board-height="${geometry.boardHeight}" data-tile-width="${tileWidth}" data-tile-gap="${tileGap}" data-inverter-column-width="${inverterColumnWidth}" data-inverter-visual-width="${inverterVisualWidth}">
             <div class="energy-flow-panel">
               <div class="flow-board">
-                <div class="flow-tile flow-tile-pv">
+                ${pvEnabled ? `<div class="flow-tile flow-tile-pv">
                   <div class="flow-tile-head">
                     <div class="flow-tile-icon" style="color:#fbbf24">${this.iconSvg("pv2")}</div>
                     <div class="flow-tile-heading">
@@ -5309,8 +5327,8 @@ class DeyeEnergyCard extends HTMLElement {
                     <span>Produced today:</span>
                     <strong><span data-live="pv-daily">${fmtNumber(pvDaily, 2)}</span> kWh</strong>
                   </div>
-                </div>
-                <div class="flow-tile flow-tile-grid">
+                </div>` : ""}
+                <div class="flow-tile flow-tile-grid"${!pvEnabled ? ' style="align-self:center"' : ""}>
                   <div class="flow-tile-head">
                     <div class="flow-tile-icon" style="color:#c084fc">${this.iconSvg("grid2")}</div>
                     <div class="flow-tile-heading">
@@ -5399,8 +5417,8 @@ class DeyeEnergyCard extends HTMLElement {
                     <marker id="flow-arrow-battery" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="3.4" markerHeight="3.4" orient="auto-start-reverse"><path d="M0 0 10 5 0 10 2.7 5Z" fill="#4ade80" stroke="none"/></marker>
                     <marker id="flow-arrow-home" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="3.4" markerHeight="3.4" orient="auto-start-reverse"><path d="M0 0 10 5 0 10 2.7 5Z" fill="#38bdf8" stroke="none"/></marker>
                   </defs>
-                  <path data-flow-line-bg="pv" d="${pvPath}" class="flow-line-bg" stroke="#fbbf24" />
-                  <path data-flow-line="pv" d="${pvPath}" stroke="#fbbf24" class="${lineClass(active.pv)}" stroke-width="4" stroke-opacity="${active.pv ? 0.96 : 0.18}"${flowMarker("pv", active.pv)} />
+                  ${pvEnabled ? `<path data-flow-line-bg="pv" d="${pvPath}" class="flow-line-bg" stroke="#fbbf24" />
+                  <path data-flow-line="pv" d="${pvPath}" stroke="#fbbf24" class="${lineClass(active.pv)}" stroke-width="4" stroke-opacity="${active.pv ? 0.96 : 0.18}"${flowMarker("pv", active.pv)} />` : ""}
                   <path data-flow-line-bg="battery" d="${batPath}" class="flow-line-bg" stroke="#4ade80" />
                   <path data-flow-line="battery" d="${batPath}" stroke="#4ade80" class="${lineClass(active.batteryDischarge || active.batteryCharge)}" stroke-width="4" stroke-opacity="${active.batteryDischarge || active.batteryCharge ? 0.96 : 0.18}"${flowMarker("battery", active.batteryDischarge || active.batteryCharge)} />
                   <path data-flow-line-bg="grid" d="${gridPath}" class="flow-line-bg" stroke="#c084fc" />
@@ -5472,50 +5490,72 @@ class DeyeEnergyCard extends HTMLElement {
   }
   updateFlowLines() {
     const st = (key) => this.asNumber(this.state(this.energyStatusEntity(key)), 0) || 0;
+    const pvEnabled = this.pvGenerationEnabled();
+    const pvPower = pvEnabled ? st("pv_power") : 0;
+    const gridPower = st("grid_power");
+    const batteryPower = st("battery_power");
+    const loadPower = this.calculatedHouseLoad(pvPower, gridPower, batteryPower);
     const active = {
-      pv: st("pv_power") > 1,
-      gridImport: st("grid_power") > 1,
-      gridExport: st("grid_power") < -1,
-      batteryDischarge: st("battery_power") > 1,
-      batteryCharge: st("battery_power") < -1,
-      load: st("load_power") > 1,
+      pv: pvEnabled && pvPower > 1,
+      gridImport: gridPower > 1,
+      gridExport: gridPower < -1,
+      batteryDischarge: batteryPower > 1,
+      batteryCharge: batteryPower < -1,
+      load: loadPower > 1,
     };
-    const svg = this.querySelector(".flow-svg");
-    if (!svg) return;
-    const scaler = this.querySelector(".flow-scaler");
-    const tileWidth = parseFloat(scaler?.dataset.tileWidth) || 300;
-    const tileGap = parseFloat(scaler?.dataset.tileGap) || 0;
-    const inverterColumnWidth = parseFloat(scaler?.dataset.inverterColumnWidth) || 640;
-    const inverterVisualWidth = parseFloat(scaler?.dataset.inverterVisualWidth) || 190;
-    const geometry = this.flowGeometry({ tileWidth, tileGap, inverterColumnWidth, inverterVisualWidth });
-    const pvPath = geometry.paths.pvToInverter;
-    const batPath = active.batteryCharge
-      ? geometry.paths.inverterToBattery
-      : geometry.paths.batteryToInverter;
-    const gridPath = active.gridExport
-      ? geometry.paths.inverterToGrid
-      : geometry.paths.gridToInverter;
-    const homePath = geometry.paths.inverterToHome;
-    svg.setAttribute("viewBox", `0 0 ${geometry.boardWidth} ${geometry.boardHeight}`);
-    const setPath = (key, d, color, isActive) => {
-      const background = svg.querySelector(`path[data-flow-line-bg="${key}"]`);
-      const path = svg.querySelector(`path[data-flow-line="${key}"]`);
-      if (!path) return;
-      background?.setAttribute("d", d);
-      background?.setAttribute("stroke", color);
-      path.setAttribute("d", d);
-      path.setAttribute("stroke", color);
-      path.setAttribute("stroke-width", "4");
-      path.setAttribute("stroke-opacity", isActive ? 0.96 : 0.18);
-      if (isActive) path.setAttribute("marker-end", `url(#flow-arrow-${key})`);
-      else path.removeAttribute("marker-end");
-      path.textContent = "";
-      path.classList.toggle("flow-active", isActive);
+    const updateSvg = (svg, scaler, markerPrefix) => {
+      if (!svg || !scaler) return;
+      const tileWidth = parseFloat(scaler.dataset.tileWidth) || 300;
+      const tileGap = parseFloat(scaler.dataset.tileGap) || 0;
+      const inverterColumnWidth = parseFloat(scaler.dataset.inverterColumnWidth) || 640;
+      const inverterVisualWidth = parseFloat(scaler.dataset.inverterVisualWidth) || 190;
+      const boardHeight = parseFloat(scaler.dataset.boardHeight) || 600;
+      const geometry = this.flowGeometry({ tileWidth, tileGap, inverterColumnWidth, inverterVisualWidth, boardHeight, pvEnabled });
+      const batPath = active.batteryCharge
+        ? geometry.paths.inverterToBattery
+        : geometry.paths.batteryToInverter;
+      const gridPath = active.gridExport
+        ? geometry.paths.inverterToGrid
+        : geometry.paths.gridToInverter;
+      svg.setAttribute("viewBox", `0 0 ${geometry.boardWidth} ${geometry.boardHeight}`);
+      const setPath = (key, d, color, isActive) => {
+        const background = svg.querySelector(`path[data-flow-line-bg="${key}"]`);
+        const path = svg.querySelector(`path[data-flow-line="${key}"]`);
+        if (!path && !background) return;
+        const show = Boolean(d);
+        if (background) {
+          if (show) {
+            background.setAttribute("d", d);
+            background.setAttribute("stroke", color);
+            background.style.display = "";
+          } else {
+            background.style.display = "none";
+          }
+        }
+        if (path) {
+          if (show) {
+            path.setAttribute("d", d);
+            path.setAttribute("stroke", color);
+            path.setAttribute("stroke-width", "4");
+            path.setAttribute("stroke-opacity", isActive ? 0.96 : 0.18);
+            path.style.display = "";
+            if (isActive) path.setAttribute("marker-end", `url(#${markerPrefix}-arrow-${key})`);
+            else path.removeAttribute("marker-end");
+            path.classList.toggle("flow-active", isActive);
+          } else {
+            path.style.display = "none";
+            path.removeAttribute("marker-end");
+            path.classList.remove("flow-active");
+          }
+        }
+      };
+      setPath("pv", pvEnabled ? geometry.paths.pvToInverter : "", "#fbbf24", active.pv);
+      setPath("battery", batPath, "#4ade80", active.batteryDischarge || active.batteryCharge);
+      setPath("grid", gridPath, "#c084fc", active.gridImport || active.gridExport);
+      setPath("home", geometry.paths.inverterToHome, "#38bdf8", active.load);
     };
-    setPath("pv", pvPath, "#fbbf24", active.pv);
-    setPath("battery", batPath, "#4ade80", active.batteryDischarge || active.batteryCharge);
-    setPath("grid", gridPath, "#c084fc", active.gridImport || active.gridExport);
-    setPath("home", homePath, "#38bdf8", active.load);
+    updateSvg(this.querySelector(".flow-svg"), this.querySelector(".flow-scaler"), "flow");
+    updateSvg(this.querySelector(".ms-flow-svg"), this.querySelector(".ms-flow-scaler"), "mf");
   }
 
   clockFromMinutes(minutes) {
@@ -5751,13 +5791,9 @@ class DeyeEnergyCard extends HTMLElement {
     if (!enabled) return `<span class="empty-value">-</span>`;
     const mode = this.displayState(entities.mode, "Normal Operation");
     const sell = this.numberState(entities.sellPower, 0);
-    const discharge = this.numberState(entities.dischargeCurrent, 0);
-    const charge = this.numberState(entities.chargeCurrent, 0);
     const soc = this.numberState(entities.touSoc, 0);
     return `
       <span class="metric sell">${this.iconSvg("sell")} ${sell} W</span>
-      <span class="metric discharge">\u2193 ${discharge} A</span>
-      <span class="metric charge">\u2191 ${charge} A</span>
       <span class="metric soc">\u25c7 ${soc}%</span>
       <span class="sr-only">${this.slotModeLabel(mode)}</span>`;
   }
@@ -5784,8 +5820,6 @@ class DeyeEnergyCard extends HTMLElement {
         active: "off",
         mode: "Selling",
         sellPower: 0,
-        dischargeCurrent: 0,
-        chargeCurrent: 0,
         minimumSellSoc: 0,
         minSellPrice: 0,
       };
@@ -5795,8 +5829,6 @@ class DeyeEnergyCard extends HTMLElement {
       active: this.displayState(entities.sellEnabled, "off") === "on" ? "on" : "off",
       mode: this.normalizeManagerMode(this.displayState(entities.mode, "Selling")),
       sellPower: this.numberState(entities.sellPower, 0),
-      dischargeCurrent: this.numberState(entities.dischargeCurrent, 0),
-      chargeCurrent: this.numberState(entities.chargeCurrent, 0),
       minimumSellSoc: this.numberState(entities.minimumSellSoc, 0),
       minSellPrice: this.numberState(entities.minSellPrice, 0),
     };
@@ -5809,8 +5841,6 @@ class DeyeEnergyCard extends HTMLElement {
       "multi-active": bulk.active,
       "multi-mode": bulk.mode,
       "multi-sell-power": bulk.sellPower,
-      "multi-discharge-current": bulk.dischargeCurrent,
-      "multi-charge-current": bulk.chargeCurrent,
       "multi-min-soc": bulk.minimumSellSoc,
       "multi-min-sell-price": bulk.minSellPrice,
     };
@@ -5845,9 +5875,6 @@ class DeyeEnergyCard extends HTMLElement {
           enabled,
           mode,
           sellPower: this.asNumber(this.numberState(entities.sellPower, 0)) || 0,
-          dischargeCurrent: this.numberState(entities.dischargeCurrent, "missing"),
-          chargeCurrent: this.numberState(entities.chargeCurrent, "missing"),
-          gridChargeCurrent: this.numberState(entities.gridChargeCurrent, "missing"),
           minimumSellSoc: this.asNumber(this.numberState(entities.minimumSellSoc, 0)) || 0,
           minSellPrice: this.asNumber(this.numberState(entities.minSellPrice, 0)) || 0,
           // Physical Deye TOU SOC is always tou_soc, independent of the logical mode.
@@ -6163,13 +6190,12 @@ class DeyeEnergyCard extends HTMLElement {
     if (!this.aiIsApplicableProposal(row)) return null;
     const contractUpdate = row?.action_contract?.schedule_update;
     if (contractUpdate && typeof contractUpdate === "object") {
-      // Core Sell is power-only.  This action must never forward a legacy
-      // derived battery current into the global maximum-discharge entity.
+      // Core Sell is power-only.  Battery current limits are never forwarded
+      // by an AI or schedule action.
       const allowed = row.action === "sell"
         ? new Set(["slot_key", "enabled", "mode", "sell_power"])
         : new Set([
-          "slot_key", "enabled", "mode", "sell_power", "discharge_current",
-          "charge_current", "grid_charge_current", "minimum_sell_soc", "tou_soc",
+          "slot_key", "enabled", "mode", "sell_power", "minimum_sell_soc", "tou_soc",
           "min_sell_price", "charge_enabled",
         ]);
       const exact = {};
@@ -6189,16 +6215,11 @@ class DeyeEnergyCard extends HTMLElement {
     // The selected proposal contract is authoritative for this special action.
     // Apply Today materialises all unselected hours as Normal Operation on the
     // backend, without duplicating that business rule in the card.
-    // Unrelated current, SOC and price fields are intentionally preserved.
+    // Unrelated SOC and price fields are intentionally preserved.
     if (selling) update.sell_power = this.aiPlannedSlotPower(row);
     if (charging) {
       const profile = this.chargeProfileStoredValues();
-      const numericFields = {
-        charge_current: profile.charge_current,
-        discharge_current: profile.discharge_current,
-        grid_charge_current: profile.grid_charge_current,
-        tou_soc: profile.target_soc,
-      };
+      const numericFields = { tou_soc: profile.target_soc };
       Object.entries(numericFields).forEach(([field, value]) => {
         const number = this.asNumber(value);
         if (number !== null) update[field] = number;
@@ -6234,7 +6255,7 @@ class DeyeEnergyCard extends HTMLElement {
       const energy = this.aiFormatNumber(row.planned_energy_kwh ?? row.energy_kwh, 2);
       const update = this.aiRowUpdate(row) || {};
       const chargeContract = row.action === "charge"
-        ? `, charge current ${this.aiFormatNumber(update.charge_current, 1)} A, discharge ${this.aiFormatNumber(update.discharge_current, 1)} A, from grid ${this.aiFormatNumber(update.grid_charge_current, 1)} A, SOC ${this.aiFormatNumber(update.tou_soc, 0)}%, Grid Charge ${update.charge_enabled ? "on" : "off"}`
+        ? `, SOC ${this.aiFormatNumber(update.tou_soc, 0)}%, Grid Charge ${update.charge_enabled ? "on" : "off"}`
         : "";
       return `${row.label || this.hourLabel(row.hour)}: ${this.aiActionLabel(row.action)}, ${power} W, about ${energy} kWh${chargeContract}`;
     }).join("\n");
@@ -8139,6 +8160,191 @@ class DeyeEnergyCard extends HTMLElement {
     <button class="danger-action" data-clear-all-history="1">Clear history and data</button>`;
   }
 
+  inverterConfigGroups() {
+    return Array.isArray(this._inverterConfig?.groups) ? this._inverterConfig.groups : [];
+  }
+
+  renderInverterConfigIfVisible() {
+    if (this._dialog?.type === "settings" && this._settingsTab === "inverter-config") {
+      this.renderDialogOnly();
+    }
+  }
+
+  async loadInverterConfiguration(force = false) {
+    if (!this.hasService("deye_energy", "get_inverter_configuration")) {
+      this._inverterConfigError = "The deye_energy.get_inverter_configuration service is unavailable. Reload the integration after installing the new version.";
+      this.renderInverterConfigIfVisible();
+      return false;
+    }
+    if (this._inverterConfigLoading) return false;
+    if (!force && this._inverterConfigLoaded) return true;
+    this._inverterConfigLoading = true;
+    this._inverterConfigError = "";
+    this.renderInverterConfigIfVisible();
+    try {
+      const response = await this.callServiceWithResponse("deye_energy", "get_inverter_configuration", {});
+      const nested = response?.response ?? response?.result;
+      let payload = response;
+      if (Array.isArray(response)) payload = { groups: response };
+      else if (!Array.isArray(payload?.groups) && Array.isArray(nested?.groups)) payload = nested;
+      const groups = Array.isArray(payload?.groups) ? payload.groups : [];
+      if (!groups.length) throw new Error("No inverter configuration groups were returned");
+      this._inverterConfig = { groups };
+      this._inverterConfigDrafts = {};
+      this._inverterConfigLoaded = true;
+      return true;
+    } catch (error) {
+      this._inverterConfigError = `Could not read inverter configuration: ${error?.message || error}`;
+      return false;
+    } finally {
+      this._inverterConfigLoading = false;
+      this.renderInverterConfigIfVisible();
+    }
+  }
+
+  inverterConfigFieldValue(field) {
+    if (Object.prototype.hasOwnProperty.call(this._inverterConfigDrafts, field.key)) {
+      return this._inverterConfigDrafts[field.key];
+    }
+    if (field.domain === "switch") return field.value === true ? "true" : "false";
+    return field.value === null || field.value === undefined ? "" : String(field.value);
+  }
+
+  inverterConfigInput(groupKey, field) {
+    const key = this.escapeHtml(String(field.key));
+    if (!field.writable) {
+      const display = String(field.display_value ?? "Not mapped");
+      const unit = display === "Not mapped" || display === "Unavailable" || !field.unit
+        ? "" : ` ${this.escapeHtml(String(field.unit))}`;
+      const reason = field.read_only_reason && field.read_only_reason !== "Not mapped"
+        ? `<small>${this.escapeHtml(String(field.read_only_reason))}</small>` : "";
+      return `<span class="inverter-config-readonly" data-inverter-config-display="${key}">${this.escapeHtml(display)}${unit}</span>${reason}`;
+    }
+    const value = this.inverterConfigFieldValue(field);
+    const attrs = `data-inverter-config-field="${key}" data-inverter-config-group="${this.escapeHtml(String(groupKey))}"`;
+    if (field.domain === "number") {
+      const min = field.min === null || field.min === undefined ? "" : ` min="${this.escapeHtml(String(field.min))}"`;
+      const max = field.max === null || field.max === undefined ? "" : ` max="${this.escapeHtml(String(field.max))}"`;
+      const step = field.step === null || field.step === undefined ? "" : ` step="${this.escapeHtml(String(field.step))}"`;
+      const unit = field.unit ? ` <span>${this.escapeHtml(String(field.unit))}</span>` : "";
+      return `<label class="field"><input type="number" inputmode="decimal" ${attrs}${min}${max}${step} value="${this.escapeHtml(String(value))}">${unit}</label>`;
+    }
+    const options = field.domain === "switch"
+      ? [["true", "On"], ["false", "Off"]]
+      : (Array.isArray(field.options) ? field.options.map((option) => [String(option), String(option)]) : []);
+    const optionsHtml = options.map(([optionValue, label]) =>
+      `<option value="${this.escapeHtml(String(optionValue))}"${String(optionValue) === String(value) ? " selected" : ""}>${this.escapeHtml(String(label))}</option>`
+    ).join("");
+    return `<select ${attrs}>${optionsHtml}</select>`;
+  }
+
+  collectInverterConfigDrafts() {
+    if (typeof this.querySelectorAll !== "function") return;
+    this.querySelectorAll("[data-inverter-config-field]").forEach((el) => {
+      this._inverterConfigDrafts[el.dataset.inverterConfigField] = el.value;
+    });
+  }
+
+  async applyInverterConfigGroup(groupKey) {
+    if (this._inverterConfigSaving[groupKey]) return false;
+    const group = this.inverterConfigGroups().find((item) => item.key === groupKey);
+    if (!group) return false;
+    this.collectInverterConfigDrafts();
+    const values = {};
+    for (const field of group.fields) {
+      if (!field.writable) continue;
+      const raw = this.inverterConfigFieldValue(field);
+      if (field.domain === "number") {
+        const parsed = Number(String(raw).replace(",", "."));
+        if (!Number.isFinite(parsed)) {
+          this._inverterConfigMessages[groupKey] = { ok: false, text: `${field.label}: enter a valid number` };
+          this.renderInverterConfigIfVisible();
+          return false;
+        }
+        const min = Number(field.min);
+        const max = Number(field.max);
+        const step = Number(field.step);
+        if (Number.isFinite(min) && Number.isFinite(max) && (parsed < min || parsed > max)) {
+          this._inverterConfigMessages[groupKey] = { ok: false, text: `${field.label}: enter a value between ${min} and ${max}` };
+          this.renderInverterConfigIfVisible();
+          return false;
+        }
+        if (Number.isFinite(step) && step > 0 && Number.isFinite(min)) {
+          const steps = (parsed - min) / step;
+          if (Math.abs(steps - Math.round(steps)) > 1e-6) {
+            this._inverterConfigMessages[groupKey] = { ok: false, text: `${field.label}: value must follow step ${step}` };
+            this.renderInverterConfigIfVisible();
+            return false;
+          }
+        }
+        values[field.key] = parsed;
+      } else if (field.domain === "switch") {
+        values[field.key] = raw === true || raw === "true" || raw === "on";
+      } else {
+        const option = String(raw ?? "");
+        if (Array.isArray(field.options) && field.options.length && !field.options.map(String).includes(option)) {
+          this._inverterConfigMessages[groupKey] = { ok: false, text: `${field.label}: unsupported selection` };
+          this.renderInverterConfigIfVisible();
+          return false;
+        }
+        values[field.key] = option;
+      }
+    }
+    if (!Object.keys(values).length) {
+      this._inverterConfigMessages[groupKey] = { ok: false, text: "This group has no editable fields" };
+      this.renderInverterConfigIfVisible();
+      return false;
+    }
+    if (!this.hasService("deye_energy", "apply_inverter_configuration_group")) {
+      this._inverterConfigMessages[groupKey] = { ok: false, text: "The apply service is unavailable. Reload the integration." };
+      this.renderInverterConfigIfVisible();
+      return false;
+    }
+    this._inverterConfigSaving[groupKey] = true;
+    this._inverterConfigMessages[groupKey] = null;
+    this.renderInverterConfigIfVisible();
+    try {
+      const response = await this.callServiceWithResponse(
+        "deye_energy",
+        "apply_inverter_configuration_group",
+        { group: groupKey, values },
+      );
+      const nested = response?.response ?? response?.result;
+      const payload = response?.status !== undefined ? response : nested;
+      const error = payload?.error || "";
+      if (payload?.status === "failed" || error) throw new Error(error || "Apply failed");
+      this._inverterConfigMessages[groupKey] = { ok: true, text: "Applied and refreshed from live values." };
+      return true;
+    } catch (error) {
+      this._inverterConfigMessages[groupKey] = { ok: false, text: String(error?.message || error) };
+      return false;
+    } finally {
+      this._inverterConfigSaving[groupKey] = false;
+      await this.loadInverterConfiguration(true);
+    }
+  }
+
+  renderInverterConfigTab() {
+    const intro = `<h3>Inverter configuration</h3>
+      <div class="hint">Live values are read from the inverter entities when this tab opens. Fields without a reliable entity are shown as <strong>Not mapped</strong> and stay read-only. Grid charge current is only a limit; Grid Charge permission remains a separate work-mode setting.</div>
+      ${this._inverterConfigError ? `<div class="bad">${this.escapeHtml(this._inverterConfigError)}</div>` : ""}
+      <button class="wide-action" data-refresh-inverter-config="1" ${this._inverterConfigLoading ? "disabled" : ""}>${this._inverterConfigLoading ? "Loading live values…" : (this._inverterConfig ? "Refresh live values" : "Load live values")}</button>`;
+    const groups = this.inverterConfigGroups();
+    if (!groups.length) return intro;
+    return `${intro}${groups.map((group) => {
+      const rows = group.fields.map((field) => `<tr><td><strong>${this.escapeHtml(String(field.label))}</strong>${field.entity_id ? `<br><small>${this.escapeHtml(String(field.entity_id))}</small>` : ""}</td><td>${this.inverterConfigInput(group.key, field)}</td></tr>`).join("");
+      const message = this._inverterConfigMessages[group.key];
+      const saving = Boolean(this._inverterConfigSaving[group.key]);
+      const label = this.escapeHtml(String(group.label));
+      return `<section class="diagnostic-section inverter-config-group">
+        <h4>${label}</h4>
+        <div class="diagnostic-entities"><table class="settings-table"><tbody>${rows}</tbody></table></div>
+        ${message ? `<div class="${message.ok ? "hint" : "bad"}">${this.escapeHtml(String(message.text))}</div>` : ""}
+        <button class="wide-action" data-apply-inverter-config="${this.escapeHtml(String(group.key))}" ${group.writable && !saving ? "" : "disabled"}>${saving ? "Applying…" : `Apply ${label}`}</button>
+      </section>`;
+    }).join("")}`;
+  }
+
   renderDialog(slots, touStarts) {
     if (!this._dialog) return "";
 
@@ -8154,19 +8360,14 @@ class DeyeEnergyCard extends HTMLElement {
           ${this.row("Default Manager mode", this.rawSelect("default-work-mode", this.defaultWorkModes(), this.defaultSettingsMode()))}
           ${this.row("Physical Normal Operation variant", this.rawSelect("default-physical-work-mode", [["", "-- select --"], ...this.normalProfileModeOptions()], this.defaultPhysicalWorkMode()))}
           ${this.row("Default maximum sell power", this.defaultProfileInput("sell_power", this.entity("number", "default_sell_power"), "W"))}
-          ${this.row("Default discharge current", this.defaultProfileInput("discharge_current", this.entity("number", "default_discharge_current"), "A"))}
-          ${this.row("Default battery charge current", this.defaultProfileInput("charge_current", this.entity("number", "default_charge_current"), "A"))}
-          ${this.row("Default grid charge current", this.defaultProfileInput("grid_charge_current", this.entity("number", "default_grid_charge_current"), "A"))}
-          <div class="hint">Fallback state: ${this.escapeHtml(this.state(this.entity("select", "default_work_mode")))} · ${this.escapeHtml(this.state(this.entity("number", "default_sell_power")))} W · discharge ${this.escapeHtml(this.state(this.entity("number", "default_discharge_current")))} A · charging ${this.escapeHtml(this.state(this.entity("number", "default_charge_current")))} A · grid ${this.escapeHtml(this.state(this.entity("number", "default_grid_charge_current")))} A</div>
+          <div class="hint">Fallback state: ${this.escapeHtml(this.state(this.entity("select", "default_work_mode")))} · ${this.escapeHtml(this.state(this.entity("number", "default_sell_power")))} W</div>
+          <div class="hint">Battery current limits are not part of this fallback. Set them in <strong>Inverter configuration</strong>.</div>
           <button class="wide-action" data-save-default-settings="1">Save default settings</button>
           <button class="wide-action" data-action="apply-defaults" data-default-action="1" data-default-label="Apply default settings now" ${this._defaultsApplying ? "disabled" : ""}>${this._defaultsApplying ? "Applying default settings…" : "Apply default settings now"}</button>
           <h3>Charging settings</h3>
           <div class="hint">This is a template copied into a slot when <strong>Charging</strong> mode is selected. Later manual changes in that slot take precedence and are not overwritten by saving the template again.</div>
           ${this.row("Charging mode", "Charging")}
           ${this.row("Grid charging", this.rawSelect("charge-profile-grid", [["on", "YES"], ["off", "NO"]], this.chargeProfileGridEnabled() ? "on" : "off"))}
-          ${this.row("Charge current", this.chargeProfileInput("charge_current", this.entity("number", "charge_profile_charge_current"), "A"))}
-          ${this.row("Discharge current", this.chargeProfileInput("discharge_current", this.entity("number", "charge_profile_discharge_current"), "A"))}
-          ${this.row("Grid charge current", this.chargeProfileInput("grid_charge_current", this.entity("number", "charge_profile_grid_charge_current"), "A"))}
           ${this.row("Target SOC", this.chargeProfileInput("target_soc", this.entity("number", "charge_profile_target_soc"), "%"))}
           <div class="hint">Grid charging: NO — the battery may charge from PV. Grid charging: YES — allowed only within Charging mode ranges.</div>
           <button class="wide-action" data-save-charge-profile="1">Save charging settings</button>
@@ -8174,9 +8375,6 @@ class DeyeEnergyCard extends HTMLElement {
           <div class="hint">This template is copied into a slot only when <strong>Normal Operation</strong> mode is selected. Later manual changes in that slot take precedence and are not overwritten by template changes.</div>
           ${this.row("Normal Operation mode", this.rawSelect("normal-profile-mode", [["", "-- select --"], ...this.normalProfileModeOptions()], this.normalProfileMode()))}
           ${this.row("Maximum selling power", this.normalProfileInput("sell_power", this.entity("number", "normal_profile_sell_power"), "W"))}
-          ${this.row("Maximum discharge current", this.normalProfileInput("discharge_current", this.entity("number", "normal_profile_discharge_current"), "A"))}
-          ${this.row("Maximum battery charge current", this.normalProfileInput("charge_current", this.entity("number", "normal_profile_charge_current"), "A"))}
-          ${this.row("Maximum grid charge current", this.normalProfileInput("grid_charge_current", this.entity("number", "normal_profile_grid_charge_current"), "A"))}
           ${this.row("Deye battery SOC (TOU)", this.normalProfileInput("tou_soc", this.entity("number", "normal_profile_tou_soc"), "%"))}
           <div class="hint">The physical SOC written to Deye Time Of Use for Normal Operation slots. This is not the minimum selling SOC.</div>
           <button class="wide-action" data-save-normal-profile="1">Save Normal Operation settings</button>
@@ -8189,6 +8387,8 @@ class DeyeEnergyCard extends HTMLElement {
         body = this.renderAiSettingsPanel();
       } else if (tab === "tariff") {
         body = this.renderTariffTab();
+      } else if (tab === "inverter-config") {
+        body = this.renderInverterConfigTab();
       } else if (tab === "history") {
         body = this.renderHistoryTab();
       } else if (tab === "system") {
@@ -8201,6 +8401,7 @@ class DeyeEnergyCard extends HTMLElement {
           <div class="settings-layout">
             <nav class="settings-nav">
               ${tabButton("defaults", "Mode settings")}
+              ${tabButton("inverter-config", "Inverter configuration")}
               ${tabButton("tou", "Deye Time Of Use")}
               ${tabButton("energy-status", "Energy status sensors")}
               ${tabButton("ai", "AI and analysis")}
@@ -8229,8 +8430,6 @@ class DeyeEnergyCard extends HTMLElement {
             <label class="apply-row"><input type="checkbox" data-apply-field="active" checked> Active ${this.rawSelect("multi-active", [["on", "Yes"], ["off", "No"]], bulk.active)}</label>
               <label class="apply-row"><input type="checkbox" data-apply-field="mode" checked> Operation mode ${this.rawSelect("multi-mode", this.slotModeOptions(), bulk.mode)}</label>
             <label class="apply-row"><input type="checkbox" data-apply-field="sellPower" checked> Sell power ${this.rawNumber("multi-sell-power", bulk.sellPower, "W")}</label>
-            <label class="apply-row"><input type="checkbox" data-apply-field="dischargeCurrent" checked> Discharge current ${this.rawNumber("multi-discharge-current", bulk.dischargeCurrent, "A")}</label>
-            <label class="apply-row"><input type="checkbox" data-apply-field="chargeCurrent" checked> Charge current ${this.rawNumber("multi-charge-current", bulk.chargeCurrent, "A")}</label>
             <label class="apply-row"><input type="checkbox" data-apply-field="minSoc" checked> Minimum sell SOC ${this.rawNumber("multi-min-soc", bulk.minimumSellSoc, "%")}</label>
             <label class="apply-row"><input type="checkbox" data-apply-field="minSellPrice" checked> Sell from price ${this.rawNumber("multi-min-sell-price", bulk.minSellPrice, "GBP")}</label>
             <div class="preview-box"><strong>Preview changes</strong><br>Starting values are taken from the first selected hour. Uncheck any field you do not want to change.</div>
@@ -8270,10 +8469,7 @@ class DeyeEnergyCard extends HTMLElement {
           ${isNormal ? `<button class="primary" type="button" data-draft-normal-profile="1" style="margin-bottom:8px">Reload Normal Operation settings</button>` : ""}
           ${isNormal ? this.row("Physical Deye mode", this.slotDraftSelect("physical_work_mode", this.normalProfileModeOptions())) : ""}
           ${this.row("Sell power", this.slotDraftInput("sell_power", "W"))}
-          ${this.row("Discharge current", this.slotDraftInput("discharge_current", "A"))}
-          ${this.row("Battery charge current", this.slotDraftInput("charge_current", "A"))}
           ${this.row("Grid charging", this.slotDraftSelect("charge_enabled", yesNo))}
-          ${this.row("Grid charge current", this.slotDraftInput("grid_charge_current", "A"))}
           ${socField}
           ${this.row("Sell from price", this.slotDraftInput("min_sell_price", "GBP"))}`;
     return `<div class="overlay" data-close-dialog="1">
@@ -8360,9 +8556,7 @@ class DeyeEnergyCard extends HTMLElement {
       const isChargeMode = mode === "Charging";
       const gridChargeLabel = isChargeMode ? (gridCharge ? "yes" : "no") : "not applicable";
       const gridChargeClass = isChargeMode ? (gridCharge ? "on" : "off") : "missing";
-      const chargeCurrent = this.numberState(entities.chargeCurrent);
-      const gridChargeCurrent = this.numberState(entities.gridChargeCurrent);
-       // Physical Deye TOU SOC is always the user-owned tou_soc, also for Selling.
+      // Physical Deye TOU SOC is always the user-owned tou_soc, also for Selling.
       const touSoc = this.numberState(entities.touSoc, "requires confirmation");
       const selected = this._selectedSlots?.has(key);
       const meta = this.modeMeta(mode, enabled);
@@ -8376,10 +8570,7 @@ class DeyeEnergyCard extends HTMLElement {
         <td data-label="Hour" class="time-col">${label}</td>
         <td data-label="Mode">${this.modePill(mode, enabled)}</td>
         <td data-label="Sell power" class="metric sell">${enabled ? `${this.iconSvg("sell")} ${this.numberState(entities.sellPower)} W` : "-"}</td>
-        <td data-label="Discharge current" class="metric discharge">${enabled ? `↓ ${this.numberState(entities.dischargeCurrent)} A` : "-"}</td>
-        <td data-label="Charge current" class="metric charge">${enabled ? `↑ ${chargeCurrent} A` : "-"}</td>
         <td data-label="Grid charging" class="metric grid">${enabled ? `<span class="pill ${gridChargeClass}">${gridChargeLabel}</span>` : "-"}</td>
-        <td data-label="Grid charge current" class="metric grid-current">${enabled ? `⚡ ${gridChargeCurrent} A` : "-"}</td>
         <td data-label="SOC" class="metric soc">${enabled ? `◇ ${touSoc}%` : "-"}</td>
         <td data-label="Price min." class="metric price-limit">${enabled ? `${this.formatPrice(this.numberState(entities.minSellPrice))} GBP` : "-"}</td>
         <td data-label="Active">${this.pill(entities.sellEnabled, enabled ? "ON" : "OFF")}</td>
@@ -8397,8 +8588,6 @@ class DeyeEnergyCard extends HTMLElement {
       <label class="apply-row"><input type="checkbox" data-apply-field="active" ${bulkFieldChecked("active") ? "checked" : ""}><span>Active</span>${this.rawSelect("multi-active", [["on", "Yes"], ["off", "No"]], bulk.active)}</label>
         <label class="apply-row"><input type="checkbox" data-apply-field="mode" ${bulkFieldChecked("mode") ? "checked" : ""}><span>Operation mode</span>${this.rawSelect("multi-mode", this.slotModeOptions(), bulk.mode)}</label>
       <label class="apply-row"><input type="checkbox" data-apply-field="sellPower" ${bulkFieldChecked("sellPower") ? "checked" : ""}><span>Sell power</span>${this.rawNumber("multi-sell-power", bulk.sellPower, "W")}</label>
-      <label class="apply-row"><input type="checkbox" data-apply-field="dischargeCurrent" ${bulkFieldChecked("dischargeCurrent") ? "checked" : ""}><span>Discharge current</span>${this.rawNumber("multi-discharge-current", bulk.dischargeCurrent, "A")}</label>
-      <label class="apply-row"><input type="checkbox" data-apply-field="chargeCurrent" ${bulkFieldChecked("chargeCurrent") ? "checked" : ""}><span>Charge current</span>${this.rawNumber("multi-charge-current", bulk.chargeCurrent, "A")}</label>
       <label class="apply-row"><input type="checkbox" data-apply-field="minSoc" ${bulkFieldChecked("minSoc") ? "checked" : ""}><span>Minimum sell SOC</span>${this.rawNumber("multi-min-soc", bulk.minSoc ?? bulk.minimumSellSoc, "%")}</label>
       <label class="apply-row"><input type="checkbox" data-apply-field="minSellPrice" ${bulkFieldChecked("minSellPrice") ? "checked" : ""}><span>Sell from price</span>${this.rawNumber("multi-min-sell-price", bulk.minSellPrice, "GBP")}</label>
       <div class="preview-box"><strong>Preview changes</strong><br>The selected fields are written only to the selected hours. Fields without a checkmark stay unchanged.</div>
@@ -8522,10 +8711,10 @@ class DeyeEnergyCard extends HTMLElement {
                    <table class="schedule-table">
                      <colgroup>
                        <col class="col-check"><col class="col-time"><col class="col-mode"><col class="col-power">
-                       <col class="col-current"><col class="col-current"><col class="col-grid"><col class="col-grid-current">
+                       <col class="col-grid">
                        <col class="col-soc"><col class="col-price"><col class="col-active"><col class="col-action">
                      </colgroup>
-                     <thead><tr><th class="check-col"></th><th class="time-col">Hour</th><th>Mode</th><th>Power</th><th>Disch.</th><th>Chg.</th><th>Grid charging</th><th>Grid charge current</th><th>SOC</th><th>Price min.</th><th>Active</th><th>Action</th></tr></thead>
+                     <thead><tr><th class="check-col"></th><th class="time-col">Hour</th><th>Mode</th><th>Power</th><th>Grid charging</th><th>SOC</th><th>Price min.</th><th>Active</th><th>Action</th></tr></thead>
                      <tbody>${scheduleRows}</tbody>
                    </table>
                    <div class="schedule-foot">
@@ -8734,6 +8923,7 @@ class DeyeEnergyCard extends HTMLElement {
       this.resetMappingEditor();
       this.render();
       if (this._settingsTab === "tou") this.refreshMappingFromInverter();
+      if (this._settingsTab === "inverter-config") this.loadInverterConfiguration(true);
     }));
     root.querySelectorAll("[data-toggle-selection]").forEach((el) => el.addEventListener("click", () => {
       this._selectionMode = !this._selectionMode;
@@ -8879,7 +9069,21 @@ class DeyeEnergyCard extends HTMLElement {
       if (this._settingsTab === "tou") this.resetMappingEditor();
       this.renderDialogOnly();
       if (this._settingsTab === "tou") this.refreshMappingFromInverter();
+      if (this._settingsTab === "inverter-config") this.loadInverterConfiguration(true);
     }));
+    root.querySelectorAll("[data-refresh-inverter-config]").forEach((el) => el.addEventListener("click", () => {
+      this.loadInverterConfiguration(true);
+    }));
+    root.querySelectorAll("[data-apply-inverter-config]").forEach((el) => el.addEventListener("click", () => {
+      this.applyInverterConfigGroup(el.dataset.applyInverterConfig);
+    }));
+    root.querySelectorAll("[data-inverter-config-field]").forEach((el) => {
+      const update = () => {
+        this._inverterConfigDrafts[el.dataset.inverterConfigField] = el.value;
+      };
+      el.addEventListener("input", update);
+      el.addEventListener("change", update);
+    });
     root.querySelectorAll("[data-ai-settings-section]").forEach((el) => el.addEventListener("click", () => {
       this.collectAiProfiles();
       this._aiSettingsSection = el.dataset.aiSettingsSection;

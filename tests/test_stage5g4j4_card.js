@@ -42,7 +42,7 @@ function proposal(hour, action = "sell") {
       deployment_ready: true,
       schedule_update: action === "sell"
         ? { slot_key: slotKey, enabled: true, mode: "Selling", sell_power: 1000 }
-        : { slot_key: slotKey, enabled: true, mode: "Charging", charge_current: 80, discharge_current: 30, grid_charge_current: 40, tou_soc: 80, charge_enabled: true },
+        : { slot_key: slotKey, enabled: true, mode: "Charging", tou_soc: 80, charge_enabled: true },
     },
   };
 }
@@ -123,6 +123,19 @@ async function run() {
   });
   check(captured.replace_day === true && captured.date === "2026-07-18", "service payload must represent full-day intent");
   check(Array.isArray(captured.updates) && captured.updates.length === 1, "service wrapper must contain selected special actions only");
+
+  const legacyCharge = proposal(21, "charge");
+  const legacyContract = {
+    ...legacyCharge.action_contract.schedule_update,
+    charge_current: 80,
+    discharge_current: 30,
+    grid_charge_current: 40,
+  };
+  const filtered = card.aiRowUpdate({ ...legacyCharge, action_contract: { deployment_ready: true, schedule_update: legacyContract } });
+  check(filtered && filtered.tou_soc === 80 && filtered.charge_enabled === true, "AI charge update must keep SOC and Grid Charge permission");
+  ["charge_current", "discharge_current", "grid_charge_current"].forEach((field) => {
+    check(filtered && !(field in filtered), `AI charge update must drop legacy ${field}`);
+  });
 }
 
 run().then(() => {

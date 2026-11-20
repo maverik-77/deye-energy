@@ -40,9 +40,6 @@ def charge(slot_key: str, *, soc: float = 80, grid: bool = True) -> dict:
         "slot_key": slot_key,
         "enabled": True,
         "mode": const.MODE_CHARGE,
-        "charge_current": 87,
-        "discharge_current": 31,
-        "grid_charge_current": 42,
         "tou_soc": soc,
         "charge_enabled": grid,
     }
@@ -116,8 +113,6 @@ def test_unselected_old_charge_has_no_ghost_grid_charge():
     old.enabled = True
     old.mode = const.MODE_CHARGE
     old.charge_enabled = True
-    old.charge_current = 111
-    old.grid_charge_current = 77
     old.tou_soc = 63
 
     apply_today(runtime, [sell("1900_1930", 2900)])
@@ -125,8 +120,6 @@ def test_unselected_old_charge_has_no_ghost_grid_charge():
     cleared = runtime.slots["1800_1830"]
     assert cleared.mode == const.MODE_NORMAL_OPERATION
     assert cleared.charge_enabled is False
-    assert cleared.charge_current == runtime.normal_profile_charge_current
-    assert cleared.grid_charge_current == runtime.normal_profile_grid_charge_current
     assert cleared.tou_soc == 63
 
 
@@ -143,9 +136,6 @@ def test_selected_sell_and_charge_preserve_exact_action_contract_fields():
     assert selling.sell_power == selected_sell["sell_power"]
     assert selling.ai_sell_power_only is True
     assert charging.mode == selected_charge["mode"]
-    assert charging.charge_current == selected_charge["charge_current"]
-    assert charging.discharge_current == selected_charge["discharge_current"]
-    assert charging.grid_charge_current == selected_charge["grid_charge_current"]
     assert charging.tou_soc == selected_charge["tou_soc"]
     assert charging.charge_enabled is selected_charge["charge_enabled"]
 
@@ -186,7 +176,6 @@ def test_full_day_diff_only_does_not_schedule_reconciliation_when_already_equal(
     special.mode = const.MODE_SELLING_FIRST
     special.physical_work_mode = None
     special.sell_power = 2917
-    special.discharge_current = runtime.user_schedule_discharge_current
     special.minimum_sell_soc = 20
     special.ai_sell_power_only = True
     runtime.scheduler_enabled = True

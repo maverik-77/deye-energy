@@ -31,6 +31,7 @@ from .const import (
     conf_tou_entity,
 )
 from .frontend import async_setup_frontend, cancel_frontend_followup
+from .inverter_config import INVERTER_CONFIG_GROUP_KEYS
 from .manager import DeyeEnergyRuntime
 from .price_sources import (
     contract_mapping_matches,
@@ -44,20 +45,14 @@ APPLY_SCHEMA = vol.Schema(
     {
         vol.Required("mode"): vol.In(WORK_MODE_SERVICE_VALUES),
         vol.Required("sell_power"): vol.All(vol.Coerce(float), vol.Range(min=0, max=ABSOLUTE_INVERTER_MAX_POWER_W)),
-        vol.Required("discharge_current"): vol.All(vol.Coerce(float), vol.Range(min=0, max=320)),
-        vol.Optional("charge_current"): vol.All(vol.Coerce(float), vol.Range(min=0, max=320)),
-        vol.Optional("grid_charge_current"): vol.All(vol.Coerce(float), vol.Range(min=0, max=320)),
     }
 )
 MANUAL_SELL_SCHEMA = vol.Schema(
     {
         vol.Required("sell_power"): vol.All(vol.Coerce(float), vol.Range(min=0, max=ABSOLUTE_INVERTER_MAX_POWER_W)),
-        vol.Required("discharge_current"): vol.All(vol.Coerce(float), vol.Range(min=0, max=320)),
     }
 )
-CHARGE_SCHEMA = vol.Schema(
-    {vol.Required("charge_current"): vol.All(vol.Coerce(float), vol.Range(min=0, max=320))}
-)
+CHARGE_SCHEMA = vol.Schema({})
 AI_DATA_SCHEMA = vol.Schema({vol.Required("data"): vol.All(cv.string, vol.Length(max=200000))})
 AI_RATING_SCHEMA = vol.Schema({vol.Required("timestamp"): vol.Coerce(float), vol.Required("rating"): vol.All(vol.Coerce(int), vol.Range(min=1, max=5))})
 DEFAULT_SETTINGS_SCHEMA = vol.Schema(
@@ -65,9 +60,6 @@ DEFAULT_SETTINGS_SCHEMA = vol.Schema(
         vol.Required("mode"): vol.In(WORK_MODE_SERVICE_VALUES),
         vol.Optional("physical_work_mode"): vol.In(list(PHYSICAL_NORMAL_MODES)),
         vol.Required("sell_power"): vol.All(vol.Coerce(float), vol.Range(min=0, max=ABSOLUTE_INVERTER_MAX_POWER_W)),
-        vol.Required("discharge_current"): vol.All(vol.Coerce(float), vol.Range(min=0, max=320)),
-        vol.Required("charge_current"): vol.All(vol.Coerce(float), vol.Range(min=0, max=320)),
-        vol.Required("grid_charge_current"): vol.All(vol.Coerce(float), vol.Range(min=0, max=320)),
     }
 )
 SCHEDULE_PATCH_SCHEMA = vol.Schema(
@@ -79,9 +71,6 @@ TARIFF_SETTINGS_SCHEMA = vol.Schema(
 CHARGE_PROFILE_SCHEMA = vol.Schema(
     {
         vol.Required("grid_charge_enabled"): cv.boolean,
-        vol.Required("charge_current"): vol.All(vol.Coerce(float), vol.Range(min=0, max=320)),
-        vol.Required("discharge_current"): vol.All(vol.Coerce(float), vol.Range(min=0, max=320)),
-        vol.Required("grid_charge_current"): vol.All(vol.Coerce(float), vol.Range(min=0, max=320)),
         vol.Required("target_soc"): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
     }
 )
@@ -89,9 +78,6 @@ NORMAL_PROFILE_SCHEMA = vol.Schema(
     {
         vol.Required("physical_work_mode"): vol.In(list(PHYSICAL_NORMAL_MODES)),
         vol.Required("sell_power"): vol.All(vol.Coerce(float), vol.Range(min=0, max=ABSOLUTE_INVERTER_MAX_POWER_W)),
-        vol.Required("discharge_current"): vol.All(vol.Coerce(float), vol.Range(min=0, max=320)),
-        vol.Required("charge_current"): vol.All(vol.Coerce(float), vol.Range(min=0, max=320)),
-        vol.Required("grid_charge_current"): vol.All(vol.Coerce(float), vol.Range(min=0, max=320)),
         vol.Required("tou_soc"): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
     }
 )
@@ -114,6 +100,13 @@ MANUAL_SCHEDULE_DATA_SCHEMA = vol.Schema(
 )
 ENERGY_STATUS_DISPLAY_DATA_SCHEMA = vol.Schema(
     {vol.Required("data"): vol.All(cv.string, vol.Length(max=50000))}
+)
+INVERTER_CONFIG_SCHEMA = vol.Schema({})
+APPLY_INVERTER_CONFIG_SCHEMA = vol.Schema(
+    {
+        vol.Required("group"): vol.In(INVERTER_CONFIG_GROUP_KEYS),
+        vol.Required("values"): dict,
+    }
 )
 SERVICE_NAMES = (
     "apply_settings",
@@ -147,6 +140,8 @@ SERVICE_NAMES = (
     "activate_manual_schedule",
     "deactivate_manual_schedule",
     "save_energy_status_display",
+    "get_inverter_configuration",
+    "apply_inverter_configuration_group",
 )
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the integration domain before config entries are loaded.
@@ -396,23 +391,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_apply_settings(call: ServiceCall) -> None:
         sell_power = call.data["sell_power"]
         runtime.validate_manual_sell_power_w("apply_settings", sell_power)
-        await runtime.async_apply_settings(
-            call.data["mode"],
-            sell_power,
-            call.data["discharge_current"],
-            call.data.get("charge_current", runtime.default_charge_current),
-            call.data.get("grid_charge_current", runtime.default_grid_charge_current),
-        )
+        await runtime.async_apply_settings(call.data["mode"], sell_power)
 
     async def handle_manual_sell(call: ServiceCall) -> None:
         sell_power = call.data["sell_power"]
         runtime.validate_manual_sell_power_w("manual_sell", sell_power)
         runtime.manual_sell_power = sell_power
-        runtime.manual_discharge_current = call.data["discharge_current"]
         await runtime.async_manual_sell()
 
     async def handle_charge_now(call: ServiceCall) -> None:
-        runtime.manual_charge_current = call.data["charge_current"]
         await runtime.async_charge_now()
 
     async def handle_stop_selling(call: ServiceCall) -> None:
@@ -548,6 +535,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         payload = _parse_json_payload(call.data["data"], dict)
         return await runtime.async_save_energy_status_display(payload)
 
+    async def handle_get_inverter_configuration(call: ServiceCall) -> dict[str, Any]:
+        return runtime.read_inverter_configuration()
+
+    async def handle_apply_inverter_configuration_group(call: ServiceCall) -> dict[str, Any]:
+        return await runtime.async_apply_inverter_configuration_group(
+            call.data["group"], call.data["values"]
+        )
+
     hass.services.async_register(DOMAIN, "apply_settings", handle_apply_settings, schema=APPLY_SCHEMA)
     hass.services.async_register(DOMAIN, "manual_sell", handle_manual_sell, schema=MANUAL_SELL_SCHEMA)
     hass.services.async_register(DOMAIN, "charge_now", handle_charge_now, schema=CHARGE_SCHEMA)
@@ -645,6 +640,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_save_energy_status_display,
         schema=ENERGY_STATUS_DISPLAY_DATA_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "get_inverter_configuration",
+        handle_get_inverter_configuration,
+        schema=INVERTER_CONFIG_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "apply_inverter_configuration_group",
+        handle_apply_inverter_configuration_group,
+        schema=APPLY_INVERTER_CONFIG_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
     )
     return True
 

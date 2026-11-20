@@ -40,10 +40,7 @@ function originalSlot(overrides = {}) {
     mode: "Selling",
     physical_work_mode: null,
     sell_power: 4000,
-    discharge_current: 100,
     charge_enabled: false,
-    charge_current: 30,
-    grid_charge_current: 40,
     minimum_sell_soc: 35,
     tou_soc: 15,
     min_sell_price: 0.5,
@@ -61,16 +58,10 @@ function makeCard(options = {}) {
     normal_profile: {
       physical_work_mode: "Zero Export To CT",
       sell_power: 3000,
-      discharge_current: 80,
-      charge_current: 25,
-      grid_charge_current: 35,
       tou_soc: 45,
     },
     charge_profile: {
       grid_charge_enabled: false,
-      charge_current: 60,
-      discharge_current: 70,
-      grid_charge_current: 50,
       target_soc: 85,
     },
   };
@@ -257,8 +248,21 @@ async function test_selling_slot_save_sends_minimum_sell_soc_and_tou_soc_separat
   const patch = servicePayload(calls)[0]; assertEqual([patch.minimum_sell_soc, patch.tou_soc], [30, 20], "payload must keep both SOC values separate");
 }
 function test_charge_slot_draft_keeps_grid_charge_independent() {
-  const { card } = makeCard(); change(card, "mode", "Charging"); change(card, "charge_current", 90); change(card, "charge_enabled", true);
-  assertTrue(card._slotEditDraft.values.charge_enabled === true, "grid permission must be independent from current");
+  const { card } = makeCard(); change(card, "mode", "Charging"); change(card, "charge_enabled", true);
+  assertTrue(card._slotEditDraft.values.charge_enabled === true, "Grid Charge permission must remain a slot setting");
+  ["charge_current", "discharge_current", "grid_charge_current"].forEach((field) => {
+    assertTrue(!(field in card._slotEditDraft.values), `slot draft must not carry ${field}`);
+  });
+}
+async function test_charge_slot_payload_has_no_current_limits() {
+  const { card, calls } = makeCard();
+  change(card, "mode", "Charging"); change(card, "charge_enabled", true);
+  await card.saveScheduleSlotDraft();
+  const patch = servicePayload(calls)[0];
+  ["charge_current", "discharge_current", "grid_charge_current"].forEach((field) => {
+    assertTrue(!(field in patch), `slot patch must not carry ${field}`);
+  });
+  assertTrue(patch.charge_enabled === true, "Grid Charge permission must still be sent");
 }
 function test_charge_slot_mode_change_does_not_force_grid_charge_off() {
   const { card } = makeCard({ slot: { charge_enabled: true } }); change(card, "mode", "Charging");
@@ -382,7 +386,8 @@ const tests = [
   test_selling_slot_draft_keeps_minimum_sell_soc_and_tou_soc_separate,
   test_selling_slot_mode_change_does_not_copy_minimum_sell_soc_to_tou_soc,
   test_selling_slot_save_sends_minimum_sell_soc_and_tou_soc_separately,
-  test_charge_slot_draft_keeps_grid_charge_independent, test_charge_slot_mode_change_does_not_force_grid_charge_off,
+  test_charge_slot_draft_keeps_grid_charge_independent, test_charge_slot_payload_has_no_current_limits,
+  test_charge_slot_mode_change_does_not_force_grid_charge_off,
   test_charge_slot_explicit_grid_charge_value_is_preserved_on_save, test_normal_slot_draft_preserves_physical_work_mode,
   test_normal_slot_save_uses_canonical_physical_work_mode, test_normal_slot_cancel_restores_original_physical_work_mode,
   test_card_uses_english_manager_modes, test_card_does_not_offer_selling_first_as_current_mode,

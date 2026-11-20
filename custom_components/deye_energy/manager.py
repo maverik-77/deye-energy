@@ -57,14 +57,12 @@ from .const import (
     CONF_BUY_PRICE_TOMORROW_SENSOR,
     CONF_BUY_SELLER_ID,
     CONF_BUY_SELLER_TARIFF_ID,
-    CONF_CHARGE_CURRENT_NUMBER,
     CONF_DAILY_BATTERY_CHARGE_SENSOR,
     CONF_DAILY_BATTERY_DISCHARGE_SENSOR,
     CONF_DAILY_ENERGY_BOUGHT_SENSOR,
     CONF_DAILY_ENERGY_SOLD_SENSOR,
     CONF_DAILY_LOAD_CONSUMPTION_SENSOR,
     CONF_DAILY_PV_PRODUCTION_SENSOR,
-    CONF_GRID_CHARGE_CURRENT_NUMBER,
     CONF_GRID_L1_POWER_SENSOR,
     CONF_GRID_L1_VOLTAGE_SENSOR,
     CONF_GRID_L2_POWER_SENSOR,
@@ -83,7 +81,6 @@ from .const import (
     CONF_LOAD_L3_POWER_SENSOR,
     CONF_LOAD_POWER_SENSOR,
     CONF_BATTERY_POWER_SENSOR,
-    CONF_DISCHARGE_CURRENT_NUMBER,
     CONF_MAX_SELL_POWER_NUMBER,
     CONF_PV1_CURRENT_SENSOR,
     CONF_PV1_POWER_SENSOR,
@@ -121,14 +118,10 @@ from .const import (
     CONF_SELL_PRICE_CONTRACT,
     CONF_TARIFF_CATALOG_URL,
     CONTROL_MODES,
-    CURRENT_HELPER_MAX_A,
     DOMAIN,
     MANAGER_MODES,
-    MIRRORED_CHARGE_CURRENT_A,
     MIRRORED_CHARGE_PROFILE_GRID_ENABLED,
     MIRRORED_CHARGE_PROFILE_TARGET_SOC,
-    MIRRORED_DISCHARGE_CURRENT_A,
-    MIRRORED_GRID_CHARGE_CURRENT_A,
     MIRRORED_MAX_SELL_POWER_W,
     MODE_SELLING_FIRST,
     MODE_CHARGE,
@@ -164,7 +157,6 @@ from .const import (
     DEFAULT_DAILY_ENERGY_SOLD_SENSOR,
     DEFAULT_DAILY_LOAD_CONSUMPTION_SENSOR,
     DEFAULT_DAILY_PV_PRODUCTION_SENSOR,
-    DEFAULT_GRID_CHARGE_CURRENT,
     DEFAULT_GRID_L1_POWER_SENSOR,
     DEFAULT_GRID_L1_VOLTAGE_SENSOR,
     DEFAULT_GRID_L2_POWER_SENSOR,
@@ -215,9 +207,6 @@ from .const import (
     DEFAULT_GRID_POSITIVE_IS_IMPORT,
     DEFAULT_BATTERY_POSITIVE_IS_DISCHARGE,
     DEFAULT_MAX_SELL_POWER,
-    DEFAULT_DISCHARGE_CURRENT,
-    DEFAULT_CHARGE_CURRENT,
-    DEFAULT_GRID_CHARGE_CURRENT,
     DEFAULT_WORK_MODE_SELECT,
     PROVIDER_LEWA_REKA,
     PROVIDER_SOLARMAN,
@@ -233,6 +222,13 @@ from .price_sources import (
     price_mapping_fingerprint,
     rebuild_price_contract,
     resolve_contract_schemas,
+)
+from .inverter_config import (
+    FIELDS_BY_KEY,
+    INVERTER_CONFIG_GROUPS,
+    INVERTER_CONFIG_GROUP_KEYS,
+    fields_for_group,
+    resolve_entity_id as resolve_inverter_config_entity_id,
 )
 from .inverter_provider import (
     boolean_state as provider_boolean_state,
@@ -363,13 +359,9 @@ class SlotSettings:
     # ever be sent to the inverter select entity.
     physical_work_mode: str | None = None
     sell_power: float = 0
-    discharge_current: float = 0
-    # Per-slot permission for physical Deye TOU Grid Charge.  It is meaningful
-    # only while this slot uses MODE_CHARGE; a positive current alone never
-    # grants permission to charge from the grid.
+    # Per-slot permission for physical Deye TOU Grid Charge.  Current limits are
+    # not part of the schedule; they are direct inverter configuration only.
     charge_enabled: bool = False
-    charge_current: float = 0
-    grid_charge_current: float = 0
     # Manager safety threshold that stops Selling First when the battery SOC
     # reaches this value.  It is a logical guard only and must never be written
     # to the physical Deye Time Of Use SOC.
@@ -381,8 +373,7 @@ class SlotSettings:
     tou_soc: float | None = None
     min_sell_price: float = 0
     # True only for a Selling slot materialised by Optimizer Core Apply Today.
-    # Such a slot owns the sell power, never the inverter's global maximum
-    # battery discharge current.  RestoreEntity persists this marker through
+    # Such a slot owns only the sell power.  RestoreEntity persists this marker through
     # the slot-mode entity attributes.
     ai_sell_power_only: bool = False
 
@@ -393,7 +384,7 @@ class TouMappingSlot:
 
     The model intentionally holds only the fields the inverter can store per
     range: start/end time, SOC and the hourly Grid Charge permission.  Manager
-    logical modes, sell power, currents, prices and physical work mode variants
+    logical modes, sell power, prices and physical work mode variants
     are runtime overlays and are never persisted here.
     """
 
@@ -431,19 +422,10 @@ class DeyeEnergyRuntime:
     min_sell_soc: float = 30
     price_sell_threshold: float = 0
     manual_sell_power: float = 3000
-    manual_discharge_current: float = 80
-    manual_charge_current: float = 60
     default_work_mode: str = MODE_NORMAL_OPERATION
     default_physical_work_mode: str | None = None
     default_sell_power: float = MIRRORED_MAX_SELL_POWER_W
-    default_discharge_current: float = MIRRORED_DISCHARGE_CURRENT_A
-    default_charge_current: float = MIRRORED_CHARGE_CURRENT_A
-    default_grid_charge_current: float = MIRRORED_GRID_CHARGE_CURRENT_A
-    # Separate values used exclusively by planned Charge slots.  They are
-    # independent from the full default/recovery state above.
-    charge_profile_charge_current: float = MIRRORED_CHARGE_CURRENT_A
-    charge_profile_discharge_current: float = MIRRORED_DISCHARGE_CURRENT_A
-    charge_profile_grid_charge_current: float = MIRRORED_GRID_CHARGE_CURRENT_A
+    # Separate values used exclusively by planned Charge slots.
     charge_profile_target_soc: float = MIRRORED_CHARGE_PROFILE_TARGET_SOC
     # The only permission to enable Deye Grid Charge for Charge slots.
     charge_profile_grid_enabled: bool = MIRRORED_CHARGE_PROFILE_GRID_ENABLED
@@ -451,9 +433,6 @@ class DeyeEnergyRuntime:
     # and accepts only the two zero-export variants supported by Deye.
     normal_profile_physical_work_mode: str | None = None
     normal_profile_sell_power: float = 0
-    normal_profile_discharge_current: float = 0
-    normal_profile_charge_current: float = 0
-    normal_profile_grid_charge_current: float = 0
     normal_profile_tou_soc: float | None = None
     _normal_profile_loaded_from_store: bool = False
     schedule_schema_version: int = 0
@@ -1213,21 +1192,6 @@ class DeyeEnergyRuntime:
             self._performance.inc("inverter_write_skipped_same_value")
             return native_value
         return await self.async_set_max_sell_power_number(value_w)
-
-    @property
-    def discharge_current_number(self) -> str | None:
-        return self.data.get(CONF_DISCHARGE_CURRENT_NUMBER)
-
-    @property
-    def charge_current_number(self) -> str | None:
-        return self.data.get(CONF_CHARGE_CURRENT_NUMBER)
-
-    @property
-    def grid_charge_current_number(self) -> str | None:
-        configured = self.data.get(CONF_GRID_CHARGE_CURRENT_NUMBER)
-        if configured:
-            return str(configured)
-        return DEFAULT_GRID_CHARGE_CURRENT if self.inverter_provider == PROVIDER_LEWA_REKA else None
 
     @property
     def grid_power_sensor(self) -> str | None:
@@ -2575,18 +2539,12 @@ class DeyeEnergyRuntime:
             plan_limit_w=plan_limit_w,
             export_limit_w=finite_float(settings.get("exportLimitW")),
             inverter_limit_w=inverter_limit_w,
-            current_limit_a=self.safe_float(settings.get("maxBatteryCurrentA"), self.manual_discharge_current or 120),
+            current_limit_a=None,
             battery_voltage_v=voltage,
             entity_limit_w=entity_limit_w,
         )
-        charge_current = self.safe_float(
-            settings.get("maxBatteryChargeCurrentA"),
-            self.manual_charge_current or 60,
-        )
-        charge_power_from_current = charge_current * voltage if voltage and voltage > 0 else None
+        power.pop("current_limit_a", None)
         charge_limit_w = power["effective_limit_w"]
-        if charge_power_from_current is not None and charge_power_from_current > 0:
-            charge_limit_w = min(charge_limit_w, charge_power_from_current)
         return {
             "capacity_kwh": capacity,
             "battery_voltage_v": voltage,
@@ -2603,14 +2561,12 @@ class DeyeEnergyRuntime:
             "directional_power_limits": {
                 "battery_charge_limit_w": round(max(0.0, charge_limit_w), 3),
                 "battery_discharge_limit_w": power["effective_limit_w"],
-                "charge_current_a": charge_current,
             },
             "current_hour_remaining_minutes": remaining_minutes_in_hour(ha_now()),
         }
 
     def optimizer_baseline_schedule(self) -> list[dict[str, Any]]:
         """Snapshot the existing user schedule without changing a slot."""
-        voltage = self.state_float_or_none(self.battery_bms_voltage_sensor)
         result: list[dict[str, Any]] = []
         for index in range(48):
             hour = index % 24
@@ -2627,33 +2583,14 @@ class DeyeEnergyRuntime:
                     "charge_power_w": 0.0,
                 })
                 continue
-            charge_current = min(
-                value
-                for value in (
-                    max(0.0, slot.charge_current),
-                    max(0.0, slot.grid_charge_current),
-                )
-                if value > 0
-            ) if slot.charge_current > 0 and slot.grid_charge_current > 0 else max(
-                0.0,
-                slot.charge_current,
-                slot.grid_charge_current,
-            )
             result.append({
                 "slot_key": slot.key,
                 "enabled": bool(slot.enabled),
                 "mode": slot.mode,
                 "physical_work_mode": slot.physical_work_mode,
                 "sell_power_w": max(0.0, slot.sell_power),
-                "discharge_current_a": max(0.0, slot.discharge_current),
                 "charge_enabled": bool(slot.charge_enabled),
-                "charge_current_a": max(0.0, slot.charge_current),
-                "grid_charge_current_a": max(0.0, slot.grid_charge_current),
-                "charge_power_w": (
-                    round(charge_current * voltage, 3)
-                    if voltage is not None and charge_current > 0
-                    else 0.0
-                ),
+                "charge_power_w": 0.0,
                 "tou_soc": slot.tou_soc,
                 "minimum_sell_soc": slot.minimum_sell_soc,
                 "min_sell_price": slot.min_sell_price,
@@ -2825,29 +2762,37 @@ class DeyeEnergyRuntime:
         load_profile_stats = self._learning_profile_stats(self.load_profile_7x24)
         pv_profile_stats = self._learning_profile_stats(self.pv_learning_profile)
         today_forecast_reading = self.solcast_forecast_today_reading()
-        today_forecast = (
-            max(0, self.safe_float(today_forecast_reading.get("value"), 0))
-            if today_forecast_reading.get("status") in ("ok", "derived_actual_plus_remaining")
-            else 0
-        )
-        today_actual = max(0, self.state_float(self.daily_pv_production_sensor, 0))
-        remaining_reading = self._measurement(
-            self.solcast_remaining_today_sensor,
-            kind="energy",
-            stale_after_seconds=_SOLCAST_TRACKING_STALE_SECONDS,
-        )
-        remaining = max(0, self.safe_float(remaining_reading.get("value"), 0))
-        if remaining <= 0:
-            remaining = max(0, today_forecast - today_actual)
-        tomorrow_reading = self._measurement(
-            self.solcast_forecast_tomorrow_sensor,
-            kind="energy",
-            stale_after_seconds=_SOLCAST_DAILY_FORECAST_STALE_SECONDS,
-        )
-        tomorrow_forecast = max(
-            0,
-            self.safe_float(tomorrow_reading.get("value"), 0),
-        )
+        pv_enabled = self.pv_generation_enabled
+        if pv_enabled:
+            today_forecast = (
+                max(0, self.safe_float(today_forecast_reading.get("value"), 0))
+                if today_forecast_reading.get("status") in ("ok", "derived_actual_plus_remaining")
+                else 0
+            )
+            today_actual = max(0, self.state_float(self.daily_pv_production_sensor, 0))
+            remaining_reading = self._measurement(
+                self.solcast_remaining_today_sensor,
+                kind="energy",
+                stale_after_seconds=_SOLCAST_TRACKING_STALE_SECONDS,
+            )
+            remaining = max(0, self.safe_float(remaining_reading.get("value"), 0))
+            if remaining <= 0:
+                remaining = max(0, today_forecast - today_actual)
+            tomorrow_reading = self._measurement(
+                self.solcast_forecast_tomorrow_sensor,
+                kind="energy",
+                stale_after_seconds=_SOLCAST_DAILY_FORECAST_STALE_SECONDS,
+            )
+            tomorrow_forecast = max(
+                0,
+                self.safe_float(tomorrow_reading.get("value"), 0),
+            )
+        else:
+            today_forecast = 0.0
+            today_actual = 0.0
+            remaining = 0.0
+            tomorrow_reading = {"status": "disabled"}
+            tomorrow_forecast = 0.0
         selected_strategy = str(settings.get("strategy") or "balanced")
         if selected_strategy == "autoconsumption":
             selected_strategy = "safe"
@@ -2864,7 +2809,11 @@ class DeyeEnergyRuntime:
             self.load_profile_7x24,
             current.replace(minute=0, second=0, microsecond=0),
         )
-        current_pv_forecast = finite_float(by_hour.get(current.hour, {}).get("pv_kwh"))
+        current_pv_forecast = (
+            finite_float(by_hour.get(current.hour, {}).get("pv_kwh")) if pv_enabled else 0.0
+        )
+        if not pv_enabled:
+            live_state["pv_power_w"] = 0.0
         live_state["pv_forecast_deviation"] = self._material_deviation_bucket(
             live_state.get("pv_power_w"),
             current_pv_forecast,
@@ -2944,9 +2893,9 @@ class DeyeEnergyRuntime:
             # Core consumes energy forecasts in kWh.  The first array contains
             # energy still available from now, while ``pv_forecast_full`` keeps
             # the full-day denominator.  Neither field is a realization rate.
-            "pv_forecast": [remaining, tomorrow_forecast],
-            "pv_forecast_full": [today_forecast, tomorrow_forecast],
-            "pv_forecast_available": [
+            "pv_forecast": [0.0, 0.0] if not pv_enabled else [remaining, tomorrow_forecast],
+            "pv_forecast_full": [0.0, 0.0] if not pv_enabled else [today_forecast, tomorrow_forecast],
+            "pv_forecast_available": [False, False] if not pv_enabled else [
                 today_forecast_reading.get("status") in ("ok", "derived_actual_plus_remaining"),
                 tomorrow_reading.get("status") == "ok",
             ],
@@ -2954,7 +2903,7 @@ class DeyeEnergyRuntime:
             # Historical completed-day accuracy is used only for uncertainty;
             # current-day realization is intentionally absent from Core input.
             "forecast_accuracy": learning.get("solcast_accuracy_avg"),
-            "pv_profile": [self.safe_float(by_hour.get(hour, {}).get("pv_kwh"), 0) for hour in range(24)],
+            "pv_profile": [0.0 for _ in range(24)] if not pv_enabled else [self.safe_float(by_hour.get(hour, {}).get("pv_kwh"), 0) for hour in range(24)],
             "load_profile": [self.safe_float(by_hour.get(hour, {}).get("load_kwh"), 0) for hour in range(24)],
             # Preserve a missing forecast as None. Optimizer Core may use only
             # evidence-based fallbacks and must never turn missing load into
@@ -3357,6 +3306,7 @@ class DeyeEnergyRuntime:
     def build_ai_state_snapshot(self) -> dict[str, Any]:
         """Build the expensive AI sensor payload outside entity getters."""
         learning = self.learning_summary()
+        pv_enabled = self.pv_generation_enabled
         return {
             "settings": self.ai_settings,
             "user_profiles": self.user_profiles,
@@ -3379,7 +3329,7 @@ class DeyeEnergyRuntime:
             "live_state": self.live_state_context(),
             "daily_summary": self.history_daily_summary(),
             "monthly_summary": self.history_monthly_summary(),
-            "solcast_history": self.solcast_history,
+            "solcast_history": self.solcast_history if pv_enabled else [],
             # Preserve the established detailed UI contract for the latest
             # 288 minutes while older persisted rows stay compact.
             "energy_samples": (
@@ -4085,7 +4035,7 @@ class DeyeEnergyRuntime:
 
         # Emergency balance uses the same sign conventions as the planner:
         # load = PV + grid import + battery discharge.
-        pv = self._measurement(self.pv_power_sensor)
+        pv = self._pv_generation_reading()
         grid_value = self.normalized_grid_power() if self.entity_available(self.grid_power_sensor) else None
         battery_value = self.battery_power_reading().get("value")
         if pv["value"] is not None and grid_value is not None and battery_value is not None:
@@ -4227,7 +4177,7 @@ class DeyeEnergyRuntime:
         sources = {
             "load_power": load,
             "battery_power": battery,
-            "pv_power": self._measurement(self.pv_power_sensor),
+            "pv_power": self._pv_generation_reading(),
             "grid_power": self.grid_power_reading(),
             "battery_soc": self.soc_diagnostics(),
         }
@@ -4240,13 +4190,27 @@ class DeyeEnergyRuntime:
             "fallback_in_use": any(item.get("source") not in ("primary", "unavailable") for item in sources.values()),
         }
 
+    def _pv_generation_reading(self) -> dict[str, Any]:
+        """Return PV power reading, or a zeroed reading when PV is disabled."""
+        if not self.pv_generation_enabled:
+            return {
+                "entity_id": self.pv_power_sensor,
+                "value": 0.0,
+                "unit": "W",
+                "last_updated": None,
+                "status": "disabled",
+                "quality": "good",
+                "source": "disabled",
+            }
+        return self._measurement(self.pv_power_sensor)
+
     def _telemetry_readings(self) -> dict[str, dict[str, Any]]:
         """Return independent live channels without replacing missing values by zero."""
         load = self.load_power_reading()
         battery = self.battery_power_reading()
         grid = self.grid_power_reading()
         return {
-            "pv": self._measurement(self.pv_power_sensor),
+            "pv": self._pv_generation_reading(),
             "load": load,
             "load_l1": self._measurement(self.load_l1_power_sensor),
             "load_l2": self._measurement(self.load_l2_power_sensor),
@@ -4391,9 +4355,6 @@ class DeyeEnergyRuntime:
         required = [
             self.work_mode_select,
             self.max_sell_power_number,
-            self.discharge_current_number,
-            self.charge_current_number,
-            self.grid_charge_current_number,
         ]
         if provider_profile(self.data).needs_aux_export_switch:
             required.append(self.work_mode_aux_entity)
@@ -4412,9 +4373,6 @@ class DeyeEnergyRuntime:
         required = [
             self.work_mode_select,
             self.max_sell_power_number,
-            self.discharge_current_number,
-            self.charge_current_number,
-            self.grid_charge_current_number,
             self.battery_soc_sensor,
         ]
         if provider_profile(self.data).needs_aux_export_switch:
@@ -4581,8 +4539,6 @@ class DeyeEnergyRuntime:
                 "soc": self._tou_entity(slot_index, "soc"),
                 "grid_charge": self._tou_entity(slot_index, "grid"),
                 "out_power": None,
-                "charge_current": None,
-                "discharge_current": None,
             }
             fields = {
                 field_name: self._tou_field_capability(
@@ -4601,8 +4557,6 @@ class DeyeEnergyRuntime:
                     "supports_soc": fields["soc"]["supported"],
                     "supports_grid_charge": fields["grid_charge"]["supported"],
                     "supports_out_power": False,
-                    "supports_charge_current": False,
-                    "supports_discharge_current": False,
                     "blocked_by_master_control": not self._control_is_active(),
                     "control_writable": bool(
                         self._control_is_active()
@@ -4620,9 +4574,6 @@ class DeyeEnergyRuntime:
         entities = {
             "work_mode": self.work_mode_select,
             "sell_power": self.max_sell_power_number,
-            "discharge_current": self.discharge_current_number,
-            "charge_current": self.charge_current_number,
-            "grid_charge_current": self.grid_charge_current_number,
             "soc": self.battery_soc_sensor,
             "grid_power": self.grid_power_sensor,
             "pv_power": self.pv_power_sensor,
@@ -4637,9 +4588,9 @@ class DeyeEnergyRuntime:
 
         groups: dict[str, tuple[str, ...]] = {
             "readings": ("soc", "grid_power", "pv_power", "load_power", "battery_power"),
-            "basic_control": ("work_mode", "sell_power", "discharge_current", "charge_current", "grid_charge_current"),
-            "selling": ("work_mode", "sell_power", "discharge_current", "soc"),
-            "charging": ("work_mode", "charge_current", "grid_charge_current", "soc"),
+            "basic_control": ("work_mode", "sell_power"),
+            "selling": ("work_mode", "sell_power", "soc"),
+            "charging": ("work_mode", "soc"),
             "full_tou": tuple(
                 f"tou_{idx}_{kind}" for idx in range(1, 7) for kind in ("start", "soc", "grid")
             ),
@@ -4675,9 +4626,6 @@ class DeyeEnergyRuntime:
         ids = {
             "System Work Mode": self.work_mode_select,
             "Max Sell Power": self.max_sell_power_number,
-            "Discharge current": self.discharge_current_number,
-            "Battery charge current": self.charge_current_number,
-            "Grid charge current": self.grid_charge_current_number,
         }
         return {label: self.state_text(entity_id) if entity_id else "not configured" for label, entity_id in ids.items()}
 
@@ -4803,15 +4751,9 @@ class DeyeEnergyRuntime:
     def active_slot_control_diagnostics(self) -> dict[str, Any]:
         """Keep logical sale guards separate from physical TOU/control values."""
         slot = self.active_slot
-        charge_slot = bool(slot.enabled and slot.mode == MODE_CHARGE)
         effective_soc = self._physical_tou_soc_for_slot(slot)
         physical_tou = self.physical_tou_snapshot()
         active_range = next((row for row in physical_tou if row["active"]), None)
-        expected_grid_current = (
-            slot.grid_charge_current
-            if charge_slot
-            else self.default_grid_charge_current
-        )
         raw_sell_power = self.target_sell_power
         applied_sell_power = self.applied_sell_power
         manager_status = self.manager_status
@@ -4830,16 +4772,6 @@ class DeyeEnergyRuntime:
             "grid_charge_expected": bool(slot.charge_enabled),
             "grid_charge_actual": active_range.get("actual_grid_charge") if active_range else "missing",
             "sale_blocked_by_soc": sale_blocked_by_soc,
-            "default_discharge_current_after_stop": self.default_discharge_current,
-            "manager_does_not_force_zero_a": True,
-            "currents": {
-                "charge_expected": self.target_charge_current,
-                "charge_actual": self.state_text(self.charge_current_number),
-                "discharge_expected": self.target_discharge_current,
-                "discharge_actual": self.state_text(self.discharge_current_number),
-                "grid_charge_expected": expected_grid_current,
-                "grid_charge_actual": self.state_text(self.grid_charge_current_number),
-            },
             "power_limits": {
                 "configured_inverter_max_power_w": self.configured_inverter_max_power_w,
                 "detected_entity_max_power_w": self.detected_entity_max_power_w,
@@ -4866,9 +4798,6 @@ class DeyeEnergyRuntime:
         configured = {
             self.data.get(CONF_WORK_MODE_SELECT): DEFAULT_WORK_MODE_SELECT,
             self.data.get(CONF_MAX_SELL_POWER_NUMBER): DEFAULT_MAX_SELL_POWER,
-            self.data.get(CONF_DISCHARGE_CURRENT_NUMBER): DEFAULT_DISCHARGE_CURRENT,
-            self.data.get(CONF_CHARGE_CURRENT_NUMBER): DEFAULT_CHARGE_CURRENT,
-            self.data.get(CONF_GRID_CHARGE_CURRENT_NUMBER): DEFAULT_GRID_CHARGE_CURRENT,
             self.data.get(CONF_BATTERY_SOC_SENSOR): DEFAULT_BATTERY_SOC,
             self.data.get(CONF_PRICE_SENSOR): DEFAULT_PRICE_SENSOR,
             self.data.get(CONF_GRID_POWER_SENSOR): DEFAULT_GRID_POWER_SENSOR,
@@ -4877,8 +4806,7 @@ class DeyeEnergyRuntime:
             self.data.get(CONF_BATTERY_POWER_SENSOR): DEFAULT_BATTERY_POWER_SENSOR,
             self.data.get(CONF_WEATHER_ENTITY): DEFAULT_WEATHER_ENTITY,
         }
-        entity_ids = [self.work_mode_select, self.max_sell_power_number, self.discharge_current_number,
-                      self.charge_current_number, self.grid_charge_current_number, self.battery_soc_sensor,
+        entity_ids = [self.work_mode_select, self.max_sell_power_number, self.battery_soc_sensor,
                       self.price_sensor, self.grid_power_sensor, self.pv_power_sensor, self.load_power_sensor,
                       self.battery_power_sensor, self.weather_entity]
         entities = []
@@ -4930,7 +4858,7 @@ class DeyeEnergyRuntime:
             if not tou["ok"]
             else "OK"
         )
-        return {"integration_version": "0.8.0.54", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
+        return {"integration_version": "0.8.0.55", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
                 "inverter_provider": self.inverter_provider,
                 "inverter_device_id": self.data.get(CONF_INVERTER_DEVICE_ID),
                 "inverter_provider_label": provider_profile(self.data).label,
@@ -4993,26 +4921,17 @@ class DeyeEnergyRuntime:
                 },
                 "charge_profile": {
                     "grid_charge_enabled": self.charge_profile_grid_enabled,
-                    "charge_current": self.charge_profile_charge_current,
-                    "discharge_current": self.charge_profile_discharge_current,
-                    "grid_charge_current": self.charge_profile_grid_charge_current,
                     "target_soc": self.charge_profile_target_soc,
                 },
                 "default_settings": {
                     "mode": self.default_work_mode,
                     "physical_work_mode": self.default_normal_physical_work_mode(),
                     "sell_power": self.default_sell_power,
-                    "discharge_current": self.default_discharge_current,
-                    "charge_current": self.default_charge_current,
-                    "grid_charge_current": self.default_grid_charge_current,
                 },
                 "normal_profile_options": normal_profile_mode_metadata(self.data),
                 "normal_profile": {
                     "physical_work_mode": self.normal_profile_physical_work_mode,
                     "sell_power": self.normal_profile_sell_power,
-                    "discharge_current": self.normal_profile_discharge_current,
-                    "charge_current": self.normal_profile_charge_current,
-                    "grid_charge_current": self.normal_profile_grid_charge_current,
                     "tou_soc": self.normal_profile_tou_soc,
                 },
                 "active_slot": self.active_slot_key(), "next_active_slot": self.next_active_slot,
@@ -5160,35 +5079,9 @@ class DeyeEnergyRuntime:
                 if slot_key in self.slots and physical_mode in PHYSICAL_NORMAL_MODES:
                     self.slots[slot_key].physical_work_mode = str(physical_mode)
 
-        # One-time migration from the pre-Solar-Assistant defaults.  Only the
-        # exact legacy template is replaced; a profile the user saved later is
-        # preserved.  The marker prevents a later intentional return to those
-        # values from being migrated again.
+        # One-time marker for the pre-Solar-Assistant defaults.  Current limits
+        # are no longer part of the manager-owned profile state.
         if not data.get("sa_defaults_v1"):
-            legacy_profile = data.get("charge_profile")
-            if isinstance(legacy_profile, dict):
-                if (
-                    self.safe_float(legacy_profile.get("charge_current"), float("nan")) == 60.0
-                    and self.safe_float(legacy_profile.get("discharge_current"), float("nan")) == 80.0
-                    and self.safe_float(legacy_profile.get("grid_charge_current"), float("nan")) == 60.0
-                    and self.safe_float(legacy_profile.get("target_soc"), float("nan")) == 100.0
-                    and legacy_profile.get("grid_charge_enabled") is False
-                ):
-                    data["charge_profile"] = {
-                        "charge_current": MIRRORED_CHARGE_CURRENT_A,
-                        "discharge_current": MIRRORED_DISCHARGE_CURRENT_A,
-                        "grid_charge_current": MIRRORED_GRID_CHARGE_CURRENT_A,
-                        "target_soc": MIRRORED_CHARGE_PROFILE_TARGET_SOC,
-                        "grid_charge_enabled": MIRRORED_CHARGE_PROFILE_GRID_ENABLED,
-                    }
-                    migrated = True
-            if not isinstance(data.get("default_profile"), dict):
-                data["default_profile"] = {
-                    "sell_power": MIRRORED_MAX_SELL_POWER_W,
-                    "discharge_current": MIRRORED_DISCHARGE_CURRENT_A,
-                    "charge_current": MIRRORED_CHARGE_CURRENT_A,
-                    "grid_charge_current": MIRRORED_GRID_CHARGE_CURRENT_A,
-                }
             data["sa_defaults_v1"] = True
             migrated = True
 
@@ -5197,22 +5090,11 @@ class DeyeEnergyRuntime:
         # rebuilding a mixed profile after a restart.
         raw_profile = data.get("charge_profile")
         if isinstance(raw_profile, dict):
-            numeric = {
-                "charge_profile_charge_current": self.safe_float(raw_profile.get("charge_current"), float("nan")),
-                "charge_profile_discharge_current": self.safe_float(raw_profile.get("discharge_current"), float("nan")),
-                "charge_profile_grid_charge_current": self.safe_float(raw_profile.get("grid_charge_current"), float("nan")),
-                "charge_profile_target_soc": self.safe_float(raw_profile.get("target_soc"), float("nan")),
-            }
+            target_soc = self.safe_float(raw_profile.get("target_soc"), float("nan"))
             grid_enabled = raw_profile.get("grid_charge_enabled")
-            currents_ok = all(
-                math.isfinite(value) and 0 <= value <= CURRENT_HELPER_MAX_A
-                for key, value in numeric.items()
-                if key != "charge_profile_target_soc"
-            )
-            soc_ok = math.isfinite(numeric["charge_profile_target_soc"]) and 0 <= numeric["charge_profile_target_soc"] <= 100
-            if currents_ok and soc_ok and isinstance(grid_enabled, bool):
-                for key, value in numeric.items():
-                    setattr(self, key, value)
+            soc_ok = math.isfinite(target_soc) and 0 <= target_soc <= 100
+            if soc_ok and isinstance(grid_enabled, bool):
+                self.charge_profile_target_soc = target_soc
                 self.charge_profile_grid_enabled = grid_enabled
                 self._charge_profile_loaded_from_store = True
         else:
@@ -5221,53 +5103,25 @@ class DeyeEnergyRuntime:
         raw_normal_profile = data.get("normal_profile")
         if isinstance(raw_normal_profile, dict):
             physical_mode = raw_normal_profile.get("physical_work_mode")
-            numeric = {
-                "normal_profile_sell_power": self.safe_float(raw_normal_profile.get("sell_power"), float("nan")),
-                "normal_profile_discharge_current": self.safe_float(raw_normal_profile.get("discharge_current"), float("nan")),
-                "normal_profile_charge_current": self.safe_float(raw_normal_profile.get("charge_current"), float("nan")),
-                "normal_profile_grid_charge_current": self.safe_float(raw_normal_profile.get("grid_charge_current"), float("nan")),
-                "normal_profile_tou_soc": self.safe_float(raw_normal_profile.get("tou_soc"), float("nan")),
-            }
+            sell_power = self.safe_float(raw_normal_profile.get("sell_power"), float("nan"))
+            tou_soc = self.safe_float(raw_normal_profile.get("tou_soc"), float("nan"))
             profile_ok = (
                 physical_mode in PHYSICAL_NORMAL_MODES
-                and math.isfinite(numeric["normal_profile_sell_power"])
-                and 0 <= numeric["normal_profile_sell_power"] <= self.effective_inverter_max_power_w
-                and all(
-                    math.isfinite(numeric[key]) and 0 <= numeric[key] <= CURRENT_HELPER_MAX_A
-                    for key in (
-                        "normal_profile_discharge_current",
-                        "normal_profile_charge_current",
-                        "normal_profile_grid_charge_current",
-                    )
-                )
-                and math.isfinite(numeric["normal_profile_tou_soc"])
-                and 0 <= numeric["normal_profile_tou_soc"] <= 100
+                and math.isfinite(sell_power)
+                and 0 <= sell_power <= self.effective_inverter_max_power_w
+                and math.isfinite(tou_soc)
+                and 0 <= tou_soc <= 100
             )
             if profile_ok:
                 self.normal_profile_physical_work_mode = str(physical_mode)
-                for key, value in numeric.items():
-                    setattr(self, key, value)
+                self.normal_profile_sell_power = sell_power
+                self.normal_profile_tou_soc = tou_soc
                 self._normal_profile_loaded_from_store = True
         raw_default_profile = data.get("default_profile")
         if isinstance(raw_default_profile, dict):
-            default_numeric = {
-                "default_sell_power": self.safe_float(raw_default_profile.get("sell_power"), float("nan")),
-                "default_discharge_current": self.safe_float(raw_default_profile.get("discharge_current"), float("nan")),
-                "default_charge_current": self.safe_float(raw_default_profile.get("charge_current"), float("nan")),
-                "default_grid_charge_current": self.safe_float(raw_default_profile.get("grid_charge_current"), float("nan")),
-            }
-            default_ok = (
-                math.isfinite(default_numeric["default_sell_power"])
-                and 0 <= default_numeric["default_sell_power"] <= self.effective_inverter_max_power_w
-                and all(
-                    math.isfinite(value) and 0 <= value <= CURRENT_HELPER_MAX_A
-                    for key, value in default_numeric.items()
-                    if key != "default_sell_power"
-                )
-            )
-            if default_ok:
-                for key, value in default_numeric.items():
-                    setattr(self, key, value)
+            sell_power = self.safe_float(raw_default_profile.get("sell_power"), float("nan"))
+            if math.isfinite(sell_power) and 0 <= sell_power <= self.effective_inverter_max_power_w:
+                self.default_sell_power = sell_power
             self._default_profile_loaded_from_store = True
 
         raw_manual_tou = data.get("manual_tou_mapping")
@@ -5325,25 +5179,16 @@ class DeyeEnergyRuntime:
                 if slot.physical_work_mode in PHYSICAL_NORMAL_MODES
             },
             "charge_profile": {
-                "charge_current": self.charge_profile_charge_current,
-                "discharge_current": self.charge_profile_discharge_current,
-                "grid_charge_current": self.charge_profile_grid_charge_current,
                 "target_soc": self.charge_profile_target_soc,
                 "grid_charge_enabled": self.charge_profile_grid_enabled,
             },
             "default_profile": {
                 "sell_power": self.default_sell_power,
-                "discharge_current": self.default_discharge_current,
-                "charge_current": self.default_charge_current,
-                "grid_charge_current": self.default_grid_charge_current,
             },
             "sa_defaults_v1": True,
             "normal_profile": {
                 "physical_work_mode": self.normal_profile_physical_work_mode,
                 "sell_power": self.normal_profile_sell_power,
-                "discharge_current": self.normal_profile_discharge_current,
-                "charge_current": self.normal_profile_charge_current,
-                "grid_charge_current": self.normal_profile_grid_charge_current,
                 "tou_soc": self.normal_profile_tou_soc,
             },
             "ai_api_limit": self.ai_api_limit_state,
@@ -5386,24 +5231,15 @@ class DeyeEnergyRuntime:
                 key: slot.physical_work_mode for key, slot in self.slots.items()
             },
             "charge_profile": [
-                self.charge_profile_charge_current,
-                self.charge_profile_discharge_current,
-                self.charge_profile_grid_charge_current,
                 self.charge_profile_target_soc,
                 self.charge_profile_grid_enabled,
             ],
             "default_profile": [
                 self.default_sell_power,
-                self.default_discharge_current,
-                self.default_charge_current,
-                self.default_grid_charge_current,
             ],
             "normal_profile": [
                 self.normal_profile_physical_work_mode,
                 self.normal_profile_sell_power,
-                self.normal_profile_discharge_current,
-                self.normal_profile_charge_current,
-                self.normal_profile_grid_charge_current,
                 self.normal_profile_tou_soc,
             ],
             "ai_api_limit": self.ai_api_limit_state,
@@ -6051,9 +5887,6 @@ class DeyeEnergyRuntime:
             raise ValueError("Tomorrow's plan does not contain the selected hours")
         numeric_limits = {
             "sell_power": (0.0, float(self.effective_inverter_max_power_w)),
-            "discharge_current": (0.0, 240.0),
-            "charge_current": (0.0, 240.0),
-            "grid_charge_current": (0.0, 240.0),
             "minimum_sell_soc": (0.0, 100.0),
             "tou_soc": (0.0, 100.0),
             "min_sell_price": (0.0, 5.0),
@@ -6095,12 +5928,9 @@ class DeyeEnergyRuntime:
                 item[name] = value
             if item.get("mode") == MODE_SELLING_FIRST:
                 # Keep price/SOC thresholds as revalidation metadata, but never
-                # persist legacy current, TOU SOC or Grid Charge as part of the
-                # executable Tomorrow sell contract.
+                # persist TOU SOC or Grid Charge as part of the executable
+                # Tomorrow sell contract.
                 for field_name in (
-                    "discharge_current",
-                    "charge_current",
-                    "grid_charge_current",
                     "tou_soc",
                     "charge_enabled",
                 ):
@@ -6166,10 +5996,7 @@ class DeyeEnergyRuntime:
             "mode": slot.mode,
             "physical_work_mode": slot.physical_work_mode,
             "sell_power": float(slot.sell_power),
-            "discharge_current": float(slot.discharge_current),
             "charge_enabled": bool(slot.charge_enabled),
-            "charge_current": float(slot.charge_current),
-            "grid_charge_current": float(slot.grid_charge_current),
             "minimum_sell_soc": float(slot.minimum_sell_soc),
             "tou_soc": None if slot.tou_soc is None else float(slot.tou_soc),
             "min_sell_price": float(slot.min_sell_price),
@@ -7304,13 +7131,6 @@ class DeyeEnergyRuntime:
             expected_physical = {
                 "System Work Mode": self.target_mode,
                 "Max Sell Power": self.applied_sell_power,
-                "Discharge current": self.target_discharge_current,
-                "Battery charge current": self.target_charge_current,
-                "Grid charge current": (
-                    self.active_slot.grid_charge_current
-                    if self.active_charge_slot
-                    else self.default_grid_charge_current
-                ),
             }
             next_lifecycle = (
                 "physical_pending"
@@ -7469,9 +7289,14 @@ class DeyeEnergyRuntime:
     async def async_update_solcast_history(self) -> None:
         now = ha_now()
         today = now.date().isoformat()
-        forecast_reading = self.solcast_forecast_today_reading()
-        forecast = max(0, self.safe_float(forecast_reading.get("value"), 0))
-        actual = max(0, self.state_float(self.daily_pv_production_sensor, 0))
+        if self.pv_generation_enabled:
+            forecast_reading = self.solcast_forecast_today_reading()
+            forecast = max(0, self.safe_float(forecast_reading.get("value"), 0))
+            actual = max(0, self.state_float(self.daily_pv_production_sensor, 0))
+        else:
+            forecast_reading = {"status": "disabled", "value": 0}
+            forecast = 0.0
+            actual = 0.0
         summary_tracking_before = (
             self.solcast_tracking.get("forecast"),
             self.solcast_tracking.get("initial_forecast_kwh"),
@@ -8238,21 +8063,21 @@ class DeyeEnergyRuntime:
             "soc_end": None,
             "sell_price_sum": 0.0,
             "buy_price_sum": 0.0,
-            "solcast_forecast_kwh": self.solcast_forecast_today_value(),
-            "forecast_initial_kwh": self.safe_float(
+            "solcast_forecast_kwh": 0.0 if not self.pv_generation_enabled else self.solcast_forecast_today_value(),
+            "forecast_initial_kwh": 0.0 if not self.pv_generation_enabled else self.safe_float(
                 self.solcast_tracking.get("initial_forecast_kwh", self.solcast_tracking.get("forecast")),
                 0,
             ),
-            "forecast_latest_kwh": self.safe_float(
+            "forecast_latest_kwh": 0.0 if not self.pv_generation_enabled else self.safe_float(
                 self.solcast_tracking.get("latest_forecast_kwh", self.solcast_tracking.get("forecast")),
                 0,
             ),
-            "forecast_hourly_snapshot_kwh": hourly_snapshot,
-            "forecast_corrected_kwh": corrected,
+            "forecast_hourly_snapshot_kwh": [] if not self.pv_generation_enabled else hourly_snapshot,
+            "forecast_corrected_kwh": 0.0 if not self.pv_generation_enabled else corrected,
             "forecast_snapshot_at": now.isoformat(timespec="seconds"),
             "forecast_correction_factor": correction_factor,
             "forecast_correction_samples": correction_samples,
-            "daily_pv_kwh": max(0, self.state_float(self.daily_pv_production_sensor, 0)),
+            "daily_pv_kwh": 0.0 if not self.pv_generation_enabled else max(0, self.state_float(self.daily_pv_production_sensor, 0)),
             "source_quality": self.source_quality_context(),
             "quality_flags": flags,
             "action": self.active_slot.mode if self.active_slot.enabled else MODE_NORMAL_OPERATION,
@@ -8260,9 +8085,6 @@ class DeyeEnergyRuntime:
                 "slot_key": self.active_slot.key,
                 "mode": self.active_slot.mode if self.active_slot.enabled else MODE_NORMAL_OPERATION,
                 "sell_power_w": max(0.0, float(self.active_slot.sell_power or 0.0)),
-                "discharge_current_a": max(0.0, float(self.active_slot.discharge_current or 0.0)),
-                "charge_current_a": max(0.0, float(self.active_slot.charge_current or 0.0)),
-                "grid_charge_current_a": max(0.0, float(self.active_slot.grid_charge_current or 0.0)),
             },
             "weather_forecast": {
                 key: weather.get(key)
@@ -9027,19 +8849,23 @@ class DeyeEnergyRuntime:
         if soc is not None:
             tracking["soc_min"] = soc if tracking.get("soc_min") is None else min(self.safe_float(tracking.get("soc_min"), soc), soc)
             tracking["soc_max"] = soc if tracking.get("soc_max") is None else max(self.safe_float(tracking.get("soc_max"), soc), soc)
-        tracking["daily_pv_kwh"] = max(0, self.state_float(self.daily_pv_production_sensor, 0))
+        pv_enabled = self.pv_generation_enabled
+        tracking["daily_pv_kwh"] = (
+            0.0 if not pv_enabled else max(0, self.state_float(self.daily_pv_production_sensor, 0))
+        )
         tracking["source_quality"] = self.source_quality_context()
         tracking["live_state"] = self.live_state_context(readings, now)
+        pv_flag_measurement = self._pv_generation_reading()
         latest_flags = pv_quality_flags(
             battery_soc=soc,
             work_mode=self.state_text(self.work_mode_select),
             grid_available=self.entity_available(self.grid_power_sensor),
-            actual_power_w=self._measurement(self.pv_power_sensor).get("value"),
+            actual_power_w=pv_flag_measurement.get("value"),
             inverter_limit_w=min(
                 finite_float(self.ai_settings.get("inverterPowerW")) or float("inf"),
                 self.effective_inverter_max_power_w,
             ),
-            sensor_stale=self._measurement(self.pv_power_sensor).get("status") == "stale",
+            sensor_stale=pv_flag_measurement.get("status") == "stale",
             manual_override=self.control_mode != "Schedule",
         )
         existing_flags = tracking.setdefault("quality_flags", {})
@@ -9343,13 +9169,17 @@ class DeyeEnergyRuntime:
                 "prices_tomorrow": price_coverage_tomorrow,
                 "weather": min(48, len(self.weather_forecast)),
             },
-            "solcast_accuracy_avg": historical_accuracy,
-            "solcast_correction_factor": round(weighted_correction, 3) if weighted_correction is not None else None,
-            "solcast_accuracy_days": len(accuracy_rows),
-            "solcast_last_accuracy": latest.get("accuracy_percent"),
-            "solcast_last_date": latest.get("date"),
+            "solcast_accuracy_avg": None if not self.pv_generation_enabled else historical_accuracy,
+            "solcast_correction_factor": None if not self.pv_generation_enabled else (
+                round(weighted_correction, 3) if weighted_correction is not None else None
+            ),
+            "solcast_accuracy_days": 0 if not self.pv_generation_enabled else len(accuracy_rows),
+            "solcast_last_accuracy": None if not self.pv_generation_enabled else latest.get("accuracy_percent"),
+            "solcast_last_date": None if not self.pv_generation_enabled else latest.get("date"),
             "current_forecast_progress": current_metrics.get("realization_today_pct"),
-            "typical_daily_pv_kwh": round(sum(row["pv_kwh"] or 0 for row in per_hour), 2),
+            "typical_daily_pv_kwh": 0.0 if not self.pv_generation_enabled else round(
+                sum(row["pv_kwh"] or 0 for row in per_hour), 2
+            ),
             "typical_daily_load_kwh": round(sum(row["load_kwh"] or 0 for row in per_hour), 2),
             "typical_daily_grid_export_kwh": round(sum(row["grid_export_kwh"] or 0 for row in per_hour), 2),
             "typical_daily_battery_charge_kwh": round(sum(row["battery_charge_kwh"] or 0 for row in per_hour), 2),
@@ -9393,31 +9223,32 @@ class DeyeEnergyRuntime:
             item = grouped.setdefault(day, {"date": day})
             item["sold_kwh"] = self.safe_float(values.get("kwh"), 0)
             item["sold_value"] = self.safe_float(values.get("value"), 0)
-        for row in self.solcast_history:
-            day = str(row.get("date") or "")
-            item = grouped.setdefault(day, {"date": day})
-            item.update({
-                "forecast_kwh": self.safe_float(row.get("forecast_kwh"), 0),
-                "actual_kwh": self.safe_float(row.get("actual_kwh"), 0),
-                "accuracy_percent": self.safe_float(row.get("accuracy_percent"), 0),
-            })
-        tracking_day = str(self.solcast_tracking.get("date") or "")
-        if tracking_day:
-            metrics = self.solcast_current_day_metrics()
-            forecast = metrics.get("forecast_today_kwh")
-            actual = metrics.get("production_today_kwh")
-            grouped.setdefault(tracking_day, {"date": tracking_day}).update({
-                "forecast_kwh": forecast,
-                "actual_kwh": actual,
-                "accuracy_percent": None,
-                "realization_today_pct": metrics.get("realization_today_pct"),
-                # Compatibility alias; it is sourced from the same canonical
-                # value and is no longer calculated independently.
-                "forecast_progress_percent": metrics.get("realization_today_pct"),
-                "forecast_difference_today_kwh": metrics.get("forecast_difference_today_kwh"),
-                "solcast_data_status": metrics.get("data_status"),
-                "day_complete": False,
-            })
+        if self.pv_generation_enabled:
+            for row in self.solcast_history:
+                day = str(row.get("date") or "")
+                item = grouped.setdefault(day, {"date": day})
+                item.update({
+                    "forecast_kwh": self.safe_float(row.get("forecast_kwh"), 0),
+                    "actual_kwh": self.safe_float(row.get("actual_kwh"), 0),
+                    "accuracy_percent": self.safe_float(row.get("accuracy_percent"), 0),
+                })
+            tracking_day = str(self.solcast_tracking.get("date") or "")
+            if tracking_day:
+                metrics = self.solcast_current_day_metrics()
+                forecast = metrics.get("forecast_today_kwh")
+                actual = metrics.get("production_today_kwh")
+                grouped.setdefault(tracking_day, {"date": tracking_day}).update({
+                    "forecast_kwh": forecast,
+                    "actual_kwh": actual,
+                    "accuracy_percent": None,
+                    "realization_today_pct": metrics.get("realization_today_pct"),
+                    # Compatibility alias; it is sourced from the same canonical
+                    # value and is no longer calculated independently.
+                    "forecast_progress_percent": metrics.get("realization_today_pct"),
+                    "forecast_difference_today_kwh": metrics.get("forecast_difference_today_kwh"),
+                    "solcast_data_status": metrics.get("data_status"),
+                    "day_complete": False,
+                })
         for row in self.daily_archive:
             day = str(row.get("date") or "")
             if day:
@@ -9452,6 +9283,16 @@ class DeyeEnergyRuntime:
 
     def solcast_forecast_today_reading(self) -> dict[str, Any]:
         """Resolve today's full forecast with source and freshness metadata."""
+        if not self.pv_generation_enabled:
+            return {
+                "entity_id": self.solcast_forecast_today_sensor,
+                "value": 0.0,
+                "unit": "kWh",
+                "last_updated": None,
+                "status": "disabled",
+                "quality": "unavailable",
+                "source": "disabled",
+            }
         configured = self._measurement(
             self.solcast_forecast_today_sensor,
             kind="energy",
@@ -9526,12 +9367,33 @@ class DeyeEnergyRuntime:
         today = now.date().isoformat()
         tracking = self.solcast_tracking if isinstance(self.solcast_tracking, dict) else {}
         tracking_day = str(tracking.get("date") or "")
+        updated_at = tracking.get("updated_at")
+        if not self.pv_generation_enabled:
+            def rounded(value: Any, digits: int = 3) -> float | None:
+                number = finite_float(value)
+                return round(number, digits) if number is not None else None
+
+            return {
+                "local_day": today,
+                "tracking_day": tracking_day or None,
+                "forecast_today_kwh": None,
+                "production_today_kwh": None,
+                "remaining_forecast_kwh": None,
+                "realization_today_pct": None,
+                "historical_accuracy_pct": rounded(historical_accuracy_pct, 1),
+                "forecast_difference_today_kwh": None,
+                "forecast_tomorrow_kwh": None,
+                "data_status": "disabled",
+                "forecast_source": tracking.get("forecast_source") or self.solcast_forecast_today_sensor,
+                "forecast_source_status": "disabled",
+                "tracking_updated_at": updated_at,
+                "initial_forecast_kwh": None,
+            }
         forecast = finite_float(
             tracking.get("latest_forecast_kwh", tracking.get("forecast"))
         )
         production = finite_float(tracking.get("actual"))
         status = str(tracking.get("forecast_status") or "legacy_tracking")
-        updated_at = tracking.get("updated_at")
         stale_tracking = False
         if updated_at:
             try:
@@ -9889,78 +9751,6 @@ class DeyeEnergyRuntime:
         """Sell power normalized for safe automatic Deye writes."""
         return self.normalize_automatic_sell_power_w(self.target_sell_power)
 
-    @property
-    def target_discharge_current(self) -> float:
-        if self.control_mode == "Manual Sell":
-            return self.manual_discharge_current
-        if self.control_mode != "Schedule":
-            return self.default_discharge_current
-        if self.active_slot.enabled and self.active_slot.mode == MODE_SELLING_FIRST and self._selling_slot_is_blocked():
-            return self.default_discharge_current
-        if self.active_charge_slot:
-            return self._effective_slot_discharge_current(self.active_slot)
-        if (
-            self.active_slot.enabled
-            and self.active_slot.mode == MODE_SELLING_FIRST
-            and self.active_slot.ai_sell_power_only
-        ):
-            # AI/Core Sell owns only the action and sell power.  The global
-            # battery current remains the independently configured user limit.
-            return self.user_schedule_discharge_current
-        return (
-            self._effective_slot_discharge_current(self.active_slot)
-            if self.active_slot.enabled
-            else self.default_discharge_current
-        )
-
-    def _effective_slot_discharge_current(self, slot: SlotSettings) -> float:
-        """Resolve legacy zero as an unset schedule value, never a 0 A command.
-
-        Old RestoreEntity rows and freshly enabled Normal Operation slots can
-        contain the dataclass default ``0`` even though the user-owned global
-        discharge limit is non-zero. Positive per-slot edits stay authoritative.
-        """
-        value = self.safe_float(slot.discharge_current, 0)
-        if value > 0:
-            return slot.discharge_current
-        if slot.mode == MODE_CHARGE:
-            charge_profile_value = self.safe_float(
-                self.charge_profile_discharge_current,
-                0,
-            )
-            if charge_profile_value > 0:
-                return charge_profile_value
-        return self.user_schedule_discharge_current
-
-    @property
-    def user_schedule_discharge_current(self) -> float:
-        """Return the user-owned global discharge limit for automatic selling."""
-        value = self.safe_float(self.normal_profile_discharge_current, 0)
-        if value > 0:
-            return value
-        return self.default_discharge_current
-
-    @property
-    def target_charge_current(self) -> float:
-        if self.control_mode == "Charge Battery":
-            return self.manual_charge_current
-        if self.active_charge_slot:
-            return self.active_slot.charge_current
-        if (
-            self.control_mode == "Schedule"
-            and self.active_slot.enabled
-            and self.active_slot.mode == MODE_SELLING_FIRST
-            and self._selling_slot_is_blocked()
-        ):
-            return self.default_charge_current
-        if self.control_mode == "Schedule" and self.active_slot.enabled:
-            return (
-                self.active_slot.charge_current
-                if self.active_slot.charge_current > 0
-                else self.default_charge_current
-            )
-        return self.default_charge_current
-
     @staticmethod
     def _format_decision_power(watts: float) -> str:
         """Show a decision power in W below 10 kW and in kW above it."""
@@ -9978,7 +9768,7 @@ class DeyeEnergyRuntime:
             power = self._format_decision_power(self.manual_sell_power)
             action = f"Manual selling — {power}"
         elif self.control_mode == "Charge Battery":
-            action = f"Battery charging — {self.manual_charge_current:.0f} A"
+            action = "Battery charging"
         elif self.control_mode == "Stop Sell":
             action = "Selling stopped — default settings"
         elif self.control_mode == "Protect Battery":
@@ -9998,10 +9788,7 @@ class DeyeEnergyRuntime:
         elif self.active_slot.mode == MODE_CHARGE:
             source = "from grid" if self.active_slot.charge_enabled else "from PV"
             target_soc = self.safe_float(self.active_slot.tou_soc, 0)
-            action = (
-                f"Charging {source} — {self.target_charge_current:.0f} A, "
-                f"target SOC {target_soc:.0f}%"
-            )
+            action = f"Charging {source} — target SOC {target_soc:.0f}%"
         else:
             measurement = (
                 "CT"
@@ -10152,6 +9939,16 @@ class DeyeEnergyRuntime:
                 "number",
                 "set_value",
                 {"entity_id": entity_id, "value": value},
+                target_value=value,
+            )
+
+    async def async_set_select(self, entity_id: str | None, value: str) -> None:
+        """Write one select option through the guarded physical write layer."""
+        if entity_id:
+            await self._async_physical_service_call(
+                "select",
+                "select_option",
+                {"entity_id": entity_id, "option": value},
                 target_value=value,
             )
 
@@ -10318,9 +10115,6 @@ class DeyeEnergyRuntime:
         self,
         mode: str,
         sell_power: float,
-        discharge_current: float,
-        charge_current: float,
-        grid_charge_current: float,
     ) -> None:
         """Reject an invalid control plan before the first write to Deye."""
         profile = provider_profile(self.data)
@@ -10330,9 +10124,6 @@ class DeyeEnergyRuntime:
             raise ValueError(f"Unsupported Deye work mode: {mode}")
         values = {
             "Max Sell Power": (sell_power, 0.0, float(self.effective_inverter_max_power_w)),
-            "Maximum Battery Discharge Current": (discharge_current, 0.0, 240.0),
-            "Maximum Battery Charge Current": (charge_current, 0.0, 240.0),
-            "Maximum Battery Grid Charge Current": (grid_charge_current, 0.0, 240.0),
         }
         for label, (raw_value, minimum, maximum) in values.items():
             value = float(raw_value)
@@ -10349,23 +10140,11 @@ class DeyeEnergyRuntime:
         # for positive values that may be written to the inverter.
         if sell_power > 0:
             self._validate_number_entity("Max Sell Power", self.max_sell_power_number, sell_power)
-        self._validate_number_entity(
-            "Maximum Battery Discharge Current", self.discharge_current_number, discharge_current
-        )
-        self._validate_number_entity(
-            "Maximum Battery Charge Current", self.charge_current_number, charge_current
-        )
-        self._validate_number_entity(
-            "Maximum Battery Grid Charge Current", self.grid_charge_current_number, grid_charge_current
-        )
 
     async def async_verify_control_values(
         self,
         mode: str | None,
         sell_power: float | None,
-        discharge_current: float,
-        charge_current: float,
-        grid_charge_current: float,
         physical_work_mode: str | None = None,
     ) -> list[str]:
         """Read the current control state once, without writing it again.
@@ -10380,15 +10159,9 @@ class DeyeEnergyRuntime:
         physical entity does not accept 0 W.
         """
         self._performance.inc("inverter_readback")
-        expected_numbers: dict[str | None, tuple[str, float]] = {
-            self.discharge_current_number: ("Maximum Battery Discharge Current", float(discharge_current)),
-        }
+        expected_numbers: dict[str | None, tuple[str, float]] = {}
         if sell_power is not None and self.max_sell_power_number:
             expected_numbers[self.max_sell_power_number] = ("Max Sell Power", float(sell_power))
-        if self.charge_current_number:
-            expected_numbers[self.charge_current_number] = ("Maximum Battery Charge Current", float(charge_current))
-        if self.grid_charge_current_number:
-            expected_numbers[self.grid_charge_current_number] = ("Maximum Battery Grid Charge Current", float(grid_charge_current))
         unconfirmed: list[str] = []
         if mode is not None:
             mode_state = self.hass.states.get(self.work_mode_select)
@@ -10439,9 +10212,6 @@ class DeyeEnergyRuntime:
                 self.work_mode_select,
                 self.work_mode_aux_entity,
                 self.max_sell_power_number,
-                self.discharge_current_number,
-                self.charge_current_number,
-                self.grid_charge_current_number,
             )
             if entity_id
         ]
@@ -10727,9 +10497,6 @@ class DeyeEnergyRuntime:
         unconfirmed = await self.async_verify_control_values(
             expected.get("System Work Mode"),
             None if expected.get("Max Sell Power") is None else float(expected.get("Max Sell Power", 0)),
-            float(expected.get("Discharge current", 0)),
-            float(expected.get("Battery charge current", 0)),
-            float(expected.get("Grid charge current", 0)),
             self._active_physical_work_mode(),
         )
         if not unconfirmed:
@@ -10800,30 +10567,12 @@ class DeyeEnergyRuntime:
             self._validate_control_plan(
                 mode,
                 capped_sell_power,
-                self.default_discharge_current,
-                self.default_charge_current,
-                self.default_grid_charge_current,
             )
         except Exception as err:
             failures.append(str(err))
 
         operations = (
             ("Max Sell Power", self.async_set_number, (self.max_sell_power_number, capped_sell_power)),
-            (
-                "Maximum Battery Discharge Current",
-                self.async_set_number,
-                (self.discharge_current_number, self.default_discharge_current),
-            ),
-            (
-                "Maximum Battery Charge Current",
-                self.async_set_number,
-                (self.charge_current_number, self.default_charge_current),
-            ),
-            (
-                "Maximum Battery Grid Charge Current",
-                self.async_set_number,
-                (self.grid_charge_current_number, self.default_grid_charge_current),
-            ),
             ("System Work Mode", self.async_set_work_mode, (mode_input,)),
         )
         if not failures:
@@ -10840,9 +10589,6 @@ class DeyeEnergyRuntime:
                 await self.async_verify_control_values(
                     mode,
                     capped_sell_power,
-                    self.default_discharge_current,
-                    self.default_charge_current,
-                    self.default_grid_charge_current,
                     self.default_normal_physical_work_mode(),
                 )
             )
@@ -12729,8 +12475,10 @@ class DeyeEnergyRuntime:
                 if key not in ENERGY_STATUS_ROLE_KEYS:
                     continue
                 visibility[str(key)] = bool(value)
+        pv_enabled = source.get("pv_enabled")
         return {
             "schema_version": ENERGY_STATUS_DISPLAY_SCHEMA_VERSION,
+            "pv_enabled": True if pv_enabled is None else bool(pv_enabled),
             "mappings": mappings,
             "visibility": visibility,
         }
@@ -12740,7 +12488,7 @@ class DeyeEnergyRuntime:
         """Strictly validate a service submission, rejecting unknown roles."""
         if not isinstance(payload, dict):
             raise ValueError("Energy status display must be an object")
-        unknown = set(payload) - {"schema_version", "mappings", "visibility"}
+        unknown = set(payload) - {"schema_version", "mappings", "visibility", "pv_enabled"}
         if unknown:
             raise ValueError("Unsupported energy status fields: " + ", ".join(sorted(unknown)))
         normalized: dict[str, Any] = {}
@@ -12766,11 +12514,22 @@ class DeyeEnergyRuntime:
             str(key): bool(value)
             for key, value in normalized["visibility"].items()
         }
+        pv_enabled = payload.get("pv_enabled")
         return {
             "schema_version": ENERGY_STATUS_DISPLAY_SCHEMA_VERSION,
+            "pv_enabled": True if pv_enabled is None else bool(pv_enabled),
             "mappings": mappings,
             "visibility": visibility,
         }
+
+    @property
+    def pv_generation_enabled(self) -> bool:
+        """Return whether PV generation is enabled for display and planning."""
+        return bool(
+            self._normalize_energy_status_display(self.energy_status_display).get(
+                "pv_enabled", True
+            )
+        )
 
     def energy_status_display_state(self) -> dict[str, Any]:
         """Public view consumed by the card, including the role catalog."""
@@ -12789,6 +12548,257 @@ class DeyeEnergyRuntime:
         await self.async_save_ai_data()
         self.notify_update()
         return self.energy_status_display_state()
+
+    @staticmethod
+    def _inverter_config_float(value: Any) -> float | None:
+        """Return a finite float without treating booleans as numbers."""
+        if isinstance(value, bool):
+            return None
+        try:
+            result = float(value)
+        except (TypeError, ValueError):
+            return None
+        return result if math.isfinite(result) else None
+
+    def _inverter_config_field_descriptor(
+        self, field: Any, entity_id: str | None
+    ) -> dict[str, Any]:
+        """Describe one live inverter-configuration field for the card."""
+        descriptor: dict[str, Any] = {
+            "key": field.key,
+            "label": field.label,
+            "group": field.group,
+            "entity_id": entity_id,
+            "domain": None,
+            "value": None,
+            "display_value": "Not mapped",
+            "writable": False,
+            "min": None,
+            "max": None,
+            "step": None,
+            "options": [],
+            "unit": field.unit,
+            "state": None,
+            "read_only_reason": "Not mapped",
+        }
+        if field.kind == "static":
+            descriptor["value"] = field.static_value
+            descriptor["display_value"] = field.static_value or "Not mapped"
+            descriptor["read_only_reason"] = (
+                "" if field.static_value else "No entity mapping"
+            )
+            return descriptor
+        if not entity_id:
+            return descriptor
+        domain, _, object_id = entity_id.partition(".")
+        if not domain or not object_id:
+            descriptor["read_only_reason"] = "Invalid entity mapping"
+            return descriptor
+        descriptor["domain"] = domain
+        state = self.hass.states.get(entity_id)
+        raw_state = None if state is None else str(state.state)
+        descriptor["state"] = raw_state
+        attributes = getattr(state, "attributes", {}) or {}
+        unit = attributes.get("unit_of_measurement")
+        if isinstance(unit, str) and unit.strip():
+            descriptor["unit"] = unit
+        unavailable = state is None or raw_state.lower() in {
+            "",
+            "unknown",
+            "unavailable",
+            "none",
+        }
+        if unavailable:
+            descriptor["display_value"] = "Unavailable"
+            descriptor["read_only_reason"] = "Entity unavailable"
+            return descriptor
+        if domain == "number":
+            minimum = self._inverter_config_float(attributes.get("min"))
+            maximum = self._inverter_config_float(attributes.get("max"))
+            step = self._inverter_config_float(attributes.get("step"))
+            value = self.state_float_or_none(entity_id)
+            descriptor.update(
+                {
+                    "value": value,
+                    "display_value": "Unavailable" if value is None else f"{value:g}",
+                    "min": minimum,
+                    "max": maximum,
+                    "step": step,
+                    "writable": bool(
+                        field.writable
+                        and minimum is not None
+                        and maximum is not None
+                        and step is not None
+                        and step > 0
+                    ),
+                    "read_only_reason": (
+                        ""
+                        if minimum is not None
+                        and maximum is not None
+                        and step is not None
+                        and step > 0
+                        else "Live number range is unavailable"
+                    ),
+                }
+            )
+            return descriptor
+        if domain == "select":
+            options = attributes.get("options")
+            options = [str(option) for option in options] if isinstance(options, (list, tuple)) else []
+            descriptor.update(
+                {
+                    "value": raw_state,
+                    "display_value": raw_state,
+                    "options": options,
+                    "writable": bool(field.writable and options),
+                    "read_only_reason": "" if options else "Live select options are unavailable",
+                }
+            )
+            return descriptor
+        if domain == "switch":
+            value = raw_state.lower() == "on"
+            descriptor.update(
+                {
+                    "value": value,
+                    "display_value": "On" if value else "Off",
+                    "writable": bool(field.writable and raw_state.lower() in {"on", "off"}),
+                    "read_only_reason": (
+                        "" if raw_state.lower() in {"on", "off"} else "Unsupported switch state"
+                    ),
+                }
+            )
+            return descriptor
+        descriptor.update(
+            {
+                "value": raw_state,
+                "display_value": raw_state,
+                "read_only_reason": "Read-only entity domain",
+            }
+        )
+        return descriptor
+
+    def read_inverter_configuration(self) -> dict[str, Any]:
+        """Read every configured inverter field from live Home Assistant state."""
+        groups = []
+        for group_key, group_label in INVERTER_CONFIG_GROUPS:
+            fields = []
+            for field in fields_for_group(group_key):
+                entity_id = resolve_inverter_config_entity_id(field, self.data)
+                fields.append(self._inverter_config_field_descriptor(field, entity_id))
+            groups.append(
+                {
+                    "key": group_key,
+                    "label": group_label,
+                    "writable": any(field["writable"] for field in fields),
+                    "fields": fields,
+                }
+            )
+        return {"groups": groups}
+
+    def _validate_inverter_config_write(
+        self, field: Any, entity_id: str | None, raw_value: Any
+    ) -> Any:
+        """Validate one value against its live entity metadata before any write."""
+        descriptor = self._inverter_config_field_descriptor(field, entity_id)
+        if not descriptor["writable"]:
+            reason = descriptor.get("read_only_reason") or "Field is read-only"
+            raise ValueError(f"{field.label}: {reason}")
+        domain = descriptor["domain"]
+        if domain == "number":
+            value = self._inverter_config_float(raw_value)
+            if value is None:
+                raise ValueError(f"{field.label} must be a finite number")
+            minimum = descriptor["min"]
+            maximum = descriptor["max"]
+            step = descriptor["step"]
+            if value < minimum or value > maximum:
+                raise ValueError(
+                    f"{field.label} must be between {minimum:g} and {maximum:g}"
+                )
+            steps = (value - minimum) / step
+            if not math.isclose(steps, round(steps), abs_tol=1e-6):
+                raise ValueError(f"{field.label} must follow step {step:g}")
+            return value
+        if domain == "select":
+            option = str(raw_value)
+            if option not in descriptor["options"]:
+                raise ValueError(f"Unsupported option for {field.label}: {option}")
+            return option
+        if domain == "switch":
+            if not isinstance(raw_value, bool):
+                raise ValueError(f"{field.label} must be true or false")
+            return raw_value
+        raise ValueError(f"{field.label} is not writable")
+
+    async def async_apply_inverter_configuration_group(
+        self, group: str, values: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Apply one validated inverter-configuration group, stopping on failure."""
+        if group not in INVERTER_CONFIG_GROUP_KEYS:
+            raise ValueError(f"Unknown inverter configuration group: {group}")
+        if not isinstance(values, dict) or not values:
+            raise ValueError("Inverter configuration values must be a non-empty object")
+        known = {field.key for field in fields_for_group(group)}
+        unknown = sorted(str(key) for key in values if key not in known)
+        if unknown:
+            raise ValueError(
+                f"Fields do not belong to group {group}: {', '.join(unknown)}"
+            )
+        plans: list[tuple[Any, str, Any]] = []
+        for field in fields_for_group(group):
+            if field.key not in values:
+                continue
+            entity_id = resolve_inverter_config_entity_id(field, self.data)
+            normalized = self._validate_inverter_config_write(
+                field, entity_id, values[field.key]
+            )
+            plans.append((field, str(entity_id), normalized))
+        if not plans:
+            raise ValueError("No writable inverter configuration fields were supplied")
+        results: list[dict[str, Any]] = []
+        async with self._operation_lock:
+            async with self._control_operation("apply_inverter_configuration_group"):
+                for field, entity_id, value in plans:
+                    try:
+                        domain = entity_id.split(".", 1)[0]
+                        if domain == "number":
+                            await self.async_set_number(entity_id, value)
+                        elif domain == "select":
+                            await self.async_set_select(entity_id, value)
+                        elif domain == "switch":
+                            await self.async_set_switch(entity_id, value)
+                        else:
+                            raise ValueError(f"Unsupported domain: {domain}")
+                    except Exception as err:
+                        results.append(
+                            {
+                                "key": field.key,
+                                "entity_id": entity_id,
+                                "value": value,
+                                "status": "failed",
+                                "error": str(err),
+                            }
+                        )
+                        self.last_error = f"{field.label}: {err}"
+                        self.notify_update()
+                        return {
+                            "group": group,
+                            "status": "failed",
+                            "results": results,
+                            "error": f"{field.label}: {err}",
+                        }
+                    results.append(
+                        {
+                            "key": field.key,
+                            "entity_id": entity_id,
+                            "value": value,
+                            "status": "ok",
+                        }
+                    )
+        self.last_error = ""
+        self.last_action = "Inverter configuration group applied"
+        self.notify_update()
+        return {"group": group, "status": "ok", "results": results, "error": ""}
 
     def manual_schedule_state(self) -> dict[str, Any]:
         manual = self._ensure_manual_schedule()
@@ -13100,9 +13110,6 @@ class DeyeEnergyRuntime:
                 "charge_enabled": False,
                 "physical_work_mode": normal_physical_mode,
                 "sell_power": self.normal_profile_sell_power,
-                "discharge_current": self.normal_profile_discharge_current,
-                "charge_current": self.normal_profile_charge_current,
-                "grid_charge_current": self.normal_profile_grid_charge_current,
             })
         else:
             if not slot.enabled:
@@ -13214,9 +13221,6 @@ class DeyeEnergyRuntime:
 
         numeric_limits = {
             "sell_power": (0.0, float(self.effective_inverter_max_power_w)),
-            "discharge_current": (0.0, 240.0),
-            "charge_current": (0.0, 240.0),
-            "grid_charge_current": (0.0, 240.0),
             "minimum_sell_soc": (0.0, 100.0),
             "tou_soc": (0.0, 100.0),
             "min_sell_price": (0.0, 5.0),
@@ -13291,14 +13295,8 @@ class DeyeEnergyRuntime:
                     slot = self.slots[slot_key]
                     if replace_day or ai_source:
                         slot.ai_sell_power_only = slot_key in ai_sell_power_only_keys
-                        if slot.ai_sell_power_only:
-                            # Materialise the independent user/global value in
-                            # the logical row so the schedule UI never presents
-                            # a derived sell current as an executable limit.
-                            slot.discharge_current = self.user_schedule_discharge_current
-                    elif "mode" in update or "discharge_current" in update:
-                        # A regular partial patch is an explicit manual edit and
-                        # retains the pre-existing per-slot current contract.
+                    elif "mode" in update:
+                        # A regular partial patch is an explicit manual edit.
                         slot.ai_sell_power_only = False
                     if "enabled" in update:
                         slot.enabled = bool(update["enabled"])
@@ -13319,12 +13317,6 @@ class DeyeEnergyRuntime:
                                 slot.physical_work_mode = self.normal_profile_physical_work_mode
                             if self.normal_profile_sell_power >= 0:
                                 slot.sell_power = self.normal_profile_sell_power
-                            if self.normal_profile_discharge_current >= 0:
-                                slot.discharge_current = self.normal_profile_discharge_current
-                            if self.normal_profile_charge_current >= 0:
-                                slot.charge_current = self.normal_profile_charge_current
-                            if self.normal_profile_grid_charge_current >= 0:
-                                slot.grid_charge_current = self.normal_profile_grid_charge_current
                             if self.normal_profile_tou_soc is not None and self.normal_profile_tou_soc >= 0:
                                 slot.tou_soc = self.normal_profile_tou_soc
                             if replace_day and slot_key in normal_replace_keys:
@@ -13335,9 +13327,6 @@ class DeyeEnergyRuntime:
                         elif mode == MODE_CHARGE:
                             slot.enabled = True
                             if previous_mode != MODE_CHARGE or force_copy_charge:
-                                slot.charge_current = self.charge_profile_charge_current
-                                slot.discharge_current = self.charge_profile_discharge_current
-                                slot.grid_charge_current = self.charge_profile_grid_charge_current
                                 slot.tou_soc = self.charge_profile_target_soc
                                 slot.charge_enabled = self.charge_profile_grid_enabled
                         elif previous_mode == MODE_NORMAL_OPERATION:
@@ -13496,9 +13485,6 @@ class DeyeEnergyRuntime:
         entities: list[tuple[str | None, str]] = [
             (self.work_mode_select, "System Work Mode"),
             (self.max_sell_power_number, "Max Sell Power"),
-            (self.discharge_current_number, "Maximum Battery Discharge Current"),
-            (self.charge_current_number, "Maximum Battery Charge Current"),
-            (self.grid_charge_current_number, "Maximum Battery Grid Charge Current"),
         ]
         if profile.needs_aux_export_switch:
             entities.append((self.work_mode_aux_entity, "Solar Export"))
@@ -13610,18 +13596,12 @@ class DeyeEnergyRuntime:
         expected = {
             "System Work Mode": logical_mode,
             "Max Sell Power": numbers.get(self.max_sell_power_number, ("", 0.0))[1],
-            "Discharge current": numbers.get(self.discharge_current_number, ("", 0.0))[1],
-            "Battery charge current": numbers.get(self.charge_current_number, ("", 0.0))[1],
-            "Grid charge current": numbers.get(self.grid_charge_current_number, ("", 0.0))[1],
         }
         deadline = asyncio.get_running_loop().time() + self.control_confirmation_timeout
         while True:
             unconfirmed = await self.async_verify_control_values(
                 expected["System Work Mode"],
                 expected["Max Sell Power"],
-                expected["Discharge current"],
-                expected["Battery charge current"],
-                expected["Grid charge current"],
                 rollback_physical_mode or self._active_physical_work_mode(),
             )
             if not unconfirmed:
@@ -13635,9 +13615,6 @@ class DeyeEnergyRuntime:
         self,
         mode: str,
         sell_power: float,
-        discharge_current: float,
-        charge_current: float,
-        grid_charge_current: float,
     ) -> bool:
         """Wait for Deye to publish the requested control values.
 
@@ -13651,7 +13628,7 @@ class DeyeEnergyRuntime:
             if not self._control_is_active():
                 return False
             unconfirmed = await self.async_verify_control_values(
-                mode, sell_power, discharge_current, charge_current, grid_charge_current, self._active_physical_work_mode()
+                mode, sell_power, self._active_physical_work_mode()
             )
             if not unconfirmed:
                 return True
@@ -13706,9 +13683,6 @@ class DeyeEnergyRuntime:
         self,
         mode: str,
         sell_power: float,
-        discharge_current: float,
-        charge_current: float,
-        grid_charge_current: float | None = None,
     ) -> None:
         """Apply direct inverter settings using a safe, serialized write order."""
         if self._inverter_link_gated:
@@ -13718,7 +13692,6 @@ class DeyeEnergyRuntime:
             raise ControlDisabledError(
                 "Deye inverter is unavailable; physical writes are blocked."
             )
-        effective_grid_charge_current = grid_charge_current if grid_charge_current is not None else self.default_grid_charge_current
         self.validate_manual_sell_power_w("Sell power", sell_power)
         physical_sell_power = self.normalize_automatic_sell_power_w(sell_power)
         async with self._operation_lock:
@@ -13734,9 +13707,6 @@ class DeyeEnergyRuntime:
                     self._validate_control_plan(
                         mode,
                         sell_power,
-                        discharge_current,
-                        charge_current,
-                        effective_grid_charge_current,
                     )
                 except Exception as err:
                     if self.emergency_stop:
@@ -13752,20 +13722,11 @@ class DeyeEnergyRuntime:
                 }
                 self._set_control_transaction_snapshot(transaction_id, raw_snapshot)
                 try:
-                    await self.async_set_number(self.charge_current_number, charge_current)
-                    await self.async_set_number(
-                        self.grid_charge_current_number,
-                        effective_grid_charge_current,
-                    )
                     applied_sell_power_native = await self.async_set_max_sell_power_number(physical_sell_power)
-                    await self.async_set_number(self.discharge_current_number, discharge_current)
                     await self.async_set_work_mode(mode)
                     confirmed = await self._async_wait_for_control_confirmation(
                         mode,
                         applied_sell_power_native,
-                        discharge_current,
-                        charge_current,
-                        effective_grid_charge_current,
                     )
                     if not confirmed:
                         if self.emergency_stop:
@@ -13810,9 +13771,6 @@ class DeyeEnergyRuntime:
         control_entities = [
             self.work_mode_select,
             self.max_sell_power_number,
-            self.discharge_current_number,
-            self.charge_current_number,
-            self.grid_charge_current_number,
             *self.tou_mapping_errors(),
         ]
         # Control values are deliberately represented only by availability:
@@ -13836,8 +13794,6 @@ class DeyeEnergyRuntime:
         )
         slot_data = (
             slot.key, slot.enabled, slot.mode, slot.sell_power,
-            slot.discharge_current, slot.charge_current,
-            slot.grid_charge_current,
             slot.minimum_sell_soc, slot.tou_soc, slot.min_sell_price,
             slot.charge_enabled,
         )
@@ -13927,18 +13883,7 @@ class DeyeEnergyRuntime:
         target_mode = self.target_mode
         target_sell_power = self.target_sell_power
         applied_sell_power = self.applied_sell_power
-        target_discharge_current = self.target_discharge_current
-        target_charge_current = self.target_charge_current
-        grid_charge_current = self.default_grid_charge_current
-        if self.control_mode == "Schedule" and self.active_slot.enabled:
-            # A positive limit does not grant grid charging. Only the active
-            # Charge slot's explicit flag may enable the physical TOU switch.
-            grid_charge_current = (
-                self.active_slot.grid_charge_current
-                if self.active_charge_slot
-                else self.default_grid_charge_current
-            )
-        expected = {"System Work Mode": target_mode, "Max Sell Power": applied_sell_power, "Discharge current": target_discharge_current, "Battery charge current": target_charge_current, "Grid charge current": grid_charge_current}
+        expected = {"System Work Mode": target_mode, "Max Sell Power": applied_sell_power}
         pending_result = await self._async_confirm_or_wait_for_control(expected, "inverter confirmation")
         if pending_result is not None:
             return pending_result
@@ -13948,9 +13893,6 @@ class DeyeEnergyRuntime:
                 unconfirmed = await self.async_verify_control_values(
                     expected["System Work Mode"],
                     None if expected["Max Sell Power"] is None else float(expected["Max Sell Power"]),
-                    float(expected["Discharge current"]),
-                    float(expected["Battery charge current"]),
-                    float(expected["Grid charge current"]),
                     self._active_physical_work_mode(),
                 )
                 if not unconfirmed:
@@ -13973,7 +13915,7 @@ class DeyeEnergyRuntime:
             )
         self.record_schedule_attempt("pending", stage, expected, cap_message)
         try:
-            self._validate_control_plan(target_mode, applied_sell_power, target_discharge_current, target_charge_current, grid_charge_current)
+            self._validate_control_plan(target_mode, applied_sell_power)
             stage = "Deye Time Of Use mapping"
             if self.control_mode == "Schedule" and not await self.async_apply_time_of_use_map():
                 if not self._control_is_active():
@@ -13985,11 +13927,8 @@ class DeyeEnergyRuntime:
                 self.notify_update()
                 return False
             stage = "numeric values"
-            await self.async_set_number_if_needed(self.charge_current_number, target_charge_current)
-            await self.async_set_number_if_needed(self.grid_charge_current_number, grid_charge_current)
             applied_sell_power_native = await self.async_set_max_sell_power_number_if_needed(target_sell_power)
             expected["Max Sell Power"] = applied_sell_power_native
-            await self.async_set_number_if_needed(self.discharge_current_number, target_discharge_current)
             stage = "work mode"
             await self.async_set_work_mode_if_needed(target_mode)
         except ControlDisabledError as err:
@@ -14045,21 +13984,12 @@ class DeyeEnergyRuntime:
         self._validate_control_plan(
             self.default_work_mode,
             capped_sell_power_w,
-            self.default_discharge_current,
-            self.default_charge_current,
-            self.default_grid_charge_current,
         )
         try:
             capped_sell_power_native = await self.async_set_max_sell_power_number(self.default_sell_power)
-            await self.async_set_number(self.discharge_current_number, self.default_discharge_current)
-            await self.async_set_number(self.charge_current_number, self.default_charge_current)
-            await self.async_set_number(self.grid_charge_current_number, self.default_grid_charge_current)
             unconfirmed = await self.async_verify_control_values(
                 None,
                 capped_sell_power_native,
-                self.default_discharge_current,
-                self.default_charge_current,
-                self.default_grid_charge_current,
             )
             if unconfirmed:
                 raise RuntimeError(f"Unconfirmed default settings: {'; '.join(unconfirmed)}")
@@ -14067,9 +13997,6 @@ class DeyeEnergyRuntime:
             unconfirmed = await self.async_verify_control_values(
                 self.default_work_mode,
                 capped_sell_power_native,
-                self.default_discharge_current,
-                self.default_charge_current,
-                self.default_grid_charge_current,
                 self.default_normal_physical_work_mode(),
             )
             if unconfirmed:
@@ -14088,42 +14015,36 @@ class DeyeEnergyRuntime:
         self.mark_settings_applied()
         self.notify_update()
 
-    async def async_save_charge_profile(self, profile: dict[str, Any]) -> None:
+    async def async_save_charge_profile(self, values: dict[str, Any]) -> None:
         """Atomically save the user-owned profile used by Charge slots."""
-        values = {
-            "charge_profile_charge_current": self.safe_float(profile.get("charge_current"), float("nan")),
-            "charge_profile_discharge_current": self.safe_float(profile.get("discharge_current"), float("nan")),
-            "charge_profile_grid_charge_current": self.safe_float(profile.get("grid_charge_current"), float("nan")),
-            "charge_profile_target_soc": self.safe_float(profile.get("target_soc"), float("nan")),
+        profile_values = {
+            "charge_profile_target_soc": self.safe_float(values.get("target_soc"), float("nan")),
         }
-        grid_enabled = profile.get("grid_charge_enabled")
+        grid_enabled = values.get("grid_charge_enabled")
         if not isinstance(grid_enabled, bool):
             raise ValueError("Grid Charge must be YES or NO")
         profile_entities = {
-            "charge_profile_charge_current": ("Maximum Battery Charge Current", self.charge_current_number),
-            "charge_profile_discharge_current": ("Maximum Battery Discharge Current", self.discharge_current_number),
-            "charge_profile_grid_charge_current": ("Maximum Battery Grid Charge Current", self.grid_charge_current_number),
             # Every Deye TOU SOC input has the same physical range. Validate
             # the profile before persisting it or starting a schedule write.
             "charge_profile_target_soc": ("Deye Time Of Use SOC", self._tou_entity(1, "soc")),
         }
-        for key, value in values.items():
+        for key, value in profile_values.items():
             self._validate_number_entity(*profile_entities[key], value)
         previous = {
             key: getattr(self, key)
-            for key in values
+            for key in profile_values
         }
         previous_grid = self.charge_profile_grid_enabled
         previous_loaded = self._charge_profile_loaded_from_store
         previous_saved_at = self.last_saved_at
-        for key, value in values.items():
+        for key, value in profile_values.items():
             setattr(self, key, value)
         self.charge_profile_grid_enabled = grid_enabled
         self._charge_profile_loaded_from_store = True
         self.last_saved_at = ha_now().isoformat(timespec="seconds")
         try:
             # Await the durable write before reporting success to the card.
-            # This avoids a close/reopen race with five independent helpers.
+            # This avoids a close/reopen race with the independent helpers.
             await self.async_save_ai_data()
         except Exception:
             for key, value in previous.items():
@@ -14153,9 +14074,6 @@ class DeyeEnergyRuntime:
             )
         profile_entities = {
             "normal_profile_sell_power": ("sell_power", "Max Sell Power", self.max_sell_power_number),
-            "normal_profile_discharge_current": ("discharge_current", "Maximum Battery Discharge Current", self.discharge_current_number),
-            "normal_profile_charge_current": ("charge_current", "Maximum Battery Charge Current", self.charge_current_number),
-            "normal_profile_grid_charge_current": ("grid_charge_current", "Maximum Battery Grid Charge Current", self.grid_charge_current_number),
             "normal_profile_tou_soc": ("tou_soc", "Deye Time Of Use SOC", self._tou_entity(1, "soc")),
         }
         numeric = {}
@@ -14217,17 +14135,11 @@ class DeyeEnergyRuntime:
         )
         fields = {
             "default_sell_power": self.safe_float(values.get("sell_power"), float("nan")),
-            "default_discharge_current": self.safe_float(values.get("discharge_current"), float("nan")),
-            "default_charge_current": self.safe_float(values.get("charge_current"), float("nan")),
-            "default_grid_charge_current": self.safe_float(values.get("grid_charge_current"), float("nan")),
         }
         if math.isfinite(fields["default_sell_power"]):
             self.validate_manual_sell_power_w("Default sell power", fields["default_sell_power"])
         default_entities = {
             "default_sell_power": ("Max Sell Power", self.max_sell_power_number),
-            "default_discharge_current": ("Maximum Battery Discharge Current", self.discharge_current_number),
-            "default_charge_current": ("Maximum Battery Charge Current", self.charge_current_number),
-            "default_grid_charge_current": ("Maximum Battery Grid Charge Current", self.grid_charge_current_number),
         }
         self._validate_select_entity("System Work Mode", self.work_mode_select, raw_option)
         for key, value in fields.items():
@@ -14712,21 +14624,12 @@ class DeyeEnergyRuntime:
                     slot.physical_work_mode = self.normal_profile_physical_work_mode
                 if math.isfinite(self.normal_profile_sell_power) and 0 <= self.normal_profile_sell_power <= self.effective_inverter_max_power_w:
                     slot.sell_power = self.normal_profile_sell_power
-                if math.isfinite(self.normal_profile_discharge_current) and 0 <= self.normal_profile_discharge_current <= 240:
-                    slot.discharge_current = self.normal_profile_discharge_current
-                if math.isfinite(self.normal_profile_charge_current) and 0 <= self.normal_profile_charge_current <= 240:
-                    slot.charge_current = self.normal_profile_charge_current
-                if math.isfinite(self.normal_profile_grid_charge_current) and 0 <= self.normal_profile_grid_charge_current <= 240:
-                    slot.grid_charge_current = self.normal_profile_grid_charge_current
                 if self.normal_profile_tou_soc is not None and math.isfinite(self.normal_profile_tou_soc) and 0 <= self.normal_profile_tou_soc <= 100:
                     slot.tou_soc = self.normal_profile_tou_soc
             elif mode == MODE_CHARGE:
                 slot.enabled = True
                 self.scheduler_enabled = True
                 if previous_mode != MODE_CHARGE:
-                    slot.charge_current = self.charge_profile_charge_current
-                    slot.discharge_current = self.charge_profile_discharge_current
-                    slot.grid_charge_current = self.charge_profile_grid_charge_current
                     slot.tou_soc = self.charge_profile_target_soc
                     slot.charge_enabled = self.charge_profile_grid_enabled
             elif previous_mode == MODE_NORMAL_OPERATION:

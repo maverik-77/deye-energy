@@ -38,13 +38,12 @@ function assertTrue(value, message) {
 
 const card = new DeyeEnergyCard();
 card.setConfig({});
+// Core contracts no longer carry the three current limits.  They live in the
+// separate "Inverter configuration" settings tab, not in work schedule slots.
 const exact = {
   slot_key: "02_03",
   enabled: true,
   mode: "Charging",
-  charge_current: 20,
-  grid_charge_current: 20,
-  discharge_current: 7,
   minimum_sell_soc: 35,
   tou_soc: 50,
   charge_enabled: true,
@@ -65,6 +64,11 @@ const row = {
 assertTrue(card.aiIsApplicableProposal(row), "deployable Core row must be applicable");
 assertEqual(card.aiPlannedSlotPower(row), 1000, "charge preview must use final Core power");
 assertEqual(card.aiRowUpdate(row), exact, "UI must forward the exact Core schedule contract");
+const forwarded = card.aiRowUpdate(row);
+["charge_current", "discharge_current", "grid_charge_current"].forEach((field) => {
+  assertTrue(!(field in forwarded), `Core contract must not forward ${field}`);
+});
+assertTrue(forwarded.charge_enabled === true, "Grid Charge permission must stay in the Core contract");
 
 const blocked = JSON.parse(JSON.stringify(row));
 blocked.action_contract.deployment_ready = false;
@@ -73,13 +77,15 @@ assertTrue(!card.aiIsApplicableProposal(blocked), "row without deterministic phy
 const legacy = JSON.parse(JSON.stringify(row));
 delete legacy.action_contract;
 card.chargeProfileStoredValues = () => ({
-  charge_current: 120,
-  discharge_current: 30,
-  grid_charge_current: 60,
   target_soc: 80,
   grid_charge_enabled: true,
 });
-assertEqual(card.aiRowUpdate(legacy).charge_current, 120, "legacy rows retain display compatibility");
+const legacyUpdate = card.aiRowUpdate(legacy);
+assertEqual(legacyUpdate.tou_soc, 80, "legacy charge rows must keep the SOC fallback");
+assertEqual(legacyUpdate.charge_enabled, true, "legacy charge rows must keep the Grid Charge permission");
+["charge_current", "discharge_current", "grid_charge_current"].forEach((field) => {
+  assertTrue(!(field in legacyUpdate), `legacy fallback must not reintroduce ${field}`);
+});
 
 if (failures) process.exit(1);
 console.log("Stage 5G.4B CoreActionContract card tests passed");

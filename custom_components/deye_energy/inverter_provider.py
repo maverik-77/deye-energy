@@ -557,25 +557,4 @@ def provider_tou_field_capabilities(key: str) -> dict[str, dict[str, Any]]:
             "note": "global number.deye_inverter_max_sell_power",
             "read_only": read_only,
         },
-        "charge_current": {
-            "supported": False,
-            "domains": (),
-            "per_slot": False,
-            "note": "global charge_current_number",
-            "read_only": read_only,
-        },
-        "discharge_current": {
-            "supported": False,
-            "domains": (),
-            "per_slot": False,
-            "note": "global discharge_current_number",
-            "read_only": read_only,
-        },
-        "grid_charge_current": {
-            "supported": False,
-            "domains": (),
-            "per_slot": False,
-            "note": "global grid_charge_current_number",
-            "read_only": read_only,
-        },
     }

@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -307,7 +309,9 @@ def test_21_store_payload_contains_lifecycle_ownership_and_revisions():
 
 def test_22_future_sell_remains_power_only():
     runtime = manager_test.make_runtime()
-    normalized = runtime._validate_future_plan_updates([{**sell(), "discharge_current": 120, "tou_soc": 20}])[0]
+    with pytest.raises(ValueError, match="Unsupported plan fields"):
+        runtime._validate_future_plan_updates([{**sell(), "discharge_current": 120}])
+    normalized = runtime._validate_future_plan_updates([{**sell(), "tou_soc": 20}])[0]
     assert set(runtime._sanitize_ai_sell_execution_update(normalized)) == {"slot_key", "enabled", "mode", "sell_power"}
 
 

@@ -1,6 +1,6 @@
 apply_settings:
   name: Apply settings
-  description: Apply the Deye work mode, maximum sell power, discharge current and optionally the charge current.
+  description: Apply the Deye work mode and maximum sell power. Battery current limits are changed only in Inverter configuration.
   fields:
     mode:
       required: true
@@ -17,32 +17,6 @@ apply_settings:
           max: 30000
           step: 100
           unit_of_measurement: W
-    discharge_current:
-      required: true
-      selector:
-        number:
-          min: 0
-          max: 320
-          step: 5
-          unit_of_measurement: A
-    charge_current:
-      required: false
-      description: When omitted, the charge current saved in Default settings is used.
-      selector:
-        number:
-          min: 0
-          max: 320
-          step: 5
-          unit_of_measurement: A
-    grid_charge_current:
-      required: false
-      description: When omitted, the grid charge current saved in Default settings is used. A positive value does not enable Grid Charge by itself; it is only a current limit.
-      selector:
-        number:
-          min: 0
-          max: 320
-          step: 5
-          unit_of_measurement: A
 manual_sell:
   name: Manual sell
   description: Switch to Selling and apply manual sell limits.
@@ -55,26 +29,9 @@ manual_sell:
           max: 30000
           step: 100
           unit_of_measurement: W
-    discharge_current:
-      required: true
-      selector:
-        number:
-          min: 0
-          max: 320
-          step: 5
-          unit_of_measurement: A
 charge_now:
   name: Charge now
-  description: Start charging the battery with the saved charge current.
-  fields:
-    charge_current:
-      required: true
-      selector:
-        number:
-          min: 0
-          max: 320
-          step: 5
-          unit_of_measurement: A
+  description: Start charging the battery using the current limits already configured on the inverter.
 stop_selling:
   name: Stop selling
   description: Latch manager control, apply the complete 1:1 Default settings set and never force numeric values to zero automatically.
@@ -185,30 +142,6 @@ save_charge_profile:
       description: "Initial value copied into a new Charging slot. After copying, only Grid Charge: YES stored in that specific Charging slot allows physical Grid Charge; a positive current is not consent."
       selector:
         boolean:
-    charge_current:
-      required: true
-      selector:
-        number:
-          min: 0
-          max: 320
-          step: 5
-          unit_of_measurement: A
-    discharge_current:
-      required: true
-      selector:
-        number:
-          min: 0
-          max: 320
-          step: 5
-          unit_of_measurement: A
-    grid_charge_current:
-      required: true
-      selector:
-        number:
-          min: 0
-          max: 320
-          step: 5
-          unit_of_measurement: A
     target_soc:
       required: true
       selector:
@@ -237,30 +170,6 @@ save_normal_profile:
           max: 30000
           step: 1
           unit_of_measurement: W
-    discharge_current:
-      required: true
-      selector:
-        number:
-          min: 0
-          max: 320
-          step: 1
-          unit_of_measurement: A
-    charge_current:
-      required: true
-      selector:
-        number:
-          min: 0
-          max: 320
-          step: 1
-          unit_of_measurement: A
-    grid_charge_current:
-      required: true
-      selector:
-        number:
-          min: 0
-          max: 320
-          step: 1
-          unit_of_measurement: A
     tou_soc:
       required: true
       selector:
@@ -297,30 +206,6 @@ save_default_settings:
           max: 30000
           step: 1
           unit_of_measurement: W
-    discharge_current:
-      required: true
-      selector:
-        number:
-          min: 0
-          max: 320
-          step: 1
-          unit_of_measurement: A
-    charge_current:
-      required: true
-      selector:
-        number:
-          min: 0
-          max: 320
-          step: 1
-          unit_of_measurement: A
-    grid_charge_current:
-      required: true
-      selector:
-        number:
-          min: 0
-          max: 320
-          step: 1
-          unit_of_measurement: A
 refresh_tariff_catalog:
   name: Refresh DSO tariff catalog
   description: Check the versioned tariff catalog. On error the last valid or bundled version is kept.
@@ -413,12 +298,40 @@ deactivate_manual_schedule:
 
 save_energy_status_display:
   name: Save Energy status sensor display
-  description: Save the card's Energy status sensor source-entity overrides and visibility choices. Unknown sensor roles are rejected.
+  description: Save the card's Energy status sensor source-entity overrides, visibility choices, and PV generation toggle (pv_enabled). Unknown sensor roles are rejected.
   fields:
     data:
       name: Display configuration JSON
-      description: JSON object with optional "mappings" (role to entity id) and "visibility" (role to boolean) objects.
+      description: JSON object with optional "pv_enabled" (boolean, default true), "mappings" (role to entity id), and "visibility" (role to boolean) objects.
       required: true
       selector:
         text:
           multiline: true
+
+get_inverter_configuration:
+  name: Get inverter configuration
+  description: Return all inverter configuration groups with live values, metadata and writability. Unmapped or unavailable fields are returned read-only.
+
+apply_inverter_configuration_group:
+  name: Apply inverter configuration group
+  description: Validate and write one group of inverter configuration fields. All values are prevalidated against live entity metadata; writes stop at the first failure.
+  fields:
+    group:
+      name: Group
+      required: true
+      selector:
+        select:
+          options:
+            - specification
+            - grid
+            - auxiliary
+            - battery_type
+            - battery_charging
+            - work_mode
+            - work_mode_detail
+    values:
+      name: Values
+      description: Object keyed by configuration field key. Only writable fields in the selected group are applied.
+      required: true
+      selector:
+        object:

@@ -57,63 +57,77 @@ def test_issue_5_tou_runtime_fails_closed_without_mapping_instead_of_guessing_pr
             assert runtime._tou_entity(idx, kind) == ""
 
 
-def test_issue_7_fresh_enabled_normal_slot_inherits_user_discharge_limit():
+def test_issue_7_manager_has_no_slot_or_target_current_contract():
     runtime = make_runtime()
-    runtime.default_discharge_current = 120
-    runtime.normal_profile_discharge_current = 0
-    runtime._normal_profile_loaded_from_store = True
     runtime.active_slot.enabled = True
     runtime.active_slot.mode = const.MODE_NORMAL_OPERATION
-    runtime.active_slot.discharge_current = 0
 
-    assert runtime.target_discharge_current == 120
+    for attr in (
+        "target_discharge_current",
+        "user_schedule_discharge_current",
+        "_effective_slot_discharge_current",
+        "default_discharge_current",
+        "normal_profile_discharge_current",
+        "discharge_current_number",
+    ):
+        assert not hasattr(runtime, attr)
+    for attr in ("charge_current", "discharge_current", "grid_charge_current"):
+        assert not hasattr(runtime.active_slot, attr)
 
 
-def test_issue_7_legacy_restored_zero_slot_is_semantically_migrated_on_read():
+def test_issue_7_current_fields_are_rejected_by_schedule_and_plan_contracts():
     runtime = make_runtime()
-    runtime.default_discharge_current = 120
-    runtime.normal_profile_discharge_current = 0
-    runtime.active_slot.enabled = True
-    runtime.active_slot.mode = const.MODE_SELLING_FIRST
-    runtime.active_slot.ai_sell_power_only = False
-    runtime.active_slot.discharge_current = 0
+    slot_key = runtime.active_slot_key()
+    with pytest.raises(ValueError, match="Unsupported schedule fields"):
+        asyncio.run(
+            runtime.async_apply_schedule_patch(
+                [
+                    {
+                        "slot_key": slot_key,
+                        "mode": const.MODE_NORMAL_OPERATION,
+                        "discharge_current": 75,
+                    }
+                ]
+            )
+        )
+    with pytest.raises(ValueError, match="Unsupported plan fields"):
+        runtime._validate_future_plan_updates(
+            [
+                {
+                    "slot_key": slot_key,
+                    "mode": const.MODE_NORMAL_OPERATION,
+                    "discharge_current": 75,
+                }
+            ]
+        )
 
-    assert runtime._effective_slot_discharge_current(runtime.active_slot) == 120
-    assert runtime.target_discharge_current == 120
 
-
-def test_issue_7_positive_manual_slot_discharge_current_remains_authoritative():
+def test_issue_7_apply_targets_never_writes_direct_current_entities():
     runtime = make_runtime()
-    runtime.default_discharge_current = 120
-    runtime.active_slot.enabled = True
-    runtime.active_slot.discharge_current = 75
-
-    assert runtime.target_discharge_current == 75
-
-
-def test_issue_7_apply_targets_never_writes_legacy_slot_zero_as_discharge_limit():
-    runtime = make_runtime()
-    runtime.default_discharge_current = 120
-    runtime.normal_profile_discharge_current = 0
     runtime.active_slot.enabled = True
     runtime.active_slot.mode = const.MODE_NORMAL_OPERATION
-    runtime.active_slot.discharge_current = 0
     runtime.control_enabled = True
     runtime.control_status = "Active"
-    runtime.hass.states.values[runtime.discharge_current_number] = FakeState("80")
+    runtime.hass.states.values[const.DEFAULT_DISCHARGE_CURRENT] = FakeState("80")
+    runtime.hass.states.values[const.DEFAULT_CHARGE_CURRENT] = FakeState("80")
+    runtime.hass.states.values[const.DEFAULT_GRID_CHARGE_CURRENT] = FakeState("60")
 
     async def _tou_ok():
         return True
 
     runtime.async_apply_time_of_use_map = _tou_ok
     assert asyncio.run(runtime.async_apply_targets()) is True
-    discharge_writes = [
-        call[2]["value"]
+    direct_current_entities = {
+        const.DEFAULT_DISCHARGE_CURRENT,
+        const.DEFAULT_CHARGE_CURRENT,
+        const.DEFAULT_GRID_CHARGE_CURRENT,
+    }
+    assert not [
+        call
         for call in runtime.hass.services.calls
         if call[:2] == ("number", "set_value")
-        and call[2].get("entity_id") == runtime.discharge_current_number
+        and call[2].get("entity_id") in direct_current_entities
     ]
-    assert discharge_writes == [120]
 
 
 def _set_solcast_inputs(runtime, *, forecast: float, actual: float) -> None:

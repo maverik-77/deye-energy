@@ -65,9 +65,6 @@ class DeyeManagerSwitch(DeyeEnergyEntity, SwitchEntity, RestoreEntity):
             return
         if self.attr == "charge_profile_grid_enabled":
             await self.runtime.async_save_charge_profile({
-                "charge_current": self.runtime.charge_profile_charge_current,
-                "discharge_current": self.runtime.charge_profile_discharge_current,
-                "grid_charge_current": self.runtime.charge_profile_grid_charge_current,
                 "target_soc": self.runtime.charge_profile_target_soc,
                 "grid_charge_enabled": True,
             })
@@ -80,9 +77,6 @@ class DeyeManagerSwitch(DeyeEnergyEntity, SwitchEntity, RestoreEntity):
     async def async_turn_off(self, **kwargs: Any):
         if self.attr == "charge_profile_grid_enabled":
             await self.runtime.async_save_charge_profile({
-                "charge_current": self.runtime.charge_profile_charge_current,
-                "discharge_current": self.runtime.charge_profile_discharge_current,
-                "grid_charge_current": self.runtime.charge_profile_grid_charge_current,
                 "target_soc": self.runtime.charge_profile_target_soc,
                 "grid_charge_enabled": False,
             })

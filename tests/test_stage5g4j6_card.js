@@ -53,7 +53,9 @@ const legacySell = {
 const sellUpdate = card.aiRowUpdate(legacySell);
 check(sellUpdate.sell_power === 4000, "AI Sell must preserve exact sell power");
 check(Object.keys(sellUpdate).sort().join(",") === "enabled,mode,sell_power,slot_key", "AI Sell must be power-only");
-check(!("discharge_current" in sellUpdate), "legacy sell current must be filtered");
+["discharge_current", "charge_current", "grid_charge_current"].forEach((field) => {
+  check(!(field in sellUpdate), `legacy sell ${field} must be filtered`);
+});
 
 const charge = {
   hour: 2,
@@ -78,7 +80,12 @@ const charge = {
     },
   },
 };
-check(card.aiRowUpdate(charge).discharge_current === 7, "Charge contract must remain unchanged");
+const chargeUpdate = card.aiRowUpdate(charge);
+check(chargeUpdate.tou_soc === 50, "Charge contract must keep the TOU SOC target");
+check(chargeUpdate.charge_enabled === true, "Charge contract must keep the Grid Charge permission");
+["discharge_current", "charge_current", "grid_charge_current"].forEach((field) => {
+  check(!(field in chargeUpdate), `charge ${field} must not be forwarded by the AI contract`);
+});
 
 if (failures) process.exit(1);
 console.log("Stage 5G.4J.6 power-only Sell card tests passed");

@@ -54,7 +54,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
 
     def test_card_sources_declare_current_resource_revision(self):
         for source in self.sources:
-            self.assertTrue(source.startswith("// Resource revision: v=0.8.0.54\n"))
+            self.assertTrue(source.startswith("// Resource revision: v=0.8.0.55\n"))
 
     def test_tou_table_is_the_simple_24h_to_six_tou_ranges(self):
         for source in self.sources:
@@ -209,33 +209,42 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
 
     def test_update_flow_lines_uses_dynamic_geometry(self):
         method = extract_method(self.sources[0], "updateFlowLines() {")
-        self.assertIn("const scaler = this.querySelector(\".flow-scaler\");", method)
-        self.assertIn("parseFloat(scaler?.dataset.tileWidth) || 300", method)
-        self.assertIn("parseFloat(scaler?.dataset.tileGap) || 0", method)
-        self.assertIn("parseFloat(scaler?.dataset.inverterColumnWidth) || 640", method)
-        self.assertIn("parseFloat(scaler?.dataset.inverterVisualWidth) || 190", method)
-        self.assertIn("this.flowGeometry({ tileWidth, tileGap, inverterColumnWidth, inverterVisualWidth })", method)
+        self.assertIn('const pvEnabled = this.pvGenerationEnabled();', method)
+        self.assertIn('updateSvg(this.querySelector(".flow-svg"), this.querySelector(".flow-scaler"), "flow");', method)
+        self.assertIn('updateSvg(this.querySelector(".ms-flow-svg"), this.querySelector(".ms-flow-scaler"), "mf");', method)
+        self.assertIn('parseFloat(scaler.dataset.tileWidth) || 300', method)
+        self.assertIn('parseFloat(scaler.dataset.tileGap) || 0', method)
+        self.assertIn('parseFloat(scaler.dataset.inverterColumnWidth) || 640', method)
+        self.assertIn('parseFloat(scaler.dataset.inverterVisualWidth) || 190', method)
+        self.assertIn('parseFloat(scaler.dataset.boardHeight) || 600', method)
+        self.assertIn('this.flowGeometry({ tileWidth, tileGap, inverterColumnWidth, inverterVisualWidth, boardHeight, pvEnabled })', method)
         self.assertIn('svg.setAttribute("viewBox", `0 0 ${geometry.boardWidth} ${geometry.boardHeight}`)', method)
         self.assertIn('path[data-flow-line-bg="${key}"]', method)
-        self.assertIn('background?.setAttribute("d", d)', method)
-        self.assertIn('background?.setAttribute("stroke", color)', method)
-        self.assertIn("path.setAttribute(\"d\", d);", method)
-        self.assertIn('path.setAttribute("marker-end", `url(#flow-arrow-${key})`)', method)
+        self.assertIn('background.setAttribute("d", d)', method)
+        self.assertIn('path.setAttribute("d", d)', method)
+        self.assertIn('path.setAttribute("marker-end", `url(#${markerPrefix}-arrow-${key})`)', method)
+        self.assertIn('setPath("pv", pvEnabled ? geometry.paths.pvToInverter : "", "#fbbf24", active.pv);', method)
 
     def test_flow_geometry_uses_tile_edges_and_four_inverter_ports(self):
         method = extract_between(self.sources[0], "flowGeometry({", "\n  energyFlowPanel()")
         for required in (
             "boardHeight = 600,",
+            "pvEnabled = true,",
+            "const hasPv = pvEnabled !== false;",
             "const tileTopY = Math.round(boardHeight * (145 / 600))",
             "const tileBottomY = boardHeight - tileTopY",
-            "pvTile: { x: tileWidth, y: tileTopY }",
-            "gridTile: { x: tileWidth, y: tileBottomY }",
+            "const gridTileY = hasPv ? tileBottomY : inverterCenterY;",
+            "pvTile: hasPv ? { x: tileWidth, y: tileTopY } : null,",
+            "gridTile: { x: tileWidth, y: gridTileY }",
             "batteryTile: { x: boardWidth - tileWidth, y: tileTopY }",
             "homeTile: { x: boardWidth - tileWidth, y: tileBottomY }",
-            "pvPort: { x: inverterCenterX - inverterVisualWidth / 2",
-            "gridPort: { x: inverterCenterX - inverterVisualWidth / 2",
-            "batteryPort: { x: inverterCenterX + inverterVisualWidth / 2",
-            "homePort: { x: inverterCenterX + inverterVisualWidth / 2",
+            "pvPort: hasPv ? { x: inverterCenterX - inverterVisualWidth / 2, y: inverterCenterY - inverterPortOffsetY } : null,",
+            "y: hasPv ? inverterCenterY + inverterPortOffsetY : inverterCenterY,",
+            "batteryPort: { x: inverterCenterX + inverterVisualWidth / 2, y: inverterCenterY - inverterPortOffsetY }",
+            "homePort: { x: inverterCenterX + inverterVisualWidth / 2, y: inverterCenterY + inverterPortOffsetY }",
+            'pvToInverter: hasPv ? curve(points.pvTile, points.pvPort) : ""',
+            "gridToInverter: curve(points.gridTile, points.gridPort)",
+            "inverterToGrid: curve(points.gridPort, points.gridTile)",
         ):
             self.assertIn(required, method)
         self.assertIn("inverterCenterY - inverterPortOffsetY", method)
@@ -486,7 +495,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
     def test_documentation_uses_current_card_cache_revision(self):
         for name in ("README.md", "INSTALL.md"):
             source = (ROOT / name).read_text(encoding="utf-8")
-            self.assertIn("deye-energy-card.js?v=0.8.0.54", source)
+            self.assertIn("deye-energy-card.js?v=0.8.0.55", source)
             self.assertNotIn("deye-energy-card.js?v=22", source)
             self.assertNotIn("deye-energy-card.js?v=10", source)
             self.assertNotIn("deye-energy-card.js?v=09", source)
@@ -623,9 +632,10 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertIn('el.addEventListener("input", saveDraft)', source)
         self.assertIn('el.addEventListener("change", saveDraft)', source)
         self.assertIn(
-            'this.chargeProfileInput("charge_current", this.entity("number", "charge_profile_charge_current"), "A")',
+            'this.chargeProfileInput("target_soc", this.entity("number", "charge_profile_target_soc"), "%")',
             source,
         )
+        self.assertNotIn("charge_profile_charge_current", source)
 
     def test_charge_profile_form_falls_back_to_persisted_manager_status(self):
         source = self.sources[0]
@@ -747,14 +757,17 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         source = self.sources[0]
         dialog = extract_method(source, "renderDialog(slots, touStarts)")
         for required in (
-            'slotDraftInput("charge_current"',
-            'slotDraftInput("discharge_current"',
-            'slotDraftInput("grid_charge_current"',
             'slotDraftInput("tou_soc"',
             'slotDraftSelect("charge_enabled"',
             'data-draft-charge-profile="1"',
         ):
             self.assertIn(required, dialog)
+        for forbidden in (
+            'slotDraftInput("charge_current"',
+            'slotDraftInput("discharge_current"',
+            'slotDraftInput("grid_charge_current"',
+        ):
+            self.assertNotIn(forbidden, dialog)
         self.assertIn("const isSelling", dialog)
         self.assertIn("const socField", dialog)
         self.assertEqual(dialog.count("${socField}"), 1)
@@ -841,7 +854,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertIn('const gridChargeLabel = isChargeMode ? (gridCharge ? "yes" : "no") : "not applicable"', source)
         self.assertIn('class="pill ${gridChargeClass}"', source)
         self.assertNotIn("this.pill(null, gridChargeLabel)", source)
-        self.assertIn("${gridChargeCurrent} A", source)
+        self.assertNotIn("${gridChargeCurrent} A", source)
         self.assertNotIn(
             'isCharge ? (slot.chargeEnabled === "on" ? "yes" : "no") : "not applicable"',
             source,
@@ -867,9 +880,9 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
             "physical_soc_actual",
             "grid_charge_expected",
             "grid_charge_actual",
-            "currents",
         ):
             self.assertIn(required, method)
+        self.assertNotIn('"currents"', method)
 
     def test_layout_config_has_defaults_and_mobile_overrides(self):
         source = self.sources[0]

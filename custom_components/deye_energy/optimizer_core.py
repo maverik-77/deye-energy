@@ -2056,35 +2056,15 @@ def _core_action_contract(
         if isinstance(baseline, list) and index < len(baseline) and isinstance(baseline[index], dict)
         else {}
     )
-    voltage = _optional(inputs.get("battery_voltage_v"))
-    estimated_current = (
-        min(240.0, max(0.0, planned_power_w / voltage))
-        if voltage is not None and voltage > 0 and planned_power_w > 0
-        else None
-    )
     existing_tou = _optional(baseline_slot.get("tou_soc"))
     existing_minimum_sell = _optional(baseline_slot.get("minimum_sell_soc"))
-    existing_discharge = _optional(baseline_slot.get("discharge_current_a"))
-    existing_charge = _optional(baseline_slot.get("charge_current_a"))
-    existing_grid_charge = _optional(baseline_slot.get("grid_charge_current_a"))
     charge_from_grid = action == "charge" and str(action_spec.get("charge_source") or "grid") != "pv"
     minimum_sell_soc = (
         effective_min_soc if action == "sell" else existing_minimum_sell
     )
     tou_soc = target_soc if action == "charge" else existing_tou
-    # A sell-power estimate is not the inverter's global maximum battery
-    # discharge current.  Keep it diagnostic only; the user-owned physical
-    # current limit is an input to feasibility and must never become a sell
-    # schedule output.
-    discharge_current = None if action == "sell" else existing_discharge
-    charge_current = estimated_current if action == "charge" and estimated_current is not None else existing_charge
-    grid_charge_current = (
-        estimated_current
-        if charge_from_grid and estimated_current is not None
-        else 0.0
-        if action == "charge" and not charge_from_grid
-        else existing_grid_charge
-    )
+    # Battery and grid current limits are direct inverter configuration only.
+    # Optimizer contracts carry logical schedule values, never current limits.
     schedule_update: dict[str, Any] = {
         "slot_key": f"{index % 24:02d}_{(index + 1) % 24:02d}",
         "enabled": True,
@@ -2093,12 +2073,7 @@ def _core_action_contract(
     execution_fields = (
         (("sell_power", planned_power_w),)
         if action == "sell"
-        else (
-            ("discharge_current", discharge_current),
-            ("charge_current", charge_current),
-            ("grid_charge_current", grid_charge_current),
-            ("tou_soc", tou_soc),
-        )
+        else (("tou_soc", tou_soc),)
         if action == "charge"
         else ()
     )
@@ -2130,25 +2105,7 @@ def _core_action_contract(
         "target_soc": round(target_soc, 4),
         "tou_soc": round(tou_soc, 4) if tou_soc is not None else None,
         "charge_enabled": schedule_update.get("charge_enabled"),
-        "charge_current": round(charge_current, 4) if charge_current is not None else None,
-        "grid_charge_current": round(grid_charge_current, 4) if grid_charge_current is not None else None,
-        "discharge_current": round(discharge_current, 4) if discharge_current is not None else None,
-        "estimated_battery_current_a": (
-            round(estimated_current, 4)
-            if action == "sell" and estimated_current is not None
-            else None
-        ),
-        "conversion": {
-            "battery_voltage_v": round(voltage, 4) if voltage is not None else None,
-            "basis": (
-                "diagnostic_sell_power_divided_by_battery_voltage"
-                if action == "sell" and estimated_current is not None
-                else "planned_power_divided_by_battery_voltage"
-                if estimated_current is not None
-                else "existing_slot_fallback"
-            ),
-        },
-        "deployment_ready": bool(action != "charge" or estimated_current is not None),
+        "deployment_ready": True,
         "confidence": confidence,
         "net_result": round(net_result, 5),
         "reason_code": reason_code,
@@ -3010,10 +2967,6 @@ def _simulate(
             "minimum_sell_soc": action_contract["minimum_sell_soc"],
             "tou_soc": action_contract["tou_soc"],
             "charge_enabled": action_contract["charge_enabled"],
-            "charge_current": action_contract["charge_current"],
-            "grid_charge_current": action_contract["grid_charge_current"],
-            "discharge_current": action_contract["discharge_current"],
-            "estimated_battery_current_a": action_contract["estimated_battery_current_a"],
             "soc_start_pct": round(soc, 4),
             "soc_end_pct": round(soc_end, 4),
             "soc_after": round(soc_end, 1),
