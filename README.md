@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.0.57-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.0.58-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -48,6 +48,9 @@ add-on profile) and to a UK-style tariff.
 - **Automatically managed Lovelace resource** in the default UI/storage mode.
 - **Diagnostics** for providers, entity mapping, data quality and the active
   schedule source.
+- **Trigger logs** card (`custom:deye-energy-trigger-logs-card`) recording every
+  physical inverter write with timestamp, target/value and success/failure
+  status, with time filters and 30-day retention; addable to any dashboard.
 
 ## Requirements
 
@@ -137,7 +140,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.57
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.58
       type: module
 ```
 

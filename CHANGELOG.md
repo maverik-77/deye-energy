@@ -6,6 +6,19 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.58] - 2026-11-20
+
+### Added
+
+- **Trigger logs**: `sensor.*_trigger_logs` and dashboard card
+  `custom:deye-energy-trigger-logs-card` (addable to any dashboard) logging
+  every individual physical inverter write with timestamp, target entity,
+  service/value, success/failure status and error/source context.
+- Trigger log time filter (Past hour, Past 2 hours, Day, Past 24 hours, Past
+  week, Past 30 days) with 30-day retention and bounded persistent storage
+  (safety cap). **Day** shows entries since local midnight; other ranges are
+  rolling windows.
+
 ## [0.8.0.57] - 2026-11-20
 
 ### Added

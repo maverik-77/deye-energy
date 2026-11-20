@@ -34,6 +34,9 @@ _INVERTER_LINK_STALE_SECONDS = 600
 _INVERTER_LINK_UNAVAILABLE_TICKS = 2
 _INVERTER_LINK_AVAILABLE_TICKS = 2
 
+TRIGGER_LOG_RETENTION_DAYS = 30
+TRIGGER_LOG_MAX_ENTRIES = 5000
+
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import (
     async_track_point_in_time,
@@ -462,6 +465,7 @@ class DeyeEnergyRuntime:
     tou_operation_started_at: datetime | None = None
     tou_last_error: str = ""
     tou_transaction_log: list[dict[str, Any]] = field(default_factory=list)
+    trigger_log: list[dict[str, Any]] = field(default_factory=list)
     reverse_sync_status: str = "idle"
     reverse_sync_last_error: str = ""
     reverse_sync_changed_hours: list[str] = field(default_factory=list)
@@ -478,6 +482,8 @@ class DeyeEnergyRuntime:
     _energy_day: str = ""
     _stats_store: Store | None = None
     _ai_store: Store | None = None
+    _trigger_log_store: Store | None = None
+    _trigger_log_dirty: bool = False
     _charge_profile_loaded_from_store: bool = False
     _default_profile_loaded_from_store: bool = False
     _solcast_store: Store | None = None
@@ -898,13 +904,35 @@ class DeyeEnergyRuntime:
         if not entity_id:
             raise ValueError("No entities for the physical Deye write")
         self._performance.inc("inverter_write_requested")
-        self._guard_physical_write(entity_id, target_value)
-        await self.hass.services.async_call(domain, service, data, blocking=True)
+        timestamp = ha_now().isoformat()
+        try:
+            self._guard_physical_write(entity_id, target_value)
+            await self.hass.services.async_call(domain, service, data, blocking=True)
+        except Exception as err:
+            await self._async_append_trigger_log(
+                timestamp=timestamp,
+                entity_id=entity_id,
+                domain=domain,
+                service=service,
+                value=target_value,
+                success=False,
+                error=str(err),
+            )
+            raise
         self._performance.inc("inverter_write_executed")
         lowered_entity_id = entity_id.lower()
         if "time_of_use" in lowered_entity_id or "_tou_" in lowered_entity_id:
             self._performance.inc("tou_write_executed")
         self._physical_write_count += 1
+        await self._async_append_trigger_log(
+            timestamp=timestamp,
+            entity_id=entity_id,
+            domain=domain,
+            service=service,
+            value=target_value,
+            success=True,
+            error="",
+        )
 
     def _control_result_is_current(self, transaction_id: str | None = None) -> bool:
         transaction_id = transaction_id or _CONTROL_TRANSACTION_ID.get()
@@ -4859,7 +4887,7 @@ class DeyeEnergyRuntime:
             if not tou["ok"]
             else "OK"
         )
-        return {"integration_version": "0.8.0.57", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
+        return {"integration_version": "0.8.0.58", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
                 "inverter_provider": self.inverter_provider,
                 "inverter_device_id": self.data.get(CONF_INVERTER_DEVICE_ID),
                 "inverter_provider_label": provider_profile(self.data).label,
@@ -4998,6 +5026,90 @@ class DeyeEnergyRuntime:
         self.sales_stats["last_update"] = self._energy_last_update.isoformat() if self._energy_last_update else None
         await self._stats_store.async_save(self.sales_stats)
         self._stats_dirty = False
+
+    def _prune_trigger_log(self) -> None:
+        cutoff = ha_now() - timedelta(days=TRIGGER_LOG_RETENTION_DAYS)
+        kept: list[dict[str, Any]] = []
+        for entry in self.trigger_log:
+            if not isinstance(entry, dict):
+                continue
+            ts = entry.get("timestamp")
+            try:
+                dt = datetime.fromisoformat(str(ts))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=cutoff.tzinfo)
+            except Exception:
+                kept.append(entry)
+                continue
+            if dt >= cutoff:
+                kept.append(entry)
+        if len(kept) > TRIGGER_LOG_MAX_ENTRIES:
+            kept = kept[-TRIGGER_LOG_MAX_ENTRIES:]
+        self.trigger_log = kept
+
+    async def async_load_trigger_log(self) -> None:
+        self._trigger_log_store = Store(
+            self.hass, 1, f"{DOMAIN}_{self.entry_id}_trigger_log"
+        )
+        try:
+            data = await self._trigger_log_store.async_load()
+        except Exception:
+            _LOGGER.exception("Failed to load Deye trigger log")
+            data = None
+        if isinstance(data, dict):
+            entries = data.get("entries")
+        elif isinstance(data, list):
+            entries = data
+        else:
+            entries = []
+        if not isinstance(entries, list):
+            entries = []
+        self.trigger_log = [e for e in entries if isinstance(e, dict)]
+        self._prune_trigger_log()
+        self._trigger_log_dirty = False
+
+    async def async_save_trigger_log(self, *, force: bool = False) -> None:
+        if self._trigger_log_store is None or (
+            not self._trigger_log_dirty and not force
+        ):
+            return
+        self._prune_trigger_log()
+        try:
+            await self._trigger_log_store.async_save(
+                {"entries": self.trigger_log}
+            )
+            self._trigger_log_dirty = False
+        except Exception:  # Persistence must not break inverter control.
+            _LOGGER.exception("Failed to save Deye trigger log")
+
+    async def _async_append_trigger_log(
+        self,
+        *,
+        timestamp: str,
+        entity_id: str,
+        domain: str,
+        service: str,
+        value: Any,
+        success: bool,
+        error: str = "",
+    ) -> None:
+        if not isinstance(value, (str, int, float, bool)) and value is not None:
+            value = str(value)
+        entry = {
+            "timestamp": timestamp,
+            "entity_id": entity_id,
+            "domain": domain,
+            "service": service,
+            "value": value,
+            "success": bool(success),
+            "error": str(error or ""),
+            "source": str(getattr(self, "planned_manager_action", "") or ""),
+        }
+        self.trigger_log.append(entry)
+        self._prune_trigger_log()
+        self._trigger_log_dirty = True
+        await self.async_save_trigger_log()
+        self.notify_update("trigger_log")
 
     async def async_load_ai_data(self) -> None:
         self._ai_store = Store(self.hass, 1, f"{DOMAIN}_{self.entry_id}_ai_data")
@@ -14503,6 +14615,7 @@ class DeyeEnergyRuntime:
             )
             await self._tariff_catalog_manager.async_load()
             await self.async_load_sales_stats()
+            await self.async_load_trigger_log()
             await self.async_load_ai_data()
             await self.async_load_solcast_history()
             await self.async_update_solcast_history()

@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.57
+// Resource revision: v=0.8.0.58
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -2988,7 +2988,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.57)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.58)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -9447,6 +9447,197 @@ class DeyeEnergyCard extends HTMLElement {
   }
 }
 
+class DeyeEnergyTriggerLogsCard extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._filter = this._config.default_filter || "24h";
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+
+  _render() {
+    if (!this._hass) return;
+    const title = this._escape(this._config.title || "Trigger logs");
+    const entityId = this._findEntity();
+    const stateObj = entityId ? this._hass.states[entityId] : null;
+    const entries = Array.isArray(stateObj?.attributes?.entries)
+      ? [...stateObj.attributes.entries]
+      : [];
+    const filtered = this._applyFilter(entries);
+    filtered.reverse();
+    const options = [
+      ["1h", "Past hour"],
+      ["2h", "Past 2 hrs"],
+      ["today", "Day"],
+      ["24h", "Past 24 hours"],
+      ["7d", "Past week"],
+      ["30d", "Past 30 days"],
+    ];
+    const select = options
+      .map(
+        ([v, l]) =>
+          `<option value="${v}" ${this._filter === v ? "selected" : ""}>${l}</option>`
+      )
+      .join("");
+    let body = "";
+    if (!stateObj) {
+      body = `<div style="padding:8px 0;color:var(--secondary-text-color);">Trigger log sensor not found. Ensure the Deye Energy integration is loaded and updated.</div>`;
+    } else if (!entries.length) {
+      body = `<div style="padding:8px 0;color:var(--secondary-text-color);">No inverter triggers logged yet.</div>`;
+    } else if (!filtered.length) {
+      body = `<div style="padding:8px 0;color:var(--secondary-text-color);">No inverter triggers in the selected period.</div>`;
+    } else {
+      const rows = filtered.map((e) => this._row(e)).join("");
+      body = `
+        <div style="max-height:440px;overflow:auto;">
+          <table style="width:100%;border-collapse:collapse;font-size:0.95em;">
+            <thead>
+              <tr>
+                <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--divider-color);">Time</th>
+                <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--divider-color);">Input / trigger</th>
+                <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--divider-color);">Status</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+    }
+    this.innerHTML = `
+      <ha-card header="${title}">
+        <div class="card-content">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+            <div style="color:var(--secondary-text-color);font-size:0.9em;">Showing ${filtered.length} of ${entries.length} (30-day retention)</div>
+            <label style="display:flex;align-items:center;gap:6px;font-size:0.95em;color:var(--primary-text-color);">Filter
+              <select id="trigger-log-filter" style="padding:4px 8px;border-radius:6px;border:1px solid var(--divider-color);background:var(--card-background-color, var(--ha-card-background, white));color:var(--primary-text-color);">${select}</select>
+            </label>
+          </div>
+          ${body}
+        </div>
+      </ha-card>`;
+    const sel = this.querySelector("#trigger-log-filter");
+    if (sel) {
+      sel.addEventListener("change", (ev) => {
+        this._filter = ev.target.value;
+        this._render();
+      });
+    }
+  }
+
+  _row(e) {
+    const ok = e && e.success === true;
+    const status = ok ? "Success" : "Failed";
+    const color = ok ? "var(--success-color, #4caf50)" : "var(--error-color, #f44336)";
+    const bg = ok ? "rgba(76,175,80,0.14)" : "rgba(244,67,54,0.14)";
+    const ts = this._escape(this._formatTime(e?.timestamp));
+    const target = this._escape(e?.entity_id || "");
+    const service = this._escape(
+      `${e?.domain || ""}.${e?.service || ""}` +
+        (e?.value !== undefined && e?.value !== null && e?.value !== ""
+          ? ` = ${e.value}`
+          : "")
+    );
+    const msgParts = [];
+    if (e?.error) msgParts.push(String(e.error));
+    if (e?.source) msgParts.push(`Source: ${e.source}`);
+    const msg = this._escape(msgParts.join(" | "));
+    return `<tr>
+      <td style="white-space:nowrap;padding:6px 8px;border-bottom:1px solid var(--divider-color);vertical-align:top;">${ts}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid var(--divider-color);vertical-align:top;">
+        <div style="font-family:var(--code-font-family, monospace);font-size:0.92em;">${target || "—"}</div>
+        <div style="color:var(--secondary-text-color);font-size:0.9em;margin-top:2px;">${service || "—"}</div>
+      </td>
+      <td style="padding:6px 8px;border-bottom:1px solid var(--divider-color);vertical-align:top;">
+        <span style="display:inline-block;padding:2px 10px;border-radius:999px;font-weight:600;color:${color};background:${bg};">${status}</span>
+        ${msg ? `<div style="color:var(--secondary-text-color);font-size:0.85em;margin-top:4px;word-break:break-word;">${msg}</div>` : ""}
+      </td>
+    </tr>`;
+  }
+
+  _formatTime(ts) {
+    if (!ts) return "";
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return String(ts);
+    return d.toLocaleString();
+  }
+
+  _applyFilter(entries) {
+    const now = new Date();
+    let cutoff = null;
+    switch (this._filter) {
+      case "1h":
+        cutoff = new Date(now.getTime() - 60 * 60 * 1000);
+        break;
+      case "2h":
+        cutoff = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+        break;
+      case "today":
+        cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        break;
+      case "24h":
+        cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        break;
+      case "7d":
+        cutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        break;
+      case "30d":
+        cutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        break;
+      default:
+        cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    }
+    return entries.filter((e) => {
+      const t = new Date(e?.timestamp);
+      if (Number.isNaN(t.getTime())) return true;
+      return t >= cutoff;
+    });
+  }
+
+  _findEntity() {
+    if (!this._hass?.states) return "";
+    if (this._config?.entity && this._hass.states[this._config.entity]) {
+      return this._config.entity;
+    }
+    const ids = Object.keys(this._hass.states).filter(
+      (id) => id.startsWith("sensor.") && id.includes("trigger_log")
+    );
+    return (
+      ids.find((id) => id.includes("deye_energy") && id.endsWith("_trigger_log")) ||
+      ids.find((id) => id.includes("deye") && id.includes("trigger_log")) ||
+      ids[0] ||
+      ""
+    );
+  }
+
+  _escape(value) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  getCardSize() {
+    return 5;
+  }
+
+  static getStubConfig() {
+    return { title: "Trigger logs", default_filter: "24h" };
+  }
+}
+
 customElements.define("deye-energy-card", DeyeEnergyCard);
+customElements.define("deye-energy-trigger-logs-card", DeyeEnergyTriggerLogsCard);
 window.customCards = window.customCards || [];
-window.customCards.push({ type: "deye-energy-card", name: "Deye Energy", description: "Deye Energy 0.8.0" });
+window.customCards.push({
+  type: "deye-energy-card",
+  name: "Deye Energy",
+  description: "Deye Energy 0.8.0",
+});
+window.customCards.push({
+  type: "deye-energy-trigger-logs-card",
+  name: "Trigger logs",
+  description: "Logs inverter inputs/triggers with success/failure status",
+});

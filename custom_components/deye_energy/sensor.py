@@ -147,6 +147,18 @@ def diagnostics_attrs(runtime):
     return runtime.diagnostics_public_snapshot()
 
 
+def trigger_log_attrs(runtime):
+    entries = list(getattr(runtime, "trigger_log", []) or [])
+    last = entries[-1] if entries else {}
+    return {
+        "entries": entries,
+        "count": len(entries),
+        "last_timestamp": last.get("timestamp"),
+        "last_success": last.get("success"),
+        "last_entity_id": last.get("entity_id"),
+    }
+
+
 def tariff_attrs(runtime):
     return runtime.tariff_context()
 
@@ -235,6 +247,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 lambda r: "connected" if r.data_available else "problem",
                 attrs_fn=diagnostics_attrs,
                 unrecorded_attributes={"entities"},
+            ),
+            DeyeManagerSensor(
+                runtime,
+                "trigger_log",
+                "Trigger logs",
+                lambda r: len(getattr(r, "trigger_log", []) or []),
+                attrs_fn=trigger_log_attrs,
+                unrecorded_attributes={"entries"},
             ),
             DeyeManagerSensor(runtime, "active_slot", "Active slot", lambda r: r.active_slot_key()),
             DeyeManagerSensor(runtime, "target_mode", "Target mode", lambda r: r.target_mode),

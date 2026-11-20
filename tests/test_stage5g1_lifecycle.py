@@ -294,7 +294,7 @@ def test_startup_finishes_with_ai_and_learning_enabled():
             return None
 
         for name in (
-            "async_load_sales_stats", "async_load_ai_data", "async_load_solcast_history",
+            "async_load_sales_stats", "async_load_trigger_log", "async_load_ai_data", "async_load_solcast_history",
             "async_update_solcast_history", "async_load_learning_history",
             "async_update_learning_history", "async_load_energy_history",
             "async_update_energy_sample", "async_update_weather_forecast",

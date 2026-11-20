@@ -17,12 +17,12 @@ def test_release_identity_and_resource_revision_are_080_44():
     component_card = PACKAGE / "www" / "deye-energy-card.js"
     public_card = ROOT / "www" / "deye-energy-card.js"
 
-    assert manifest["version"] == "0.8.0.57"
+    assert manifest["version"] == "0.8.0.58"
     assert "MINOR_VERSION = 25" in config_flow
-    assert 'CARD_RESOURCE_REVISION = "0.8.0.57"' in frontend
+    assert 'CARD_RESOURCE_REVISION = "0.8.0.58"' in frontend
     assert component_card.read_bytes() == public_card.read_bytes()
     assert component_card.read_text(encoding="utf-8").startswith(
-        "// Resource revision: v=0.8.0.57\n"
+        "// Resource revision: v=0.8.0.58\n"
     )
 
 
@@ -61,7 +61,7 @@ def test_release_notes_cover_final_rc_contract_without_overclaiming():
 def test_storage_and_yaml_installation_paths_are_explicitly_separated():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     install = (ROOT / "INSTALL.md").read_text(encoding="utf-8")
-    canonical = "/deye_energy/deye-energy-card.js?v=0.8.0.57"
+    canonical = "/deye_energy/deye-energy-card.js?v=0.8.0.58"
 
     assert "UI/storage mode" in readme
     assert "automatically registers" in readme

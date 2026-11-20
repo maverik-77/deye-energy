@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.57`.
+Card resource revision: `v=0.8.0.58`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the original
@@ -9,6 +9,12 @@ integrated through MQTT. Attribution is recorded at the bottom of README.md.
 
 ## Revision history
 
+- `v=0.8.0.58` — Added **Trigger logs** (`sensor.*_trigger_logs` and
+  `custom:deye-energy-trigger-logs-card`) recording every individual physical
+  inverter write with timestamp, target/service/value, success/failure status
+  and error/source context, plus time filters (Past hour, Past 2 hours, Day,
+  Past 24 hours, Past week, Past 30 days) with 30-day retention and bounded
+  persistent storage.
 - `v=0.8.0.57` — Added an independent **Save PV** button in Energy status,
   set `number.deye_battery_restart_capacity` to 10% once on first
   install/setup/start (best-effort), fixed TOU `H:MM`/`HH:MM` normalization,
