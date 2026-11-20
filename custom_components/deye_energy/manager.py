@@ -452,6 +452,7 @@ class DeyeEnergyRuntime:
     _restored_slot_tou_soc_keys: set[str] = field(default_factory=set)
     _restored_slot_minimum_sell_soc_keys: set[str] = field(default_factory=set)
     _tou_soc_migration_done: bool = False
+    _install_init_battery_restart_capacity_done: bool = False
     # Stage 5B: physical Deye Time Of Use transaction state.
     tou_write_pending: bool = False
     tou_operation_status: str = "idle"
@@ -4858,7 +4859,7 @@ class DeyeEnergyRuntime:
             if not tou["ok"]
             else "OK"
         )
-        return {"integration_version": "0.8.0.56", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
+        return {"integration_version": "0.8.0.57", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
                 "inverter_provider": self.inverter_provider,
                 "inverter_device_id": self.data.get(CONF_INVERTER_DEVICE_ID),
                 "inverter_provider_label": provider_profile(self.data).label,
@@ -5123,6 +5124,9 @@ class DeyeEnergyRuntime:
             if math.isfinite(sell_power) and 0 <= sell_power <= self.effective_inverter_max_power_w:
                 self.default_sell_power = sell_power
             self._default_profile_loaded_from_store = True
+        self._install_init_battery_restart_capacity_done = bool(
+            data.get("install_init_battery_restart_capacity_done", False)
+        )
 
         raw_manual_tou = data.get("manual_tou_mapping")
         if isinstance(raw_manual_tou, (list, dict)):
@@ -5185,6 +5189,7 @@ class DeyeEnergyRuntime:
             "default_profile": {
                 "sell_power": self.default_sell_power,
             },
+            "install_init_battery_restart_capacity_done": self._install_init_battery_restart_capacity_done,
             "sa_defaults_v1": True,
             "normal_profile": {
                 "physical_work_mode": self.normal_profile_physical_work_mode,
@@ -5237,6 +5242,7 @@ class DeyeEnergyRuntime:
             "default_profile": [
                 self.default_sell_power,
             ],
+            "install_init_battery_restart_capacity_done": self._install_init_battery_restart_capacity_done,
             "normal_profile": [
                 self.normal_profile_physical_work_mode,
                 self.normal_profile_sell_power,
@@ -14445,6 +14451,42 @@ class DeyeEnergyRuntime:
             _on_hass_started,
         )
 
+    async def _async_ensure_install_battery_restart_capacity_default(self) -> None:
+        """One-time install setup: set Start battery discharge capacity to 10%."""
+        if self._install_init_battery_restart_capacity_done:
+            return
+        entity_id = "number.deye_battery_restart_capacity"
+        target = 10.0
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in ("unknown", "unavailable"):
+            _LOGGER.warning(
+                "Install default: %s is unavailable; leaving Start battery discharge capacity unchanged and will retry on next start",
+                entity_id,
+            )
+            return
+        current = self.safe_float(state.state, float("nan"))
+        if math.isfinite(current) and math.isclose(current, target, abs_tol=0.01):
+            self._install_init_battery_restart_capacity_done = True
+            await self.async_save_ai_data()
+            return
+        try:
+            await self.hass.services.async_call(
+                "number",
+                "set_value",
+                {"entity_id": entity_id, "value": target},
+                blocking=True,
+            )
+        except Exception as err:  # noqa: BLE001 - startup best-effort
+            _LOGGER.warning(
+                "Install default: failed to set %s to %s%%: %s; will retry on next start",
+                entity_id,
+                target,
+                err,
+            )
+            return
+        self._install_init_battery_restart_capacity_done = True
+        await self.async_save_ai_data()
+
     async def async_start(self) -> None:
         self._startup_in_progress = True
         self._unloading = False
@@ -14492,6 +14534,7 @@ class DeyeEnergyRuntime:
                 self.request_learning_save()
             if self._energy_save_dirty:
                 self.request_energy_save()
+            await self._async_ensure_install_battery_restart_capacity_default()
             self.request_optimizer_recalc("startup")
             self.request_sensor_snapshot_refresh()
 

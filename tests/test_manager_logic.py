@@ -5314,9 +5314,14 @@ class ControlMasterTests(unittest.IsolatedAsyncioTestCase):
 
     def test_source_audit_leaves_only_guarded_writes_and_weather_read(self):
         source = (PACKAGE / "manager.py").read_text(encoding="utf-8")
-        self.assertEqual(source.count("self.hass.services.async_call("), 2)
+        self.assertEqual(source.count("self.hass.services.async_call("), 3)
         self.assertIn("async def _async_physical_service_call", source)
         self.assertIn('"weather",\n                "get_forecasts"', source)
+        self.assertIn("async def _async_ensure_install_battery_restart_capacity_default", source)
+        install_body = source.split(
+            "async def _async_ensure_install_battery_restart_capacity_default", 1
+        )[1].split("\n    async def ", 1)[0]
+        self.assertIn("self.hass.services.async_call(", install_body)
         for helper in (
             "async_set_work_mode",
             "async_set_number",

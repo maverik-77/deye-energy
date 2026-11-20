@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.0.56-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.0.57-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -137,7 +137,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.56
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.57
       type: module
 ```
 
@@ -162,7 +162,8 @@ and displayed:
 - untick **Visible** to hide that reading from the Energy status page. PV sensor
   mappings/visibility rows remain configurable but are ignored while PV
   generation is disabled;
-- select **Save sensor display** to persist the choices through the
+- select **Save PV** in the PV generation row to persist only the PV generation
+  setting, or **Save sensor display** to persist the full choices through the
   `deye_energy.save_energy_status_display` service (`pv_enabled`, `mappings`,
   `visibility`). Unknown roles are rejected. The updated integration must be
   installed and Home Assistant restarted before this editor is available.

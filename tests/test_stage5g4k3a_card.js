@@ -77,5 +77,5 @@ check(html.includes("rates") && html.includes("rates"), "Octopus Energy list att
 check(html.includes("24/24"), "coverage must be visible");
 check(!html.includes("stable-entry") && !html.includes("config_entry_id"), "technical registry IDs must stay hidden");
 check(source.includes("The frontend does not read or guess the schema"), "backend-only parsing contract missing");
-check(source.startsWith("// Resource revision: v=0.8.0.56"), "resource revision must be 0.8.0.56");
+check(source.startsWith("// Resource revision: v=0.8.0.57"), "resource revision must be 0.8.0.57");
 console.log("stage5g4k3a card contract OK");

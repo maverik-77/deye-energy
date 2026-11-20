@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.56
+// Resource revision: v=0.8.0.57
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -2988,7 +2988,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.56)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.57)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -3272,7 +3272,10 @@ class DeyeEnergyCard extends HTMLElement {
       <section class="diagnostic-section energy-status-general">
         <h3>PV generation</h3>
         <div class="energy-status-toggle">
-          <label><input type="checkbox" data-energy-pv-enabled="1"${draft.pv_enabled ? " checked" : ""}> Enable PV generation</label>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <label><input type="checkbox" data-energy-pv-enabled="1"${draft.pv_enabled ? " checked" : ""}> Enable PV generation</label>
+            <button type="button" data-save-energy-pv="1">Save PV</button>
+          </div>
           <span class="hint" style="margin:0;padding:0;border:0;background:transparent">When disabled, PV is removed from Energy status and excluded from AI/plan calculations.</span>
         </div>
       </section>
@@ -3317,6 +3320,38 @@ class DeyeEnergyCard extends HTMLElement {
       return true;
     } catch (error) {
       this._energyStatusMessage = `Save error: ${error?.message || "could not save sensor display"}`;
+      this.failSave("energy_status_display", error);
+      this.renderDialogOnly();
+      return false;
+    }
+  }
+
+  async saveEnergyPvGeneration() {
+    if (!this.hasService("deye_energy", "save_energy_status_display")) {
+      this._energyStatusMessage = "The save_energy_status_display service is unavailable. Update and restart the integration.";
+      this.renderDialogOnly();
+      return false;
+    }
+    const saved = this.energyStatusDisplay();
+    const pvField = this.querySelector('[data-energy-pv-enabled="1"]');
+    const pv_enabled = pvField ? pvField.checked : this.pvGenerationEnabled();
+    const payload = {
+      pv_enabled,
+      mappings: (saved.mappings && typeof saved.mappings === "object") ? { ...saved.mappings } : {},
+      visibility: (saved.visibility && typeof saved.visibility === "object") ? { ...saved.visibility } : {},
+    };
+    this.beginSave();
+    try {
+      await this.callService("deye_energy", "save_energy_status_display", { data: JSON.stringify(payload) });
+      if (this._energyStatusDraft && typeof this._energyStatusDraft === "object") {
+        this._energyStatusDraft.pv_enabled = pv_enabled;
+      }
+      this._energyStatusMessage = "PV generation setting saved.";
+      this.finishSave();
+      this.renderDialogOnly();
+      return true;
+    } catch (error) {
+      this._energyStatusMessage = `Save error: ${error?.message || "could not save PV generation setting"}`;
       this.failSave("energy_status_display", error);
       this.renderDialogOnly();
       return false;
@@ -3835,9 +3870,9 @@ class DeyeEnergyCard extends HTMLElement {
 
   // ---- Deye Time Of Use table editor ---------------------------------------
 
-  // Reverse of clockFromMinutes; accepts any valid HH:MM whole-minute time.
+  // Reverse of clockFromMinutes; accepts whole-minute clock times (HH:MM, H:MM, with optional seconds).
   minutesFromClock(value) {
-    const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(value ?? "").trim());
+    const match = /^([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?$/.exec(String(value ?? "").trim());
     if (!match) return null;
     return Number(match[1]) * 60 + Number(match[2]);
   }
@@ -3872,7 +3907,7 @@ class DeyeEnergyCard extends HTMLElement {
     if (!state) return null;
     const raw = String(state.state ?? "").trim();
     if (!raw || ["unknown", "unavailable", "none"].includes(raw.toLowerCase())) return null;
-    if (field === "start") return raw.slice(0, 5);
+    if (field === "start") return this.normalizeMappingClock(raw);
     if (field === "soc") {
       const value = Number(raw);
       return Number.isFinite(value) ? value : null;
@@ -3975,27 +4010,30 @@ class DeyeEnergyCard extends HTMLElement {
       const field = String(el.dataset.mappingField || "");
       const row = rows.find((item) => Number(item.slot) === slot);
       if (!row) return;
-      const value = String(el.value || "").slice(0, 5);
+      const rawValue = String(el.value || "").trim();
+      const timeValue = (field === "start" || field === "end")
+        ? this.normalizeMappingClock(rawValue)
+        : "";
       // An unchanged control may be stale after a neighbouring edit synced it.
       // Ignore it so it cannot overwrite the newer value.
-      if ((field === "start" || field === "end") && value === row[field]) return;
+      if ((field === "start" || field === "end") && timeValue === row[field]) return;
       if (field === "start") {
-        row.start = value;
+        row.start = timeValue;
         // To is derived from the following From; keep the chain contiguous.
         if (slot > 1) {
           const previous = rows.find((item) => Number(item.slot) === slot - 1);
           if (previous) {
-            previous.end = value;
-            setControlValue(slot - 1, "end", value);
+            previous.end = timeValue;
+            setControlValue(slot - 1, "end", timeValue);
           }
         }
       } else if (field === "end") {
-        row.end = value;
+        row.end = timeValue;
         if (slot < rows.length) {
           const next = rows.find((item) => Number(item.slot) === slot + 1);
           if (next) {
-            next.start = value;
-            setControlValue(slot + 1, "start", value);
+            next.start = timeValue;
+            setControlValue(slot + 1, "start", timeValue);
           }
         }
       } else if (field === "soc") {
@@ -4743,7 +4781,7 @@ class DeyeEnergyCard extends HTMLElement {
     const tileTopY = Math.round(boardHeight * (145 / 600));
     const tileBottomY = boardHeight - tileTopY;
     const hasPv = pvEnabled !== false;
-    const gridTileY = hasPv ? tileBottomY : inverterCenterY;
+    const gridTileY = tileBottomY;
     const points = {
       pvTile: hasPv ? { x: tileWidth, y: tileTopY } : null,
       gridTile: { x: tileWidth, y: gridTileY },
@@ -4752,7 +4790,7 @@ class DeyeEnergyCard extends HTMLElement {
       pvPort: hasPv ? { x: inverterCenterX - inverterVisualWidth / 2, y: inverterCenterY - inverterPortOffsetY } : null,
       gridPort: {
         x: inverterCenterX - inverterVisualWidth / 2,
-        y: hasPv ? inverterCenterY + inverterPortOffsetY : inverterCenterY,
+        y: inverterCenterY + inverterPortOffsetY,
       },
       batteryPort: { x: inverterCenterX + inverterVisualWidth / 2, y: inverterCenterY - inverterPortOffsetY },
       homePort: { x: inverterCenterX + inverterVisualWidth / 2, y: inverterCenterY + inverterPortOffsetY },
@@ -5083,7 +5121,7 @@ class DeyeEnergyCard extends HTMLElement {
                     </div>
                   </div>
                 </div>` : ""}
-                <div class="ms-flow-tile ms-flow-grid"${!pvEnabled ? ' style="align-self:center"' : ""}>
+                <div class="ms-flow-tile ms-flow-grid">
                   <div class="ms-flow-head">
                     <div class="ms-flow-icon" style="color:#c084fc">${this.iconSvg("grid2")}</div>
                     <div class="ms-flow-heading">
@@ -5335,7 +5373,7 @@ class DeyeEnergyCard extends HTMLElement {
                     <strong><span data-live="pv-daily">${fmtNumber(pvDaily, 2)}</span> kWh</strong>
                   </div>
                 </div>` : ""}
-                <div class="flow-tile flow-tile-grid"${!pvEnabled ? ' style="align-self:center"' : ""}>
+                <div class="flow-tile flow-tile-grid">
                   <div class="flow-tile-head">
                     <div class="flow-tile-icon" style="color:#c084fc">${this.iconSvg("grid2")}</div>
                     <div class="flow-tile-heading">
@@ -8814,7 +8852,7 @@ class DeyeEnergyCard extends HTMLElement {
             @media(max-width:620px){.ai-execution-toolbar,.ai-execution-date{width:100%}.ai-execution-date{display:grid;grid-template-columns:minmax(0,1fr) auto}.ai-exec-kpi{min-width:calc(50% - 4px)}.ai-execution-chart{padding:8px}.ai-execution-toolbar .ai-day-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}}
 @media(max-width:620px){.ai-execution-toolbar,.ai-execution-date{width:100%}.ai-execution-date{display:grid;grid-template-columns:minmax(0,1fr) auto}.ai-exec-kpi{min-width:calc(50% - 4px)}.ai-execution-chart{padding:8px}.ai-execution-toolbar .ai-day-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}}
            .ai-explanation-view{display:grid;gap:12px}.ai-explanation-view>h2{margin:0}.ai-explanation-profile details,.ai-shadow,.ai-help{margin-top:10px}.ai-explanation-profile summary,.ai-shadow summary,.ai-help summary{cursor:pointer;color:#dff3fc;font-weight:800}.ai-decision-summary{line-height:1.55}.ai-explanation-balance{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0}.ai-explanation-balance>div{border:1px solid rgba(103,158,184,.2);border-radius:6px;padding:9px;background:rgba(3,16,25,.45)}.ai-explanation-balance span{display:block;color:#93adbc;font-size:10px}.ai-explanation-balance strong{display:block;margin-top:4px}.ai-explanation-list{display:grid;gap:7px;padding-left:18px}.ai-explanation-list li{padding:6px 0;border-top:1px solid rgba(103,158,184,.15)}.ai-explanation-list strong{display:block;color:#7ee22d}.ai-explanation-list span{display:block;margin-top:3px;color:#b9d0dc;line-height:1.4}.ai-help dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:7px 12px}.ai-help dt{color:#7ee22d;font-weight:800}.ai-help dd{margin:0;color:#b9d0dc}@media(max-width:620px){.ai-explanation-balance{grid-template-columns:minmax(0,1fr)}.ai-help dl{grid-template-columns:minmax(0,1fr)}}
-           .manual-schedule-table{min-width:820px}.manual-schedule-table .time-col{white-space:nowrap}.manual-schedule-table tr.editing{background:rgba(21,155,255,.09)}.manual-schedule-table tr.disabled{opacity:.72}.manual-schedule-table tr.editing td{border-top-color:rgba(21,155,255,.38)}.manual-schedule-table input,.manual-schedule-table select{width:100%;min-width:90px;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:5px 6px}.manual-schedule-table input[type=checkbox]{width:auto;min-width:0;accent-color:var(--blue)}.manual-action-cell{display:flex;gap:6px;align-items:center}.manual-schedule-table .icon-only.active{border-color:var(--blue);color:#2ea7ff;background:rgba(8,53,92,.55)}.manual-schedule-table .icon-only.remove:hover{border-color:rgba(255,77,99,.7);color:#ff9cab}.manual-schedule-table .icon-only:disabled{opacity:.35;cursor:not-allowed}.manual-row-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.manual-row-actions button{min-height:36px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 12px;cursor:pointer}.manual-row-actions button:disabled{opacity:.45;cursor:not-allowed}.manual-schedule-table tr.time-current td{animation:manual-time-current-text-glow 2.4s ease-in-out infinite}@keyframes manual-time-current-text-glow{0%,100%{text-shadow:0 0 2px rgba(255,166,45,.18)}50%{text-shadow:0 0 5px rgba(255,166,45,.7),0 0 12px rgba(255,166,45,.95),0 0 22px rgba(255,166,45,.55)}}
+           .manual-schedule-table{min-width:820px}.manual-schedule-table .time-col{white-space:nowrap}.manual-schedule-table tr.editing{background:rgba(21,155,255,.09)}.manual-schedule-table tr.disabled{opacity:.72}.manual-schedule-table tr.editing td{border-top-color:rgba(21,155,255,.38)}.manual-schedule-table input,.manual-schedule-table select{width:100%;min-width:90px;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:5px 6px}.manual-schedule-table input[type=checkbox]{width:auto;min-width:0;accent-color:var(--blue)}.manual-action-cell{display:flex;gap:6px;align-items:center}.manual-schedule-table .icon-only.active{border-color:var(--blue);color:#2ea7ff;background:rgba(8,53,92,.55)}.manual-schedule-table .icon-only.remove:hover{border-color:rgba(255,77,99,.7);color:#ff9cab}.manual-schedule-table .icon-only:disabled{opacity:.35;cursor:not-allowed}.manual-row-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.manual-row-actions button{min-height:36px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 12px;cursor:pointer}.manual-row-actions button:disabled{opacity:.45;cursor:not-allowed}.manual-schedule-table tr.time-current td{background:rgba(255,166,45,.07);box-shadow:inset 0 0 0 1px rgba(255,166,45,.22);animation:manual-time-current-text-glow 2.4s ease-in-out infinite}@keyframes manual-time-current-text-glow{0%,100%{text-shadow:0 0 3px rgba(255,166,45,.28)}50%{text-shadow:0 0 8px rgba(255,166,45,.85),0 0 18px rgba(255,166,45,1),0 0 30px rgba(255,166,45,.65)}}
            </style>
             <div class="dem-v073" style="${demStyle}">
             ${statusSection}
@@ -9067,8 +9105,14 @@ class DeyeEnergyCard extends HTMLElement {
       el.addEventListener("change", update);
       if (el.tagName !== "SELECT") el.addEventListener("input", update);
     });
+    root.querySelectorAll("[data-energy-pv-enabled]").forEach((el) => {
+      el.addEventListener("change", () => this.collectEnergyStatusDraft());
+    });
     root.querySelectorAll("[data-save-energy-status]").forEach((el) => el.addEventListener("click", () => {
       this.saveEnergyStatusDisplay();
+    }));
+    root.querySelectorAll("[data-save-energy-pv]").forEach((el) => el.addEventListener("click", () => {
+      this.saveEnergyPvGeneration();
     }));
     root.querySelectorAll("[data-settings-tab]").forEach((el) => el.addEventListener("click", () => {
       this._settingsTab = el.dataset.settingsTab;

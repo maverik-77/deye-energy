@@ -6,6 +6,38 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.57] - 2026-11-20
+
+### Added
+
+- **Energy status**: an independent **Save PV** button in the PV generation row
+  saves only `pv_enabled` through the existing
+  `deye_energy.save_energy_status_display` service, preserving unsaved
+  mapping/visibility draft edits. **Save sensor display** continues to save the
+  full payload.
+
+### Changed
+
+- On first integration install/setup/start, `number.deye_battery_restart_capacity`
+  (**Start battery discharge**) is set to **10% once** as a best-effort
+  initialization. If the entity is missing, unknown/unavailable or the write
+  fails, a warning is logged and initialization is retried on the next start;
+  if it is already ~10% it is marked done without a write, and once recorded it
+  is never changed automatically again.
+- Manual schedule: the current active row glow/highlight is more pronounced
+  (stronger amber text glow with a subtle row background/outline) for clearer
+  visibility.
+
+### Fixed
+
+- **TOU mapping**: time validation/normalization now accepts and canonicalizes
+  `H:MM`/`HH:MM` mapping start/end values to `HH:MM` without changing
+  range/contiguity/SOC logic.
+- **Energy status flow (PV disabled)**: Grid tile and grid↔inverter
+  connection/flow remain at the bottom position and port in desktop and mobile
+  layouts when PV generation is disabled (PV slot left empty), so the
+  grid↔inverter line stays in the standard location.
+
 ## [0.8.0.56] - 2026-11-20
 
 ### Changed

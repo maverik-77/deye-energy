@@ -54,7 +54,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
 
     def test_card_sources_declare_current_resource_revision(self):
         for source in self.sources:
-            self.assertTrue(source.startswith("// Resource revision: v=0.8.0.56\n"))
+            self.assertTrue(source.startswith("// Resource revision: v=0.8.0.57\n"))
 
     def test_tou_table_is_the_simple_24h_to_six_tou_ranges(self):
         for source in self.sources:
@@ -233,13 +233,13 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
             "const hasPv = pvEnabled !== false;",
             "const tileTopY = Math.round(boardHeight * (145 / 600))",
             "const tileBottomY = boardHeight - tileTopY",
-            "const gridTileY = hasPv ? tileBottomY : inverterCenterY;",
+            "const gridTileY = tileBottomY;",
             "pvTile: hasPv ? { x: tileWidth, y: tileTopY } : null,",
             "gridTile: { x: tileWidth, y: gridTileY }",
             "batteryTile: { x: boardWidth - tileWidth, y: tileTopY }",
             "homeTile: { x: boardWidth - tileWidth, y: tileBottomY }",
             "pvPort: hasPv ? { x: inverterCenterX - inverterVisualWidth / 2, y: inverterCenterY - inverterPortOffsetY } : null,",
-            "y: hasPv ? inverterCenterY + inverterPortOffsetY : inverterCenterY,",
+            "y: inverterCenterY + inverterPortOffsetY,",
             "batteryPort: { x: inverterCenterX + inverterVisualWidth / 2, y: inverterCenterY - inverterPortOffsetY }",
             "homePort: { x: inverterCenterX + inverterVisualWidth / 2, y: inverterCenterY + inverterPortOffsetY }",
             'pvToInverter: hasPv ? curve(points.pvTile, points.pvPort) : ""',
@@ -495,7 +495,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
     def test_documentation_uses_current_card_cache_revision(self):
         for name in ("README.md", "INSTALL.md"):
             source = (ROOT / name).read_text(encoding="utf-8")
-            self.assertIn("deye-energy-card.js?v=0.8.0.56", source)
+            self.assertIn("deye-energy-card.js?v=0.8.0.57", source)
             self.assertNotIn("deye-energy-card.js?v=22", source)
             self.assertNotIn("deye-energy-card.js?v=10", source)
             self.assertNotIn("deye-energy-card.js?v=09", source)
@@ -1178,10 +1178,13 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
             )
 
             self.assertIn(".manual-schedule-table tr.time-current td", source)
+            self.assertIn("background:rgba(255,166,45,.07)", source)
+            self.assertIn("box-shadow:inset 0 0 0 1px rgba(255,166,45,.22)", source)
             self.assertIn("@keyframes manual-time-current-text-glow", source)
             self.assertIn("2.4s ease-in-out infinite", source)
-            self.assertIn("text-shadow:0 0 2px rgba(255,166,45,.18)", source)
-            self.assertIn("0 0 12px rgba(255,166,45,.95)", source)
+            self.assertIn("text-shadow:0 0 3px rgba(255,166,45,.28)", source)
+            self.assertIn("0 0 18px rgba(255,166,45,1)", source)
+            self.assertIn("0 0 30px rgba(255,166,45,.65)", source)
             self.assertNotIn("@keyframes manual-time-current-row", source)
             self.assertNotIn("@keyframes manual-time-current-cell", source)
 

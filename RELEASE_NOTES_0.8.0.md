@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.56`.
+Card resource revision: `v=0.8.0.57`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the original
@@ -9,6 +9,11 @@ integrated through MQTT. Attribution is recorded at the bottom of README.md.
 
 ## Revision history
 
+- `v=0.8.0.57` — Added an independent **Save PV** button in Energy status,
+  set `number.deye_battery_restart_capacity` to 10% once on first
+  install/setup/start (best-effort), fixed TOU `H:MM`/`HH:MM` normalization,
+  kept grid↔inverter flow at the bottom when PV is disabled, and made the
+  manual-schedule active-row glow more pronounced.
 - `v=0.8.0.56` — Mapped inverter configuration start/stop battery discharge
   capacities and grid voltage/frequency to direct-MQTT Deye entities (with grid
   V/f shown as live read-only sensors), removed unmapped Sunsynk/`inverters_1`
