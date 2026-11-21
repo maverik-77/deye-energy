@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.61
+// Resource revision: v=0.8.0.62
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -2988,7 +2988,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.61 (resource revision v=0.8.0.61)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.62 (resource revision v=0.8.0.62)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -3936,35 +3936,62 @@ class DeyeEnergyCard extends HTMLElement {
     for (let slot = 1; slot <= 6; slot += 1) {
       const physicalRow = physical.find((item) => Number(item.range) === slot) || {};
       const planRow = plan[slot - 1] || {};
+      const cap = (field) => physicalRow?.capabilities?.fields?.[field] ?? physicalRow?.fields?.[field] ?? this.touCapabilityRow(slot)?.fields?.[field] ?? null;
+      const capActual = (field) => {
+        const c = cap(field);
+        let val = c?.actual;
+        if (val === undefined || val === null || val === "") return null;
+        if (field === "sell" || field === "grid_charge") {
+          if (typeof val === "boolean") return val;
+          const n = String(val).trim().toLowerCase();
+          if (["on","true","1","yes","enable","enabled","allow grid","both"].includes(n)) return true;
+          if (["off","false","0","no","disable","disabled","no grid or gen"].includes(n)) return false;
+          return null;
+        }
+        if (field === "soc" || field === "power" || field === "voltage") {
+          const num = Number(val);
+          return Number.isFinite(num) ? num : null;
+        }
+        if (field === "start") return this.normalizeMappingClock(val);
+        return String(val);
+      };
       const start = this.normalizeMappingClock(
         this.mappingLiveValue(this.mappingEntityId(slot, "start"), "start")
         ?? physicalRow.actual_start
+        ?? capActual("start")
         ?? planRow.start_time
         ?? planRow.start
         ?? "00:00",
       );
       const soc = this.mappingLiveValue(this.mappingEntityId(slot, "soc"), "soc")
         ?? physicalRow.actual_soc
+        ?? capActual("soc")
         ?? planRow.tou_soc;
       const grid = this.mappingLiveValue(this.mappingEntityId(slot, "grid_charge"), "grid_charge")
         ?? physicalRow.actual_grid_charge_enabled
+        ?? capActual("grid_charge")
         ?? planRow.grid_charge;
       const mode = this.mappingLiveValue(this.mappingEntityId(slot, "mode"), "mode")
         ?? physicalRow.actual_mode
+        ?? capActual("mode")
         ?? planRow.mode
         ?? null;
       const charge = this.mappingLiveValue(this.mappingEntityId(slot, "charge"), "charge")
         ?? physicalRow.actual_charge
+        ?? capActual("charge")
         ?? planRow.charge
         ?? null;
       const sell = this.mappingLiveValue(this.mappingEntityId(slot, "sell"), "sell")
         ?? physicalRow.actual_sell
+        ?? capActual("sell")
         ?? planRow.sell;
       const power = this.mappingLiveValue(this.mappingEntityId(slot, "power"), "power")
         ?? physicalRow.actual_power
+        ?? capActual("power")
         ?? planRow.power;
       const voltage = this.mappingLiveValue(this.mappingEntityId(slot, "voltage"), "voltage")
         ?? physicalRow.actual_voltage
+        ?? capActual("voltage")
         ?? planRow.voltage;
       rows.push({
         slot,
@@ -4024,6 +4051,10 @@ class DeyeEnergyCard extends HTMLElement {
     const keepEditing = options.keepEditing === true;
     const previousStatus = this._mappingStatus;
     const entityIds = this.mappingTouEntityIds();
+    const diagnosticsEntity = this.entity("sensor", "diagnostics");
+    if (diagnosticsEntity && this.exists(diagnosticsEntity) && !entityIds.includes(diagnosticsEntity)) {
+      entityIds.push(diagnosticsEntity);
+    }
     let refreshError = "";
     if (entityIds.length && this.hasService("homeassistant", "update_entity")) {
       try {
@@ -9866,6 +9897,31 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
     </div>`;
   }
 
+  _renderSig(active) {
+    const monitorIds = [
+      "sensor.deye_pv1_voltage","sensor.deye_pv1_current","sensor.deye_pv2_voltage","sensor.deye_pv2_current","sensor.deye_pv3_voltage","sensor.deye_pv3_current",
+      "sensor.deye_grid_voltage","sensor.deye_inverter_voltage",
+      "sensor.deye_pv_power","sensor.deye_pv1_power","sensor.deye_pv2_power","sensor.deye_pv3_power",
+      "sensor.deye_inverter_power","sensor.deye_load_power","sensor.deye_load_l1_power","sensor.deye_load_l2_power","sensor.deye_essential_power","sensor.deye_essential_1_power","sensor.deye_essential_2_power","sensor.deye_non_essential_power",
+      "sensor.deye_grid_power","sensor.deye_gen_power",
+      "sensor.deye_battery_soc","sensor.deye_battery_voltage","sensor.deye_battery_charging_voltage","sensor.deye_battery_current","sensor.deye_battery_power","sensor.deye_battery_temperature","sensor.deye_bat1_soc","sensor.deye_bat1_cycle","sensor.deye_battery_charge_limit_current","sensor.deye_battery_discharge_limit_current",
+      "sensor.deye_day_battery_charge","sensor.deye_day_battery_discharge","sensor.deye_total_battery_charge","sensor.deye_total_battery_discharge",
+      "sensor.deye_day_pv_energy","sensor.deye_day_load_energy","sensor.deye_day_grid_import","sensor.deye_day_grid_export","sensor.deye_day_active_energy","sensor.deye_day_reactive_energy",
+      "sensor.deye_total_pv_energy","sensor.deye_total_load_energy","sensor.deye_total_grid_import","sensor.deye_total_grid_export","sensor.deye_total_active_energy","sensor.deye_year_pv_energy","sensor.deye_year_load_energy","sensor.deye_year_grid_export",
+    ];
+    const monitorStates = monitorIds.map((id) => {
+      const s = this._hass?.states?.[id];
+      return s ? `${id}=${s.state}|${s.attributes?.unit_of_measurement || ""}` : `${id}=`;
+    }).join(";");
+    return JSON.stringify([
+      active, this._inverterConfigLoading, this._inverterConfigLoaded, this._inverterConfigError,
+      this._inverterDatetimeSyncing, this._inverterDatetimeMessage, this._inverterDatetimeStatus,
+      this._inverterConfig, this._inverterConfigDrafts, this._inverterConfigSaving,
+      this._inverterConfigMessages, this._pendingApply, this._config?.title || "",
+      monitorStates,
+    ]);
+  }
+
   _render() {
     if (!this._hass) {
       this.innerHTML = `<ha-card><div style="padding:16px">Loading…</div></ha-card>`;
@@ -9874,6 +9930,9 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
     const subTabs = this.inverterConfigSubTabDefs();
     const active = subTabs.some((tab) => tab.key === this._inverterConfigSubTab) ? this._inverterConfigSubTab : "inverter";
     this._inverterConfigSubTab = active;
+    const sig = this._renderSig(active);
+    if (sig === this._lastRenderSig) return;
+    this._lastRenderSig = sig;
     const shownEntities = new Set();
     this.inverterConfigGroups().forEach((group) => (group.fields || []).forEach((field) => { if (field.entity_id) shownEntities.add(String(field.entity_id)); }));
 
@@ -9979,7 +10038,7 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
     this.innerHTML = `
       <ha-card class="ic-card">
         <style>
-          .ic-card { --ic-bg: var(--card-background-color, #111); --ic-surface: rgba(255,255,255,.03); --ic-surface2: rgba(255,255,255,.06); --ic-line: var(--divider-color, rgba(255,255,255,.12)); --ic-text: var(--primary-text-color, #eaf6ff); --ic-muted: var(--secondary-text-color, #9bb3c1); --ic-accent: var(--primary-color, #4da3ff); --ic-good: var(--success-color, #66bb6a); --ic-bad: var(--error-color, #ff6b6b); color: var(--ic-text); }
+          .ic-card { --ic-bg: var(--card-background-color, #111); --ic-surface: rgba(255,255,255,.03); --ic-surface2: rgba(255,255,255,.06); --ic-line: rgba(118,166,190,.22); --ic-text: #eef7ff; --ic-muted: #9eb8c8; --ic-accent: #4da3ff; --ic-good: var(--success-color, #66bb6a); --ic-bad: var(--error-color, #ff6b6b); --primary-text-color:#eef7ff; --secondary-text-color:#9eb8c8; --divider-color:rgba(118,166,190,.22); --ha-card-background:transparent; --card-background-color:rgba(9,24,35,.92); color: var(--ic-text); background: radial-gradient(circle at 18% 0%,rgba(26,106,164,.22),transparent 34%),linear-gradient(180deg,#020913,#06131c 54%,#050b10); border: 1px solid rgba(101,142,164,.32); box-shadow: 0 18px 45px rgba(0,0,0,.35); }
           .ic-wrap { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
           .ic-header { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; justify-content: space-between; }
           .ic-header h2 { margin: 0; font-size: 1.35rem; line-height: 1.2; }
@@ -10193,7 +10252,7 @@ class DeyeEnergyTriggerLogsCard extends HTMLElement {
     }
 
     this.innerHTML = `
-      <ha-card header="${title}" style="height:100%;min-height:480px;display:flex;flex-direction:column;">
+      <ha-card header="${title}" style="height:100%;min-height:480px;display:flex;flex-direction:column;background:radial-gradient(circle at 18% 0%,rgba(26,106,164,.22),transparent 34%),linear-gradient(180deg,#020913,#06131c 54%,#050b10);border:1px solid rgba(101,142,164,.32);box-shadow:0 18px 45px rgba(0,0,0,.35);color:#eef7ff;--primary-text-color:#eef7ff;--secondary-text-color:#9eb8c8;--divider-color:rgba(118,166,190,.22);--ha-card-background:transparent;--card-background-color:rgba(9,24,35,.92);">
         <div class="card-content" style="flex:1;min-height:0;display:flex;flex-direction:column;box-sizing:border-box;">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
             <div style="color:var(--secondary-text-color);font-size:0.9em;">${filtered.length} event${filtered.length === 1 ? "" : "s"} in selected period</div>
@@ -10342,7 +10401,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.0.61",
+  description: "Deye Energy 0.8.0.62",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

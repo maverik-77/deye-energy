@@ -6,6 +6,20 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.62] - 2026-11-21
+
+### Changed
+
+- **Inverter configuration card**: Added a render-signature guard to avoid
+  unnecessary full DOM rebuilds on every Home Assistant state update, improving
+  tab responsiveness.
+- **Deye Time Of Use settings**: Added robust fallbacks to capability/diagnostics
+  actual values for TOU fields (including Mode/Charge/Sell/Power/Voltage) and
+  refresh the diagnostics entity when opening/refreshing the TOU tab, reducing
+  cases where table data appears unavailable.
+- **Card styling**: Aligned Trigger logs and Inverter configuration card
+  backgrounds/border/text vars with the main Deye Energy dark blue card theme.
+
 ## [0.8.0.61] - 2026-11-21
 
 ### Changed
