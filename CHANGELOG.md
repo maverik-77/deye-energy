@@ -6,6 +6,19 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.71] - 2026-11-21
+
+### Changed
+
+- **Power flow consumers**: added optional `consumers` config to
+  `custom:deye-energy-power-flow-card`, rendering named consumer cards with live
+  power, icons, active state, click-to-more-info, and optional `type: rest`
+  untracked-load calculation.
+- **Energy period switching**: added `view.energy_periods` selector
+  (`power/today/24h/week/month`) with live power mode and energy-period display
+  using configured daily/statistics energy entities where available.
+- **Tests/docs**: extended power flow contract tests and updated documentation.
+
 ## [0.8.0.70] - 2026-11-21
 
 ### Changed

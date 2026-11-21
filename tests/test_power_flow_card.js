@@ -95,5 +95,35 @@ check(fired.detail && fired.detail.entityId === 'sensor.my_pv', "more-info entit
 card.hass = { states: { "sensor.my_pv": { state: "0" } } };
 check(card.innerHTML.includes("Missing/unavailable entities"), "missing entity warning not shown");
 
+// Consumers + period selector
+const card2 = new sandbox.PowerFlowCard();
+card2.setConfig({
+  title: "Deye",
+  view: { energy_periods: ["power", "today", "24h", "week", "month"] },
+  entities: { pv: "sensor.pv", grid: "sensor.grid", battery: "sensor.batt", battery_soc: "sensor.soc", load: "sensor.load", inverter: "sensor.inv" },
+  consumers: [
+    { entity: "sensor.ac", name: "Right AC", icon: "mdi:air-conditioner", min_w: 5 },
+    { entity: "sensor.uni", name: "Unifi", icon: "mdi:server", min_w: 1 },
+    { type: "rest", name: "Rest", icon: "mdi:cloud-question", min_w: 20 }
+  ]
+});
+card2.hass = { states: {
+  "sensor.pv": { state: "1000" }, "sensor.grid": { state: "200" }, "sensor.batt": { state: "0" },
+  "sensor.soc": { state: "50" }, "sensor.load": { state: "1200" }, "sensor.inv": { state: "1000" },
+  "sensor.ac": { state: "500" }, "sensor.uni": { state: "50" }
+}};
+const h2 = card2.innerHTML;
+check(h2.includes("Consumers"), "missing consumers section");
+check(h2.includes("Right AC"), "missing consumer name");
+check(h2.includes("Unifi"), "missing consumer name Unifi");
+check(h2.includes("Rest"), "missing rest consumer");
+check(h2.includes("pf-period"), "missing period selector");
+check(h2.includes('data-period="today"'), "missing today period");
+check(h2.includes('data-period="24h"'), "missing 24h period");
+check(h2.includes("pf-consumer-click"), "missing consumer click class");
+check(card2._period === "power", "default period should be power");
+card2._period = "today"; card2._render();
+check(card2.innerHTML.includes("Energy period view"), "missing period view label");
+
 check(/^\/\/ Resource revision: v=\d+\.\d+\.\d+(\.\d+)?\n/.test(source), "resource revision header missing/invalid");
 console.log("Power flow card tests passed");
