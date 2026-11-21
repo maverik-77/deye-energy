@@ -32,8 +32,9 @@ INVERTER_CONFIG_GROUPS: tuple[tuple[str, str], ...] = (
     ("specification", "Specification"),
     ("grid", "Grid"),
     ("battery_charging", "Battery charging"),
-    ("work_mode", "Work mode"),
+    ("battery_config", "Battery configuration"),
     ("work_mode_detail", "Work mode detail"),
+    ("system_control", "Mode & control"),
 )
 
 INVERTER_CONFIG_GROUP_KEYS: tuple[str, ...] = tuple(
@@ -87,6 +88,10 @@ INVERTER_CONFIG_FIELDS: tuple[InverterConfigField, ...] = (
         "grid_peak_shaving_power", "Grid peak shaving power", "grid",
         entity_id="number.deye_grid_peak_shaving_power", unit="W",
     ),
+    InverterConfigField(
+        "gen_peak_shaving_power", "Gen peak shaving power", "grid",
+        entity_id="number.deye_gen_peak_shaving_power", unit="W",
+    ),
     # Battery charging.  The three direct-only current fields are here.
     InverterConfigField(
         "max_discharge_current", "Max discharge current", "battery_charging",
@@ -100,16 +105,44 @@ INVERTER_CONFIG_FIELDS: tuple[InverterConfigField, ...] = (
         "max_grid_charge_current", "Max grid charge current", "battery_charging",
         entity_id=DEFAULT_GRID_CHARGE_CURRENT, config_key=CONF_GRID_CHARGE_CURRENT_NUMBER, unit="A",
     ),
-    # Work mode.
+    # Battery configuration.
     InverterConfigField(
-        "stop_battery_discharge_capacity", "Stop battery discharge capacity", "work_mode",
+        "battery_absorption_voltage", "Absorption voltage", "battery_config",
+        entity_id="number.deye_battery_absorption_voltage", unit="V",
+    ),
+    InverterConfigField(
+        "battery_float_voltage", "Float voltage", "battery_config",
+        entity_id="number.deye_battery_float_voltage", unit="V",
+    ),
+    InverterConfigField(
+        "battery_equalization_voltage", "Equalization voltage", "battery_config",
+        entity_id="number.deye_battery_equalization_voltage", unit="V",
+    ),
+    InverterConfigField(
+        "battery_low_capacity", "Low capacity", "battery_config",
+        entity_id="number.deye_battery_low_capacity", unit="%",
+    ),
+    InverterConfigField(
+        "battery_low_voltage", "Low voltage", "battery_config",
+        entity_id="number.deye_battery_low_voltage", unit="V",
+    ),
+    InverterConfigField(
+        "stop_battery_discharge_capacity", "Shutdown capacity", "battery_config",
         entity_id="number.deye_battery_shutdown_capacity", unit="%",
     ),
     InverterConfigField(
-        "start_battery_discharge_capacity", "Start battery discharge capacity", "work_mode",
+        "battery_shutdown_voltage", "Shutdown voltage", "battery_config",
+        entity_id="number.deye_battery_shutdown_voltage", unit="V",
+    ),
+    InverterConfigField(
+        "start_battery_discharge_capacity", "Restart capacity", "battery_config",
         entity_id="number.deye_battery_restart_capacity", unit="%",
     ),
-    # Work mode detail.
+    InverterConfigField(
+        "battery_restart_voltage", "Restart voltage", "battery_config",
+        entity_id="number.deye_battery_restart_voltage", unit="V",
+    ),
+    # Work mode.
     InverterConfigField(
         "work_mode", "Work mode", "work_mode_detail",
         entity_id=DEFAULT_WORK_MODE_SELECT, config_key=CONF_WORK_MODE_SELECT,
@@ -125,6 +158,43 @@ INVERTER_CONFIG_FIELDS: tuple[InverterConfigField, ...] = (
     InverterConfigField(
         "grid_trickle_feed", "Grid trickle feed", "work_mode_detail",
         entity_id="number.deye_grid_trickle_feed_power", unit="W",
+    ),
+    # Mode & control.
+    InverterConfigField(
+        "bms_protocol", "BMS protocol", "system_control",
+        entity_id="select.deye_bms_protocol",
+    ),
+    InverterConfigField(
+        "aux_port_usage", "AUX port usage", "system_control",
+        entity_id="select.deye_aux_port_usage",
+    ),
+    InverterConfigField(
+        "use_timer", "Use timer", "system_control",
+        entity_id="switch.deye_use_timer",
+    ),
+    InverterConfigField(
+        "grid_charge_enabled", "Grid charge enabled", "system_control",
+        entity_id="switch.deye_grid_charge_enabled",
+    ),
+    InverterConfigField(
+        "priority_load", "Priority load", "system_control",
+        entity_id="switch.deye_priority_load",
+    ),
+    InverterConfigField(
+        "solar_export", "Solar export", "system_control",
+        entity_id="switch.deye_solar_export",
+    ),
+    InverterConfigField(
+        "inverter_enabled", "Inverter enabled", "system_control",
+        entity_id="switch.deye_inverter_enabled",
+    ),
+    InverterConfigField(
+        "grid_always_on", "Grid always on", "system_control",
+        entity_id="switch.deye_grid_always_on",
+    ),
+    InverterConfigField(
+        "near_realtime", "Near realtime", "system_control",
+        entity_id="switch.deye_near_realtime",
     ),
 )
 

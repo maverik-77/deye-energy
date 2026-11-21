@@ -366,6 +366,8 @@ def boolean_option(data: dict[str, Any], role: str, enabled: bool) -> str:
             return str(configured)
     if role == "grid":
         return item.grid_enabled if enabled else item.grid_disabled
+    if role == "sell":
+        return "on" if enabled else "off"
     raise ValueError(f"Unknown provider boolean role: {role}")
 
 
@@ -405,12 +407,19 @@ def boolean_state(data: dict[str, Any], role: str, state: Any) -> bool | None:
     provider value.  This reader therefore preserves all four meanings while
     writes continue to use the provider's configured true/false options.
     """
-    if role != "grid":
-        raise ValueError(f"Unknown provider boolean role: {role}")
-
     actual = _normalized_option(state)
     if not actual or actual in {"unknown", "unavailable", "none"}:
         return None
+
+    if role == "sell":
+        if actual in {"on", "true", "1", "yes", "enable", "enabled"}:
+            return True
+        if actual in {"off", "false", "0", "no", "disable", "disabled"}:
+            return False
+        return None
+
+    if role != "grid":
+        raise ValueError(f"Unknown provider boolean role: {role}")
 
     provider = provider_key(data)
     if provider == PROVIDER_SUNSYNK:
@@ -541,6 +550,36 @@ def provider_tou_field_capabilities(key: str) -> dict[str, dict[str, Any]]:
         "grid_charge": {
             "supported": physical_supported,
             "domains": item.tou_grid_domains,
+            "per_slot": True,
+            "read_only": read_only,
+        },
+        "mode": {
+            "supported": physical_supported,
+            "domains": ("select",),
+            "per_slot": True,
+            "read_only": read_only,
+        },
+        "charge": {
+            "supported": physical_supported,
+            "domains": ("select",),
+            "per_slot": True,
+            "read_only": read_only,
+        },
+        "sell": {
+            "supported": physical_supported,
+            "domains": ("switch", "select", "input_boolean"),
+            "per_slot": True,
+            "read_only": read_only,
+        },
+        "power": {
+            "supported": physical_supported,
+            "domains": ("number",),
+            "per_slot": True,
+            "read_only": read_only,
+        },
+        "voltage": {
+            "supported": physical_supported,
+            "domains": ("number",),
             "per_slot": True,
             "read_only": read_only,
         },

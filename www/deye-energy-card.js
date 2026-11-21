@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.58
+// Resource revision: v=0.8.0.59
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -33,6 +33,9 @@ class DeyeEnergyCard extends HTMLElement {
     this._inverterConfigDrafts = {};
     this._inverterConfigSaving = {};
     this._inverterConfigMessages = {};
+    this._inverterDatetimeStatus = null;
+    this._inverterDatetimeSyncing = false;
+    this._inverterDatetimeMessage = "";
     this._scrollTops = {};
     this._pageScrollTops = [];
     this._interactionRelease = null;
@@ -2988,7 +2991,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.58)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0 (resource revision v=0.8.0.59)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -3908,14 +3911,21 @@ class DeyeEnergyCard extends HTMLElement {
     const raw = String(state.state ?? "").trim();
     if (!raw || ["unknown", "unavailable", "none"].includes(raw.toLowerCase())) return null;
     if (field === "start") return this.normalizeMappingClock(raw);
-    if (field === "soc") {
+    if (field === "soc" || field === "power" || field === "voltage") {
       const value = Number(raw);
       return Number.isFinite(value) ? value : null;
     }
-    if (field === "grid_charge") {
+    if (field === "grid_charge" || field === "sell") {
+      const normalized = raw.toLowerCase();
+      if (["on", "true", "1", "yes", "enable", "enabled", "allow grid", "both"].includes(normalized)) return true;
+      if (["off", "false", "0", "no", "disable", "disabled", "no grid or gen"].includes(normalized)) return false;
       const label = this.touGridLabel(raw);
       if (label === "yes") return true;
       if (label === "no") return false;
+      return null;
+    }
+    if (field === "mode" || field === "charge") {
+      return raw;
     }
     return null;
   }
@@ -3940,11 +3950,33 @@ class DeyeEnergyCard extends HTMLElement {
       const grid = this.mappingLiveValue(this.mappingEntityId(slot, "grid_charge"), "grid_charge")
         ?? physicalRow.actual_grid_charge_enabled
         ?? planRow.grid_charge;
+      const mode = this.mappingLiveValue(this.mappingEntityId(slot, "mode"), "mode")
+        ?? physicalRow.actual_mode
+        ?? planRow.mode
+        ?? null;
+      const charge = this.mappingLiveValue(this.mappingEntityId(slot, "charge"), "charge")
+        ?? physicalRow.actual_charge
+        ?? planRow.charge
+        ?? null;
+      const sell = this.mappingLiveValue(this.mappingEntityId(slot, "sell"), "sell")
+        ?? physicalRow.actual_sell
+        ?? planRow.sell;
+      const power = this.mappingLiveValue(this.mappingEntityId(slot, "power"), "power")
+        ?? physicalRow.actual_power
+        ?? planRow.power;
+      const voltage = this.mappingLiveValue(this.mappingEntityId(slot, "voltage"), "voltage")
+        ?? physicalRow.actual_voltage
+        ?? planRow.voltage;
       rows.push({
         slot,
         start,
         soc: soc === null || soc === undefined || soc === "" ? null : Number(soc),
         gridCharge: Boolean(grid),
+        mode: mode === null || mode === undefined || mode === "" ? null : String(mode),
+        charge: charge === null || charge === undefined || charge === "" ? null : String(charge),
+        sell: sell === null || sell === undefined ? null : Boolean(sell),
+        power: power === null || power === undefined || power === "" ? null : Number(power),
+        voltage: voltage === null || voltage === undefined || voltage === "" ? null : Number(voltage),
       });
     }
     rows.forEach((row, index) => {
@@ -4039,7 +4071,17 @@ class DeyeEnergyCard extends HTMLElement {
       } else if (field === "soc") {
         const numeric = Number(el.value);
         row.soc = Number.isFinite(numeric) ? numeric : null;
-      } else if (field === "grid_charge") row.gridCharge = String(el.value) === "on";
+      } else if (field === "grid_charge") {
+        row.gridCharge = String(el.value) === "on";
+      } else if (field === "mode" || field === "charge") {
+        const value = String(el.value ?? "").trim();
+        row[field] = value || null;
+      } else if (field === "sell") {
+        row.sell = String(el.value) === "on";
+      } else if (field === "power" || field === "voltage") {
+        const numeric = Number(el.value);
+        row[field] = Number.isFinite(numeric) ? numeric : null;
+      }
     });
     return rows;
   }
@@ -4070,6 +4112,13 @@ class DeyeEnergyCard extends HTMLElement {
       const soc = Number(row.soc);
       if (!Number.isFinite(soc) || soc < 0 || soc > 100) {
         return `Deye TOU SOC must be between 0 and 100% (range ${row.slot}).`;
+      }
+      for (const field of ["power", "voltage"]) {
+        if (row[field] === null || row[field] === undefined || row[field] === "") continue;
+        const numeric = Number(row[field]);
+        if (!Number.isFinite(numeric) || numeric < 0) {
+          return `Deye TOU ${field} must be a non-negative number (range ${row.slot}).`;
+        }
       }
     }
     return "";
@@ -4134,7 +4183,23 @@ class DeyeEnergyCard extends HTMLElement {
         const payload = { slot: Number(row.slot) };
         if (this.mappingFieldWritable(row.slot, "start")) payload.start = String(row.start).slice(0, 5);
         if (this.mappingFieldWritable(row.slot, "soc")) payload.soc = Number(row.soc);
-        if (this.mappingFieldWritable(row.slot, "grid_charge")) payload.grid_charge = Boolean(row.gridCharge);
+        if (this.mappingFieldWritable(row.slot, "mode") && row.mode !== null && row.mode !== undefined && row.mode !== "") {
+          payload.mode = String(row.mode);
+        } else if (this.mappingFieldWritable(row.slot, "grid_charge")) {
+          payload.grid_charge = Boolean(row.gridCharge);
+        }
+        if (this.mappingFieldWritable(row.slot, "charge") && row.charge !== null && row.charge !== undefined && row.charge !== "") {
+          payload.charge = String(row.charge);
+        }
+        if (this.mappingFieldWritable(row.slot, "sell") && row.sell !== null && row.sell !== undefined) {
+          payload.sell = Boolean(row.sell);
+        }
+        if (this.mappingFieldWritable(row.slot, "power") && row.power !== null && row.power !== undefined && row.power !== "") {
+          payload.power = Number(row.power);
+        }
+        if (this.mappingFieldWritable(row.slot, "voltage") && row.voltage !== null && row.voltage !== undefined && row.voltage !== "") {
+          payload.voltage = Number(row.voltage);
+        }
         if (Object.keys(payload).length === 1) continue;
         await this.callService("deye_energy", "set_tou_slot", payload);
       }
@@ -4598,8 +4663,23 @@ class DeyeEnergyCard extends HTMLElement {
     const rows = this.ensureMappingDraft();
     const boundaryField = (row, field) => (field === "start" && Number(row.slot) === 1)
       || (field === "end" && Number(row.slot) === rows.length);
-    const writable = rows.some((row) => ["start", "end", "soc", "grid_charge"]
+    const editableFields = ["start", "end", "soc", "mode", "charge", "sell", "power", "voltage", "grid_charge"];
+    const writable = rows.some((row) => editableFields
       .some((field) => !boundaryField(row, field) && this.mappingFieldWritable(row.slot, field)));
+    const optionsFor = (slot, field, fallback) => {
+      const entityId = this.mappingEntityId(slot, field);
+      const options = this._hass?.states?.[entityId]?.attributes?.options;
+      return Array.isArray(options) && options.length ? options.map((value) => String(value)) : fallback;
+    };
+    const selectCell = (slot, field, value, fallback, labelFor = (v) => v) => {
+      if (!this.mappingFieldWritable(slot, field)) {
+        return `<span>${this.escapeHtml(value ?? "Unavailable")}</span>`;
+      }
+      const options = optionsFor(slot, field, fallback);
+      const current = value === null || value === undefined ? "" : String(value);
+      const selectedValue = options.includes(current) ? current : (options[0] ?? "");
+      return `<select data-mapping-field="${field}" data-mapping-slot="${slot}">${options.map((option) => `<option value="${this.escapeHtml(option)}" ${option === selectedValue ? "selected" : ""}>${this.escapeHtml(labelFor(option))}</option>`).join("")}</select>`;
+    };
     const rowHtml = rows.map((row) => {
       const timeCell = (field) => !boundaryField(row, field) && this.mappingFieldWritable(row.slot, field)
         ? `<input type="time" step="60" data-mapping-field="${field}" data-mapping-slot="${row.slot}" value="${this.escapeHtml(this.normalizeMappingClock(row[field]))}">`
@@ -4607,10 +4687,24 @@ class DeyeEnergyCard extends HTMLElement {
       const socCell = this.mappingFieldWritable(row.slot, "soc")
         ? `<input type="number" min="0" max="100" step="1" data-mapping-field="soc" data-mapping-slot="${row.slot}" value="${this.escapeHtml(String(row.soc ?? ""))}">`
         : `<span>${row.soc === null ? "Unavailable" : `${this.escapeHtml(String(row.soc))}%`}</span>`;
-      const gridCell = this.mappingFieldWritable(row.slot, "grid_charge")
-        ? `<select data-mapping-field="grid_charge" data-mapping-slot="${row.slot}"><option value="off" ${row.gridCharge ? "" : "selected"}>NO</option><option value="on" ${row.gridCharge ? "selected" : ""}>YES</option></select>`
-        : `<span>${row.gridCharge ? "yes" : "no"}</span>`;
-      return `<tr><td>${row.slot}</td><td>${timeCell("start")}</td><td>${timeCell("end")}</td><td>${gridCell}</td><td>${socCell}</td></tr>`;
+      const modeCell = selectCell(row.slot, "mode", row.mode, ["None", "General", "Backup", "Charge"]);
+      const chargeCell = selectCell(row.slot, "charge", row.charge, ["No Grid or Gen", "Allow Grid", "Allow Gen", "Allow Grid & Gen"]);
+      const sellCell = this.mappingFieldWritable(row.slot, "sell")
+        ? `<select data-mapping-field="sell" data-mapping-slot="${row.slot}"><option value="off" ${row.sell ? "" : "selected"}>No</option><option value="on" ${row.sell ? "selected" : ""}>Yes</option></select>`
+        : `<span>${row.sell === null ? "Unavailable" : (row.sell ? "Yes" : "No")}</span>`;
+      const numberCell = (field, step = "1") => {
+        if (!this.mappingFieldWritable(row.slot, field)) {
+          const value = row[field];
+          return `<span>${value === null || value === undefined || value === "" ? "Unavailable" : this.escapeHtml(String(value))}</span>`;
+        }
+        const entityId = this.mappingEntityId(row.slot, field);
+        const attrs = this._hass?.states?.[entityId]?.attributes || {};
+        const min = Number.isFinite(Number(attrs.min)) ? Number(attrs.min) : 0;
+        const max = Number.isFinite(Number(attrs.max)) ? Number(attrs.max) : "";
+        const stepAttr = Number.isFinite(Number(attrs.step)) ? Number(attrs.step) : step;
+        return `<input type="number" min="${this.escapeHtml(String(min))}" ${max === "" ? "" : `max="${this.escapeHtml(String(max))}"`} step="${this.escapeHtml(String(stepAttr))}" data-mapping-field="${field}" data-mapping-slot="${row.slot}" value="${this.escapeHtml(row[field] === null || row[field] === undefined ? "" : String(row[field]))}">`;
+      };
+      return `<tr><td>${row.slot}</td><td>${timeCell("start")}</td><td>${timeCell("end")}</td><td>${modeCell}</td><td>${chargeCell}</td><td>${sellCell}</td><td>${numberCell("power")}</td><td>${numberCell("voltage")}</td><td>${socCell}</td></tr>`;
     }).join("");
     const message = this._mappingSaveError
       ? `<div class="bad" data-mapping-error>${this.escapeHtml(this._mappingSaveError)}</div>`
@@ -4623,7 +4717,7 @@ class DeyeEnergyCard extends HTMLElement {
     return `<div class="hint">${this.mapWarning(slots)}. Edit the six rows below directly. The first From and last To are fixed at 00:00; each To follows the next row's From. Save validates that the day starts at 00:00, ends at 00:00 and has no gaps or overlaps.</div>
       ${readOnlyHint}${blockedHint}${pendingHint}
       <div class="hint">Operation status: <strong>${this.touOperationStatusLabel()}</strong></div>
-      <table class="settings-table mapping-table" data-tou-capabilities-table><thead><tr><th>Slot</th><th>From</th><th>To</th><th>Grid charging</th><th>SOC</th></tr></thead><tbody>${rowHtml}</tbody></table>
+      <div style="overflow-x:auto;-webkit-overflow-scrolling:touch;"><table class="settings-table mapping-table" data-tou-capabilities-table><thead><tr><th>Slot</th><th>From</th><th>To</th><th>Mode</th><th>Charge</th><th>Sell</th><th>Power</th><th>Voltage</th><th>SOC</th></tr></thead><tbody>${rowHtml}</tbody></table></div>
       ${this.renderTouReverseSyncSummary()}
       <div class="dialog-actions">
         <button type="button" data-refresh-mapping="1" ${this._mappingSaving ? "disabled" : ""}>${this._mappingSaving ? "Reading…" : "Rollback"}</button>
@@ -8234,7 +8328,9 @@ class DeyeEnergyCard extends HTMLElement {
       else if (!Array.isArray(payload?.groups) && Array.isArray(nested?.groups)) payload = nested;
       const groups = Array.isArray(payload?.groups) ? payload.groups : [];
       if (!groups.length) throw new Error("No inverter configuration groups were returned");
-      this._inverterConfig = { groups };
+      const datetimeStatus = payload?.datetime_status ?? nested?.datetime_status ?? response?.datetime_status ?? null;
+      this._inverterConfig = { groups, datetime_status: datetimeStatus };
+      this._inverterDatetimeStatus = datetimeStatus;
       this._inverterConfigDrafts = {};
       this._inverterConfigLoaded = true;
       return true;
@@ -8243,6 +8339,36 @@ class DeyeEnergyCard extends HTMLElement {
       return false;
     } finally {
       this._inverterConfigLoading = false;
+      this.renderInverterConfigIfVisible();
+    }
+  }
+
+  async syncInverterDatetime() {
+    if (this._inverterDatetimeSyncing) return false;
+    if (!this.hasService("deye_energy", "sync_inverter_datetime")) {
+      this._inverterDatetimeMessage = "The deye_energy.sync_inverter_datetime service is unavailable. Reload the integration after installing the new version.";
+      this.renderInverterConfigIfVisible();
+      return false;
+    }
+    this._inverterDatetimeSyncing = true;
+    this._inverterDatetimeMessage = "";
+    this.renderInverterConfigIfVisible();
+    try {
+      const response = await this.callServiceWithResponse("deye_energy", "sync_inverter_datetime", {});
+      const nested = response?.response ?? response?.result;
+      const payload = response?.status !== undefined ? response : (nested?.status !== undefined ? nested : response);
+      if (payload?.status === "failed" || payload?.error) {
+        throw new Error(payload?.error || "Sync failed");
+      }
+      this._inverterDatetimeMessage = `Synced inverter time to ${payload?.ha_time || payload?.synced_value || "Home Assistant server time"}.`;
+      await this.loadInverterConfiguration(true);
+      return true;
+    } catch (error) {
+      this._inverterDatetimeMessage = `Sync failed: ${error?.message || error}`;
+      this.renderInverterConfigIfVisible();
+      return false;
+    } finally {
+      this._inverterDatetimeSyncing = false;
       this.renderInverterConfigIfVisible();
     }
   }
@@ -8369,14 +8495,49 @@ class DeyeEnergyCard extends HTMLElement {
     }
   }
 
+  renderInverterDatetimeSection() {
+    const status = this._inverterDatetimeStatus || this._inverterConfig?.datetime_status || null;
+    const syncing = Boolean(this._inverterDatetimeSyncing);
+    const message = this._inverterDatetimeMessage ? `<div class="hint">${this.escapeHtml(String(this._inverterDatetimeMessage))}</div>` : "";
+    const inverterTime = status?.inverter_time ?? "Not loaded";
+    const haTime = status?.ha_time ?? "Not loaded";
+    const inSync = status?.in_sync;
+    const deviation = status?.deviation_seconds;
+    const syncState = inSync === true
+      ? `<span class="good">In sync</span>`
+      : inSync === false
+        ? `<span class="bad">Out of sync${Number.isFinite(Number(deviation)) ? ` (${this.formatNumber(Number(deviation), 0)}s)` : ""}</span>`
+        : `<span class="hint">Unknown</span>`;
+    const lastCheck = status?.last_check_at ? this.escapeHtml(String(status.last_check_at).replace("T", " ")) : "Never";
+    const lastSync = status?.last_sync_at ? this.escapeHtml(String(status.last_sync_at).replace("T", " ")) : "Never";
+    const lastError = status?.last_error ? `<div class="bad">${this.escapeHtml(String(status.last_error))}</div>` : "";
+    const entity = status?.entity_id ? `<div class="hint">Entity: <code>${this.escapeHtml(String(status.entity_id))}</code></div>` : "";
+    return `<section class="diagnostic-section inverter-config-group">
+      <h4>Inverter time</h4>
+      <div class="diagnostic-entities"><table class="settings-table"><tbody>
+        <tr><td><strong>Inverter time</strong></td><td>${this.escapeHtml(String(inverterTime))}</td></tr>
+        <tr><td><strong>Home Assistant server time</strong></td><td>${this.escapeHtml(String(haTime))}</td></tr>
+        <tr><td><strong>Status</strong></td><td>${syncState}</td></tr>
+        <tr><td><strong>Last 6-hour check</strong></td><td>${lastCheck}</td></tr>
+        <tr><td><strong>Last sync</strong></td><td>${lastSync}</td></tr>
+      </tbody></table></div>
+      ${entity}
+      ${lastError}
+      ${message}
+      <button class="wide-action" data-sync-inverter-datetime="1" ${syncing || this._inverterConfigLoading ? "disabled" : ""}>${syncing ? "Syncing…" : "Sync now"}</button>
+      <div class="hint">The integration compares inverter and Home Assistant server time every 6 hours and force-syncs if any hour, minute, or second differs.</div>
+    </section>`;
+  }
+
   renderInverterConfigTab() {
     const intro = `<h3>Inverter configuration</h3>
       <div class="hint">Live values are read from the inverter entities when this tab opens. Fields without a reliable entity are shown as <strong>Not mapped</strong> and stay read-only. Grid charge current is only a limit; Grid Charge permission remains a separate work-mode setting.</div>
       ${this._inverterConfigError ? `<div class="bad">${this.escapeHtml(this._inverterConfigError)}</div>` : ""}
       <button class="wide-action" data-refresh-inverter-config="1" ${this._inverterConfigLoading ? "disabled" : ""}>${this._inverterConfigLoading ? "Loading live values…" : (this._inverterConfig ? "Refresh live values" : "Load live values")}</button>`;
+    const datetimeSection = this.renderInverterDatetimeSection();
     const groups = this.inverterConfigGroups();
-    if (!groups.length) return intro;
-    return `${intro}${groups.map((group) => {
+    if (!groups.length) return `${intro}${datetimeSection}`;
+    return `${intro}${datetimeSection}${groups.map((group) => {
       const rows = group.fields.map((field) => `<tr><td><strong>${this.escapeHtml(String(field.label))}</strong>${field.entity_id ? `<br><small>${this.escapeHtml(String(field.entity_id))}</small>` : ""}</td><td>${this.inverterConfigInput(group.key, field)}</td></tr>`).join("");
       const message = this._inverterConfigMessages[group.key];
       const saving = Boolean(this._inverterConfigSaving[group.key]);
@@ -8852,7 +9013,7 @@ class DeyeEnergyCard extends HTMLElement {
             @media(max-width:620px){.ai-execution-toolbar,.ai-execution-date{width:100%}.ai-execution-date{display:grid;grid-template-columns:minmax(0,1fr) auto}.ai-exec-kpi{min-width:calc(50% - 4px)}.ai-execution-chart{padding:8px}.ai-execution-toolbar .ai-day-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}}
 @media(max-width:620px){.ai-execution-toolbar,.ai-execution-date{width:100%}.ai-execution-date{display:grid;grid-template-columns:minmax(0,1fr) auto}.ai-exec-kpi{min-width:calc(50% - 4px)}.ai-execution-chart{padding:8px}.ai-execution-toolbar .ai-day-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}}
            .ai-explanation-view{display:grid;gap:12px}.ai-explanation-view>h2{margin:0}.ai-explanation-profile details,.ai-shadow,.ai-help{margin-top:10px}.ai-explanation-profile summary,.ai-shadow summary,.ai-help summary{cursor:pointer;color:#dff3fc;font-weight:800}.ai-decision-summary{line-height:1.55}.ai-explanation-balance{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0}.ai-explanation-balance>div{border:1px solid rgba(103,158,184,.2);border-radius:6px;padding:9px;background:rgba(3,16,25,.45)}.ai-explanation-balance span{display:block;color:#93adbc;font-size:10px}.ai-explanation-balance strong{display:block;margin-top:4px}.ai-explanation-list{display:grid;gap:7px;padding-left:18px}.ai-explanation-list li{padding:6px 0;border-top:1px solid rgba(103,158,184,.15)}.ai-explanation-list strong{display:block;color:#7ee22d}.ai-explanation-list span{display:block;margin-top:3px;color:#b9d0dc;line-height:1.4}.ai-help dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:7px 12px}.ai-help dt{color:#7ee22d;font-weight:800}.ai-help dd{margin:0;color:#b9d0dc}@media(max-width:620px){.ai-explanation-balance{grid-template-columns:minmax(0,1fr)}.ai-help dl{grid-template-columns:minmax(0,1fr)}}
-           .manual-schedule-table{min-width:820px}.manual-schedule-table .time-col{white-space:nowrap}.manual-schedule-table tr.editing{background:rgba(21,155,255,.09)}.manual-schedule-table tr.disabled{opacity:.72}.manual-schedule-table tr.editing td{border-top-color:rgba(21,155,255,.38)}.manual-schedule-table input,.manual-schedule-table select{width:100%;min-width:90px;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:5px 6px}.manual-schedule-table input[type=checkbox]{width:auto;min-width:0;accent-color:var(--blue)}.manual-action-cell{display:flex;gap:6px;align-items:center}.manual-schedule-table .icon-only.active{border-color:var(--blue);color:#2ea7ff;background:rgba(8,53,92,.55)}.manual-schedule-table .icon-only.remove:hover{border-color:rgba(255,77,99,.7);color:#ff9cab}.manual-schedule-table .icon-only:disabled{opacity:.35;cursor:not-allowed}.manual-row-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.manual-row-actions button{min-height:36px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 12px;cursor:pointer}.manual-row-actions button:disabled{opacity:.45;cursor:not-allowed}.manual-schedule-table tr.time-current td{background:rgba(255,166,45,.07);box-shadow:inset 0 0 0 1px rgba(255,166,45,.22);animation:manual-time-current-text-glow 2.4s ease-in-out infinite}@keyframes manual-time-current-text-glow{0%,100%{text-shadow:0 0 3px rgba(255,166,45,.28)}50%{text-shadow:0 0 8px rgba(255,166,45,.85),0 0 18px rgba(255,166,45,1),0 0 30px rgba(255,166,45,.65)}}
+           .manual-schedule-table{min-width:820px}.manual-schedule-table .time-col{white-space:nowrap}.manual-schedule-table tr.editing{background:rgba(21,155,255,.09)}.manual-schedule-table tr.disabled{opacity:.72}.manual-schedule-table tr.editing td{border-top-color:rgba(21,155,255,.38)}.manual-schedule-table input,.manual-schedule-table select{width:100%;min-width:90px;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:5px 6px}.manual-schedule-table input[type=checkbox]{width:auto;min-width:0;accent-color:var(--blue)}.manual-action-cell{display:flex;gap:6px;align-items:center}.manual-schedule-table .icon-only.active{border-color:var(--blue);color:#2ea7ff;background:rgba(8,53,92,.55)}.manual-schedule-table .icon-only.remove:hover{border-color:rgba(255,77,99,.7);color:#ff9cab}.manual-schedule-table .icon-only:disabled{opacity:.35;cursor:not-allowed}.manual-row-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.manual-row-actions button{min-height:36px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 12px;cursor:pointer}.manual-row-actions button:disabled{opacity:.45;cursor:not-allowed}.manual-schedule-table tr.time-current td{background:transparent;box-shadow:none;animation:manual-time-current-text-glow 4s ease-in-out infinite}@keyframes manual-time-current-text-glow{0%,100%{text-shadow:0 0 0 rgba(255,166,45,0)}50%{text-shadow:0 0 10px rgba(255,166,45,.95),0 0 22px rgba(255,166,45,1),0 0 36px rgba(255,166,45,.75),0 0 52px rgba(255,166,45,.35)}}
            </style>
             <div class="dem-v073" style="${demStyle}">
             ${statusSection}
@@ -9124,6 +9285,9 @@ class DeyeEnergyCard extends HTMLElement {
     }));
     root.querySelectorAll("[data-refresh-inverter-config]").forEach((el) => el.addEventListener("click", () => {
       this.loadInverterConfiguration(true);
+    }));
+    root.querySelectorAll("[data-sync-inverter-datetime]").forEach((el) => el.addEventListener("click", () => {
+      this.syncInverterDatetime();
     }));
     root.querySelectorAll("[data-apply-inverter-config]").forEach((el) => el.addEventListener("click", () => {
       this.applyInverterConfigGroup(el.dataset.applyInverterConfig);
@@ -9448,9 +9612,18 @@ class DeyeEnergyCard extends HTMLElement {
 }
 
 class DeyeEnergyTriggerLogsCard extends HTMLElement {
+  constructor() {
+    super();
+    this._page = 1;
+    this._pageSize = 20;
+    this._lastSig = "";
+  }
+
   setConfig(config) {
     this._config = config || {};
     this._filter = this._config.default_filter || "24h";
+    this._page = 1;
+    this._lastSig = "";
   }
 
   set hass(hass) {
@@ -9460,6 +9633,9 @@ class DeyeEnergyTriggerLogsCard extends HTMLElement {
 
   _render() {
     if (!this._hass) return;
+    this.style.display = "block";
+    this.style.height = "100%";
+
     const title = this._escape(this._config.title || "Trigger logs");
     const entityId = this._findEntity();
     const stateObj = entityId ? this._hass.states[entityId] : null;
@@ -9468,6 +9644,31 @@ class DeyeEnergyTriggerLogsCard extends HTMLElement {
       : [];
     const filtered = this._applyFilter(entries);
     filtered.reverse();
+
+    const totalPages = Math.max(1, Math.ceil(filtered.length / this._pageSize));
+    if (this._page > totalPages) this._page = totalPages;
+    if (this._page < 1) this._page = 1;
+    const startIdx = (this._page - 1) * this._pageSize;
+    const pageEntries = filtered.slice(startIdx, startIdx + this._pageSize);
+
+    const sig = JSON.stringify([
+      entityId,
+      stateObj?.last_updated || stateObj?.state || "",
+      entries.length,
+      entries[0]?.timestamp || "",
+      entries[entries.length - 1]?.timestamp || "",
+      this._filter,
+      this._page,
+      title,
+    ]);
+    if (sig === this._lastSig && this.querySelector("[data-trigger-log-scroll]")) {
+      return;
+    }
+
+    const scrollEl = this.querySelector("[data-trigger-log-scroll]");
+    const scrollTop = scrollEl ? scrollEl.scrollTop : 0;
+    this._lastSig = sig;
+
     const options = [
       ["1h", "Past hour"],
       ["2h", "Past 2 hrs"],
@@ -9482,6 +9683,7 @@ class DeyeEnergyTriggerLogsCard extends HTMLElement {
           `<option value="${v}" ${this._filter === v ? "selected" : ""}>${l}</option>`
       )
       .join("");
+
     let body = "";
     if (!stateObj) {
       body = `<div style="padding:8px 0;color:var(--secondary-text-color);">Trigger log sensor not found. Ensure the Deye Energy integration is loaded and updated.</div>`;
@@ -9490,26 +9692,37 @@ class DeyeEnergyTriggerLogsCard extends HTMLElement {
     } else if (!filtered.length) {
       body = `<div style="padding:8px 0;color:var(--secondary-text-color);">No inverter triggers in the selected period.</div>`;
     } else {
-      const rows = filtered.map((e) => this._row(e)).join("");
+      const rows = pageEntries.map((e) => this._row(e)).join("");
+      const from = filtered.length ? startIdx + 1 : 0;
+      const to = startIdx + pageEntries.length;
       body = `
-        <div style="max-height:440px;overflow:auto;">
-          <table style="width:100%;border-collapse:collapse;font-size:0.95em;">
+        <div data-trigger-log-scroll style="flex:1;min-height:280px;overflow:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--divider-color);border-radius:8px;">
+          <table style="width:100%;border-collapse:separate;border-spacing:0;font-size:0.95em;">
             <thead>
               <tr>
-                <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--divider-color);">Time</th>
-                <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--divider-color);">Input / trigger</th>
-                <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--divider-color);">Status</th>
+                <th style="position:sticky;top:0;z-index:2;text-align:left;padding:8px;border-bottom:1px solid var(--divider-color);background:var(--card-background-color, var(--ha-card-background, white));">Time</th>
+                <th style="position:sticky;top:0;z-index:2;text-align:left;padding:8px;border-bottom:1px solid var(--divider-color);background:var(--card-background-color, var(--ha-card-background, white));">Input / trigger</th>
+                <th style="position:sticky;top:0;z-index:2;text-align:left;padding:8px;border-bottom:1px solid var(--divider-color);background:var(--card-background-color, var(--ha-card-background, white));">Status</th>
               </tr>
             </thead>
             <tbody>${rows}</tbody>
           </table>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;flex-wrap:wrap;">
+          <div style="color:var(--secondary-text-color);font-size:0.9em;">Showing ${from}-${to} of ${filtered.length} (30-day retention: ${entries.length})</div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <button type="button" data-trigger-page="prev" ${this._page <= 1 ? "disabled" : ""} style="padding:4px 10px;border-radius:6px;border:1px solid var(--divider-color);background:var(--card-background-color, var(--ha-card-background, white));color:var(--primary-text-color);cursor:${this._page <= 1 ? "default" : "pointer"};opacity:${this._page <= 1 ? "0.5" : "1"};">Prev</button>
+            <span style="font-size:0.9em;color:var(--secondary-text-color);min-width:72px;text-align:center;">Page ${this._page} / ${totalPages}</span>
+            <button type="button" data-trigger-page="next" ${this._page >= totalPages ? "disabled" : ""} style="padding:4px 10px;border-radius:6px;border:1px solid var(--divider-color);background:var(--card-background-color, var(--ha-card-background, white));color:var(--primary-text-color);cursor:${this._page >= totalPages ? "default" : "pointer"};opacity:${this._page >= totalPages ? "0.5" : "1"};">Next</button>
+          </div>
         </div>`;
     }
+
     this.innerHTML = `
-      <ha-card header="${title}">
-        <div class="card-content">
+      <ha-card header="${title}" style="height:100%;min-height:480px;display:flex;flex-direction:column;">
+        <div class="card-content" style="flex:1;min-height:0;display:flex;flex-direction:column;box-sizing:border-box;">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
-            <div style="color:var(--secondary-text-color);font-size:0.9em;">Showing ${filtered.length} of ${entries.length} (30-day retention)</div>
+            <div style="color:var(--secondary-text-color);font-size:0.9em;">${filtered.length} event${filtered.length === 1 ? "" : "s"} in selected period</div>
             <label style="display:flex;align-items:center;gap:6px;font-size:0.95em;color:var(--primary-text-color);">Filter
               <select id="trigger-log-filter" style="padding:4px 8px;border-radius:6px;border:1px solid var(--divider-color);background:var(--card-background-color, var(--ha-card-background, white));color:var(--primary-text-color);">${select}</select>
             </label>
@@ -9517,12 +9730,32 @@ class DeyeEnergyTriggerLogsCard extends HTMLElement {
           ${body}
         </div>
       </ha-card>`;
+
     const sel = this.querySelector("#trigger-log-filter");
     if (sel) {
       sel.addEventListener("change", (ev) => {
         this._filter = ev.target.value;
+        this._page = 1;
+        this._lastSig = "";
         this._render();
       });
+    }
+    this.querySelectorAll("[data-trigger-page]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const dir = btn.getAttribute("data-trigger-page");
+        const total = Math.max(1, Math.ceil(filtered.length / this._pageSize));
+        if (dir === "prev" && this._page > 1) this._page -= 1;
+        if (dir === "next" && this._page < total) this._page += 1;
+        this._lastSig = "";
+        this._render();
+        const nextScroll = this.querySelector("[data-trigger-log-scroll]");
+        if (nextScroll) nextScroll.scrollTop = 0;
+      });
+    });
+
+    const newScroll = this.querySelector("[data-trigger-log-scroll]");
+    if (newScroll && scrollTop) {
+      newScroll.scrollTop = scrollTop;
     }
   }
 
@@ -9544,12 +9777,12 @@ class DeyeEnergyTriggerLogsCard extends HTMLElement {
     if (e?.source) msgParts.push(`Source: ${e.source}`);
     const msg = this._escape(msgParts.join(" | "));
     return `<tr>
-      <td style="white-space:nowrap;padding:6px 8px;border-bottom:1px solid var(--divider-color);vertical-align:top;">${ts}</td>
-      <td style="padding:6px 8px;border-bottom:1px solid var(--divider-color);vertical-align:top;">
-        <div style="font-family:var(--code-font-family, monospace);font-size:0.92em;">${target || "—"}</div>
-        <div style="color:var(--secondary-text-color);font-size:0.9em;margin-top:2px;">${service || "—"}</div>
+      <td style="white-space:nowrap;padding:8px;border-bottom:1px solid var(--divider-color);vertical-align:top;">${ts}</td>
+      <td style="padding:8px;border-bottom:1px solid var(--divider-color);vertical-align:top;">
+        <div style="font-family:var(--code-font-family, monospace);font-size:0.92em;word-break:break-word;">${target || "—"}</div>
+        <div style="color:var(--secondary-text-color);font-size:0.9em;margin-top:2px;word-break:break-word;">${service || "—"}</div>
       </td>
-      <td style="padding:6px 8px;border-bottom:1px solid var(--divider-color);vertical-align:top;">
+      <td style="padding:8px;border-bottom:1px solid var(--divider-color);vertical-align:top;">
         <span style="display:inline-block;padding:2px 10px;border-radius:999px;font-weight:600;color:${color};background:${bg};">${status}</span>
         ${msg ? `<div style="color:var(--secondary-text-color);font-size:0.85em;margin-top:4px;word-break:break-word;">${msg}</div>` : ""}
       </td>
@@ -9620,7 +9853,7 @@ class DeyeEnergyTriggerLogsCard extends HTMLElement {
   }
 
   getCardSize() {
-    return 5;
+    return 8;
   }
 
   static getStubConfig() {

@@ -54,7 +54,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
 
     def test_card_sources_declare_current_resource_revision(self):
         for source in self.sources:
-            self.assertTrue(source.startswith("// Resource revision: v=0.8.0.58\n"))
+            self.assertTrue(source.startswith("// Resource revision: v=0.8.0.59\n"))
 
     def test_tou_table_is_the_simple_24h_to_six_tou_ranges(self):
         for source in self.sources:
@@ -495,7 +495,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
     def test_documentation_uses_current_card_cache_revision(self):
         for name in ("README.md", "INSTALL.md"):
             source = (ROOT / name).read_text(encoding="utf-8")
-            self.assertIn("deye-energy-card.js?v=0.8.0.58", source)
+            self.assertIn("deye-energy-card.js?v=0.8.0.59", source)
             self.assertNotIn("deye-energy-card.js?v=22", source)
             self.assertNotIn("deye-energy-card.js?v=10", source)
             self.assertNotIn("deye-energy-card.js?v=09", source)
@@ -535,7 +535,11 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         for required in (
             'data-mapping-field="${field}"',
             'data-mapping-field="soc" data-mapping-slot=',
-            'data-mapping-field="grid_charge" data-mapping-slot=',
+            'selectCell(row.slot, "mode"',
+            'selectCell(row.slot, "charge"',
+            'data-mapping-field="sell" data-mapping-slot=',
+            'numberCell("power")',
+            'numberCell("voltage")',
             'data-refresh-mapping="1"',
             'data-save-mapping="1"',
             '"Rollback"',
@@ -579,7 +583,15 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         dialog = extract_method(source, "renderDialog(slots, touStarts)")
         self.assertIn("touSoc: this.asNumber(item.tou_soc)", mapping)
         self.assertIn("chargeEnabled: Boolean(item.grid_charge)", mapping)
-        self.assertIn('row.gridCharge ? "yes" : "no"', source)
+        tou = extract_method(source, "renderTouSettingsContent(slots)")
+        for header in ("<th>Mode</th>", "<th>Charge</th>", "<th>Sell</th>", "<th>Power</th>", "<th>Voltage</th>", "<th>SOC</th>"):
+            self.assertIn(header, tou)
+        self.assertIn('selectCell(row.slot, "mode"', tou)
+        self.assertIn('selectCell(row.slot, "charge"', tou)
+        self.assertIn('data-mapping-field="sell"', tou)
+        self.assertIn('numberCell("power")', tou)
+        self.assertIn('numberCell("voltage")', tou)
+        self.assertNotIn('>Grid charging<', tou)
         self.assertNotIn("<th>Function</th>", dialog)
 
     def test_charge_profile_save_uses_one_backend_service_only(self):
@@ -1178,13 +1190,15 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
             )
 
             self.assertIn(".manual-schedule-table tr.time-current td", source)
-            self.assertIn("background:rgba(255,166,45,.07)", source)
-            self.assertIn("box-shadow:inset 0 0 0 1px rgba(255,166,45,.22)", source)
+            self.assertIn("background:transparent", source)
+            self.assertIn("box-shadow:none", source)
             self.assertIn("@keyframes manual-time-current-text-glow", source)
-            self.assertIn("2.4s ease-in-out infinite", source)
-            self.assertIn("text-shadow:0 0 3px rgba(255,166,45,.28)", source)
-            self.assertIn("0 0 18px rgba(255,166,45,1)", source)
-            self.assertIn("0 0 30px rgba(255,166,45,.65)", source)
+            self.assertIn("4s ease-in-out infinite", source)
+            self.assertIn("text-shadow:0 0 0 rgba(255,166,45,0)", source)
+            self.assertIn("0 0 10px rgba(255,166,45,.95)", source)
+            self.assertIn("0 0 22px rgba(255,166,45,1)", source)
+            self.assertIn("0 0 36px rgba(255,166,45,.75)", source)
+            self.assertIn("0 0 52px rgba(255,166,45,.35)", source)
             self.assertNotIn("@keyframes manual-time-current-row", source)
             self.assertNotIn("@keyframes manual-time-current-cell", source)
 

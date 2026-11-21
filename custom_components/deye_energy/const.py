@@ -47,6 +47,7 @@ CONF_INVERTER_MAX_POWER_W = "inverter_max_power_w"
 CONF_MAPPING_MODE = "mapping_mode"
 CONF_INVERTER_PROVIDER = "inverter_provider"
 CONF_INVERTER_DEVICE_ID = "inverter_device_id"
+CONF_INVERTER_DATETIME_ENTITY = "inverter_datetime_entity"
 CONF_WORK_MODE_AUX_ENTITY = "work_mode_aux_entity"
 CONF_WORK_MODE_SELL_OPTION = "work_mode_sell_option"
 CONF_WORK_MODE_ZERO_LOAD_OPTION = "work_mode_zero_load_option"
@@ -73,7 +74,9 @@ DEFAULT_INVERTER_PROVIDER = PROVIDER_SUNSYNK
 
 def conf_tou_entity(index: int, kind: str) -> str:
     """Return a stable config key for one physical TOU field."""
-    if kind not in ("start", "soc", "grid") or not 1 <= int(index) <= 6:
+    if kind == "grid_charge":
+        kind = "grid"
+    if kind not in ("start", "soc", "grid", "charge", "mode", "sell", "power", "voltage") or not 1 <= int(index) <= 6:
         raise ValueError("Invalid TOU config key")
     return f"tou_{int(index)}_{kind}_entity"
 
@@ -148,6 +151,7 @@ ENERGY_STATUS_DISPLAY_SCHEMA_VERSION = 1
 
 DEFAULT_WORK_MODE_SELECT = "select.deye_load_limit"
 DEFAULT_MAX_SELL_POWER = "number.deye_max_sell_power"
+DEFAULT_INVERTER_DATETIME_ENTITY = "text.deye_date_time"
 DEFAULT_DISCHARGE_CURRENT = "number.deye_battery_max_discharge_current"
 DEFAULT_CHARGE_CURRENT = "number.deye_battery_max_charge_current"
 DEFAULT_GRID_CHARGE_CURRENT = "number.deye_grid_charge_battery_current"

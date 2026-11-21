@@ -6,6 +6,38 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.59] - 2026-11-21
+
+### Added
+
+- **Deye Time Of Use settings**: slots 1–6 now expose editable `Mode`,
+  `Charge`, `Sell`, `Power`, `Voltage` and `SOC` fields in the TOU table.
+  `Mode` uses live entity options with fallback
+  `None, General, Backup, Charge`.
+- **Inverter datetime sync**: Inverter configuration shows inverter/HA time and
+  a **Sync now** action; backend reports datetime status and performs a 6-hour
+  drift check that force-syncs on any hour/minute/second deviation.
+
+### Changed
+
+- **Trigger logs card** (`custom:deye-energy-trigger-logs-card`): full-height
+  flex layout fills available card space, table header is sticky with only rows
+  scrolling, hass-update rerenders preserve scroll position (fixing mobile
+  scroll jump), and logs are paginated at 20 entries per page with Prev/Next
+  controls.
+- **Manual schedule**: current active row highlight now uses text-only glow
+  (no row background/box shadow) with a 4s ease-in-out pulse ramping from 0 to
+  full intensity.
+- **Inverter configuration catalog**: expanded direct-MQTT inverter
+  configuration mappings/catalog coverage.
+
+### Fixed
+
+- **`deye_energy.set_tou_slot`**: accepts optional `mode`, `charge`, `sell`,
+  `power` and `voltage` fields with validation/capability checks; legacy
+  `grid_charge` remains backward-compatible and ambiguous `grid_charge`+`charge`
+  payloads are rejected.
+
 ## [0.8.0.58] - 2026-11-20
 
 ### Added

@@ -62,6 +62,7 @@ function makeCard() {
       deye_energy: {
         get_inverter_configuration: {},
         apply_inverter_configuration_group: {},
+        sync_inverter_datetime: {},
       },
     },
     callService: async (...args) => {
@@ -343,6 +344,46 @@ async function testApplyRejectsOutOfRangeInputWithoutCallingService() {
   assert.equal(mutationCount(card), 0, "no apply service call should be made for invalid input");
 }
 
+async function testInverterDatetimeSectionRendersAndSyncs() {
+  const card = makeCard();
+  let reads = 0;
+  setServiceResponses(card, {
+    get_inverter_configuration: () => {
+      reads += 1;
+      return {
+        groups: [writableGroup()],
+        datetime_status: {
+          entity_id: "text.deye_date_time",
+          inverter_time: reads === 1 ? "2026-11-21 10:00:05" : "2026-11-21 10:00:10",
+          ha_time: "2026-11-21 10:00:10",
+          in_sync: reads !== 1,
+          deviation_seconds: reads === 1 ? 5 : 0,
+          last_check_at: "2026-11-21T10:00:00+00:00",
+          last_sync_at: reads === 1 ? null : "2026-11-21T10:00:10+00:00",
+          last_error: "",
+        },
+      };
+    },
+    sync_inverter_datetime: () => ({ status: "ok", ha_time: "2026-11-21 10:00:10" }),
+  });
+  await card.loadInverterConfiguration(true);
+  const html = settingsHtml(card, "inverter-config");
+  assert.match(html, /Inverter time/);
+  assert.match(html, /Home Assistant server time/);
+  assert.match(html, /2026-11-21 10:00:05/);
+  assert.match(html, /2026-11-21 10:00:10/);
+  assert.match(html, /data-sync-inverter-datetime="1"/);
+  assert.match(html, /Out of sync/);
+
+  const ok = await card.syncInverterDatetime();
+  assert.equal(ok, true);
+  const syncCalls = card._serviceCalls.filter((args) => args[0] === "deye_energy" && args[1] === "sync_inverter_datetime");
+  assert.equal(syncCalls.length, 1);
+  assert.equal(reads, 2, "sync should refresh inverter configuration");
+  const htmlAfter = settingsHtml(card, "inverter-config");
+  assert.match(htmlAfter, /In sync/);
+}
+
 module.exports = async function run() {
   testSettingsNavHasInverterConfigTab();
   testWorkScheduleHeaderHasNoRemovedCurrentColumns();
@@ -352,7 +393,8 @@ module.exports = async function run() {
   await testApplySendsOnlyWritableParsedValuesThenRereads();
   await testApplyErrorIsReportedWithoutThrowing();
   await testApplyRejectsOutOfRangeInputWithoutCallingService();
-  console.log("inverter config card: 8 checks passed");
+  await testInverterDatetimeSectionRendersAndSyncs();
+  console.log("inverter config card: 9 checks passed");
 };
 
 if (require.main === module) module.exports().catch((err) => {

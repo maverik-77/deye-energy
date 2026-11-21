@@ -76,6 +76,7 @@ from .const import (
     CONF_GRID_POSITIVE_IS_IMPORT,
     CONF_INVERTER_AC_TEMPERATURE_SENSOR,
     CONF_INVERTER_DEVICE_ID,
+    CONF_INVERTER_DATETIME_ENTITY,
     CONF_INVERTER_MAX_POWER_W,
     CONF_INVERTER_PROVIDER,
     CONF_LOAD_FREQUENCY_SENSOR,
@@ -207,6 +208,7 @@ from .const import (
     DEFAULT_TARIFF_CATALOG_URL,
     DEFAULT_BUY_SELLER_ID,
     DEFAULT_BUY_SELLER_TARIFF_ID,
+    DEFAULT_INVERTER_DATETIME_ENTITY,
     DEFAULT_GRID_POSITIVE_IS_IMPORT,
     DEFAULT_BATTERY_POSITIVE_IS_DISCHARGE,
     DEFAULT_MAX_SELL_POWER,
@@ -249,6 +251,7 @@ from .inverter_provider import (
     provider_tou_field_capabilities,
     provider_key,
     resolve_select_option,
+    select_option_matches,
     state_matches_boolean,
 )
 from .tariff_catalog import TariffCatalogManager
@@ -470,6 +473,10 @@ class DeyeEnergyRuntime:
     reverse_sync_last_error: str = ""
     reverse_sync_changed_hours: list[str] = field(default_factory=list)
     reverse_sync_round_trip_ok: bool | None = None
+    _inverter_datetime_last_check: datetime | None = None
+    _inverter_datetime_last_sync: datetime | None = None
+    _inverter_datetime_last_error: str = ""
+    _inverter_datetime_last_deviation_seconds: float | None = None
     _tou_transaction_lock_obj: asyncio.Lock | None = None
     _tou_pending_owner: object | None = None
     _tou_confirmation_event_obj: asyncio.Event | None = None
@@ -4505,6 +4512,14 @@ class DeyeEnergyRuntime:
             return value if math.isfinite(value) else None
         if field_name == "grid_charge":
             return provider_boolean_state(self.data, "grid", raw)
+        if field_name in ("mode", "charge"):
+            value = str(raw).strip()
+            return value or None
+        if field_name == "sell":
+            return provider_boolean_state(self.data, "sell", raw)
+        if field_name in ("power", "voltage"):
+            value = self.safe_float(raw, float("nan"))
+            return value if math.isfinite(value) else None
         return raw
 
     def _tou_field_capability(
@@ -4567,6 +4582,11 @@ class DeyeEnergyRuntime:
                 "end": self._tou_entity(next_slot, "start"),
                 "soc": self._tou_entity(slot_index, "soc"),
                 "grid_charge": self._tou_entity(slot_index, "grid"),
+                "mode": self._tou_entity(slot_index, "mode"),
+                "charge": self._tou_entity(slot_index, "charge"),
+                "sell": self._tou_entity(slot_index, "sell"),
+                "power": self._tou_entity(slot_index, "power"),
+                "voltage": self._tou_entity(slot_index, "voltage"),
                 "out_power": None,
             }
             fields = {
@@ -4585,6 +4605,11 @@ class DeyeEnergyRuntime:
                     "supports_end_as_next_start": fields["end"]["supported"],
                     "supports_soc": fields["soc"]["supported"],
                     "supports_grid_charge": fields["grid_charge"]["supported"],
+                    "supports_mode": fields["mode"]["supported"],
+                    "supports_charge": fields["charge"]["supported"],
+                    "supports_sell": fields["sell"]["supported"],
+                    "supports_power": fields["power"]["supported"],
+                    "supports_voltage": fields["voltage"]["supported"],
                     "supports_out_power": False,
                     "blocked_by_master_control": not self._control_is_active(),
                     "control_writable": bool(
@@ -4612,7 +4637,7 @@ class DeyeEnergyRuntime:
             "solcast_today": self.solcast_forecast_today_sensor,
         }
         for idx in range(1, 7):
-            for kind in ("start", "soc", "grid"):
+            for kind in ("start", "soc", "grid", "mode", "charge", "sell", "power", "voltage"):
                 entities[f"tou_{idx}_{kind}"] = self._tou_entity(idx, kind)
 
         groups: dict[str, tuple[str, ...]] = {
@@ -4887,7 +4912,7 @@ class DeyeEnergyRuntime:
             if not tou["ok"]
             else "OK"
         )
-        return {"integration_version": "0.8.0.58", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
+        return {"integration_version": "0.8.0.59", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
                 "inverter_provider": self.inverter_provider,
                 "inverter_device_id": self.data.get(CONF_INVERTER_DEVICE_ID),
                 "inverter_provider_label": provider_profile(self.data).label,
@@ -10214,14 +10239,19 @@ class DeyeEnergyRuntime:
         self, label: str, entity_id: str | None, value: bool, role: str
     ) -> None:
         item = provider_profile(self.data)
-        allowed = item.tou_grid_domains
+        if role == "grid":
+            allowed = item.tou_grid_domains
+        elif role == "sell":
+            allowed = ("switch", "select", "input_boolean")
+        else:
+            allowed = ("switch", "select")
         if not entity_id or entity_id.split(".", 1)[0] not in allowed:
             raise ValueError(f"Missing required Deye {role} entity: {label}")
         state = self.hass.states.get(entity_id)
         if state is None or state.state in ("unknown", "unavailable", "none", ""):
             raise ValueError(f"Unavailable Deye {role} entity: {label}")
-        if entity_id.startswith("switch."):
-            if state.state not in ("on", "off"):
+        if entity_id.split(".", 1)[0] in ("switch", "input_boolean"):
+            if str(state.state).lower() not in ("on", "off"):
                 raise ValueError(f"Unavailable Deye switch entity: {label}")
             return
         option = provider_boolean_option(self.data, role, value)
@@ -11004,13 +11034,26 @@ class DeyeEnergyRuntime:
         if state is None or state.state in ("unknown", "unavailable", "none", ""):
             return False
         actual = str(state.state)
-        if field == "start" or field == "end":
+        if field in ("start", "end"):
             return self._time_to_minutes(actual) == self._time_to_minutes(expected_logical)
         if field == "soc":
             numeric = self.safe_float(actual, float("nan"))
             return math.isfinite(numeric) and math.isclose(numeric, float(expected_logical), abs_tol=0.1)
         if field == "grid":
             return state_matches_boolean(self.data, "grid", bool(expected_logical), actual)
+        if field in ("mode", "charge"):
+            options = (getattr(state, "attributes", {}) or {}).get("options")
+            expected = str(expected_logical).strip()
+            if isinstance(options, (list, tuple)):
+                resolved = resolve_select_option(options, expected)
+                if resolved is not None:
+                    return resolve_select_option(options, actual) == resolved or select_option_matches(actual, resolved)
+            return " ".join(actual.strip().casefold().split()) == " ".join(expected.casefold().split())
+        if field == "sell":
+            return state_matches_boolean(self.data, "sell", bool(expected_logical), actual)
+        if field in ("power", "voltage"):
+            numeric = self.safe_float(actual, float("nan"))
+            return math.isfinite(numeric) and math.isclose(numeric, float(expected_logical), abs_tol=0.1)
         return actual == str(expected_logical)
 
     def _tou_provider_value(self, entity_id: str | None, field: str, logical_value: Any) -> Any:
@@ -11029,10 +11072,34 @@ class DeyeEnergyRuntime:
                     f"Time {logical_value} is not supported by {entity_id}. Supported options: {supported}"
                 )
             return option
-        if field == "soc":
+        if field in ("soc", "power", "voltage"):
             return float(logical_value)
         if field == "grid":
             option = provider_boolean_option(self.data, "grid", bool(logical_value))
+            if entity_id.split(".", 1)[0] == "select":
+                state = self.hass.states.get(entity_id)
+                options = (getattr(state, "attributes", {}) or {}).get("options") if state else None
+                resolved = resolve_select_option(options, option)
+                if resolved is not None:
+                    return resolved
+            return option
+        if field in ("mode", "charge"):
+            option = str(logical_value).strip()
+            state = self.hass.states.get(entity_id)
+            options = (getattr(state, "attributes", {}) or {}).get("options") if state else None
+            if isinstance(options, (list, tuple)):
+                resolved = resolve_select_option(options, option)
+                if resolved is None:
+                    supported = ", ".join(str(item) for item in options[:12])
+                    if len(options) > 12:
+                        supported += ", ..."
+                    raise ValueError(
+                        f"Option {option} is not supported by {entity_id}. Supported options: {supported}"
+                    )
+                return resolved
+            return option
+        if field == "sell":
+            option = provider_boolean_option(self.data, "sell", bool(logical_value))
             if entity_id.split(".", 1)[0] == "select":
                 state = self.hass.states.get(entity_id)
                 options = (getattr(state, "attributes", {}) or {}).get("options") if state else None
@@ -11063,10 +11130,14 @@ class DeyeEnergyRuntime:
         actual = self._tou_field_actual_value(entity_id, capability_field)
         if field in ("start", "end"):
             previous_logical = current_raw
-        elif field == "soc":
+        elif field in ("soc", "power", "voltage"):
             previous_logical = self.safe_float(current_raw, None)
         elif field == "grid":
             previous_logical = state_matches_boolean(self.data, "grid", True, current_raw)
+        elif field == "sell":
+            previous_logical = state_matches_boolean(self.data, "sell", True, current_raw)
+        elif field in ("mode", "charge"):
+            previous_logical = str(current_raw).strip()
         else:
             previous_logical = current_raw
         return {
@@ -11339,11 +11410,33 @@ class DeyeEnergyRuntime:
                         self._validate_boolean_control_entity(
                             f"TOU {idx} Grid Charge", entity_id, bool(value), "grid"
                         )
+                    elif field in ("mode", "charge"):
+                        self._validate_select_entity(
+                            f"TOU {idx} {field.title()}", entity_id, str(value)
+                        )
+                    elif field == "sell":
+                        self._validate_boolean_control_entity(
+                            f"TOU {idx} Sell", entity_id, bool(value), "sell"
+                        )
+                    elif field in ("power", "voltage"):
+                        self._validate_number_entity(
+                            f"TOU {idx} {field.title()}", entity_id, float(value)
+                        )
 
                 self._last_tou_write_started = True
 
-                # Deterministic write order: start/end, soc, grid.
-                write_order = {"start": 0, "end": 0, "soc": 1, "grid": 2}
+                # Deterministic write order.
+                write_order = {
+                    "start": 0,
+                    "end": 0,
+                    "mode": 1,
+                    "charge": 2,
+                    "sell": 3,
+                    "power": 4,
+                    "voltage": 5,
+                    "soc": 6,
+                    "grid": 7,
+                }
                 changed_items.sort(key=lambda item: (write_order.get(item["field"], 99), item["slot_index"]))
 
                 for item in changed_items:
@@ -11360,6 +11453,14 @@ class DeyeEnergyRuntime:
                         await self.async_set_number(entity_id, float(provider_value))
                     elif field == "grid":
                         await self.async_set_boolean_control(entity_id, bool(item["expected_logical_value"]), "grid")
+                    elif field in ("mode", "charge"):
+                        await self.async_set_select(entity_id, str(provider_value))
+                    elif field == "sell":
+                        await self.async_set_boolean_control(entity_id, bool(item["expected_logical_value"]), "sell")
+                    elif field in ("power", "voltage"):
+                        await self.async_set_number(entity_id, float(provider_value))
+                    else:
+                        raise ValueError(f"Unsupported TOU field write: {field}")
                     item["written"] = True
                     item["status"] = "waiting"
 
@@ -12282,6 +12383,11 @@ class DeyeEnergyRuntime:
         end: str | None = None,
         soc: float | None = None,
         grid_charge: bool | None = None,
+        mode: str | None = None,
+        charge: str | None = None,
+        sell: bool | None = None,
+        power: float | None = None,
+        voltage: float | None = None,
     ) -> None:
         """Write only supplied physical TOU fields through the provider adapter."""
         if self._inverter_link_gated:
@@ -12303,9 +12409,16 @@ class DeyeEnergyRuntime:
             "end": end is not None,
             "soc": soc is not None,
             "grid_charge": grid_charge is not None,
+            "mode": mode is not None,
+            "charge": charge is not None,
+            "sell": sell is not None,
+            "power": power is not None,
+            "voltage": voltage is not None,
         }
         if not any(supplied.values()):
             raise ValueError("Provide at least one Deye Time Of Use field to change")
+        if supplied["grid_charge"] and supplied["charge"]:
+            raise ValueError("Provide either grid_charge or charge, not both")
         self._ensure_control_active()
 
         normalized_start: str | None = None
@@ -12323,6 +12436,17 @@ class DeyeEnergyRuntime:
                 raise ValueError("Deye Time Of Use SOC must be between 0 and 100%")
         if supplied["grid_charge"] and not isinstance(grid_charge, bool):
             raise ValueError("Grid charge must be true or false")
+        if supplied["sell"] and not isinstance(sell, bool):
+            raise ValueError("Sell must be true or false")
+        for field_name, value in (("mode", mode), ("charge", charge)):
+            if supplied[field_name]:
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"{field_name.title()} must be a non-empty string")
+        for field_name, value in (("power", power), ("voltage", voltage)):
+            if supplied[field_name]:
+                numeric = float(value)
+                if not math.isfinite(numeric) or numeric < 0:
+                    raise ValueError(f"{field_name.title()} must be a non-negative number")
 
         next_slot = 1 if slot == 6 else slot + 1
         capability_row = self.tou_slot_capabilities()[slot - 1]
@@ -12330,7 +12454,9 @@ class DeyeEnergyRuntime:
         for field_name, present in supplied.items():
             if not present:
                 continue
-            capability = capabilities[field_name]
+            capability = capabilities.get(field_name)
+            if not capability:
+                raise ValueError(f"Unknown Deye Time Of Use field: {field_name}")
             if not capability["supported"]:
                 raise ValueError(
                     f"Provider {profile.label} does not support the {field_name} field "
@@ -12352,6 +12478,11 @@ class DeyeEnergyRuntime:
                     end_entity = self._tou_entity(next_slot, "start")
                     soc_entity = self._tou_entity(slot, "soc")
                     grid_entity = self._tou_entity(slot, "grid")
+                    mode_entity = self._tou_entity(slot, "mode")
+                    charge_entity = self._tou_entity(slot, "charge")
+                    sell_entity = self._tou_entity(slot, "sell")
+                    power_entity = self._tou_entity(slot, "power")
+                    voltage_entity = self._tou_entity(slot, "voltage")
                     snapshot: dict[str, str] = {}
                     items: list[dict[str, Any]] = []
                     if normalized_start is not None:
@@ -12376,6 +12507,36 @@ class DeyeEnergyRuntime:
                         items.append(
                             self._make_tou_transaction_item(
                                 grid_entity, "grid", slot, bool(grid_charge), snapshot
+                            )
+                        )
+                    if supplied["mode"]:
+                        items.append(
+                            self._make_tou_transaction_item(
+                                mode_entity, "mode", slot, str(mode).strip(), snapshot
+                            )
+                        )
+                    if supplied["charge"]:
+                        items.append(
+                            self._make_tou_transaction_item(
+                                charge_entity, "charge", slot, str(charge).strip(), snapshot
+                            )
+                        )
+                    if supplied["sell"]:
+                        items.append(
+                            self._make_tou_transaction_item(
+                                sell_entity, "sell", slot, bool(sell), snapshot
+                            )
+                        )
+                    if supplied["power"]:
+                        items.append(
+                            self._make_tou_transaction_item(
+                                power_entity, "power", slot, float(power), snapshot
+                            )
+                        )
+                    if supplied["voltage"]:
+                        items.append(
+                            self._make_tou_transaction_item(
+                                voltage_entity, "voltage", slot, float(voltage), snapshot
                             )
                         )
 
@@ -12795,6 +12956,168 @@ class DeyeEnergyRuntime:
         )
         return descriptor
 
+    def _resolve_inverter_datetime_entity_id(self) -> str:
+        """Return configured inverter datetime entity, falling back to the Deye default."""
+        entity_id = str(self.data.get(CONF_INVERTER_DATETIME_ENTITY) or "").strip()
+        return entity_id or DEFAULT_INVERTER_DATETIME_ENTITY
+
+    @staticmethod
+    def _parse_inverter_datetime(value: Any) -> datetime | None:
+        """Parse inverter datetime text in the format written by sync."""
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text or text.lower() in {"unknown", "unavailable", "none"}:
+            return None
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                parsed = datetime.strptime(text, fmt)
+                return parsed.replace(tzinfo=ha_now().tzinfo)
+            except ValueError:
+                continue
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=ha_now().tzinfo)
+        return parsed.astimezone(ha_now().tzinfo)
+
+    def read_inverter_datetime_status(self) -> dict[str, Any]:
+        """Return inverter and HA server time comparison for the settings UI."""
+        entity_id = self._resolve_inverter_datetime_entity_id()
+        ha_time = ha_now().replace(microsecond=0)
+        state = self.hass.states.get(entity_id) if entity_id else None
+        raw_state = None if state is None else str(state.state)
+        inverter_dt = self._parse_inverter_datetime(raw_state)
+        ha_naive = ha_time.replace(tzinfo=None)
+        deviation_seconds: float | None = None
+        in_sync: bool | None = None
+        if inverter_dt is not None:
+            deviation_seconds = abs((inverter_dt.replace(tzinfo=None) - ha_naive).total_seconds())
+            in_sync = deviation_seconds < 1
+        available = state is not None and str(state.state).lower() not in {
+            "unknown",
+            "unavailable",
+            "none",
+            "",
+        }
+        return {
+            "entity_id": entity_id,
+            "ha_time": ha_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "inverter_time": (
+                inverter_dt.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+                if inverter_dt is not None
+                else (str(raw_state) if raw_state is not None else "Not mapped")
+            ),
+            "available": available,
+            "in_sync": in_sync,
+            "deviation_seconds": deviation_seconds,
+            "last_check_at": (
+                self._inverter_datetime_last_check.isoformat(timespec="seconds")
+                if self._inverter_datetime_last_check
+                else None
+            ),
+            "last_sync_at": (
+                self._inverter_datetime_last_sync.isoformat(timespec="seconds")
+                if self._inverter_datetime_last_sync
+                else None
+            ),
+            "last_error": self._inverter_datetime_last_error or "",
+        }
+
+    async def async_sync_inverter_datetime(self, *, reason: str = "manual") -> dict[str, Any]:
+        """Force-sync HA server time to the inverter datetime entity."""
+        entity_id = self._resolve_inverter_datetime_entity_id()
+        ha_time = ha_now().replace(microsecond=0)
+        value = ha_time.strftime("%Y-%m-%d %H:%M:%S")
+        if not entity_id:
+            self._inverter_datetime_last_error = "Inverter datetime entity is not configured"
+            self._notify_update_for("inverter_datetime_sync")
+            return {
+                "status": "failed",
+                "error": self._inverter_datetime_last_error,
+                "entity_id": "",
+                "ha_time": value,
+            }
+        state = self.hass.states.get(entity_id)
+        if state is None:
+            self._inverter_datetime_last_error = f"Inverter datetime entity not found: {entity_id}"
+            self._notify_update_for("inverter_datetime_sync")
+            return {
+                "status": "failed",
+                "error": self._inverter_datetime_last_error,
+                "entity_id": entity_id,
+                "ha_time": value,
+            }
+        if str(state.state).lower() in {"unknown", "unavailable", "none", ""}:
+            self._inverter_datetime_last_error = (
+                f"Inverter datetime entity unavailable: {entity_id}"
+            )
+            self._notify_update_for("inverter_datetime_sync")
+            return {
+                "status": "failed",
+                "error": self._inverter_datetime_last_error,
+                "entity_id": entity_id,
+                "ha_time": value,
+            }
+        try:
+            await self.hass.services.async_call(
+                "text",
+                "set_value",
+                {"entity_id": entity_id, "value": value},
+                blocking=True,
+            )
+        except Exception as err:  # noqa: BLE001 - surface service failures
+            self._inverter_datetime_last_error = str(err)
+            self._notify_update_for("inverter_datetime_sync")
+            return {
+                "status": "failed",
+                "error": self._inverter_datetime_last_error,
+                "entity_id": entity_id,
+                "ha_time": value,
+            }
+        self._inverter_datetime_last_sync = ha_time
+        self._inverter_datetime_last_check = ha_time
+        self._inverter_datetime_last_error = ""
+        self._inverter_datetime_last_deviation_seconds = 0.0
+        self.last_action = f"Inverter datetime synced ({reason})"
+        self._notify_update_for("inverter_datetime_sync")
+        return {
+            "status": "ok",
+            "error": "",
+            "entity_id": entity_id,
+            "ha_time": value,
+            "synced_value": value,
+            "reason": reason,
+        }
+
+    async def async_check_inverter_datetime_sync(self, *, force: bool = False) -> dict[str, Any]:
+        """Check inverter datetime every 6 hours and sync on any deviation."""
+        now = ha_now().replace(microsecond=0)
+        last_check = self._inverter_datetime_last_check
+        if (
+            not force
+            and last_check is not None
+            and (now - last_check).total_seconds() < 6 * 3600
+        ):
+            return {"status": "skipped", "reason": "interval_not_elapsed"}
+        status = self.read_inverter_datetime_status()
+        self._inverter_datetime_last_check = now
+        deviation = status.get("deviation_seconds")
+        self._inverter_datetime_last_deviation_seconds = (
+            float(deviation) if isinstance(deviation, (int, float)) else None
+        )
+        if not status.get("available"):
+            self._inverter_datetime_last_error = status.get("inverter_time") or "Unavailable"
+            return {"status": "unavailable", "datetime_status": status}
+        if status.get("in_sync") is True:
+            self._inverter_datetime_last_error = ""
+            return {"status": "ok", "datetime_status": status}
+        sync_result = await self.async_sync_inverter_datetime(reason="6h_drift_check")
+        sync_result["datetime_status"] = self.read_inverter_datetime_status()
+        return sync_result
+
     def read_inverter_configuration(self) -> dict[str, Any]:
         """Read every configured inverter field from live Home Assistant state."""
         groups = []
@@ -12811,7 +13134,10 @@ class DeyeEnergyRuntime:
                     "fields": fields,
                 }
             )
-        return {"groups": groups}
+        return {
+            "groups": groups,
+            "datetime_status": self.read_inverter_datetime_status(),
+        }
 
     def _validate_inverter_config_write(
         self, field: Any, entity_id: str | None, raw_value: Any
@@ -14450,6 +14776,10 @@ class DeyeEnergyRuntime:
         if self._tariff_catalog_manager is not None and self._tariff_catalog_manager.refresh_due():
             await self._tariff_catalog_manager.async_refresh()
             self._notify_update_for("tariff")
+        try:
+            await self.async_check_inverter_datetime_sync()
+        except Exception as err:  # noqa: BLE001 - datetime sync must not break tick
+            self._inverter_datetime_last_error = str(err)
         # Resolve any missing selling slot tou_soc values before any plan or
         # control action can trigger a physical TOU mapping/write.  The migration
         # is idempotent and retries every tick until every selling slot can be

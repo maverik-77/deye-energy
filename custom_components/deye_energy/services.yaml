@@ -237,7 +237,7 @@ get_plan_execution:
 
 set_tou_slot:
   name: Set physical Deye Time Of Use slot
-  description: Write and confirm only the supplied fields of one physical slot through the selected communication adapter. At least one of Start, End, SOC or Grid Charge must be provided. Start and End must be on a :00 or :30 boundary.
+  description: Write and confirm only the supplied fields of one physical slot through the selected communication adapter. At least one field must be provided. Start and End must be on a :00 or :30 boundary.
   fields:
     slot:
       name: Slot
@@ -271,6 +271,39 @@ set_tou_slot:
       required: false
       selector:
         boolean:
+    mode:
+      name: Mode
+      required: false
+      selector:
+        text:
+    charge:
+      name: Charge
+      required: false
+      selector:
+        text:
+    sell:
+      name: Sell
+      required: false
+      selector:
+        boolean:
+    power:
+      name: Power
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 200000
+          step: 1
+          unit_of_measurement: W
+    voltage:
+      name: Voltage
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1000
+          step: 0.1
+          unit_of_measurement: V
 
 save_manual_schedule:
   name: Save manual schedule
@@ -327,11 +360,17 @@ apply_inverter_configuration_group:
             - auxiliary
             - battery_type
             - battery_charging
+            - battery_config
             - work_mode
             - work_mode_detail
+            - system_control
     values:
       name: Values
       description: Object keyed by configuration field key. Only writable fields in the selected group are applied.
       required: true
       selector:
         object:
+
+sync_inverter_datetime:
+  name: Sync inverter datetime
+  description: Force-sync the Home Assistant server time to the configured inverter datetime entity. Returns the sync result and current datetime status.

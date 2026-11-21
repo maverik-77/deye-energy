@@ -462,6 +462,7 @@ class ServiceJsonValidationTests(unittest.TestCase):
 
     def test_inverter_configuration_schemas(self):
         self.assertEqual(init.INVERTER_CONFIG_SCHEMA({}), {})
+        self.assertEqual(init.SYNC_INVERTER_DATETIME_SCHEMA({}), {})
         payload = init.APPLY_INVERTER_CONFIG_SCHEMA(
             {"group": "battery_charging", "values": {"max_charge_current": 120}}
         )
@@ -475,13 +476,19 @@ class ServiceJsonValidationTests(unittest.TestCase):
         source = (PACKAGE / "__init__.py").read_text(encoding="utf-8")
         self.assertIn('"get_inverter_configuration"', source)
         self.assertIn('"apply_inverter_configuration_group"', source)
+        self.assertIn('"sync_inverter_datetime"', source)
         self.assertIn("return runtime.read_inverter_configuration()", source)
         self.assertIn(
             "return await runtime.async_apply_inverter_configuration_group(",
             source,
         )
+        self.assertIn(
+            "return await runtime.async_sync_inverter_datetime(",
+            source,
+        )
         self.assertIn("get_inverter_configuration", init.SERVICE_NAMES)
         self.assertIn("apply_inverter_configuration_group", init.SERVICE_NAMES)
+        self.assertIn("sync_inverter_datetime", init.SERVICE_NAMES)
 
     def test_inverter_config_catalog_groups_and_direct_currents(self):
         catalog = sys.modules[f"{package.__name__}.inverter_config"]
@@ -491,8 +498,9 @@ class ServiceJsonValidationTests(unittest.TestCase):
                 "specification",
                 "grid",
                 "battery_charging",
-                "work_mode",
+                "battery_config",
                 "work_mode_detail",
+                "system_control",
             ],
         )
         currents = {
@@ -514,6 +522,7 @@ class ServiceJsonValidationTests(unittest.TestCase):
             self.assertNotIn(f"    {field}:", text)
         self.assertIn("get_inverter_configuration:", text)
         self.assertIn("apply_inverter_configuration_group:", text)
+        self.assertIn("sync_inverter_datetime:", text)
         self.assertNotIn("max: 320", text)
 
     def test_default_settings_card_to_schema_to_runtime(self):
@@ -597,6 +606,11 @@ class ServiceJsonValidationTests(unittest.TestCase):
             {"slot": 1, "end": "08:00"},
             {"slot": 1, "soc": 55},
             {"slot": 1, "grid_charge": True},
+            {"slot": 1, "mode": "Charge"},
+            {"slot": 1, "charge": "Allow Grid"},
+            {"slot": 1, "sell": True},
+            {"slot": 1, "power": 5000},
+            {"slot": 1, "voltage": 50.0},
         ):
             self.assertEqual(init.TOU_SLOT_SCHEMA(payload), payload)
 
@@ -610,6 +624,11 @@ class ServiceJsonValidationTests(unittest.TestCase):
         self.assertIn('end=call.data.get("end")', source)
         self.assertIn('soc=call.data.get("soc")', source)
         self.assertIn('grid_charge=call.data.get("grid_charge")', source)
+        self.assertIn('mode=call.data.get("mode")', source)
+        self.assertIn('charge=call.data.get("charge")', source)
+        self.assertIn('sell=call.data.get("sell")', source)
+        self.assertIn('power=call.data.get("power")', source)
+        self.assertIn('voltage=call.data.get("voltage")', source)
 
 
 class IntegrationSetupTests(unittest.IsolatedAsyncioTestCase):
@@ -1078,7 +1097,7 @@ class ServicesYamlContractTests(unittest.TestCase):
     def test_set_tou_slot_yaml_marks_only_slot_as_required(self):
         fields = self.SERVICES["set_tou_slot"]["fields"]
         self.assertTrue(fields["slot"]["required"])
-        for field in ("start", "end", "soc", "grid_charge"):
+        for field in ("start", "end", "soc", "grid_charge", "mode", "charge", "sell", "power", "voltage"):
             self.assertFalse(fields[field]["required"])
 
 

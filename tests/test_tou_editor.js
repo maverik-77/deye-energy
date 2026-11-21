@@ -53,12 +53,22 @@ function diagnostics(options = {}) {
       end: STARTS[nextSlot - 1],
       soc: 10 + slot,
       grid_charge: slot % 2 === 0,
+      mode: slot % 2 === 0 ? "Charge" : "None",
+      charge: slot % 2 === 0 ? "Allow Grid" : "No Grid or Gen",
+      sell: slot % 3 === 0,
+      power: 5000 + slot * 100,
+      voltage: 50 + slot,
     };
     const entityIds = {
       start: `time.deye_prog_start_${slot}`,
       end: `time.deye_prog_start_${nextSlot}`,
       soc: `number.deye_prog_soc_${slot}`,
       grid_charge: `select.deye_prog_grid_${slot}`,
+      mode: `select.deye_prog${slot}_mode`,
+      charge: `select.deye_prog${slot}_charge`,
+      sell: `switch.deye_prog${slot}_sell`,
+      power: `number.deye_prog${slot}_power`,
+      voltage: `number.deye_prog${slot}_voltage`,
     };
     const fields = {};
     Object.entries(values).forEach(([field, value]) => {
@@ -142,10 +152,17 @@ function setLiveStates(card, starts) {
     Object.values(row.fields || {}).forEach((capability) => {
       if (!capability?.entity_id) return;
       let value;
+      let attributes = {};
       if (capability.field === "start") value = starts[slot - 1];
       else if (capability.field === "soc") value = String(10 + slot);
+      else if (capability.field === "grid_charge") value = slot % 2 === 0 ? "Allow Grid" : "No Grid or Gen";
+      else if (capability.field === "mode") { value = slot % 2 === 0 ? "Charge" : "None"; attributes.options = ["None", "General", "Backup", "Charge"]; }
+      else if (capability.field === "charge") { value = slot % 2 === 0 ? "Allow Grid" : "No Grid or Gen"; attributes.options = ["No Grid or Gen", "Allow Grid", "Allow Gen", "Allow Grid & Gen"]; }
+      else if (capability.field === "sell") value = slot % 3 === 0 ? "on" : "off";
+      else if (capability.field === "power") { value = String(5000 + slot * 100); attributes = { min: 0, max: 12000, step: 100 }; }
+      else if (capability.field === "voltage") { value = String(50 + slot); attributes = { min: 0, max: 63, step: 0.1 }; }
       else value = slot % 2 === 0 ? "on" : "off";
-      card._hass.states[capability.entity_id] = { state: value };
+      card._hass.states[capability.entity_id] = { state: value, attributes };
     });
   });
 }
@@ -160,7 +177,11 @@ function test_tou_table_is_inline_editable_without_overlay_controls() {
   assertTrue(html.includes('data-mapping-field="start" data-mapping-slot="2"'), "middle From must be editable in the table");
   assertTrue(html.includes('data-mapping-field="end" data-mapping-slot="5"'), "middle To must be editable in the table");
   assertTrue(html.includes('data-mapping-field="soc" data-mapping-slot="2"'), "SOC must be editable in the table");
-  assertTrue(html.includes('data-mapping-field="grid_charge" data-mapping-slot="2"'), "grid charging must be editable in the table");
+  assertTrue(html.includes('data-mapping-field="mode" data-mapping-slot="2"'), "mode must be editable in the table");
+  assertTrue(html.includes('data-mapping-field="charge" data-mapping-slot="2"'), "charge must be editable in the table");
+  assertTrue(html.includes('data-mapping-field="sell" data-mapping-slot="2"'), "sell must be editable in the table");
+  assertTrue(html.includes('data-mapping-field="power" data-mapping-slot="2"'), "power must be editable in the table");
+  assertTrue(html.includes('data-mapping-field="voltage" data-mapping-slot="2"'), "voltage must be editable in the table");
   assertTrue(!html.includes("data-open-tou"), "per-row overlay edit button must be gone");
   assertTrue(!html.includes("data-tou-field"), "overlay field controls must be gone");
   assertTrue(!html.includes("data-save-tou") && !html.includes("data-rollback-tou"), "overlay action buttons must be gone");

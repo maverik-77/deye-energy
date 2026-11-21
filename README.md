@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.0.58-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.0.59-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -50,7 +50,8 @@ add-on profile) and to a UK-style tariff.
   schedule source.
 - **Trigger logs** card (`custom:deye-energy-trigger-logs-card`) recording every
   physical inverter write with timestamp, target/value and success/failure
-  status, with time filters and 30-day retention; addable to any dashboard.
+  status. Full-height layout with sticky header, scrollable content, 20-entry
+  pagination, time filters and 30-day retention; addable to any dashboard.
 
 ## Requirements
 
@@ -140,7 +141,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.58
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.59
       type: module
 ```
 
@@ -217,8 +218,8 @@ ignored when older data is loaded or saved.
 The **Deye Time Of Use** tab on the Settings and diagnostics page maps the full
 day onto six physical Deye ranges. All six rows are edited directly in the
 table — there is no separate overlay or second mapping tab. From and To times,
-grid charging and SOC are inline controls; the first From and last To are fixed
-at `00:00`, and each To follows the next row's From.
+Mode, Charge, Sell, Power, Voltage and SOC are inline controls; the first From
+and last To are fixed at `00:00`, and each To follows the next row's From.
 
 - **Save** validates the entire day before writing: it must start at `00:00`,
   end at `00:00`, and have no gaps or overlaps between rows. SOC must be between

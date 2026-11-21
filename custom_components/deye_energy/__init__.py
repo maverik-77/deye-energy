@@ -93,6 +93,11 @@ TOU_SLOT_SCHEMA = vol.Schema(
         vol.Optional("end"): vol.All(cv.string, vol.Length(max=5)),
         vol.Optional("soc"): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
         vol.Optional("grid_charge"): cv.boolean,
+        vol.Optional("mode"): vol.All(cv.string, vol.Length(max=64)),
+        vol.Optional("charge"): vol.All(cv.string, vol.Length(max=64)),
+        vol.Optional("sell"): cv.boolean,
+        vol.Optional("power"): vol.All(vol.Coerce(float), vol.Range(min=0, max=200000)),
+        vol.Optional("voltage"): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
     }
 )
 MANUAL_SCHEDULE_DATA_SCHEMA = vol.Schema(
@@ -108,6 +113,7 @@ APPLY_INVERTER_CONFIG_SCHEMA = vol.Schema(
         vol.Required("values"): dict,
     }
 )
+SYNC_INVERTER_DATETIME_SCHEMA = vol.Schema({})
 SERVICE_NAMES = (
     "apply_settings",
     "manual_sell",
@@ -142,6 +148,7 @@ SERVICE_NAMES = (
     "save_energy_status_display",
     "get_inverter_configuration",
     "apply_inverter_configuration_group",
+    "sync_inverter_datetime",
 )
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the integration domain before config entries are loaded.
@@ -172,6 +179,21 @@ for _tou_index in range(1, 7):
     )
     _SUNSYNK_ENTITY_FALLBACKS[conf_tou_entity(_tou_index, "grid")] = (
         f"select.deye_prog{_tou_index}_charge"
+    )
+    _SUNSYNK_ENTITY_FALLBACKS[conf_tou_entity(_tou_index, "charge")] = (
+        f"select.deye_prog{_tou_index}_charge"
+    )
+    _SUNSYNK_ENTITY_FALLBACKS[conf_tou_entity(_tou_index, "mode")] = (
+        f"select.deye_prog{_tou_index}_mode"
+    )
+    _SUNSYNK_ENTITY_FALLBACKS[conf_tou_entity(_tou_index, "sell")] = (
+        f"switch.deye_prog{_tou_index}_sell"
+    )
+    _SUNSYNK_ENTITY_FALLBACKS[conf_tou_entity(_tou_index, "power")] = (
+        f"number.deye_prog{_tou_index}_power"
+    )
+    _SUNSYNK_ENTITY_FALLBACKS[conf_tou_entity(_tou_index, "voltage")] = (
+        f"number.deye_prog{_tou_index}_voltage"
     )
 
 
@@ -507,6 +529,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             end=call.data.get("end"),
             soc=call.data.get("soc"),
             grid_charge=call.data.get("grid_charge"),
+            mode=call.data.get("mode"),
+            charge=call.data.get("charge"),
+            sell=call.data.get("sell"),
+            power=call.data.get("power"),
+            voltage=call.data.get("voltage"),
         )
 
     async def handle_save_manual_schedule(call: ServiceCall) -> dict[str, Any]:
@@ -542,6 +569,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return await runtime.async_apply_inverter_configuration_group(
             call.data["group"], call.data["values"]
         )
+
+    async def handle_sync_inverter_datetime(call: ServiceCall) -> dict[str, Any]:
+        return await runtime.async_sync_inverter_datetime(reason="manual_service")
 
     hass.services.async_register(DOMAIN, "apply_settings", handle_apply_settings, schema=APPLY_SCHEMA)
     hass.services.async_register(DOMAIN, "manual_sell", handle_manual_sell, schema=MANUAL_SELL_SCHEMA)
@@ -653,6 +683,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "apply_inverter_configuration_group",
         handle_apply_inverter_configuration_group,
         schema=APPLY_INVERTER_CONFIG_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "sync_inverter_datetime",
+        handle_sync_inverter_datetime,
+        schema=SYNC_INVERTER_DATETIME_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
     return True
