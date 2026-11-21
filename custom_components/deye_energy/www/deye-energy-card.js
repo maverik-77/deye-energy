@@ -10564,9 +10564,10 @@ class DeyeEnergyGraphsCard extends HTMLElement {
       const data = await this._hass.callApi('GET', url);
       const map = {};
       (Array.isArray(data) ? data : []).forEach(arr => {
-        (Array.isArray(arr) ? arr : []).forEach(item => {
-          const id = item.entity_id;
-          if (!id) return;
+        const arrItems = Array.isArray(arr) ? arr : [];
+        const id = arrItems.find(i => i && i.entity_id)?.entity_id;
+        if (!id) return;
+        arrItems.forEach(item => {
           const t = new Date(item.last_changed || item.last_updated || 0).getTime();
           const v = Number(item.state);
           if (!Number.isFinite(t) || !Number.isFinite(v)) return;
