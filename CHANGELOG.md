@@ -6,6 +6,24 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.64] - 2026-11-21
+
+### Added
+
+- **Graphs card** (`custom:deye-energy-graphs-card`): new history graph card for
+  inverter, grid, load, and battery metrics. Includes 1h/6h/24h range selector,
+  responsive SVG charts, and grouped sections for Power flow, Inverter, Grid,
+  Load, and Battery. Default entity mappings are overridable via card config.
+- **Graphs dashboard view**: added a `Graphs` view to
+  `dashboard/energy_manager.yaml` containing only the graphs card, avoiding
+  duplicate charts across existing views.
+
+### Changed
+
+- **Manual schedule active row**: replaced the large row glow with a tighter
+  text/icon-only pulse (2.4s) so the current row is more visible without
+  highlighting the whole row background.
+
 ## [0.8.0.63] - 2026-11-21
 
 ### Fixed

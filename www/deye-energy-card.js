@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.63
+// Resource revision: v=0.8.0.64
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -2988,7 +2988,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.63 (resource revision v=0.8.0.63)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.64 (resource revision v=0.8.0.64)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -8835,7 +8835,7 @@ class DeyeEnergyCard extends HTMLElement {
             @media(max-width:620px){.ai-execution-toolbar,.ai-execution-date{width:100%}.ai-execution-date{display:grid;grid-template-columns:minmax(0,1fr) auto}.ai-exec-kpi{min-width:calc(50% - 4px)}.ai-execution-chart{padding:8px}.ai-execution-toolbar .ai-day-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}}
 @media(max-width:620px){.ai-execution-toolbar,.ai-execution-date{width:100%}.ai-execution-date{display:grid;grid-template-columns:minmax(0,1fr) auto}.ai-exec-kpi{min-width:calc(50% - 4px)}.ai-execution-chart{padding:8px}.ai-execution-toolbar .ai-day-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}}
            .ai-explanation-view{display:grid;gap:12px}.ai-explanation-view>h2{margin:0}.ai-explanation-profile details,.ai-shadow,.ai-help{margin-top:10px}.ai-explanation-profile summary,.ai-shadow summary,.ai-help summary{cursor:pointer;color:#dff3fc;font-weight:800}.ai-decision-summary{line-height:1.55}.ai-explanation-balance{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0}.ai-explanation-balance>div{border:1px solid rgba(103,158,184,.2);border-radius:6px;padding:9px;background:rgba(3,16,25,.45)}.ai-explanation-balance span{display:block;color:#93adbc;font-size:10px}.ai-explanation-balance strong{display:block;margin-top:4px}.ai-explanation-list{display:grid;gap:7px;padding-left:18px}.ai-explanation-list li{padding:6px 0;border-top:1px solid rgba(103,158,184,.15)}.ai-explanation-list strong{display:block;color:#7ee22d}.ai-explanation-list span{display:block;margin-top:3px;color:#b9d0dc;line-height:1.4}.ai-help dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:7px 12px}.ai-help dt{color:#7ee22d;font-weight:800}.ai-help dd{margin:0;color:#b9d0dc}@media(max-width:620px){.ai-explanation-balance{grid-template-columns:minmax(0,1fr)}.ai-help dl{grid-template-columns:minmax(0,1fr)}}
-           .manual-schedule-table{min-width:820px}.manual-schedule-table .time-col{white-space:nowrap}.manual-schedule-table tr.editing{background:rgba(21,155,255,.09)}.manual-schedule-table tr.disabled{opacity:.72}.manual-schedule-table tr.editing td{border-top-color:rgba(21,155,255,.38)}.manual-schedule-table input,.manual-schedule-table select{width:100%;min-width:90px;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:5px 6px}.manual-schedule-table input[type=checkbox]{width:auto;min-width:0;accent-color:var(--blue)}.manual-action-cell{display:flex;gap:6px;align-items:center}.manual-schedule-table .icon-only.active{border-color:var(--blue);color:#2ea7ff;background:rgba(8,53,92,.55)}.manual-schedule-table .icon-only.remove:hover{border-color:rgba(255,77,99,.7);color:#ff9cab}.manual-schedule-table .icon-only:disabled{opacity:.35;cursor:not-allowed}.manual-row-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.manual-row-actions button{min-height:36px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 12px;cursor:pointer}.manual-row-actions button:disabled{opacity:.45;cursor:not-allowed}.manual-schedule-table tr.time-current td{background:transparent;box-shadow:none;animation:manual-time-current-text-glow 4s ease-in-out infinite}@keyframes manual-time-current-text-glow{0%,100%{text-shadow:0 0 0 rgba(255,166,45,0)}50%{text-shadow:0 0 30px rgba(255,166,45,.95),0 0 66px rgba(255,166,45,1),0 0 108px rgba(255,166,45,.75),0 0 156px rgba(255,166,45,.35)}}
+           .manual-schedule-table{min-width:820px}.manual-schedule-table .time-col{white-space:nowrap}.manual-schedule-table tr.editing{background:rgba(21,155,255,.09)}.manual-schedule-table tr.disabled{opacity:.72}.manual-schedule-table tr.editing td{border-top-color:rgba(21,155,255,.38)}.manual-schedule-table input,.manual-schedule-table select{width:100%;min-width:90px;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:5px 6px}.manual-schedule-table input[type=checkbox]{width:auto;min-width:0;accent-color:var(--blue)}.manual-action-cell{display:flex;gap:6px;align-items:center}.manual-schedule-table .icon-only.active{border-color:var(--blue);color:#2ea7ff;background:rgba(8,53,92,.55)}.manual-schedule-table .icon-only.remove:hover{border-color:rgba(255,77,99,.7);color:#ff9cab}.manual-schedule-table .icon-only:disabled{opacity:.35;cursor:not-allowed}.manual-row-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.manual-row-actions button{min-height:36px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 12px;cursor:pointer}.manual-row-actions button:disabled{opacity:.45;cursor:not-allowed}.manual-schedule-table tr.time-current td{background:transparent;box-shadow:none;color:#fff8ea}.manual-schedule-table tr.time-current td,.manual-schedule-table tr.time-current td *{text-shadow:0 0 0 rgba(255,166,45,0);animation:manual-time-current-text-glow 2.4s ease-in-out infinite}.manual-schedule-table tr.time-current td svg,.manual-schedule-table tr.time-current td .icon-only{animation:manual-time-current-icon-glow 2.4s ease-in-out infinite}@keyframes manual-time-current-text-glow{0%,100%{text-shadow:0 0 0 rgba(255,166,45,0);color:inherit}50%{text-shadow:0 0 4px rgba(255,244,214,.95),0 0 10px rgba(255,176,58,.95),0 0 18px rgba(255,140,0,.55);color:#fffaf0}}@keyframes manual-time-current-icon-glow{0%,100%{filter:drop-shadow(0 0 0 rgba(255,166,45,0))}50%{filter:drop-shadow(0 0 3px rgba(255,244,214,.95)) drop-shadow(0 0 8px rgba(255,166,45,.85))}}
            </style>
             <div class="dem-v073" style="${demStyle}">
             ${statusSection}
@@ -10394,14 +10394,320 @@ class DeyeEnergyTriggerLogsCard extends HTMLElement {
   }
 }
 
+class DeyeEnergyGraphsCard extends HTMLElement {
+  constructor() {
+    super();
+    this._hass = null;
+    this._config = {};
+    this._range = '6h';
+    this._loading = false;
+    this._error = '';
+    this._history = {};
+    this._lastFetch = 0;
+    this._lastSig = '';
+    this._timer = null;
+  }
+
+  static getStubConfig() {
+    return { title: 'Deye Energy Graphs', default_range: '6h' };
+  }
+
+  getCardSize() { return 8; }
+
+  setConfig(config) {
+    this._config = config || {};
+    this._range = this._config.default_range || '6h';
+    this._history = {};
+    this._lastFetch = 0;
+    this._lastSig = '';
+  }
+
+  disconnectedCallback() {
+    if (this._timer) { clearTimeout(this._timer); this._timer = null; }
+  }
+
+  set hass(hass) {
+    const old = this._hass;
+    this._hass = hass;
+    if (!old || (hass && hass.connected !== old.connected)) {
+      this._scheduleFetch(0);
+    }
+    this._render();
+  }
+
+  _scheduleFetch(delay = 30000) {
+    if (this._timer) clearTimeout(this._timer);
+    this._timer = setTimeout(() => { this._fetchHistory(); }, delay);
+  }
+
+  _ranges() {
+    return [
+      ['1h', '1h', 60 * 60 * 1000],
+      ['6h', '6h', 6 * 60 * 60 * 1000],
+      ['24h', '24h', 24 * 60 * 60 * 1000],
+    ];
+  }
+
+  _rangeMs() {
+    const found = this._ranges().find(r => r[0] === this._range);
+    return found ? found[2] : 6 * 60 * 60 * 1000;
+  }
+
+  _defaultEntities() {
+    return {
+      grid_voltage: 'sensor.deye_grid_voltage',
+      grid_frequency: 'sensor.deye_grid_frequency',
+      grid_power: 'sensor.deye_grid_power',
+      load_power: 'sensor.deye_load_power',
+      inverter_power: 'sensor.deye_inverter_power',
+      ac_output_voltage: 'sensor.totals_ac_output_voltage',
+      battery_soc: 'sensor.deye_battery_soc',
+      battery_power: 'sensor.deye_battery_power',
+      battery_current: 'sensor.deye_battery_current',
+      battery_voltage: 'sensor.deye_battery_voltage',
+      battery_temperature: 'sensor.deye_battery_temperature',
+      inverter_rad_temperature: 'sensor.deye_radiator_temperature',
+      inverter_dc_transformer_temperature: 'sensor.deye_dc_transformer_temperature',
+      inverter_ac_temperature: 'sensor.garage_deye_energy_inverter_ac_temperature',
+    };
+  }
+
+  _entities() {
+    return { ...this._defaultEntities(), ...(this._config.entities || {}) };
+  }
+
+  _groupDefs() {
+    const e = this._entities();
+    return [
+      {
+        key: 'power_flow',
+        title: 'Power flow',
+        charts: [
+          {
+            key: 'power_flow',
+            title: 'Power flow',
+            unit: 'W',
+            series: [
+              { key: 'grid_power', label: 'Grid', entity: e.grid_power, color: '#5bc0ff' },
+              { key: 'load_power', label: 'Load', entity: e.load_power, color: '#f6a619' },
+              { key: 'battery_power', label: 'Battery', entity: e.battery_power, color: '#7ee22d' },
+              { key: 'inverter_power', label: 'Inverter', entity: e.inverter_power, color: '#bc63ff' },
+            ],
+          },
+        ],
+      },
+      {
+        key: 'inverter',
+        title: 'Inverter',
+        charts: [
+          { key: 'ac_output_voltage', title: 'AC output voltage', unit: 'V', series: [{ key: 'ac_output_voltage', label: 'AC output voltage', entity: e.ac_output_voltage, color: '#5bc0ff' }] },
+          { key: 'ac_inverter_output_power', title: 'AC inverter output power', unit: 'W', series: [{ key: 'inverter_power', label: 'Inverter output power', entity: e.inverter_power, color: '#bc63ff' }] },
+          {
+            key: 'inverter_temperatures',
+            title: 'Inverter temperatures',
+            unit: '°C',
+            series: [
+              { key: 'inverter_rad_temperature', label: 'Radiator', entity: e.inverter_rad_temperature, color: '#ff7a45' },
+              { key: 'inverter_dc_transformer_temperature', label: 'DC transformer', entity: e.inverter_dc_transformer_temperature, color: '#f6a619' },
+              { key: 'inverter_ac_temperature', label: 'AC temperature', entity: e.inverter_ac_temperature, color: '#5bc0ff' },
+            ],
+          },
+        ],
+      },
+      {
+        key: 'grid',
+        title: 'Grid',
+        charts: [
+          { key: 'grid_voltage', title: 'Grid voltage', unit: 'V', series: [{ key: 'grid_voltage', label: 'Grid voltage', entity: e.grid_voltage, color: '#5bc0ff' }] },
+          { key: 'grid_frequency', title: 'Grid frequency', unit: 'Hz', series: [{ key: 'grid_frequency', label: 'Grid frequency', entity: e.grid_frequency, color: '#35d66f' }] },
+          { key: 'grid_power', title: 'Grid power (input / output)', unit: 'W', series: [{ key: 'grid_power', label: 'Grid power', entity: e.grid_power, color: '#5bc0ff' }] },
+        ],
+      },
+      {
+        key: 'load',
+        title: 'Load',
+        charts: [
+          { key: 'load_power', title: 'Load power', unit: 'W', series: [{ key: 'load_power', label: 'Load power', entity: e.load_power, color: '#f6a619' }] },
+        ],
+      },
+      {
+        key: 'battery',
+        title: 'Battery',
+        charts: [
+          { key: 'battery_soc', title: 'Battery SOC', unit: '%', series: [{ key: 'battery_soc', label: 'SOC', entity: e.battery_soc, color: '#7ee22d' }] },
+          { key: 'battery_power', title: 'Battery power', unit: 'W', series: [{ key: 'battery_power', label: 'Battery power', entity: e.battery_power, color: '#7ee22d' }] },
+          { key: 'battery_current', title: 'Battery current', unit: 'A', series: [{ key: 'battery_current', label: 'Battery current', entity: e.battery_current, color: '#5bc0ff' }] },
+          { key: 'battery_voltage', title: 'DC voltage', unit: 'V', series: [{ key: 'battery_voltage', label: 'DC voltage', entity: e.battery_voltage, color: '#bc63ff' }] },
+          { key: 'battery_temperatures', title: 'Battery temperature', unit: '°C', series: [{ key: 'battery_temperature', label: 'Battery temperature', entity: e.battery_temperature, color: '#ff7a45' }] },
+        ],
+      },
+    ];
+  }
+
+  _allEntityIds() {
+    const ids = new Set();
+    for (const g of this._groupDefs()) for (const c of g.charts) for (const s of c.series) if (s.entity) ids.add(s.entity);
+    return [...ids];
+  }
+
+  async _fetchHistory() {
+    if (!this._hass || this._loading) return;
+    const ids = this._allEntityIds();
+    if (!ids.length) return;
+    this._loading = true;
+    this._error = '';
+    this._render();
+    try {
+      const end = new Date();
+      const start = new Date(end.getTime() - this._rangeMs());
+      const url = `history/period/${start.toISOString()}?filter_entity_id=${ids.join(',')}&end_time=${end.toISOString()}&minimal_response=1&no_attributes=1&significant_changes_only=0`;
+      const data = await this._hass.callApi('GET', url);
+      const map = {};
+      (Array.isArray(data) ? data : []).forEach(arr => {
+        (Array.isArray(arr) ? arr : []).forEach(item => {
+          const id = item.entity_id;
+          if (!id) return;
+          const t = new Date(item.last_changed || item.last_updated || 0).getTime();
+          const v = Number(item.state);
+          if (!Number.isFinite(t) || !Number.isFinite(v)) return;
+          if (!map[id]) map[id] = [];
+          map[id].push([t, v]);
+        });
+      });
+      this._history = map;
+      this._lastFetch = Date.now();
+    } catch (e) {
+      this._error = e?.message || String(e);
+    } finally {
+      this._loading = false;
+      this._lastSig = '';
+      this._render();
+      this._scheduleFetch(60000);
+    }
+  }
+
+  _fmtTime(ts) {
+    const d = new Date(ts);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  _esc(v) {
+    return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  _chartSvg(chart) {
+    const w = 640, h = 220, padL = 46, padR = 12, padT = 12, padB = 28;
+    const seriesData = chart.series.map(s => ({ ...s, points: (this._history[s.entity] || []).slice().sort((a, b) => a[0] - b[0]) }));
+    const all = seriesData.flatMap(s => s.points);
+    if (!all.length) {
+      return `<div style="height:${h}px;display:flex;align-items:center;justify-content:center;color:var(--g-muted);font-size:0.95em;border:1px dashed rgba(118,166,190,.22);border-radius:10px;background:rgba(255,255,255,.02);">No history data for selected range</div>`;
+    }
+    let minX = Math.min(...all.map(p => p[0]));
+    let maxX = Math.max(...all.map(p => p[0]));
+    let minY = Math.min(...all.map(p => p[1]));
+    let maxY = Math.max(...all.map(p => p[1]));
+    if (minX === maxX) maxX = minX + 1;
+    if (minY === maxY) { minY -= 1; maxY += 1; }
+    if (minY > 0 && (chart.unit === '%' || chart.unit === 'V' || chart.unit === 'Hz')) minY = Math.min(0, minY);
+    const spanY = maxY - minY || 1;
+    minY -= spanY * 0.08; maxY += spanY * 0.08;
+    const x = t => padL + ((t - minX) / (maxX - minX)) * (w - padL - padR);
+    const y = v => padT + (1 - (v - minY) / (maxY - minY || 1)) * (h - padT - padB);
+    const gridLines = 4;
+    let grid = '';
+    for (let i = 0; i <= gridLines; i++) {
+      const val = minY + (spanY * 1.16) * (i / gridLines);
+      const yy = padT + (1 - i / gridLines) * (h - padT - padB);
+      grid += `<line x1="${padL}" y1="${yy.toFixed(2)}" x2="${w - padR}" y2="${yy.toFixed(2)}" stroke="rgba(158,184,200,.14)" stroke-dasharray="4 4"/>`;
+      grid += `<text x="${padL - 8}" y="${(yy + 4).toFixed(2)}" text-anchor="end" fill="#9eb8c8" font-size="10">${this._esc(val.toFixed(val >= 100 ? 0 : 1))}</text>`;
+    }
+    const xLabels = 4;
+    let xLbl = '';
+    for (let i = 0; i <= xLabels; i++) {
+      const t = minX + (maxX - minX) * (i / xLabels);
+      const xx = x(t);
+      xLbl += `<text x="${xx.toFixed(2)}" y="${h - 8}" text-anchor="middle" fill="#9eb8c8" font-size="10">${this._esc(this._fmtTime(t))}</text>`;
+    }
+    let paths = '';
+    let lastVals = [];
+    seriesData.forEach(s => {
+      if (!s.points.length) return;
+      const d = s.points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p[0]).toFixed(2)} ${y(p[1]).toFixed(2)}`).join(' ');
+      paths += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>`;
+      const lv = s.points[s.points.length - 1][1];
+      lastVals.push(`<span style="color:${s.color};white-space:nowrap;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${s.color};margin-right:4px;vertical-align:middle;"></span>${this._esc(s.label)}: <strong>${this._esc(lv.toFixed(2))}${this._esc(chart.unit)}</strong></span>`);
+    });
+    return `
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;font-size:12px;color:var(--g-muted);">${lastVals.join('')}</div>
+      <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;display:block;background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,.01));border-radius:10px;border:1px solid rgba(118,166,190,.16);">
+        ${grid}
+        ${paths}
+        ${xLbl}
+      </svg>`;
+  }
+
+  _render() {
+    if (!this._hass) return;
+    const groups = this._groupDefs();
+    const sig = JSON.stringify({ r: this._range, l: this._loading, e: this._error, lf: this._lastFetch, ids: this._allEntityIds().map(id => this._hass.states[id]?.last_updated || '') });
+    if (sig === this._lastSig && this.querySelector('.graphs-root')) return;
+    this._lastSig = sig;
+
+    const ranges = this._ranges().map(([k, label]) => `<button class="rg" data-range="${k}" style="padding:5px 12px;border-radius:999px;border:1px solid ${this._range === k ? 'rgba(77,163,255,.7)' : 'rgba(118,166,190,.28)'};background:${this._range === k ? 'rgba(77,163,255,.18)' : 'rgba(255,255,255,.03)'};color:#eef7ff;cursor:pointer;font-size:12px;">${label}</button>`).join('');
+    const sections = groups.map(g => {
+      const charts = g.charts.map(c => `
+        <div class="g-chart" style="background:rgba(255,255,255,.03);border:1px solid rgba(118,166,190,.16);border-radius:12px;padding:12px;min-width:0;">
+          <div style="font-size:13px;font-weight:600;color:#eef7ff;margin-bottom:8px;">${this._esc(c.title)}</div>
+          ${this._chartSvg(c)}
+        </div>`).join('');
+      return `
+        <section style="margin-top:14px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+            <div style="width:10px;height:10px;border-radius:50%;background:#4da3ff;box-shadow:0 0 0 3px rgba(77,163,255,.15);"></div>
+            <h3 style="margin:0;font-size:15px;color:#eef7ff;font-weight:600;">${this._esc(g.title)}</h3>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;">${charts}</div>
+        </section>`;
+    }).join('');
+
+    const err = this._error ? `<div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.35);color:#ffb3b3;font-size:13px;">${this._esc(this._error)}</div>` : '';
+    const loading = this._loading ? `<span style="color:#9eb8c8;font-size:12px;">Loading history…</span>` : `<span style="color:#9eb8c8;font-size:12px;">${this._lastFetch ? 'Updated ' + this._esc(new Date(this._lastFetch).toLocaleTimeString()) : ''}</span>`;
+
+    this.innerHTML = `
+      <ha-card style="overflow:hidden;font-family:Roboto,Arial,sans-serif;font-size:14px;background:radial-gradient(circle at 18% 0%,rgba(26,106,164,.22),transparent 34%),linear-gradient(180deg,#020913,#06131c 54%,#050b10);border:1px solid rgba(101,142,164,.32);box-shadow:0 18px 45px rgba(0,0,0,.35);color:#eef7ff;--primary-text-color:#eef7ff;--secondary-text-color:#9eb8c8;--divider-color:rgba(118,166,190,.22);--g-muted:#9eb8c8;">
+        <div class="graphs-root" style="padding:16px;">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+            <div>
+              <div style="font-size:20px;font-weight:700;color:#eef7ff;">${this._esc(this._config.title || 'Deye Energy Graphs')}</div>
+              <div style="color:#9eb8c8;font-size:12px;margin-top:4px;">History graphs grouped by inverter, grid, load, and battery. ${loading}</div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">${ranges}</div>
+          </div>
+          ${err}
+          ${sections}
+        </div>
+      </ha-card>`;
+
+    this.querySelectorAll('[data-range]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._range = btn.getAttribute('data-range');
+        this._lastSig = '';
+        this._render();
+        this._fetchHistory();
+      });
+    });
+  }
+}
+
 customElements.define("deye-energy-card", DeyeEnergyCard);
 customElements.define("deye-energy-inverter-config-card", DeyeEnergyInverterConfigCard);
 customElements.define("deye-energy-trigger-logs-card", DeyeEnergyTriggerLogsCard);
+customElements.define("deye-energy-graphs-card", DeyeEnergyGraphsCard);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.0.63",
+  description: "Deye Energy 0.8.0.64",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",
@@ -10412,4 +10718,9 @@ window.customCards.push({
   type: "deye-energy-trigger-logs-card",
   name: "Trigger logs",
   description: "Logs inverter inputs/triggers with success/failure status",
+});
+window.customCards.push({
+  type: "deye-energy-graphs-card",
+  name: "Deye Energy Graphs",
+  description: "History graphs for inverter, grid, load, and battery metrics",
 });

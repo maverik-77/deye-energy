@@ -57,7 +57,7 @@ check(card.asNumber("12 / 24") === null, "multiple numeric fragments must be rej
 check(card.formatNumber("unknown", 1) === "missing", "unknown must be displayed as missing");
 check(card.formatNumber("unavailable", 1) === "missing", "unavailable must be displayed as missing");
 check(card.formatNumber(0, 1) === "0.0", "a real zero must still be displayed as zero");
-check(source.startsWith("// Resource revision: v=0.8.0.63"), "resource revision must be v=0.8.0.63");
+check(source.startsWith("// Resource revision: v=0.8.0.64"), "resource revision must be v=0.8.0.64");
 check(!source.includes("deye_inverter_time_of_use_"), "card must not hardcode the legacy TOU prefix");
 
 console.log("Stage 5G.4K.5 card parser checks passed");

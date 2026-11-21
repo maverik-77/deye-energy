@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.0.63-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.0.64-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -52,6 +52,9 @@ add-on profile) and to a UK-style tariff.
   physical inverter write with timestamp, target/value and success/failure
   status. Full-height layout with sticky header, scrollable content, 20-entry
   pagination, time filters and 30-day retention; addable to any dashboard.
+- **Graphs** card (`custom:deye-energy-graphs-card`) with 1h/6h/24h history
+  graphs grouped by Power flow, Inverter, Grid, Load, and Battery. Default
+  entity mappings are overridable in card config; addable to any dashboard.
 
 ## Requirements
 
@@ -155,7 +158,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.63
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.64
       type: module
 ```
 

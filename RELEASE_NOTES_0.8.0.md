@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.63`.
+Card resource revision: `v=0.8.0.64`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the original
@@ -9,6 +9,10 @@ integrated through MQTT. Attribution is recorded at the bottom of README.md.
 
 ## Revision history
 
+- `v=0.8.0.64` — Added `custom:deye-energy-graphs-card` with 1h/6h/24h history
+  graphs grouped by Power flow/Inverter/Grid/Load/Battery, added a Graphs view
+  to the dev dashboard, and refined manual schedule active-row glow to a
+  text/icon-only pulse.
 - `v=0.8.0.63` — Auto-fill missing Sunsynk TOU mode/charge/sell/power/voltage
   entity mappings on setup when matching default `deye_prog{n}_*` entities
   exist (without overwriting user mappings), fixing Unavailable TOU fields for

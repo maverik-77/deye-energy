@@ -121,7 +121,7 @@ check(!unavailableHtml.includes("Najlepsza decyzja"), "missing BUY prices must n
 check(unavailableHtml.includes("partial result — missing prices"), "missing prices must remain explicit and fail-closed in presentation");
 
 check(!source.includes("gwarantowany zysk"), "UI must not promise a guaranteed profit");
-check(source.startsWith("// Resource revision: v=0.8.0.63"), "resource revision must be v=0.8.0.63");
+check(source.startsWith("// Resource revision: v=0.8.0.64"), "resource revision must be v=0.8.0.64");
 
 if (failures) process.exit(1);
 console.log("Stage 5G.4K.1 v2 net-result semantic contract tests passed");
