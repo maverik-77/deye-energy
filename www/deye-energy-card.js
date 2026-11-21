@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.64
+// Resource revision: v=0.8.0.65
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -2988,7 +2988,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.64 (resource revision v=0.8.0.64)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.65 (resource revision v=0.8.0.65)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -10400,6 +10400,7 @@ class DeyeEnergyGraphsCard extends HTMLElement {
     this._hass = null;
     this._config = {};
     this._range = '6h';
+    this._group = 'power_flow';
     this._loading = false;
     this._error = '';
     this._history = {};
@@ -10650,26 +10651,23 @@ class DeyeEnergyGraphsCard extends HTMLElement {
   _render() {
     if (!this._hass) return;
     const groups = this._groupDefs();
-    const sig = JSON.stringify({ r: this._range, l: this._loading, e: this._error, lf: this._lastFetch, ids: this._allEntityIds().map(id => this._hass.states[id]?.last_updated || '') });
+    const activeGroup = groups.find(g => g.key === this._group) || groups[0];
+    if (activeGroup && this._group !== activeGroup.key) this._group = activeGroup.key;
+    const sig = JSON.stringify({ r: this._range, g: this._group, l: this._loading, e: this._error, lf: this._lastFetch, ids: this._allEntityIds().map(id => this._hass.states[id]?.last_updated || '') });
     if (sig === this._lastSig && this.querySelector('.graphs-root')) return;
     this._lastSig = sig;
 
     const ranges = this._ranges().map(([k, label]) => `<button class="rg" data-range="${k}" style="padding:5px 12px;border-radius:999px;border:1px solid ${this._range === k ? 'rgba(77,163,255,.7)' : 'rgba(118,166,190,.28)'};background:${this._range === k ? 'rgba(77,163,255,.18)' : 'rgba(255,255,255,.03)'};color:#eef7ff;cursor:pointer;font-size:12px;">${label}</button>`).join('');
-    const sections = groups.map(g => {
-      const charts = g.charts.map(c => `
-        <div class="g-chart" style="background:rgba(255,255,255,.03);border:1px solid rgba(118,166,190,.16);border-radius:12px;padding:12px;min-width:0;">
-          <div style="font-size:13px;font-weight:600;color:#eef7ff;margin-bottom:8px;">${this._esc(c.title)}</div>
-          ${this._chartSvg(c)}
-        </div>`).join('');
-      return `
-        <section style="margin-top:14px;">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
-            <div style="width:10px;height:10px;border-radius:50%;background:#4da3ff;box-shadow:0 0 0 3px rgba(77,163,255,.15);"></div>
-            <h3 style="margin:0;font-size:15px;color:#eef7ff;font-weight:600;">${this._esc(g.title)}</h3>
-          </div>
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;">${charts}</div>
-        </section>`;
+    const groupTabs = groups.map(g => {
+      const active = g.key === this._group;
+      return `<button class="gg" data-group="${g.key}" style="padding:7px 14px;border-radius:999px;border:1px solid ${active ? 'rgba(126,226,45,.65)' : 'rgba(118,166,190,.28)'};background:${active ? 'rgba(126,226,45,.14)' : 'rgba(255,255,255,.03)'};color:#eef7ff;cursor:pointer;font-size:13px;font-weight:${active ? '600' : '500'};">${this._esc(g.title)}</button>`;
     }).join('');
+
+    const charts = (activeGroup?.charts || []).map(c => `
+      <div class="g-chart" style="background:rgba(255,255,255,.03);border:1px solid rgba(118,166,190,.16);border-radius:12px;padding:12px;min-width:0;width:100%;box-sizing:border-box;">
+        <div style="font-size:13px;font-weight:600;color:#eef7ff;margin-bottom:8px;">${this._esc(c.title)}</div>
+        ${this._chartSvg(c)}
+      </div>`).join('');
 
     const err = this._error ? `<div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.35);color:#ffb3b3;font-size:13px;">${this._esc(this._error)}</div>` : '';
     const loading = this._loading ? `<span style="color:#9eb8c8;font-size:12px;">Loading history…</span>` : `<span style="color:#9eb8c8;font-size:12px;">${this._lastFetch ? 'Updated ' + this._esc(new Date(this._lastFetch).toLocaleTimeString()) : ''}</span>`;
@@ -10680,12 +10678,15 @@ class DeyeEnergyGraphsCard extends HTMLElement {
           <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;">
             <div>
               <div style="font-size:20px;font-weight:700;color:#eef7ff;">${this._esc(this._config.title || 'Deye Energy Graphs')}</div>
-              <div style="color:#9eb8c8;font-size:12px;margin-top:4px;">History graphs grouped by inverter, grid, load, and battery. ${loading}</div>
+              <div style="color:#9eb8c8;font-size:12px;margin-top:4px;">History graphs for ${this._esc(activeGroup?.title || 'selected')} metrics. ${loading}</div>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">${ranges}</div>
           </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;">${groupTabs}</div>
           ${err}
-          ${sections}
+          <section style="margin-top:14px;">
+            <div style="display:grid;grid-template-columns:1fr;gap:12px;">${charts}</div>
+          </section>
         </div>
       </ha-card>`;
 
@@ -10695,6 +10696,13 @@ class DeyeEnergyGraphsCard extends HTMLElement {
         this._lastSig = '';
         this._render();
         this._fetchHistory();
+      });
+    });
+    this.querySelectorAll('[data-group]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._group = btn.getAttribute('data-group');
+        this._lastSig = '';
+        this._render();
       });
     });
   }
@@ -10708,7 +10716,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.0.64",
+  description: "Deye Energy 0.8.0.65",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

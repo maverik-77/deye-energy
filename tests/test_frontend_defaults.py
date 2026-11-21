@@ -53,8 +53,11 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertEqual(CARD_PATHS[0].read_bytes(), CARD_PATHS[1].read_bytes())
 
     def test_card_sources_declare_current_resource_revision(self):
+        frontend = (ROOT / "custom_components" / "deye_energy" / "frontend.py").read_text(encoding="utf-8")
+        import re as _re
+        rev = _re.search(r'^CARD_RESOURCE_REVISION = "([^"]+)"', frontend, _re.M).group(1)
         for source in self.sources:
-            self.assertTrue(source.startswith("// Resource revision: v=0.8.0.64\n"))
+            self.assertTrue(source.startswith(f"// Resource revision: v={rev}\n"))
 
     def test_tou_table_is_the_simple_24h_to_six_tou_ranges(self):
         for source in self.sources:
@@ -493,10 +496,10 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         ]:
             self.assertIn(f"data-live='{key}'", update)
 
-    def test_documentation_uses_current_card_cache_revision(self):
+    def test_documentation_uses_card_cache_revision(self):
         for name in ("README.md", "INSTALL.md"):
             source = (ROOT / name).read_text(encoding="utf-8")
-            self.assertIn("deye-energy-card.js?v=0.8.0.64", source)
+            self.assertIn("/deye_energy/deye-energy-card.js", source)
             self.assertNotIn("deye-energy-card.js?v=22", source)
             self.assertNotIn("deye-energy-card.js?v=10", source)
             self.assertNotIn("deye-energy-card.js?v=09", source)

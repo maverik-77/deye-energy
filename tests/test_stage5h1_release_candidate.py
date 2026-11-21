@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 
@@ -10,19 +11,21 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "custom_components" / "deye_energy"
 
 
-def test_release_identity_and_resource_revision_are_080_44():
+def test_release_identity_and_resource_revision_are_consistent():
     manifest = json.loads((PACKAGE / "manifest.json").read_text(encoding="utf-8"))
     config_flow = (PACKAGE / "config_flow.py").read_text(encoding="utf-8")
     frontend = (PACKAGE / "frontend.py").read_text(encoding="utf-8")
     component_card = PACKAGE / "www" / "deye-energy-card.js"
     public_card = ROOT / "www" / "deye-energy-card.js"
 
-    assert manifest["version"] == "0.8.0.64"
+    version = manifest["version"]
+    assert re.match(r"^\d+\.\d+\.\d+(\.\d+)?$", version)
     assert "MINOR_VERSION = 25" in config_flow
-    assert 'CARD_RESOURCE_REVISION = "0.8.0.64"' in frontend
+    rev = re.search(r'^CARD_RESOURCE_REVISION = "([^"]+)"', frontend, re.M).group(1)
+    assert rev == version
     assert component_card.read_bytes() == public_card.read_bytes()
     assert component_card.read_text(encoding="utf-8").startswith(
-        "// Resource revision: v=0.8.0.64\n"
+        f"// Resource revision: v={rev}\n"
     )
 
 
@@ -61,13 +64,13 @@ def test_release_notes_cover_final_rc_contract_without_overclaiming():
 def test_storage_and_yaml_installation_paths_are_explicitly_separated():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     install = (ROOT / "INSTALL.md").read_text(encoding="utf-8")
-    canonical = "/deye_energy/deye-energy-card.js?v=0.8.0.64"
+    canonical_path = "/deye_energy/deye-energy-card.js"
 
     assert "UI/storage mode" in readme
     assert "automatically registers" in readme
     assert "Mode UI/storage — automatic resource" in install
     assert "Mode YAML — manual configuration" in install
-    assert canonical in readme and canonical in install
+    assert canonical_path in readme and canonical_path in install
 
 
 def test_active_release_files_use_only_canonical_repository_slug():

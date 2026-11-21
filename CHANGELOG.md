@@ -6,6 +6,22 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.65] - 2026-11-21
+
+### Fixed
+
+- **Graphs card history parsing**: Fixed empty graphs when Home Assistant history
+  is fetched with `minimal_response`/`no_attributes`, where `entity_id` is only
+  present on the first item of each entity history array.
+
+### Changed
+
+- **Graphs card layout**: Added sub-tabs for `Power flow`, `Inverter`, `Grid`,
+  `Load`, and `Battery`, and render charts full-width within the selected tab.
+- **Release/test maintenance**: Removed brittle hardcoded release-version pins
+  from tests and dashboard comments; kept version metadata in manifest, frontend,
+  manager diagnostics, card JS, README, INSTALL, release notes, and changelog.
+
 ## [0.8.0.64] - 2026-11-21
 
 ### Added

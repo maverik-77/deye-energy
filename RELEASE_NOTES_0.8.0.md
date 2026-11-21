@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.64`.
+Card resource revision: `v=0.8.0.65`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the original
@@ -9,6 +9,10 @@ integrated through MQTT. Attribution is recorded at the bottom of README.md.
 
 ## Revision history
 
+- `v=0.8.0.65` — Fixed graphs card history parsing for HA `minimal_response`
+  history payloads, added Power flow/Inverter/Grid/Load/Battery sub-tabs, made
+  graphs full-width within tabs, and removed brittle hardcoded release-version
+  pins from tests/dashboard comments.
 - `v=0.8.0.64` — Added `custom:deye-energy-graphs-card` with 1h/6h/24h history
   graphs grouped by Power flow/Inverter/Grid/Load/Battery, added a Graphs view
   to the dev dashboard, and refined manual schedule active-row glow to a
