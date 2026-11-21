@@ -6,6 +6,20 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.69] - 2026-11-21
+
+### Changed
+
+- **Power flow card visual overhaul**: redesigned `custom:deye-energy-power-flow-card`
+  for a larger, page-fitting, responsive layout (`100%` width/height, scalable SVG
+  with `preserveAspectRatio`).
+- **Curved animated flows**: replaced straight lines with curved Bezier flow paths,
+  directional arrows, and glowing animated balls/particles proportional to power.
+- **Glowing node widgets**: added glowing icon halos, active pulse rings, glass
+  node cards, ambient background glow, and stronger status/value typography.
+- **Power flow tests**: updated contract tests for curved paths, responsive
+  scaling, glow/icon filters, and click/more-info behavior.
+
 ## [0.8.0.68] - 2026-11-21
 
 ### Changed
