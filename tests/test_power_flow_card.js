@@ -78,6 +78,11 @@ check(html.includes('pf-arrow-pf-pv-inv'), "missing arrow marker");
 check(html.includes('pf-node-click'), "missing clickable node class");
 check(html.includes('data-entity="sensor.my_pv"'), "missing node entity data attribute");
 check(html.toLowerCase().includes('click any node for details'), "missing click hint");
+check(html.includes('Import today'), "missing grid import today detail");
+check(html.includes('Export today'), "missing grid export today detail");
+check(html.includes('Charged today'), "missing battery charged today detail");
+check(html.includes('Discharged today'), "missing battery discharged today detail");
+check(html.includes('Today'), "missing daily detail label");
 
 // Click dispatch
 let fired = null;

@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.69
+// Resource revision: v=0.8.0.70
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -2988,7 +2988,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.69 (resource revision v=0.8.0.69)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.70 (resource revision v=0.8.0.70)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -10843,6 +10843,12 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     super();
     this._hass = null;
     this._config = {};
+    if (typeof this.addEventListener === 'function') {
+      this.addEventListener('click', (e) => {
+        const t = e?.target?.closest ? e.target.closest('.pf-node-click[data-entity]') : null;
+        if (t) this._openMoreInfo(t.getAttribute('data-entity'));
+      });
+    }
   }
 
   static getStubConfig() {
@@ -10855,11 +10861,23 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
         battery_soc: 'sensor.garage_deye_energy_battery_soc',
         load: 'sensor.garage_deye_energy_load_power',
         inverter: 'sensor.deye_inverter_power',
+        daily_pv_production: 'sensor.garage_deye_energy_daily_pv_production',
+        daily_energy_bought: 'sensor.garage_deye_energy_daily_energy_bought',
+        daily_energy_sold: 'sensor.garage_deye_energy_daily_energy_sold',
+        daily_battery_charge: 'sensor.garage_deye_energy_daily_battery_charge',
+        daily_battery_discharge: 'sensor.garage_deye_energy_daily_battery_discharge',
+        daily_load_consumption: 'sensor.garage_deye_energy_daily_load_consumption',
+        battery_voltage: 'sensor.garage_deye_energy_battery_bms_voltage',
+        battery_current: 'sensor.garage_deye_energy_battery_current',
+        battery_temperature: 'sensor.garage_deye_energy_battery_temperature',
+        grid_frequency: 'sensor.garage_deye_energy_load_frequency',
+        inverter_temperature: 'sensor.garage_deye_energy_inverter_ac_temperature',
+        grid_l1_voltage: 'sensor.garage_deye_energy_grid_l1_voltage',
       },
     };
   }
 
-  getCardSize() { return 10; }
+  getCardSize() { return 12; }
 
   setConfig(config) {
     this._config = config || {};
@@ -10888,6 +10906,8 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     if (abs >= 1000) return `${(v / 1000).toFixed(abs >= 10000 ? 1 : 2)} kW`;
     return `${Math.round(v)} W`;
   }
+  _fmtKwh(v) { return v == null || !Number.isFinite(v) ? '—' : `${v.toFixed(2)} kWh`; }
+  _fmtNum(v, d=1, unit='') { return v == null || !Number.isFinite(v) ? '—' : `${v.toFixed(d)}${unit}`; }
 
   _entities() {
     const d = DeyeEnergyPowerFlowCard.getStubConfig().entities;
@@ -10903,89 +10923,80 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     this.dispatchEvent(ev);
   }
 
+  _pathMid(d) {
+    const nums = (d.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+    if (nums.length >= 8) {
+      const [x0,y0,x1,y1,x2,y2,x3,y3] = nums;
+      const t=0.5, mt=1-t;
+      return {x: mt*mt*mt*x0 + 3*mt*mt*t*x1 + 3*mt*t*t*x2 + t*t*t*x3, y: mt*mt*mt*y0 + 3*mt*mt*t*y1 + 3*mt*t*t*y2 + t*t*t*y3};
+    }
+    if (nums.length >= 4) return {x:(nums[0]+nums[nums.length-2])/2, y:(nums[1]+nums[nums.length-1])/2};
+    return {x:0,y:0};
+  }
+
   _flow(id, d, color, power, reverse, label) {
     const active = Math.abs(power) > 10;
-    const stroke = active ? color : 'rgba(158,184,200,.20)';
-    const sw = active ? 4 : 2.2;
+    const stroke = active ? color : 'rgba(158,184,200,.18)';
+    const sw = active ? 4.5 : 2.4;
     const marker = active ? `url(#pf-arrow-${id})` : '';
-    const dur = Math.max(1.6, Math.min(6, 3000 / Math.max(90, Math.abs(power))));
-    const count = active ? (Math.abs(power) > 3000 ? 4 : Math.abs(power) > 1200 ? 3 : Math.abs(power) > 400 ? 2 : 1) : 0;
+    const dur = Math.max(1.5, Math.min(6.5, 3200 / Math.max(90, Math.abs(power))));
+    const count = active ? (Math.abs(power) > 3000 ? 4 : Math.abs(power) > 1200 ? 3 : Math.abs(power) > 350 ? 2 : 1) : 0;
     let balls = '';
     for (let i = 0; i < count; i++) {
       const begin = (i * dur / count).toFixed(2);
-      const r = 5.2 - i * 0.35;
+      const r = 5.6 - i * 0.35;
       balls += `
-        <circle r="${(r + 4).toFixed(1)}" fill="${color}" opacity="0.14">
-          <animateMotion dur="${dur.toFixed(2)}s" begin="${begin}s" repeatCount="indefinite" ${reverse ? 'keyPoints="1;0" keyTimes="0;1" calcMode="linear"' : ''}><mpath href="#${id}"/></animateMotion>
-        </circle>
-        <circle r="${r.toFixed(1)}" fill="${color}" opacity="0.95" filter="url(#pf-glow)">
-          <animateMotion dur="${dur.toFixed(2)}s" begin="${begin}s" repeatCount="indefinite" ${reverse ? 'keyPoints="1;0" keyTimes="0;1" calcMode="linear"' : ''}><mpath href="#${id}"/></animateMotion>
-        </circle>`;
+        <circle r="${(r + 5).toFixed(1)}" fill="${color}" opacity="0.12"><animateMotion dur="${dur.toFixed(2)}s" begin="${begin}s" repeatCount="indefinite" ${reverse ? 'keyPoints="1;0" keyTimes="0;1" calcMode="linear"' : ''}><mpath href="#${id}"/></animateMotion></circle>
+        <circle r="${r.toFixed(1)}" fill="${color}" opacity="0.98" filter="url(#pf-glow)"><animateMotion dur="${dur.toFixed(2)}s" begin="${begin}s" repeatCount="indefinite" ${reverse ? 'keyPoints="1;0" keyTimes="0;1" calcMode="linear"' : ''}><mpath href="#${id}"/></animateMotion></circle>`;
     }
     const mid = this._pathMid(d);
-    const lbl = active && label ? `
-      <g>
-        <rect x="${mid.x - 38}" y="${mid.y - 14}" width="76" height="28" rx="14" fill="rgba(3,12,24,.88)" stroke="${color}" stroke-opacity=".6" stroke-width="1.2"/>
-        <text x="${mid.x}" y="${mid.y + 4}" text-anchor="middle" font-size="12" fill="#f4fbff" font-weight="800">${this._esc(label)}</text>
-      </g>` : '';
+    const lbl = active && label ? `<g><rect x="${mid.x - 42}" y="${mid.y - 15}" width="84" height="30" rx="15" fill="rgba(3,12,24,.90)" stroke="${color}" stroke-opacity=".65" stroke-width="1.2"/><text x="${mid.x}" y="${mid.y + 5}" text-anchor="middle" font-size="13" fill="#f4fbff" font-weight="800">${this._esc(label)}</text></g>` : '';
     return `
-      <defs>
-        <marker id="pf-arrow-${id}" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="${color}" opacity="0.95" />
-        </marker>
-      </defs>
-      <path id="${id}" d="${d}" stroke="${stroke}" stroke-width="${sw}" stroke-dasharray="${active ? 'none' : '7 10'}" fill="none" stroke-linecap="round" ${marker ? `marker-end="${marker}"` : ''} opacity="${active ? 0.95 : 0.35}"/>
-      ${active ? `<path d="${d}" stroke="${color}" stroke-width="12" fill="none" stroke-linecap="round" opacity="0.08"/>` : ''}
-      ${balls}
-      ${lbl}`;
+      <defs><marker id="pf-arrow-${id}" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M 0 0 L 10 5 L 0 10 z" fill="${color}" opacity="0.95"/></marker></defs>
+      <path id="${id}" d="${d}" stroke="${stroke}" stroke-width="${sw}" stroke-dasharray="${active ? 'none' : '8 10'}" fill="none" stroke-linecap="round" ${marker ? `marker-end="${marker}"` : ''} opacity="${active ? 0.96 : 0.32}"/>
+      ${active ? `<path d="${d}" stroke="${color}" stroke-width="14" fill="none" stroke-linecap="round" opacity="0.07"/>` : ''}
+      ${balls}${lbl}`;
   }
 
-  _pathMid(d) {
-    // crude midpoint for cubic/quadratic path strings we generate: M x1 y1 C cx1 cy1 cx2 cy2 x2 y2 or Q
-    const nums = d.match(/-?\d+(?:\.\d+)?/g).map(Number);
-    if (nums.length >= 8) {
-      // cubic: M x0 y0 C x1 y1 x2 y2 x3 y3
-      const [x0,y0,x1,y1,x2,y2,x3,y3] = nums;
-      const t = 0.5, mt = 1-t;
-      const x = mt*mt*mt*x0 + 3*mt*mt*t*x1 + 3*mt*t*t*x2 + t*t*t*x3;
-      const y = mt*mt*mt*y0 + 3*mt*mt*t*y1 + 3*mt*t*t*y2 + t*t*t*y3;
-      return {x, y};
-    }
-    if (nums.length >= 6) {
-      const [x0,y0,x1,y1,x2,y2] = nums;
-      const t=0.5, mt=1-t;
-      return {x: mt*mt*x0 + 2*mt*t*x1 + t*t*x2, y: mt*mt*y0 + 2*mt*t*y1 + t*t*y2};
-    }
-    return {x: (nums[0]+nums[2])/2, y: (nums[1]+nums[3])/2};
+  _detailLine(label, value, color='#9eb8c8') {
+    return `<div style="display:flex;justify-content:space-between;gap:10px;font-size:12px;line-height:1.5;"><span style="color:#93adbc;">${this._esc(label)}</span><span style="color:${this._esc(color)};font-weight:600;white-space:nowrap;">${this._esc(value)}</span></div>`;
   }
 
-  _node(x, y, icon, title, value, sub, color, active, entityId) {
+  _node(x, y, icon, title, value, sub, color, active, entityId, details=[]) {
     const click = entityId ? `class="pf-node-click" data-entity="${this._esc(entityId)}" style="cursor:pointer"` : '';
     const border = active ? color : 'rgba(148,173,189,.28)';
-    const glow = active ? `filter="url(#pf-node-glow-${this._esc(color.replace('#',''))})"` : '';
+    const det = details.length ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(118,166,190,.16);display:flex;flex-direction:column;gap:2px;">${details.join('')}</div>` : '';
+    const nodeW = 248, nodeH = details.length ? 220 : 112;
+    const nx = x - nodeW / 2, ny = y - nodeH / 2;
     return `
-      <g ${click} ${glow}>
-        <rect x="${x - 98}" y="${y - 64}" width="196" height="128" rx="24" fill="rgba(9,20,34,.72)" stroke="${border}" stroke-width="${active ? 2.2 : 1.4}"/>
-        <rect x="${x - 98}" y="${y - 64}" width="196" height="128" rx="24" fill="url(#pf-node-bg)" opacity="0.7"/>
-        ${active ? `<rect x="${x - 98}" y="${y - 64}" width="196" height="128" rx="24" fill="none" stroke="${color}" stroke-opacity=".18" stroke-width="10"/>` : ''}
-        <circle cx="${x}" cy="${y - 28}" r="28" fill="${color}" opacity="${active ? '.14' : '.08'}"/>
-        <circle cx="${x}" cy="${y - 28}" r="28" fill="none" stroke="${color}" stroke-opacity="${active ? '.55' : '.22'}" stroke-width="1.6"/>
-        ${active ? `<circle cx="${x}" cy="${y - 28}" r="34" fill="none" stroke="${color}" stroke-opacity=".18" stroke-width="2"><animate attributeName="r" values="34;38;34" dur="2.6s" repeatCount="indefinite"/><animate attributeName="stroke-opacity" values="0.18;0.05;0.18" dur="2.6s" repeatCount="indefinite"/></circle>` : ''}
-        <text x="${x}" y="${y - 20}" text-anchor="middle" font-size="26" filter="${active ? 'url(#pf-icon-glow)' : 'none'}">${icon}</text>
-        <text x="${x}" y="${y + 12}" text-anchor="middle" font-size="13" fill="#9eb8c8" letter-spacing="0.5">${this._esc(title)}</text>
-        <text x="${x}" y="${y + 38}" text-anchor="middle" font-size="24" fill="#f4fbff" font-weight="800">${this._esc(value)}</text>
-        ${sub ? `<text x="${x}" y="${y + 56}" text-anchor="middle" font-size="12" fill="${this._esc(color)}" font-weight="700">${this._esc(sub)}</text>` : ''}
-      </g>`;
+      <foreignObject x="${nx}" y="${ny}" width="${nodeW}" height="${nodeH}" overflow="visible">
+        <div xmlns="http://www.w3.org/1999/xhtml" ${click} style="box-sizing:border-box;width:${nodeW}px;min-height:${nodeH}px;padding:14px 14px 12px;border-radius:22px;background:linear-gradient(180deg,rgba(11,24,40,.90),rgba(7,16,28,.82));border:1px solid ${border};box-shadow:${active ? `0 0 0 1px ${color}22,0 0 28px ${color}22,0 18px 40px rgba(0,0,0,.35)` : '0 12px 30px rgba(0,0,0,.28)'};backdrop-filter:blur(6px);font-family:Roboto,Arial,sans-serif;color:#eef7ff;">
+          <div style="display:flex;align-items:center;gap:12px;">
+            <div style="width:50px;height:50px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:28px;background:${color}18;border:1px solid ${color}55;box-shadow:${active ? `0 0 24px ${color}44` : 'none'};position:relative;flex:0 0 50px;">
+              ${active ? `<span style="position:absolute;inset:-4px;border-radius:18px;border:1px solid ${color}44;animation:pfPulse 2.6s infinite;"></span>` : ''}
+              <span style="filter:${active ? 'drop-shadow(0 0 8px rgba(255,255,255,.35))' : 'none'}">${icon}</span>
+            </div>
+            <div style="min-width:0;">
+              <div style="font-size:12px;color:#93adbc;letter-spacing:.5px;text-transform:uppercase;">${this._esc(title)}</div>
+              <div style="font-size:26px;font-weight:800;color:#f4fbff;line-height:1.15;margin-top:2px;">${this._esc(value)}</div>
+              <div style="font-size:12px;color:${this._esc(color)};font-weight:700;margin-top:2px;">${this._esc(sub || '')}</div>
+            </div>
+          </div>
+          ${det}
+        </div>
+      </foreignObject>`;
   }
 
   _render() {
     const e = this._entities();
-    const pv = this._num(e.pv);
-    const grid = this._num(e.grid);
-    const batt = this._num(e.battery);
-    const soc = this._num(e.battery_soc);
-    const load = this._num(e.load);
-    const inv = this._num(e.inverter);
+    const pv = this._num(e.pv); const grid = this._num(e.grid); const batt = this._num(e.battery);
+    const soc = this._num(e.battery_soc); const load = this._num(e.load); const inv = this._num(e.inverter);
+    const pvDaily = this._num(e.daily_pv_production);
+    const gridBought = this._num(e.daily_energy_bought); const gridSold = this._num(e.daily_energy_sold);
+    const battChargeDaily = this._num(e.daily_battery_charge); const battDischargeDaily = this._num(e.daily_battery_discharge);
+    const loadDaily = this._num(e.daily_load_consumption);
+    const battV = this._num(e.battery_voltage); const battA = this._num(e.battery_current); const battT = this._num(e.battery_temperature);
+    const gridFreq = this._num(e.grid_frequency); const invT = this._num(e.inverter_temperature); const gridV = this._num(e.grid_l1_voltage);
 
     const gridImport = grid != null ? Math.max(0, grid) : 0;
     const gridExport = grid != null ? Math.max(0, -grid) : 0;
@@ -10995,14 +11006,14 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const loadVal = load != null ? Math.max(0, load) : 0;
 
     const W = 1200, H = 760;
-    const N = { pv:[600,110], grid:[170,380], inv:[600,380], home:[1030,380], batt:[600,650] };
-    // curved paths
-    const pvToInv = `M ${N.pv[0]} ${N.pv[1]+64} C ${N.pv[0]-30} ${N.pv[1]+170}, ${N.inv[0]-30} ${N.inv[1]-170}, ${N.inv[0]} ${N.inv[1]-64}`;
-    const gridToInv = `M ${N.grid[0]+98} ${N.grid[1]} C ${N.grid[0]+260} ${N.grid[1]-70}, ${N.inv[0]-260} ${N.inv[1]-70}, ${N.inv[0]-98} ${N.inv[1]}`;
-    const invToGrid = `M ${N.inv[0]-98} ${N.inv[1]} C ${N.inv[0]-260} ${N.inv[1]+70}, ${N.grid[0]+260} ${N.grid[1]+70}, ${N.grid[0]+98} ${N.grid[1]}`;
-    const invToHome = `M ${N.inv[0]+98} ${N.inv[1]} C ${N.inv[0]+260} ${N.inv[1]-70}, ${N.home[0]-260} ${N.home[1]-70}, ${N.home[0]-98} ${N.home[1]}`;
-    const battToInv = `M ${N.batt[0]} ${N.batt[1]-64} C ${N.batt[0]+30} ${N.batt[1]-170}, ${N.inv[0]+30} ${N.inv[1]+170}, ${N.inv[0]} ${N.inv[1]+64}`;
-    const invToBatt = `M ${N.inv[0]} ${N.inv[1]+64} C ${N.inv[0]-30} ${N.inv[1]+170}, ${N.batt[0]-30} ${N.batt[1]-170}, ${N.batt[0]} ${N.batt[1]-64}`;
+    const N = { pv:[600,120], grid:[170,380], inv:[600,380], home:[1030,380], batt:[600,640] };
+    const pos = { pv:[600,120], grid:[170,380], inv:[600,380], home:[1030,380], batt:[600,640] };
+    const pvToInv = `M ${N.pv[0]} ${N.pv[1]+72} C ${N.pv[0]-40} ${N.pv[1]+190}, ${N.inv[0]-40} ${N.inv[1]-190}, ${N.inv[0]} ${N.inv[1]-72}`;
+    const gridToInv = `M ${N.grid[0]+120} ${N.grid[1]} C ${N.grid[0]+290} ${N.grid[1]-80}, ${N.inv[0]-290} ${N.inv[1]-80}, ${N.inv[0]-120} ${N.inv[1]}`;
+    const invToGrid = `M ${N.inv[0]-120} ${N.inv[1]} C ${N.inv[0]-290} ${N.inv[1]+80}, ${N.grid[0]+290} ${N.grid[1]+80}, ${N.grid[0]+120} ${N.grid[1]}`;
+    const invToHome = `M ${N.inv[0]+120} ${N.inv[1]} C ${N.inv[0]+290} ${N.inv[1]-80}, ${N.home[0]-290} ${N.home[1]-80}, ${N.home[0]-120} ${N.home[1]}`;
+    const battToInv = `M ${N.batt[0]} ${N.batt[1]-72} C ${N.batt[0]+40} ${N.batt[1]-190}, ${N.inv[0]+40} ${N.inv[1]+190}, ${N.inv[0]} ${N.inv[1]+72}`;
+    const invToBatt = `M ${N.inv[0]} ${N.inv[1]+72} C ${N.inv[0]-40} ${N.inv[1]+190}, ${N.batt[0]-40} ${N.batt[1]-190}, ${N.batt[0]} ${N.batt[1]-72}`;
 
     const flows = [];
     flows.push(this._flow('pf-pv-inv', pvToInv, '#f6c945', pvVal, false, pvVal > 10 ? this._fmtW(pvVal) : ''));
@@ -11017,51 +11028,70 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const gridLabel = gridImport > 10 ? 'Importing' : gridExport > 10 ? 'Exporting' : 'Idle';
     const battLabel = battDischarge > 10 ? 'Discharging' : battCharge > 10 ? 'Charging' : 'Idle';
     const socText = soc != null ? `SOC ${Math.round(soc)}%` : '';
-    const unavailable = [e.pv, e.grid, e.battery, e.battery_soc, e.load, e.inverter].filter(id => !this._hass?.states?.[id]);
+    const unavailable = [e.pv,e.grid,e.battery,e.battery_soc,e.load,e.inverter].filter(id => !this._hass?.states?.[id]);
     const warn = unavailable.length ? `<div style="margin-top:12px;padding:12px 14px;border-radius:14px;background:rgba(255,170,0,.10);border:1px solid rgba(255,170,0,.28);color:#ffd38a;font-size:12px;">Missing/unavailable entities: ${unavailable.map(x => this._esc(x)).join(', ')}</div>` : '';
 
     const chips = [
-      ['PV', this._fmtW(pvVal), '#f6c945'],
-      ['Grid', this._fmtW(grid), '#5bc0ff'],
-      ['Battery', this._fmtW(batt), '#7ee22d'],
-      ['Home', this._fmtW(loadVal), '#ff8a4c'],
-    ].map(([l,v,c]) => `<div style="flex:1;min-width:120px;padding:12px 14px;border-radius:14px;background:rgba(255,255,255,.035);border:1px solid rgba(118,166,190,.18);backdrop-filter:blur(4px);"><div style="font-size:11px;color:#9eb8c8;letter-spacing:.4px;text-transform:uppercase;">${l}</div><div style="font-size:20px;font-weight:800;color:${c};margin-top:4px;text-shadow:0 0 18px ${c}33;">${this._esc(v)}</div></div>`).join('');
+      ['PV', this._fmtW(pvVal), '#f6c945', pvDaily != null ? `Today ${this._fmtKwh(pvDaily)}` : ''],
+      ['Grid', this._fmtW(grid), '#5bc0ff', gridImport>10?'Importing':gridExport>10?'Exporting':'Idle'],
+      ['Battery', this._fmtW(batt), '#7ee22d', socText],
+      ['Home', this._fmtW(loadVal), '#ff8a4c', loadDaily != null ? `Today ${this._fmtKwh(loadDaily)}` : ''],
+    ].map(([l,v,c,s2]) => `<div style="flex:1;min-width:130px;padding:12px 14px;border-radius:14px;background:rgba(255,255,255,.035);border:1px solid rgba(118,166,190,.18);"><div style="font-size:11px;color:#9eb8c8;letter-spacing:.4px;text-transform:uppercase;">${l}</div><div style="font-size:22px;font-weight:800;color:${c};margin-top:4px;text-shadow:0 0 18px ${c}33;">${this._esc(v)}</div><div style="font-size:11px;color:#93adbc;margin-top:2px;">${this._esc(s2)}</div></div>`).join('');
+
+    const pvNode = this._node(pos.pv[0], pos.pv[1], '☀️', 'PV', this._fmtW(pvVal), pvVal>10?'Generating':'Idle', '#f6c945', pvVal>10, e.pv, [
+      this._detailLine('Today', this._fmtKwh(pvDaily), '#f6c945'),
+    ]);
+    const gridNode = this._node(pos.grid[0], pos.grid[1], '⚡', 'Grid', this._fmtW(grid), gridLabel, '#5bc0ff', gridImport>10||gridExport>10, e.grid, [
+      this._detailLine('Import today', this._fmtKwh(gridBought), '#5bc0ff'),
+      this._detailLine('Export today', this._fmtKwh(gridSold), '#7ee22d'),
+      this._detailLine('Voltage', this._fmtNum(gridV,1,' V')),
+      this._detailLine('Frequency', this._fmtNum(gridFreq,2,' Hz')),
+    ]);
+    const invNode = this._node(pos.inv[0], pos.inv[1], '🔌', 'Inverter', this._fmtW(inv), inv!=null?'Active':'Unavailable', '#bc63ff', inv!=null && Math.abs(inv)>10, e.inverter, [
+      this._detailLine('Temperature', this._fmtNum(invT,1,' °C'), '#bc63ff'),
+      this._detailLine('Status', inv!=null?'Online':'—'),
+    ]);
+    const homeNode = this._node(pos.home[0], pos.home[1], '🏠', 'Home', this._fmtW(loadVal), loadVal>10?'Consuming':'Idle', '#ff8a4c', loadVal>10, e.load, [
+      this._detailLine('Today', this._fmtKwh(loadDaily), '#ff8a4c'),
+    ]);
+    const battNode = this._node(pos.batt[0], pos.batt[1], '🔋', 'Battery', this._fmtW(batt), [battLabel, socText].filter(Boolean).join(' · '), '#7ee22d', battCharge>10||battDischarge>10, e.battery, [
+      this._detailLine('SOC', soc!=null?`${Math.round(soc)} %`:'—', '#7ee22d'),
+      this._detailLine('Voltage', this._fmtNum(battV,1,' V')),
+      this._detailLine('Current', this._fmtNum(battA,1,' A')),
+      this._detailLine('Temp', this._fmtNum(battT,1,' °C')),
+      this._detailLine('Charged today', this._fmtKwh(battChargeDaily), '#7ee22d'),
+      this._detailLine('Discharged today', this._fmtKwh(battDischargeDaily), '#ff8a4c'),
+    ]);
 
     this.innerHTML = `
-      <ha-card style="height:100%;min-height:680px;display:flex;flex-direction:column;overflow:hidden;font-family:Roboto,Arial,sans-serif;background:radial-gradient(ellipse at 20% 0%,rgba(39,120,190,.25),transparent 35%),radial-gradient(ellipse at 80% 100%,rgba(126,226,45,.10),transparent 30%),linear-gradient(180deg,#020913,#06131c 55%,#040b11);border:1px solid rgba(101,142,164,.34);box-shadow:0 24px 60px rgba(0,0,0,.45);color:#eef7ff;">
+      <ha-card style="height:100%;min-height:720px;display:flex;flex-direction:column;overflow:hidden;font-family:Roboto,Arial,sans-serif;background:radial-gradient(ellipse at 20% 0%,rgba(39,120,190,.25),transparent 35%),radial-gradient(ellipse at 80% 100%,rgba(126,226,45,.10),transparent 30%),linear-gradient(180deg,#020913,#06131c 55%,#040b11);border:1px solid rgba(101,142,164,.34);box-shadow:0 24px 60px rgba(0,0,0,.45);color:#eef7ff;">
+        <style>@keyframes pfPulse{0%,100%{opacity:.35;transform:scale(1)}50%{opacity:.05;transform:scale(1.08)}}</style>
         <div style="display:flex;flex-direction:column;height:100%;padding:18px;box-sizing:border-box;">
           <div style="display:flex;justify-content:space-between;gap:14px;align-items:flex-start;flex-wrap:wrap;">
             <div>
-              <div style="font-size:28px;font-weight:800;letter-spacing:.2px;">${this._esc(this._config.title || 'Deye Energy Power Flow')}</div>
+              <div style="font-size:30px;font-weight:800;letter-spacing:.2px;">${this._esc(this._config.title || 'Deye Energy Power Flow')}</div>
               <div style="font-size:13px;color:#9eb8c8;margin-top:4px;">Live energy flow · click any node for details</div>
             </div>
             <div style="font-size:12px;color:#9eb8c8;padding:7px 12px;border-radius:999px;background:rgba(255,255,255,.04);border:1px solid rgba(118,166,190,.18);">${new Date().toLocaleString()}</div>
           </div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;">${chips}</div>
-          <div style="flex:1;min-height:520px;margin-top:14px;border-radius:20px;overflow:hidden;border:1px solid rgba(118,166,190,.18);background:linear-gradient(180deg,rgba(255,255,255,.025),rgba(255,255,255,.008));position:relative;">
-            <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:100%;display:block;min-height:520px;">
+          <div style="flex:1;min-height:560px;margin-top:14px;border-radius:20px;overflow:hidden;border:1px solid rgba(118,166,190,.18);background:linear-gradient(180deg,rgba(255,255,255,.025),rgba(255,255,255,.008));position:relative;">
+            <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:100%;display:block;min-height:560px;">
               <defs>
                 <linearGradient id="pf-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="rgba(77,163,255,.10)"/><stop offset="100%" stop-color="rgba(126,226,45,.04)"/></linearGradient>
-                <linearGradient id="pf-node-bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="rgba(255,255,255,.09)"/><stop offset="100%" stop-color="rgba(255,255,255,.00)"/></linearGradient>
-                <filter id="pf-glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+                <filter id="pf-glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3.2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
                 <filter id="pf-icon-glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="1.8" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-                <filter id="pf-node-glow-f6c945" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="0" stdDeviation="10" flood-color="#f6c945" flood-opacity="0.25"/></filter>
-                <filter id="pf-node-glow-5bc0ff" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="0" stdDeviation="10" flood-color="#5bc0ff" flood-opacity="0.25"/></filter>
-                <filter id="pf-node-glow-bc63ff" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="0" stdDeviation="10" flood-color="#bc63ff" flood-opacity="0.25"/></filter>
-                <filter id="pf-node-glow-ff8a4c" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="0" stdDeviation="10" flood-color="#ff8a4c" flood-opacity="0.25"/></filter>
-                <filter id="pf-node-glow-7ee22d" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="0" stdDeviation="10" flood-color="#7ee22d" flood-opacity="0.25"/></filter>
                 <pattern id="pf-grid" width="44" height="44" patternUnits="userSpaceOnUse"><path d="M 44 0 L 0 0 0 44" fill="none" stroke="rgba(158,184,200,.045)" stroke-width="1"/></pattern>
               </defs>
               <rect x="0" y="0" width="${W}" height="${H}" fill="url(#pf-bg)" opacity="0.55"/>
               <rect x="0" y="0" width="${W}" height="${H}" fill="url(#pf-grid)"/>
-              <circle cx="${N.inv[0]}" cy="${N.inv[1]}" r="190" fill="none" stroke="rgba(188,99,255,.05)" stroke-width="34"/>
-              <circle cx="${N.inv[0]}" cy="${N.inv[1]}" r="240" fill="none" stroke="rgba(91,192,255,.03)" stroke-width="1.5"/>
+              <circle cx="${N.inv[0]}" cy="${N.inv[1]}" r="210" fill="none" stroke="rgba(188,99,255,.05)" stroke-width="38"/>
               ${flows.join('')}
-              ${this._node(N.pv[0], N.pv[1], '☀️', 'PV', this._fmtW(pvVal), pvVal > 10 ? 'Generating' : 'Idle', '#f6c945', pvVal > 10, e.pv)}
-              ${this._node(N.grid[0], N.grid[1], '⚡', 'Grid', this._fmtW(grid), gridLabel, '#5bc0ff', gridImport > 10 || gridExport > 10, e.grid)}
-              ${this._node(N.inv[0], N.inv[1], '🔌', 'Inverter', this._fmtW(inv), inv != null ? 'Active' : 'Unavailable', '#bc63ff', inv != null && Math.abs(inv) > 10, e.inverter)}
-              ${this._node(N.home[0], N.home[1], '🏠', 'Home', this._fmtW(loadVal), loadVal > 10 ? 'Consuming' : 'Idle', '#ff8a4c', loadVal > 10, e.load)}
-              ${this._node(N.batt[0], N.batt[1], '🔋', 'Battery', this._fmtW(batt), [battLabel, socText].filter(Boolean).join(' · '), '#7ee22d', battCharge > 10 || battDischarge > 10, e.battery)}
+              ${pvNode}
+              ${gridNode}
+              ${invNode}
+              ${homeNode}
+              ${battNode}
             </svg>
           </div>
           ${warn}
@@ -11085,7 +11115,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.0.69",
+  description: "Deye Energy 0.8.0.70",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

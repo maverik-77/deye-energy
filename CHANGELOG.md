@@ -6,6 +6,19 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.70] - 2026-11-21
+
+### Changed
+
+- **Power flow data density**: enhanced `custom:deye-energy-power-flow-card`
+  with richer per-node details while keeping curved/glowing animated flows.
+- **Node details**: added daily PV, grid import/export/voltage/frequency, inverter
+  temperature, home daily consumption, and battery SOC/voltage/current/temperature
+  plus daily charge/discharge details.
+- **Layout/interaction**: kept responsive page-fitting SVG layout, glowing node
+  widgets, and per-node click to open Home Assistant more-info.
+- **Tests/docs**: extended power flow contract tests and updated documentation.
+
 ## [0.8.0.69] - 2026-11-21
 
 ### Changed
