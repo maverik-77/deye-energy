@@ -6,6 +6,20 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.63] - 2026-11-21
+
+### Fixed
+
+- **Sunsynk TOU entity mappings**: On setup, Deye Energy now auto-fills missing
+  Sunsynk Time Of Use entity mappings for `mode`, `charge`, `sell`, `power`, and
+  `voltage` (slots 1-6) when the matching default Home Assistant entities exist
+  (`select.deye_prog{n}_mode`, `select.deye_prog{n}_charge`,
+  `switch.deye_prog{n}_sell`, `number.deye_prog{n}_power`,
+  `number.deye_prog{n}_voltage`). Existing user mappings are never overwritten.
+  This fixes Mode/Charge/Sell/Power/Voltage showing as Unavailable in the Deye
+  Time Of Use table for existing Sunsynk entries where these mappings were not
+  populated.
+
 ## [0.8.0.62] - 2026-11-21
 
 ### Changed

@@ -38,6 +38,7 @@ def _load_migration_helpers():
         "_SUNSYNK_ENTITY_FALLBACKS",
         "_entity_exists",
         "_set_migrated_value",
+        "_fill_missing_sunsynk_fallbacks",
         "_migrate_24_to_25",
     }
     chunks: list[str] = []
@@ -61,6 +62,7 @@ def _load_migration_helpers():
         "ConfigEntry": object,
         "PROVIDER_DEYE_ADDON": "deye_addon",
         "PROVIDER_SUNSYNK": "sunsynk",
+        "DEFAULT_INVERTER_PROVIDER": "sunsynk",
         "conf_tou_entity": _tou_key,
         **CONF_KEYS,
     }
@@ -116,6 +118,11 @@ class ProviderWritableMigrationTests(unittest.TestCase):
             self.assertEqual(fallbacks[_tou_key(index, "start")], f"select.deye_prog{index}_time")
             self.assertEqual(fallbacks[_tou_key(index, "soc")], f"number.deye_prog{index}_capacity")
             self.assertEqual(fallbacks[_tou_key(index, "grid")], f"select.deye_prog{index}_charge")
+            self.assertEqual(fallbacks[_tou_key(index, "charge")], f"select.deye_prog{index}_charge")
+            self.assertEqual(fallbacks[_tou_key(index, "mode")], f"select.deye_prog{index}_mode")
+            self.assertEqual(fallbacks[_tou_key(index, "sell")], f"switch.deye_prog{index}_sell")
+            self.assertEqual(fallbacks[_tou_key(index, "power")], f"number.deye_prog{index}_power")
+            self.assertEqual(fallbacks[_tou_key(index, "voltage")], f"number.deye_prog{index}_voltage")
 
     def test_deye_addon_entry_switches_to_sunsynk_and_maps_tou(self):
         fallbacks = self.helpers["_SUNSYNK_ENTITY_FALLBACKS"]
@@ -151,6 +158,59 @@ class ProviderWritableMigrationTests(unittest.TestCase):
         self.assertTrue(asyncio.run(self.helpers["_migrate_24_to_25"](hass, entry)))
         self.assertEqual(entry.options, {"inverter_provider": "solarman"})
         self.assertEqual(hass.config_entries.updates[-1], {"minor_version": 25})
+
+    def test_fill_missing_sunsynk_fallbacks_maps_tou_fields(self):
+        present = [
+            f"select.deye_prog{index}_mode" for index in range(1, 7)
+        ] + [
+            f"select.deye_prog{index}_charge" for index in range(1, 7)
+        ] + [
+            f"switch.deye_prog{index}_sell" for index in range(1, 7)
+        ] + [
+            f"number.deye_prog{index}_power" for index in range(1, 7)
+        ] + [
+            f"number.deye_prog{index}_voltage" for index in range(1, 7)
+        ]
+        hass = self._hass(present)
+        entry = FakeEntry(options={"inverter_provider": "sunsynk"})
+        data, options, changed = self.helpers["_fill_missing_sunsynk_fallbacks"](hass, entry)
+        self.assertTrue(changed)
+        merged = {**data, **options}
+        for index in range(1, 7):
+            self.assertEqual(merged[_tou_key(index, "mode")], f"select.deye_prog{index}_mode")
+            self.assertEqual(merged[_tou_key(index, "charge")], f"select.deye_prog{index}_charge")
+            self.assertEqual(merged[_tou_key(index, "sell")], f"switch.deye_prog{index}_sell")
+            self.assertEqual(merged[_tou_key(index, "power")], f"number.deye_prog{index}_power")
+            self.assertEqual(merged[_tou_key(index, "voltage")], f"number.deye_prog{index}_voltage")
+
+    def test_fill_missing_sunsynk_fallbacks_preserves_existing_mappings(self):
+        present = [f"select.deye_prog{index}_mode" for index in range(1, 7)]
+        hass = self._hass(present)
+        entry = FakeEntry(
+            options={
+                "inverter_provider": "sunsynk",
+                _tou_key(1, "mode"): "select.my_custom_mode",
+            }
+        )
+        data, options, changed = self.helpers["_fill_missing_sunsynk_fallbacks"](hass, entry)
+        self.assertTrue(changed)
+        merged = {**data, **options}
+        self.assertEqual(merged[_tou_key(1, "mode")], "select.my_custom_mode")
+        self.assertEqual(merged[_tou_key(2, "mode")], "select.deye_prog2_mode")
+
+    def test_fill_missing_sunsynk_fallbacks_skips_missing_entities_and_other_providers(self):
+        hass = self._hass([])
+        entry = FakeEntry(options={"inverter_provider": "sunsynk"})
+        data, options, changed = self.helpers["_fill_missing_sunsynk_fallbacks"](hass, entry)
+        self.assertFalse(changed)
+        self.assertEqual(data, {})
+        self.assertEqual(options, {"inverter_provider": "sunsynk"})
+
+        hass = self._hass(["select.deye_prog1_mode"])
+        entry = FakeEntry(options={"inverter_provider": "solarman"})
+        data, options, changed = self.helpers["_fill_missing_sunsynk_fallbacks"](hass, entry)
+        self.assertFalse(changed)
+        self.assertEqual(options, {"inverter_provider": "solarman"})
 
     def test_dispatch_and_schema_version_are_present(self):
         self.assertIn("if entry.minor_version == 24:", INIT_SOURCE)

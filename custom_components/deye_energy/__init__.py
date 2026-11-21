@@ -20,6 +20,7 @@ from .const import (
     CONF_WORK_MODE_SELECT,
     DEFAULT_BUY_SELLER_ID,
     DEFAULT_BUY_SELLER_TARIFF_ID,
+    DEFAULT_INVERTER_PROVIDER,
     DOMAIN,
     PHYSICAL_NORMAL_MODES,
     PLATFORMS,
@@ -211,6 +212,32 @@ def _entity_exists(hass: HomeAssistant, entity_id: str) -> bool:
         return False
 
 
+def _fill_missing_sunsynk_fallbacks(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> tuple[dict[str, Any], dict[str, Any], bool]:
+    """Fill empty Sunsynk entity mappings when the default HA entity exists.
+
+    Existing user mappings are never overwritten. This covers TOU mode/charge/
+    sell/power/voltage (and any other Sunsynk fallback) for entries that were
+    created before those fields were exposed or migrated.
+    """
+    data = dict(entry.data)
+    options = dict(entry.options)
+    merged = {**data, **options}
+    if str(merged.get(CONF_INVERTER_PROVIDER, DEFAULT_INVERTER_PROVIDER)) != PROVIDER_SUNSYNK:
+        return data, options, False
+    changed = False
+    for key, entity_id in _SUNSYNK_ENTITY_FALLBACKS.items():
+        if str(merged.get(key) or "").strip():
+            continue
+        if not _entity_exists(hass, entity_id):
+            continue
+        _set_migrated_value(data, options, key, entity_id)
+        merged[key] = entity_id
+        changed = True
+    return data, options, changed
+
+
 def _set_migrated_value(
     data: dict, options: dict, key: str, value: str
 ) -> None:
@@ -393,10 +420,15 @@ def _parse_json_payload(value: str, expected_type: type | tuple[type, ...]) -> A
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    data, options, changed = _fill_missing_sunsynk_fallbacks(hass, entry)
+    if changed:
+        update_entry = getattr(hass.config_entries, "async_update_entry", None)
+        if callable(update_entry):
+            update_entry(entry, data=data, options=options)
     runtime = DeyeEnergyRuntime(
         hass=hass,
         entry_id=entry.entry_id,
-        data={**entry.data, **entry.options},
+        data={**data, **options},
     )
     runtime._platform_setup_in_progress = True
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = runtime
