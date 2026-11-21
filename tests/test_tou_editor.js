@@ -173,15 +173,21 @@ function tableHtml(card) {
 
 function test_tou_table_is_inline_editable_without_overlay_controls() {
   const { card } = makeCard();
+  const view = tableHtml(card);
+  assertTrue(!view.includes('data-mapping-field="start" data-mapping-slot="2"'), "view mode must not render inline inputs");
+  assertTrue(view.includes('data-edit-mapping="1"') && view.includes(">Edit<"), "view mode must show Edit button");
+  assertTrue(view.includes('data-refresh-mapping="1"') && view.includes(">Refresh<"), "view mode must show Refresh button");
+
+  card.startMappingEdit();
   const html = tableHtml(card);
-  assertTrue(html.includes('data-mapping-field="start" data-mapping-slot="2"'), "middle From must be editable in the table");
-  assertTrue(html.includes('data-mapping-field="end" data-mapping-slot="5"'), "middle To must be editable in the table");
-  assertTrue(html.includes('data-mapping-field="soc" data-mapping-slot="2"'), "SOC must be editable in the table");
-  assertTrue(html.includes('data-mapping-field="mode" data-mapping-slot="2"'), "mode must be editable in the table");
-  assertTrue(html.includes('data-mapping-field="charge" data-mapping-slot="2"'), "charge must be editable in the table");
-  assertTrue(html.includes('data-mapping-field="sell" data-mapping-slot="2"'), "sell must be editable in the table");
-  assertTrue(html.includes('data-mapping-field="power" data-mapping-slot="2"'), "power must be editable in the table");
-  assertTrue(html.includes('data-mapping-field="voltage" data-mapping-slot="2"'), "voltage must be editable in the table");
+  assertTrue(html.includes('data-mapping-field="start" data-mapping-slot="2"'), "middle From must be editable in edit mode");
+  assertTrue(html.includes('data-mapping-field="end" data-mapping-slot="5"'), "middle To must be editable in edit mode");
+  assertTrue(html.includes('data-mapping-field="soc" data-mapping-slot="2"'), "SOC must be editable in edit mode");
+  assertTrue(html.includes('data-mapping-field="mode" data-mapping-slot="2"'), "mode must be editable in edit mode");
+  assertTrue(html.includes('data-mapping-field="charge" data-mapping-slot="2"'), "charge must be editable in edit mode");
+  assertTrue(html.includes('data-mapping-field="sell" data-mapping-slot="2"'), "sell must be editable in edit mode");
+  assertTrue(html.includes('data-mapping-field="power" data-mapping-slot="2"'), "power must be editable in edit mode");
+  assertTrue(html.includes('data-mapping-field="voltage" data-mapping-slot="2"'), "voltage must be editable in edit mode");
   assertTrue(!html.includes("data-open-tou"), "per-row overlay edit button must be gone");
   assertTrue(!html.includes("data-tou-field"), "overlay field controls must be gone");
   assertTrue(!html.includes("data-save-tou") && !html.includes("data-rollback-tou"), "overlay action buttons must be gone");
@@ -189,25 +195,35 @@ function test_tou_table_is_inline_editable_without_overlay_controls() {
 
 function test_tou_table_has_save_and_rollback_at_the_bottom() {
   const { card } = makeCard();
+  const view = tableHtml(card);
+  const viewActions = view.slice(view.lastIndexOf("</table>"));
+  assertTrue(viewActions.includes('data-refresh-mapping="1"') && viewActions.includes(">Refresh<"), "view must have Refresh");
+  assertTrue(viewActions.includes('data-edit-mapping="1"') && viewActions.includes(">Edit<"), "view must have Edit");
+
+  card.startMappingEdit();
   const html = tableHtml(card);
   const tableEnd = html.lastIndexOf("</table>");
   assertTrue(tableEnd > 0, "the editor table must be rendered");
   const actions = html.slice(tableEnd);
-  assertTrue(actions.includes('data-refresh-mapping="1"') && actions.includes(">Rollback<"), "Rollback must be at the bottom");
-  assertTrue(actions.includes('data-save-mapping="1"') && actions.includes(">Save<"), "Save must be at the bottom");
-  assertTrue(actions.indexOf('data-refresh-mapping="1"') < actions.indexOf('data-save-mapping="1"'), "Rollback must sit next to Save");
+  assertTrue(actions.includes('data-cancel-mapping="1"') && actions.includes(">Cancel<"), "Cancel must be at the bottom in edit mode");
+  assertTrue(actions.includes('data-save-mapping="1"') && actions.includes(">Save<"), "Save must be at the bottom in edit mode");
+  assertTrue(actions.indexOf('data-cancel-mapping="1"') < actions.indexOf('data-save-mapping="1"'), "Cancel must sit next to Save");
 }
 
 function test_tou_table_explains_full_day_validation() {
   const { card } = makeCard();
+  const view = tableHtml(card);
+  assertTrue(view.includes("Values are loaded from the inverter"), "view mode must explain fresh load");
+  assertTrue(view.includes("Use Edit to change TOU slots"), "view mode must point to Edit");
+  card.startMappingEdit();
   const html = tableHtml(card);
-  assertTrue(html.includes("starts at 00:00, ends at 00:00 and has no gaps or overlaps"), "validation rule must be explained");
+  assertTrue(html.includes("starts at 00:00, ends at 00:00 and has no gaps or overlaps"), "validation rule must be explained in edit mode");
   assertTrue(html.includes("Operation status") && html.includes("data-tou-reverse-sync"), "status sections must remain visible");
 }
 
 function test_tou_table_shows_validation_errors_after_failed_save() {
   const { card } = makeCard();
-  card._mappingDraft = card.mappingRowsFromDiagnostics();
+  card.startMappingEdit();
   card._mappingDraft[0].start = "00:30";
   return card.saveMappingToInverter().then((saved) => {
     assertEqual(saved, false, "invalid draft must not save");
@@ -221,18 +237,18 @@ async function test_tou_rollback_rebuilds_every_row_from_the_inverter() {
   const { card, calls } = makeCard();
   const refreshed = ["00:00", "03:30", "08:00", "12:00", "16:00", "20:00"];
   setLiveStates(card, STARTS);
-  card.ensureMappingDraft();
+  card.startMappingEdit();
   card._mappingDraft[1].start = "05:00";
   card.callService = async (domain, service, data) => {
     calls.push({ domain, service, data });
     setLiveStates(card, refreshed);
   };
-  const ok = await card.rollbackTouTable();
-  assertEqual(ok, undefined, "rollback must complete");
+  await card.rollbackTouTable();
   const update = calls.find((call) => call.service === "update_entity");
   assertTrue(Boolean(update), "rollback must force a fresh inverter read");
   assertTrue(Array.isArray(update?.data?.entity_id) && update.data.entity_id.length > 0, "all physical TOU entities must be refreshed");
   assertEqual(card._mappingDraft, null, "rollback must discard the edited draft");
+  assertEqual(card._mappingEditing, false, "rollback must exit edit mode");
   assertEqual(card.ensureMappingDraft()[1].start, "03:30", "all rows must be rebuilt from the refreshed inverter values");
   assertEqual(card._mappingStatus, "Restored all rows from the inverter.", "rollback must report the restore");
   assertTrue(tableHtml(card).includes("Restored all rows from the inverter."), "rollback status must appear in the UI");
@@ -242,21 +258,28 @@ function test_tou_read_only_provider_disables_save() {
   const { card } = makeCard({ readOnly: true });
   const html = tableHtml(card);
   assertTrue(html.includes("read-only"), "read-only provider must be explained");
-  assertTrue(html.includes('data-save-mapping="1" disabled'), "read-only provider must disable Save");
+  assertTrue(html.includes('data-edit-mapping="1" disabled'), "read-only provider must disable Edit");
+  assertTrue(!html.includes('data-save-mapping="1"'), "read-only view must not show Save");
 }
 
 function test_tou_disabled_master_control_shows_hint_and_disables_save() {
   const { card } = makeCard({ controlEnabled: false });
   const html = tableHtml(card);
   assertTrue(html.includes("Deye control is disabled."), "disabled control must be explained");
-  assertTrue(html.includes('data-save-mapping="1" disabled'), "disabled control must disable Save");
+  assertTrue(html.includes('data-edit-mapping="1" disabled'), "disabled control must disable Edit");
 }
 
 function test_tou_pending_save_disables_both_bottom_actions() {
   const { card } = makeCard();
   card._mappingSaving = true;
-  const html = tableHtml(card);
-  assertTrue(html.includes('data-refresh-mapping="1" disabled'), "Rollback must be disabled while saving");
+  let html = tableHtml(card);
+  assertTrue(html.includes('data-refresh-mapping="1" disabled'), "Refresh must be disabled while saving");
+  assertTrue(html.includes('data-edit-mapping="1" disabled'), "Edit must be disabled while saving");
+  card._mappingSaving = false;
+  card.startMappingEdit();
+  card._mappingSaving = true;
+  html = tableHtml(card);
+  assertTrue(html.includes('data-cancel-mapping="1" disabled'), "Cancel must be disabled while saving");
   assertTrue(html.includes('data-save-mapping="1" disabled'), "Save must be disabled while saving");
 }
 

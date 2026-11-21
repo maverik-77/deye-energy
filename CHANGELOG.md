@@ -6,6 +6,23 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.61] - 2026-11-21
+
+### Changed
+
+- **Inverter configuration**: Moved from the main Energy Manager settings tab to
+  a standalone card (`custom:deye-energy-inverter-config-card`) with its own
+  **Inverter config** tab on the `deye-energy` dashboard. The card keeps the
+  existing editable groups and read-only monitor sections, uses a responsive
+  layout without a fixed height, and loads live inverter values on every page
+  access (with manual refresh).
+- **Inverter configuration apply confirmation**: Before uploading an editable
+  group, the card shows a confirmation overlay with **Field | Previous (live) |
+  New** values; upload happens only after explicit confirmation, then live values
+  are refreshed.
+- **README**: Documented the standalone inverter configuration card/dashboard
+  tab, live-load-on-access behavior, and confirmation-before-upload flow.
+
 ## [0.8.0.60] - 2026-11-21
 
 ### Changed

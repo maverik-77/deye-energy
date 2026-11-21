@@ -71,5 +71,5 @@ card.tariffData = () => ({
 const tariff = card.renderTariffTab();
 check(!tariff.includes('data-tariff-field="price_source"'), "legacy source must not be an active dropdown");
 check(tariff.includes("Detected source: octopus_energy"), "derived source must be rendered as read-only text");
-check(source.startsWith("// Resource revision: v=0.8.0.60"), "resource revision must be v=0.8.0.60");
+check(source.startsWith("// Resource revision: v=0.8.0.61"), "resource revision must be v=0.8.0.61");
 console.log("stage5g4k3b2 real HA cleanup card OK");

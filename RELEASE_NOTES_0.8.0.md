@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.60`.
+Card resource revision: `v=0.8.0.61`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the original
@@ -9,6 +9,10 @@ integrated through MQTT. Attribution is recorded at the bottom of README.md.
 
 ## Revision history
 
+- `v=0.8.0.61` — Inverter configuration moved from main settings tab to a
+  standalone card (`custom:deye-energy-inverter-config-card`) with its own
+  dashboard tab, live-load-on-access refresh, and confirmation overlay with
+  Field/Previous (live)/New before upload.
 - `v=0.8.0.60` — README documents inverter time sync (inverter/Home Assistant
   time display, Sync now) and the periodic 6-hour drift-check scheduler.
 - `v=0.8.0.59` — Trigger Logs card UI fixes (full-height flex layout, sticky

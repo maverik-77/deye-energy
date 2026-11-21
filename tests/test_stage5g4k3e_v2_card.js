@@ -67,5 +67,5 @@ card.tariffData = () => data({ today_entity: "", tomorrow_entity: "", source_ada
 const unsupported = card.renderTariffTab();
 check(unsupported.includes("The system remains fail-closed"), "unsupported special tariff needs a clear fail-closed status");
 
-check(source.startsWith("// Resource revision: v=0.8.0.60"), "resource revision must be v=0.8.0.60");
+check(source.startsWith("// Resource revision: v=0.8.0.61"), "resource revision must be v=0.8.0.61");
 console.log("stage5g4k3e v2 seller tariff card OK");

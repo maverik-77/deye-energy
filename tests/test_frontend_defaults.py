@@ -54,13 +54,14 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
 
     def test_card_sources_declare_current_resource_revision(self):
         for source in self.sources:
-            self.assertTrue(source.startswith("// Resource revision: v=0.8.0.60\n"))
+            self.assertTrue(source.startswith("// Resource revision: v=0.8.0.61\n"))
 
     def test_tou_table_is_the_simple_24h_to_six_tou_ranges(self):
         for source in self.sources:
             table = extract_method(source, "renderTouSettingsContent(slots)")
-            self.assertIn("Edit the six rows below directly", table)
+            self.assertIn("Edit the six rows below", table)
             self.assertIn("The first From and last To are fixed at 00:00", table)
+            self.assertIn("Values are loaded from the inverter", table)
             self.assertIn("<th>SOC</th>", table)
             self.assertNotIn(
                 "Minimum sell SOC</strong> is a logical Manager protection",
@@ -495,7 +496,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
     def test_documentation_uses_current_card_cache_revision(self):
         for name in ("README.md", "INSTALL.md"):
             source = (ROOT / name).read_text(encoding="utf-8")
-            self.assertIn("deye-energy-card.js?v=0.8.0.60", source)
+            self.assertIn("deye-energy-card.js?v=0.8.0.61", source)
             self.assertNotIn("deye-energy-card.js?v=22", source)
             self.assertNotIn("deye-energy-card.js?v=10", source)
             self.assertNotIn("deye-energy-card.js?v=09", source)
@@ -541,9 +542,15 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
             'numberCell("power")',
             'numberCell("voltage")',
             'data-refresh-mapping="1"',
+            'data-edit-mapping="1"',
+            'data-cancel-mapping="1"',
             'data-save-mapping="1"',
-            '"Rollback"',
+            '"Refresh"',
+            '>Edit</button>',
+            '>Cancel</button>',
             '"Save"',
+            'Values are loaded from the inverter',
+            'this._mappingEditing',
         ):
             self.assertIn(required, tou_table)
         self.assertNotIn("data-open-tou", source)
@@ -1195,10 +1202,10 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
             self.assertIn("@keyframes manual-time-current-text-glow", source)
             self.assertIn("4s ease-in-out infinite", source)
             self.assertIn("text-shadow:0 0 0 rgba(255,166,45,0)", source)
-            self.assertIn("0 0 10px rgba(255,166,45,.95)", source)
-            self.assertIn("0 0 22px rgba(255,166,45,1)", source)
-            self.assertIn("0 0 36px rgba(255,166,45,.75)", source)
-            self.assertIn("0 0 52px rgba(255,166,45,.35)", source)
+            self.assertIn("0 0 30px rgba(255,166,45,.95)", source)
+            self.assertIn("0 0 66px rgba(255,166,45,1)", source)
+            self.assertIn("0 0 108px rgba(255,166,45,.75)", source)
+            self.assertIn("0 0 156px rgba(255,166,45,.35)", source)
             self.assertNotIn("@keyframes manual-time-current-row", source)
             self.assertNotIn("@keyframes manual-time-current-cell", source)
 

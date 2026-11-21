@@ -194,6 +194,7 @@ function test_mapping_refresh_collects_only_present_physical_entity_ids() {
 async function test_mapping_refresh_forces_update_and_rebuilds_draft() {
   const { card, calls } = makeCard();
   setLiveStates(card, DEFAULT_STARTS);
+  card.startMappingEdit();
   assertEqual(card.ensureMappingDraft()[1].start, "04:00", "initial draft must use current values");
   card._mappingDraft[1].start = "05:00";
   const refreshed = ["00:00", "03:30", "08:00", "12:00", "16:00", "20:00"];
@@ -206,7 +207,8 @@ async function test_mapping_refresh_forces_update_and_rebuilds_draft() {
   assertTrue(Boolean(update), "opening the mapping tab must force homeassistant.update_entity");
   assertTrue(Array.isArray(update?.data?.entity_id) && update.data.entity_id.length > 0, "update_entity must target physical entities");
   assertTrue(card._mappingDraft === null, "refresh must discard the previous draft");
-  assertEqual(card.ensureMappingDraft()[1].start, "03:30", "refreshed draft must come from the new inverter values");
+  assertEqual(card._mappingEditing, false, "view mode must not keep a local edit draft");
+  assertEqual(card.ensureMappingDraft()[1].start, "03:30", "refreshed view must come from the new inverter values");
 }
 
 async function test_mapping_refresh_can_keep_saved_status() {
@@ -218,6 +220,7 @@ async function test_mapping_refresh_can_keep_saved_status() {
 
 function test_mapping_draft_preserves_edits_and_keeps_boundaries_contiguous() {
   const { card } = makeCard();
+  card.startMappingEdit();
   card.ensureMappingDraft();
   const elements = [
     { dataset: { mappingSlot: "1", mappingField: "end" }, value: "04:00" },
@@ -234,6 +237,7 @@ function test_mapping_draft_preserves_edits_and_keeps_boundaries_contiguous() {
 
 function test_mapping_end_edit_moves_following_start() {
   const { card } = makeCard();
+  card.startMappingEdit();
   card.ensureMappingDraft();
   const elements = [
     { dataset: { mappingSlot: "2", mappingField: "end" }, value: "09:00" },
@@ -282,6 +286,7 @@ async function test_mapping_save_writes_all_six_slots_then_refreshes() {
 
 async function test_mapping_save_rejects_invalid_draft_before_any_write() {
   const { card, calls } = makeCard();
+  card.startMappingEdit();
   card._mappingDraft = validRows();
   card._mappingDraft[2].start = "bad";
   const result = await card.saveMappingToInverter();
@@ -294,7 +299,9 @@ async function test_mapping_save_handles_read_only_provider_without_writes() {
   const { card, calls } = makeCard({ readOnly: true });
   const html = card.renderTouSettingsContent([]);
   assertTrue(html.includes("read-only"), "read-only provider must explain that saving is unavailable");
-  assertTrue(html.includes('data-save-mapping="1" disabled'), "read-only provider must disable the save button");
+  assertTrue(html.includes('data-edit-mapping="1" disabled'), "read-only provider must disable Edit");
+  assertTrue(!html.includes('data-save-mapping="1"'), "read-only view must not show Save");
+  card.startMappingEdit();
   const result = await card.saveMappingToInverter();
   assertTrue(!result, "read-only save must fail cleanly");
   assertEqual(calls.length, 0, "read-only provider must not write or refresh");
@@ -311,13 +318,19 @@ async function test_mapping_save_checks_service_and_backend_pending() {
 
 function test_tou_table_renders_editable_fields_and_fixed_boundaries() {
   const { card } = makeCard();
+  const view = card.renderTouSettingsContent([]);
+  assertTrue(!view.includes('data-mapping-field="start" data-mapping-slot="2"'), "view mode must not render editable fields");
+  assertTrue(view.includes('data-refresh-mapping="1"') && view.includes('data-edit-mapping="1"'), "view mode must show Refresh and Edit");
+  assertTrue(view.includes(">Refresh<") || view.includes('"Refresh"'), "view mode must label Refresh");
+  assertTrue(view.includes(">Edit</button>"), "view mode must label Edit");
+  card.startMappingEdit();
   const html = card.renderTouSettingsContent([]);
   assertTrue(html.includes('data-mapping-field="start" data-mapping-slot="2"'), "middle From values must be editable");
   assertTrue(html.includes('data-mapping-field="end" data-mapping-slot="5"'), "middle To values must be editable");
   assertTrue(!html.includes('data-mapping-field="start" data-mapping-slot="1"'), "first From must be fixed at 00:00");
   assertTrue(!html.includes('data-mapping-field="end" data-mapping-slot="6"'), "last To must be fixed at 00:00");
-  assertTrue(html.includes('data-refresh-mapping="1"') && html.includes('data-save-mapping="1"'), "rollback and save actions must be present");
-  assertTrue(html.includes(">Rollback<") && html.includes(">Save<"), "bottom actions must be labelled Rollback and Save");
+  assertTrue(html.includes('data-cancel-mapping="1"') && html.includes('data-save-mapping="1"'), "edit mode must show Cancel and Save");
+  assertTrue(html.includes(">Cancel</button>") && html.includes(">Save<"), "bottom actions must be labelled Cancel and Save");
 }
 
 function test_both_card_copies_remain_identical() {
