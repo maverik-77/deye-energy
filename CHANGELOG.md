@@ -6,6 +6,14 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.60] - 2026-11-21
+
+### Changed
+
+- **README**: Documented inverter time sync in Inverter configuration (inverter/
+  Home Assistant time display, **Sync now**, and periodic 6-hour drift-check
+  scheduler with force-sync on any hour/minute/second deviation).
+
 ## [0.8.0.59] - 2026-11-21
 
 ### Added

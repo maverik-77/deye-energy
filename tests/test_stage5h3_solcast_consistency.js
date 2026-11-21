@@ -73,6 +73,6 @@ for (const field of [
 ]) {
   check(source.includes(field), `AI history must preserve explicit ${field}`);
 }
-check(source.startsWith("// Resource revision: v=0.8.0.59"), "resource revision must be v=0.8.0.59");
+check(source.startsWith("// Resource revision: v=0.8.0.60"), "resource revision must be v=0.8.0.60");
 
 console.log("Stage 5H.3 Solcast frontend contract checks passed");

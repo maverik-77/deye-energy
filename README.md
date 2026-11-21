@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.0.59-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.0.60-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -121,6 +121,12 @@ only direct write path for those entities. Work Schedule, profiles, defaults,
 manual sell/charge, optimizer plans and automatic reconciliation never write
 them.
 
+**Inverter time sync**: The Inverter configuration tab shows the inverter and
+Home Assistant time. Use **Sync now** to write the current Home Assistant time
+to the configured inverter datetime entity. The backend also runs a periodic
+6-hour drift check and force-syncs the inverter clock when any hour, minute, or
+second deviation is detected.
+
 ## Quick start
 
 1. Install through HACS (custom repository) or copy
@@ -141,7 +147,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.59
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.60
       type: module
 ```
 
