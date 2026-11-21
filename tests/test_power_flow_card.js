@@ -68,6 +68,19 @@ check(html.includes("SOC 77%"), "missing SOC label");
 check(html.includes("<svg"), "missing svg");
 check(html.includes("animateMotion"), "missing animated flow");
 check(!html.includes("Missing/unavailable entities"), "should not warn when all entities present");
+check(html.includes('viewBox="0 0 980 560"'), "missing larger viewBox");
+check(html.includes('pf-glow'), "missing glow filter");
+check(html.includes('pf-arrow-pf-pv-inv'), "missing arrow marker");
+check(html.includes('pf-node-click'), "missing clickable node class");
+check(html.includes('data-entity="sensor.my_pv"'), "missing node entity data attribute");
+check(html.toLowerCase().includes('click any node for details'), "missing click hint");
+
+// Click dispatch
+let fired = null;
+card.dispatchEvent = (ev) => { fired = ev; return true; };
+card._openMoreInfo('sensor.my_pv');
+check(fired && fired.type === 'hass-more-info', "more-info event not fired");
+check(fired.detail && fired.detail.entityId === 'sensor.my_pv', "more-info entityId mismatch");
 
 // Missing entity warning
 card.hass = { states: { "sensor.my_pv": { state: "0" } } };

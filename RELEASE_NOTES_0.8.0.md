@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.67`.
+Card resource revision: `v=0.8.0.68`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the original
@@ -9,6 +9,10 @@ integrated through MQTT. Attribution is recorded at the bottom of README.md.
 
 ## Revision history
 
+- `v=0.8.0.68` — Redesigned `custom:deye-energy-power-flow-card` with larger
+  layout, animated glow balls, directional arrows, stronger visual styling,
+  summary strip, and per-node click to open Home Assistant more-info; updated
+  contract tests and docs.
 - `v=0.8.0.67` — Added `custom:deye-energy-power-flow-card` showing live PV, Grid,
   Inverter, Battery, and Home power flow with animated flow lines, SOC/status
   labels, and config-overridable entity mappings; added Power flow dashboard tab.

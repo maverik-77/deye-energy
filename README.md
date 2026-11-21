@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.0.67-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.0.68-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -58,9 +58,10 @@ add-on profile) and to a UK-style tariff.
   selected tab; default entity mappings are overridable in card config; addable
   to any dashboard.
 - **Power flow** card (`custom:deye-energy-power-flow-card`) showing live
-  animated power flow between PV, Grid, Inverter, Battery, and Home, with
-  SOC/status labels and config-overridable entity mappings; addable to any
-  dashboard.
+  animated power flow between PV, Grid, Inverter, Battery, and Home, with glow
+  balls, directional arrows, SOC/status labels, and per-node click to open
+  Home Assistant more-info; entity mappings are config-overridable and the card
+  is addable to any dashboard.
 
 ## Requirements
 
@@ -164,7 +165,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.67
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.68
       type: module
 ```
 

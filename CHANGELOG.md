@@ -6,6 +6,19 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.68] - 2026-11-21
+
+### Changed
+
+- **Power flow card redesign**: redesigned `custom:deye-energy-power-flow-card`
+  with a larger canvas, glass/gradient styling, stronger node cards, animated
+  glow balls along active flows, directional arrows, power-proportional motion,
+  summary strip, and improved active/inactive visuals.
+- **Power flow details**: clicking any node opens Home Assistant more-info for
+  the node's configured entity.
+- **Power flow tests**: extended contract tests for larger layout, glow/arrow
+  markup, click hooks, and more-info dispatch.
+
 ## [0.8.0.67] - 2026-11-21
 
 ### Added
