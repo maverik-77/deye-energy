@@ -67,3 +67,9 @@ views:
       - type: custom:deye-energy-graphs-card
         title: Deye Energy Graphs
         default_range: 6h
+  - title: Power flow
+    path: power-flow
+    icon: mdi:transmission-tower-import
+    cards:
+      - type: custom:deye-energy-power-flow-card
+        title: Deye Energy Power Flow

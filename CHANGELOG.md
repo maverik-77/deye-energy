@@ -6,6 +6,27 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.67] - 2026-11-21
+
+### Added
+
+- **Power flow card** (`custom:deye-energy-power-flow-card`): new live power
+  flow card showing PV, Grid, Inverter, Battery, and Home nodes with animated
+  directional flow lines, active/inactive styling, SOC/status labels, missing
+  entity warnings, and config-overridable entity mappings.
+- **Power flow dashboard tab**: added a dedicated Power flow view to the Deye
+  Energy dashboard containing the power-flow card.
+- **Power flow contract tests**: added `tests/test_power_flow_card.js` covering
+  card registration, defaults, entity mapping, flow rendering, and status labels.
+
+### Changed
+
+- **Graphs hover interaction**: graphs now show dotted crosshair lines to bottom
+  (time/X) and left (value/Y) on hover, with a bottom readout showing hovered
+  time and all series values at the nearest X position.
+- **Graphs tests**: extended `tests/test_graphs_card.js` to cover hover markup
+  and interaction hooks.
+
 ## [0.8.0.66] - 2026-11-21
 
 ### Added

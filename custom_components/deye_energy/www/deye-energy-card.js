@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.66
+// Resource revision: v=0.8.0.67
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -2988,7 +2988,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.66 (resource revision v=0.8.0.66)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.67 (resource revision v=0.8.0.67)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -10648,20 +10648,108 @@ class DeyeEnergyGraphsCard extends HTMLElement {
     }
     let paths = '';
     let lastVals = [];
-    seriesData.forEach(s => {
+    let hoverDots = '';
+    seriesData.forEach((s, idx) => {
       if (!s.points.length) return;
       const d = s.points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p[0]).toFixed(2)} ${y(p[1]).toFixed(2)}`).join(' ');
       paths += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>`;
       const lv = s.points[s.points.length - 1][1];
       lastVals.push(`<span style="color:${s.color};white-space:nowrap;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${s.color};margin-right:4px;vertical-align:middle;"></span>${this._esc(s.label)}: <strong>${this._esc(lv.toFixed(2))}${this._esc(chart.unit)}</strong></span>`);
+      hoverDots += `<circle class="g-hover-dot" data-series="${idx}" r="4" fill="${s.color}" stroke="#eef7ff" stroke-width="1.5" visibility="hidden"></circle>`;
     });
+    this._chartMeta = this._chartMeta || {};
+    this._chartMeta[chart.key] = {
+      w, h, padL, padR, padT, padB, minX, maxX, minY, maxY, unit: chart.unit || '',
+      series: seriesData.map(s => ({ label: s.label, color: s.color, points: s.points })),
+    };
+    const hoverReadout = `<div class="g-hover-readout" style="margin-top:8px;min-height:22px;font-size:12px;color:#9eb8c8;">Hover graph to see time and values</div>`;
     return `
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;font-size:12px;color:var(--g-muted);">${lastVals.join('')}</div>
-      <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;display:block;background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,.01));border-radius:10px;border:1px solid rgba(118,166,190,.16);">
-        ${grid}
-        ${paths}
-        ${xLbl}
-      </svg>`;
+      <div class="g-chart-wrap" data-chart-key="${this._esc(chart.key)}">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;font-size:12px;color:var(--g-muted);">${lastVals.join('')}</div>
+        <svg class="g-svg" viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;display:block;background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,.01));border-radius:10px;border:1px solid rgba(118,166,190,.16);cursor:crosshair;">
+          ${grid}
+          ${paths}
+          ${xLbl}
+          <line class="g-hover-x" x1="${padL}" y1="${padT}" x2="${padL}" y2="${h - padB}" stroke="rgba(238,247,255,.45)" stroke-dasharray="4 4" visibility="hidden"></line>
+          <line class="g-hover-y" x1="${padL}" y1="${padT}" x2="${w - padR}" y2="${padT}" stroke="rgba(238,247,255,.45)" stroke-dasharray="4 4" visibility="hidden"></line>
+          ${hoverDots}
+          <rect class="g-capture" x="${padL}" y="${padT}" width="${w - padL - padR}" height="${h - padT - padB}" fill="transparent"></rect>
+        </svg>
+        ${hoverReadout}
+      </div>`;
+  }
+
+  _attachChartHovers() {
+    this.querySelectorAll('.g-chart-wrap[data-chart-key]').forEach(wrap => {
+      const key = wrap.getAttribute('data-chart-key');
+      const meta = this._chartMeta?.[key];
+      const svg = wrap.querySelector('.g-svg');
+      const capture = wrap.querySelector('.g-capture');
+      const readout = wrap.querySelector('.g-hover-readout');
+      const hx = wrap.querySelector('.g-hover-x');
+      const hy = wrap.querySelector('.g-hover-y');
+      if (!meta || !svg || !capture) return;
+
+      const x = t => meta.padL + ((t - meta.minX) / (meta.maxX - meta.minX || 1)) * (meta.w - meta.padL - meta.padR);
+      const y = v => meta.padT + (1 - (v - meta.minY) / (meta.maxY - meta.minY || 1)) * (meta.h - meta.padT - meta.padB);
+      const xToT = px => meta.minX + ((px - meta.padL) / (meta.w - meta.padL - meta.padR || 1)) * (meta.maxX - meta.minX);
+      const hide = () => {
+        if (hx) hx.setAttribute('visibility', 'hidden');
+        if (hy) hy.setAttribute('visibility', 'hidden');
+        wrap.querySelectorAll('.g-hover-dot').forEach(d => d.setAttribute('visibility', 'hidden'));
+        if (readout) readout.innerHTML = 'Hover graph to see time and values';
+      };
+
+      capture.addEventListener('mousemove', (evt) => {
+        const rect = svg.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        const sx = ((evt.clientX - rect.left) / rect.width) * meta.w;
+        const sy = ((evt.clientY - rect.top) / rect.height) * meta.h;
+        const t = xToT(Math.min(meta.w - meta.padR, Math.max(meta.padL, sx)));
+        let nearestT = null;
+        let nearestDist = Infinity;
+        meta.series.forEach(s => {
+          s.points.forEach(p => {
+            const d = Math.abs(p[0] - t);
+            if (d < nearestDist) { nearestDist = d; nearestT = p[0]; }
+          });
+        });
+        if (nearestT == null) { hide(); return; }
+        const px = x(nearestT);
+        if (hx) {
+          hx.setAttribute('x1', px.toFixed(2));
+          hx.setAttribute('x2', px.toFixed(2));
+          hx.setAttribute('y1', String(meta.padT));
+          hx.setAttribute('y2', String(meta.h - meta.padB));
+          hx.setAttribute('visibility', 'visible');
+        }
+        const hoverY = Math.min(meta.h - meta.padB, Math.max(meta.padT, sy));
+        if (hy) {
+          hy.setAttribute('x1', String(meta.padL));
+          hy.setAttribute('x2', String(meta.w - meta.padR));
+          hy.setAttribute('y1', hoverY.toFixed(2));
+          hy.setAttribute('y2', hoverY.toFixed(2));
+          hy.setAttribute('visibility', 'visible');
+        }
+        const values = [];
+        meta.series.forEach((s, idx) => {
+          let best = null, bestD = Infinity;
+          s.points.forEach(p => { const d = Math.abs(p[0] - nearestT); if (d < bestD) { bestD = d; best = p; } });
+          const dot = wrap.querySelector(`.g-hover-dot[data-series="${idx}"]`);
+          if (best) {
+            const py = y(best[1]);
+            if (dot) { dot.setAttribute('cx', px.toFixed(2)); dot.setAttribute('cy', py.toFixed(2)); dot.setAttribute('visibility', 'visible'); }
+            values.push(`<span style="color:${s.color};white-space:nowrap;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${s.color};margin-right:4px;vertical-align:middle;"></span>${this._esc(s.label)}: <strong>${this._esc(best[1].toFixed(2))}${this._esc(meta.unit)}</strong></span>`);
+          } else if (dot) {
+            dot.setAttribute('visibility', 'hidden');
+          }
+        });
+        if (readout) {
+          readout.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;"><span style="color:#eef7ff;font-weight:600;">${this._esc(new Date(nearestT).toLocaleString())}</span>${values.join('')}</div>`;
+        }
+      });
+      capture.addEventListener('mouseleave', hide);
+    });
   }
 
   _render() {
@@ -10745,6 +10833,161 @@ class DeyeEnergyGraphsCard extends HTMLElement {
         this._fetchHistory();
       });
     }
+    this._attachChartHovers();
+  }
+}
+
+
+class DeyeEnergyPowerFlowCard extends HTMLElement {
+  constructor() {
+    super();
+    this._hass = null;
+    this._config = {};
+  }
+
+  static getStubConfig() {
+    return {
+      title: 'Deye Energy Power Flow',
+      entities: {
+        pv: 'sensor.garage_deye_energy_pv_power',
+        grid: 'sensor.garage_deye_energy_grid_power',
+        battery: 'sensor.garage_deye_energy_battery_power',
+        battery_soc: 'sensor.garage_deye_energy_battery_soc',
+        load: 'sensor.garage_deye_energy_load_power',
+        inverter: 'sensor.deye_inverter_power',
+      },
+    };
+  }
+
+  getCardSize() { return 5; }
+
+  setConfig(config) {
+    this._config = config || {};
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+
+  _esc(v) {
+    return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  _num(entityId) {
+    const st = this._hass?.states?.[entityId];
+    if (!st) return null;
+    const v = Number(st.state);
+    return Number.isFinite(v) ? v : null;
+  }
+
+  _fmtW(v) {
+    if (v == null || !Number.isFinite(v)) return '—';
+    const abs = Math.abs(v);
+    if (abs >= 1000) return `${(v / 1000).toFixed(2)} kW`;
+    return `${Math.round(v)} W`;
+  }
+
+  _entities() {
+    const d = DeyeEnergyPowerFlowCard.getStubConfig().entities;
+    return { ...d, ...(this._config.entities || {}) };
+  }
+
+  _flowLine(x1, y1, x2, y2, color, active, reverse, label) {
+    const id = `pf-${Math.random().toString(36).slice(2, 9)}`;
+    const dx = x2 - x1, dy = y2 - y1;
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    const dur = Math.max(1.2, Math.min(4, 220 / Math.max(30, Math.abs(active ? parseFloat(label) || 50 : 50))));
+    const dash = active ? '6 10' : '4 10';
+    const opacity = active ? '0.95' : '0.18';
+    const stroke = active ? color : 'rgba(158,184,200,.35)';
+    const anim = active ? `<circle r="3.5" fill="${color}" opacity="0.95"><animateMotion dur="${dur.toFixed(2)}s" repeatCount="indefinite" ${reverse ? 'keyPoints="1;0" keyTimes="0;1"' : ''} calcMode="linear"><mpath href="#${id}"/></animateMotion></circle>` : '';
+    const midX = (x1 + x2) / 2;
+    const midY = (y1 + y2) / 2;
+    const lbl = active && label ? `<g><rect x="${midX - 28}" y="${midY - 11}" width="56" height="20" rx="10" fill="rgba(2,9,19,.85)" stroke="${color}" stroke-opacity=".45"/><text x="${midX}" y="${midY + 3}" text-anchor="middle" font-size="10" fill="#eef7ff" font-weight="600">${this._esc(label)}</text></g>` : '';
+    return `<path id="${id}" d="M ${x1} ${y1} L ${x2} ${y2}" stroke="${stroke}" stroke-width="${active ? 3 : 2}" stroke-dasharray="${dash}" opacity="${opacity}" fill="none" stroke-linecap="round"/>${anim}${lbl}`;
+  }
+
+  _node(x, y, icon, title, value, sub, color, active) {
+    const border = active ? color : 'rgba(118,166,190,.28)';
+    const glow = active ? `filter="drop-shadow(0 0 8px ${color}55)"` : '';
+    return `
+      <g ${glow}>
+        <rect x="${x - 62}" y="${y - 38}" width="124" height="76" rx="16" fill="rgba(255,255,255,.04)" stroke="${border}" stroke-width="1.5"/>
+        <text x="${x}" y="${y - 12}" text-anchor="middle" font-size="20">${icon}</text>
+        <text x="${x}" y="${y + 8}" text-anchor="middle" font-size="11" fill="#9eb8c8">${this._esc(title)}</text>
+        <text x="${x}" y="${y + 26}" text-anchor="middle" font-size="13" fill="#eef7ff" font-weight="700">${this._esc(value)}</text>
+        ${sub ? `<text x="${x}" y="${y + 40}" text-anchor="middle" font-size="10" fill="${this._esc(color)}">${this._esc(sub)}</text>` : ''}
+      </g>`;
+  }
+
+  _render() {
+    const e = this._entities();
+    const pv = this._num(e.pv);
+    const grid = this._num(e.grid);
+    const batt = this._num(e.battery);
+    const soc = this._num(e.battery_soc);
+    const load = this._num(e.load);
+    const inv = this._num(e.inverter);
+
+    const gridImport = grid != null ? Math.max(0, grid) : 0;
+    const gridExport = grid != null ? Math.max(0, -grid) : 0;
+    const battCharge = batt != null ? Math.max(0, batt) : 0;
+    const battDischarge = batt != null ? Math.max(0, -batt) : 0;
+    const pvVal = pv != null ? Math.max(0, pv) : 0;
+    const loadVal = load != null ? Math.max(0, load) : 0;
+
+    const W = 760, H = 420;
+    const C = { pv: [380, 60], inv: [380, 210], grid: [110, 210], home: [650, 210], batt: [380, 360] };
+    const flows = [];
+    // PV -> Inverter
+    flows.push(this._flowLine(C.pv[0], C.pv[1] + 38, C.inv[0], C.inv[1] - 38, '#f6c945', pvVal > 10, false, pvVal > 10 ? this._fmtW(pvVal) : ''));
+    // Grid <-> Inverter
+    if (gridImport > 10) flows.push(this._flowLine(C.grid[0] + 62, C.grid[1], C.inv[0] - 62, C.inv[1], '#5bc0ff', true, false, this._fmtW(gridImport)));
+    else if (gridExport > 10) flows.push(this._flowLine(C.inv[0] - 62, C.inv[1], C.grid[0] + 62, C.grid[1], '#5bc0ff', true, false, this._fmtW(gridExport)));
+    else flows.push(this._flowLine(C.grid[0] + 62, C.grid[1], C.inv[0] - 62, C.inv[1], '#5bc0ff', false, false, ''));
+    // Inverter -> Home
+    flows.push(this._flowLine(C.inv[0] + 62, C.inv[1], C.home[0] - 62, C.home[1], '#ff8a4c', loadVal > 10, false, loadVal > 10 ? this._fmtW(loadVal) : ''));
+    // Battery <-> Inverter
+    if (battDischarge > 10) flows.push(this._flowLine(C.batt[0], C.batt[1] - 38, C.inv[0], C.inv[1] + 38, '#7ee22d', true, false, this._fmtW(battDischarge)));
+    else if (battCharge > 10) flows.push(this._flowLine(C.inv[0], C.inv[1] + 38, C.batt[0], C.batt[1] - 38, '#7ee22d', true, false, this._fmtW(battCharge)));
+    else flows.push(this._flowLine(C.batt[0], C.batt[1] - 38, C.inv[0], C.inv[1] + 38, '#7ee22d', false, false, ''));
+
+    const gridLabel = gridImport > 10 ? 'Importing' : gridExport > 10 ? 'Exporting' : 'Idle';
+    const battLabel = battDischarge > 10 ? 'Discharging' : battCharge > 10 ? 'Charging' : 'Idle';
+    const socText = soc != null ? `SOC ${Math.round(soc)}%` : '';
+
+    const unavailable = [e.pv, e.grid, e.battery, e.battery_soc, e.load, e.inverter].filter(id => !this._hass?.states?.[id]);
+    const warn = unavailable.length ? `<div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:rgba(255,170,0,.10);border:1px solid rgba(255,170,0,.28);color:#ffd38a;font-size:12px;">Missing/unavailable entities: ${unavailable.map(x => this._esc(x)).join(', ')}</div>` : '';
+
+    this.innerHTML = `
+      <ha-card style="overflow:hidden;font-family:Roboto,Arial,sans-serif;background:radial-gradient(circle at 20% 0%,rgba(26,106,164,.22),transparent 34%),linear-gradient(180deg,#020913,#06131c 54%,#050b10);border:1px solid rgba(101,142,164,.32);box-shadow:0 18px 45px rgba(0,0,0,.35);color:#eef7ff;">
+        <div style="padding:16px;">
+          <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;">
+            <div>
+              <div style="font-size:20px;font-weight:700;">${this._esc(this._config.title || 'Deye Energy Power Flow')}</div>
+              <div style="font-size:12px;color:#9eb8c8;margin-top:4px;">Live power flow between PV, Grid, Inverter, Battery and Home</div>
+            </div>
+            <div style="font-size:12px;color:#9eb8c8;">${new Date().toLocaleTimeString()}</div>
+          </div>
+          <div style="margin-top:12px;">
+            <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,.01));border-radius:14px;border:1px solid rgba(118,166,190,.16);">
+              <defs>
+                <linearGradient id="pf-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="rgba(77,163,255,.08)"/><stop offset="100%" stop-color="rgba(126,226,45,.03)"/></linearGradient>
+              </defs>
+              <rect x="0" y="0" width="${W}" height="${H}" fill="url(#pf-bg)" opacity="0.35"/>
+              ${flows.join('')}
+              ${this._node(C.pv[0], C.pv[1], '☀️', 'PV', this._fmtW(pvVal), pvVal > 10 ? 'Generating' : 'Idle', '#f6c945', pvVal > 10)}
+              ${this._node(C.grid[0], C.grid[1], '⚡', 'Grid', this._fmtW(grid), gridLabel, '#5bc0ff', gridImport > 10 || gridExport > 10)}
+              ${this._node(C.inv[0], C.inv[1], '🔌', 'Inverter', this._fmtW(inv), inv != null ? 'Active' : '—', '#bc63ff', inv != null && Math.abs(inv) > 10)}
+              ${this._node(C.home[0], C.home[1], '🏠', 'Home', this._fmtW(loadVal), loadVal > 10 ? 'Consuming' : 'Idle', '#ff8a4c', loadVal > 10)}
+              ${this._node(C.batt[0], C.batt[1], '🔋', 'Battery', this._fmtW(batt), [battLabel, socText].filter(Boolean).join(' · '), '#7ee22d', battCharge > 10 || battDischarge > 10)}
+            </svg>
+          </div>
+          ${warn}
+        </div>
+      </ha-card>`;
   }
 }
 
@@ -10752,11 +10995,12 @@ customElements.define("deye-energy-card", DeyeEnergyCard);
 customElements.define("deye-energy-inverter-config-card", DeyeEnergyInverterConfigCard);
 customElements.define("deye-energy-trigger-logs-card", DeyeEnergyTriggerLogsCard);
 customElements.define("deye-energy-graphs-card", DeyeEnergyGraphsCard);
+customElements.define("deye-energy-power-flow-card", DeyeEnergyPowerFlowCard);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.0.66",
+  description: "Deye Energy 0.8.0.67",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",
@@ -10772,4 +11016,9 @@ window.customCards.push({
   type: "deye-energy-graphs-card",
   name: "Deye Energy Graphs",
   description: "History graphs for inverter, grid, load, and battery metrics",
+});
+window.customCards.push({
+  type: "deye-energy-power-flow-card",
+  name: "Deye Energy Power Flow",
+  description: "Live power flow between PV, Grid, Inverter, Battery, and Home",
 });

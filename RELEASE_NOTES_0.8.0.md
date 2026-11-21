@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.66`.
+Card resource revision: `v=0.8.0.67`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the original
@@ -9,6 +9,12 @@ integrated through MQTT. Attribution is recorded at the bottom of README.md.
 
 ## Revision history
 
+- `v=0.8.0.67` — Added `custom:deye-energy-power-flow-card` showing live PV, Grid,
+  Inverter, Battery, and Home power flow with animated flow lines, SOC/status
+  labels, and config-overridable entity mappings; added Power flow dashboard tab.
+  Improved graphs hover with crosshair dotted lines, bottom time/value readout,
+  and all-series values at nearest X; added power-flow/graphs contract tests and
+  documentation updates.
 - `v=0.8.0.66` — Added 7d/30d/1y graph presets and custom From/To date+time
   range selection to `custom:deye-energy-graphs-card`; added graphs card
   contract tests and updated README/changelog.

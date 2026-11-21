@@ -59,6 +59,14 @@ check(typeof card._customFrom === "string", "customFrom should be string");
 check(typeof card._customTo === "string", "customTo should be string");
 
 // Render contract
+const now = Date.now();
+card._history = {
+  "sensor.deye_grid_power": [[now - 60000, 100], [now, 120]],
+  "sensor.deye_load_power": [[now - 60000, 200], [now, 220]],
+  "sensor.deye_battery_power": [[now - 60000, 50], [now, 60]],
+  "sensor.deye_inverter_power": [[now - 60000, 300], [now, 320]],
+};
+card._lastSig = "";
 card._render();
 const html = card.innerHTML;
 check(html.includes('data-group="power_flow"'), "missing power flow tab");
@@ -70,6 +78,11 @@ check(html.includes('grid-template-columns:1fr'), "charts should be full width")
 check(html.includes('type="datetime-local"'), "missing datetime-local inputs");
 check(html.includes('g-apply'), "missing apply range button");
 check(html.includes('Apply range'), "missing Apply range label");
+check(html.includes('g-hover-x'), "missing hover X line");
+check(html.includes('g-hover-y'), "missing hover Y line");
+check(html.includes('g-hover-readout'), "missing hover readout");
+check(html.includes('g-capture'), "missing hover capture area");
+check(html.includes('g-chart-wrap'), "missing chart wrap");
 
 // History parsing: minimal_response entity_id only on first item
 card._hass = {
