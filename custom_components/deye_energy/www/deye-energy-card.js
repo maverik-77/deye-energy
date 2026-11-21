@@ -10038,7 +10038,7 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
     this.innerHTML = `
       <ha-card class="ic-card">
         <style>
-          .ic-card { --ic-bg: var(--card-background-color, #111); --ic-surface: rgba(255,255,255,.03); --ic-surface2: rgba(255,255,255,.06); --ic-line: rgba(118,166,190,.22); --ic-text: #eef7ff; --ic-muted: #9eb8c8; --ic-accent: #4da3ff; --ic-good: var(--success-color, #66bb6a); --ic-bad: var(--error-color, #ff6b6b); --primary-text-color:#eef7ff; --secondary-text-color:#9eb8c8; --divider-color:rgba(118,166,190,.22); --ha-card-background:transparent; --card-background-color:rgba(9,24,35,.92); color: var(--ic-text); background: radial-gradient(circle at 18% 0%,rgba(26,106,164,.22),transparent 34%),linear-gradient(180deg,#020913,#06131c 54%,#050b10); border: 1px solid rgba(101,142,164,.32); box-shadow: 0 18px 45px rgba(0,0,0,.35); }
+          .ic-card { --ic-bg: var(--card-background-color, #111); --ic-surface: rgba(255,255,255,.03); --ic-surface2: rgba(255,255,255,.06); --ic-line: rgba(118,166,190,.22); --ic-text: #eef7ff; --ic-muted: #9eb8c8; --ic-accent: #4da3ff; --ic-good: var(--success-color, #66bb6a); --ic-bad: var(--error-color, #ff6b6b); --primary-text-color:#eef7ff; --secondary-text-color:#9eb8c8; --divider-color:rgba(118,166,190,.22); --ha-card-background:transparent; --card-background-color:rgba(9,24,35,.92); color: var(--ic-text); background: radial-gradient(circle at 18% 0%,rgba(26,106,164,.22),transparent 34%),linear-gradient(180deg,#020913,#06131c 54%,#050b10); border: 1px solid rgba(101,142,164,.32); box-shadow: 0 18px 45px rgba(0,0,0,.35); overflow: hidden; font-family: Roboto,Arial,sans-serif; font-size: 14px; }
           .ic-wrap { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
           .ic-header { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; justify-content: space-between; }
           .ic-header h2 { margin: 0; font-size: 1.35rem; line-height: 1.2; }
@@ -10233,9 +10233,9 @@ class DeyeEnergyTriggerLogsCard extends HTMLElement {
           <table style="width:100%;border-collapse:separate;border-spacing:0;font-size:0.95em;">
             <thead>
               <tr>
-                <th style="position:sticky;top:0;z-index:2;text-align:left;padding:8px;border-bottom:1px solid var(--divider-color);background:var(--card-background-color, var(--ha-card-background, white));">Time</th>
-                <th style="position:sticky;top:0;z-index:2;text-align:left;padding:8px;border-bottom:1px solid var(--divider-color);background:var(--card-background-color, var(--ha-card-background, white));">Input / trigger</th>
-                <th style="position:sticky;top:0;z-index:2;text-align:left;padding:8px;border-bottom:1px solid var(--divider-color);background:var(--card-background-color, var(--ha-card-background, white));">Status</th>
+                <th style="position:sticky;top:0;z-index:2;text-align:left;padding:8px;border-bottom:1px solid var(--divider-color);background:rgba(9,24,35,.92);">Time</th>
+                <th style="position:sticky;top:0;z-index:2;text-align:left;padding:8px;border-bottom:1px solid var(--divider-color);background:rgba(9,24,35,.92);">Input / trigger</th>
+                <th style="position:sticky;top:0;z-index:2;text-align:left;padding:8px;border-bottom:1px solid var(--divider-color);background:rgba(9,24,35,.92);">Status</th>
               </tr>
             </thead>
             <tbody>${rows}</tbody>
@@ -10244,20 +10244,20 @@ class DeyeEnergyTriggerLogsCard extends HTMLElement {
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;flex-wrap:wrap;">
           <div style="color:var(--secondary-text-color);font-size:0.9em;">Showing ${from}-${to} of ${filtered.length} (30-day retention: ${entries.length})</div>
           <div style="display:flex;align-items:center;gap:8px;">
-            <button type="button" data-trigger-page="prev" ${this._page <= 1 ? "disabled" : ""} style="padding:4px 10px;border-radius:6px;border:1px solid var(--divider-color);background:var(--card-background-color, var(--ha-card-background, white));color:var(--primary-text-color);cursor:${this._page <= 1 ? "default" : "pointer"};opacity:${this._page <= 1 ? "0.5" : "1"};">Prev</button>
+            <button type="button" data-trigger-page="prev" ${this._page <= 1 ? "disabled" : ""} style="padding:4px 10px;border-radius:6px;border:1px solid var(--divider-color);background:rgba(9,24,35,.92);color:var(--primary-text-color);cursor:${this._page <= 1 ? "default" : "pointer"};opacity:${this._page <= 1 ? "0.5" : "1"};">Prev</button>
             <span style="font-size:0.9em;color:var(--secondary-text-color);min-width:72px;text-align:center;">Page ${this._page} / ${totalPages}</span>
-            <button type="button" data-trigger-page="next" ${this._page >= totalPages ? "disabled" : ""} style="padding:4px 10px;border-radius:6px;border:1px solid var(--divider-color);background:var(--card-background-color, var(--ha-card-background, white));color:var(--primary-text-color);cursor:${this._page >= totalPages ? "default" : "pointer"};opacity:${this._page >= totalPages ? "0.5" : "1"};">Next</button>
+            <button type="button" data-trigger-page="next" ${this._page >= totalPages ? "disabled" : ""} style="padding:4px 10px;border-radius:6px;border:1px solid var(--divider-color);background:rgba(9,24,35,.92);color:var(--primary-text-color);cursor:${this._page >= totalPages ? "default" : "pointer"};opacity:${this._page >= totalPages ? "0.5" : "1"};">Next</button>
           </div>
         </div>`;
     }
 
     this.innerHTML = `
-      <ha-card header="${title}" style="height:100%;min-height:480px;display:flex;flex-direction:column;background:radial-gradient(circle at 18% 0%,rgba(26,106,164,.22),transparent 34%),linear-gradient(180deg,#020913,#06131c 54%,#050b10);border:1px solid rgba(101,142,164,.32);box-shadow:0 18px 45px rgba(0,0,0,.35);color:#eef7ff;--primary-text-color:#eef7ff;--secondary-text-color:#9eb8c8;--divider-color:rgba(118,166,190,.22);--ha-card-background:transparent;--card-background-color:rgba(9,24,35,.92);">
+      <ha-card header="${title}" style="height:100%;min-height:480px;display:flex;flex-direction:column;overflow:hidden;font-family:Roboto,Arial,sans-serif;font-size:14px;background:radial-gradient(circle at 18% 0%,rgba(26,106,164,.22),transparent 34%),linear-gradient(180deg,#020913,#06131c 54%,#050b10);border:1px solid rgba(101,142,164,.32);box-shadow:0 18px 45px rgba(0,0,0,.35);color:#eef7ff;--primary-text-color:#eef7ff;--secondary-text-color:#9eb8c8;--divider-color:rgba(118,166,190,.22);--ha-card-background:transparent;--card-background-color:rgba(9,24,35,.92);--ha-card-header-color:#eef7ff;">
         <div class="card-content" style="flex:1;min-height:0;display:flex;flex-direction:column;box-sizing:border-box;">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
             <div style="color:var(--secondary-text-color);font-size:0.9em;">${filtered.length} event${filtered.length === 1 ? "" : "s"} in selected period</div>
             <label style="display:flex;align-items:center;gap:6px;font-size:0.95em;color:var(--primary-text-color);">Filter
-              <select id="trigger-log-filter" style="padding:4px 8px;border-radius:6px;border:1px solid var(--divider-color);background:var(--card-background-color, var(--ha-card-background, white));color:var(--primary-text-color);">${select}</select>
+              <select id="trigger-log-filter" style="padding:4px 8px;border-radius:6px;border:1px solid var(--divider-color);background:rgba(9,24,35,.92);color:var(--primary-text-color);">${select}</select>
             </label>
           </div>
           ${body}
