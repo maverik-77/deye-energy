@@ -1,0 +1,97 @@
+const fs = require("fs");
+const vm = require("vm");
+
+const source = fs.readFileSync(
+  "custom_components/deye_energy/www/deye-energy-card.js",
+  "utf8",
+);
+const sandbox = {
+  console,
+  HTMLElement: class {
+    constructor() { this._inner = ""; this._listeners = {}; this._children = []; }
+    set innerHTML(v) { this._inner = v; this._children = []; }
+    get innerHTML() { return this._inner; }
+    querySelector(sel) {
+      if (sel === ".graphs-root") return this._inner.includes('graphs-root') ? {} : null;
+      if (sel === ".g-apply") return this._applyBtn || null;
+      return null;
+    }
+    querySelectorAll(sel) {
+      if (sel === "[data-range]") return this._rangeBtns || [];
+      if (sel === "[data-group]") return this._groupBtns || [];
+      return [];
+    }
+  },
+  customElements: { define() {} },
+  setTimeout: (fn) => 1,
+  clearTimeout: () => {},
+};
+sandbox.window = sandbox;
+vm.createContext(sandbox);
+vm.runInContext(`${source}\nthis.GraphsCard = DeyeEnergyGraphsCard;`, sandbox);
+
+function check(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+const card = new sandbox.GraphsCard();
+card._hass = { states: {}, connected: true, callApi: async () => [] };
+
+// Ranges
+const ranges = card._ranges();
+check(ranges.some(r => r[0] === "1h"), "missing 1h range");
+check(ranges.some(r => r[0] === "6h"), "missing 6h range");
+check(ranges.some(r => r[0] === "24h"), "missing 24h range");
+check(ranges.some(r => r[0] === "7d"), "missing 7d range");
+check(ranges.some(r => r[0] === "30d"), "missing 30d range");
+check(ranges.some(r => r[0] === "1y"), "missing 1y range");
+
+// Group defs / sub-tabs
+const groups = card._groupDefs();
+const keys = groups.map(g => g.key);
+for (const k of ["power_flow", "inverter", "grid", "load", "battery"]) {
+  check(keys.includes(k), `missing group ${k}`);
+}
+
+// Custom range state
+check(card._customRange === false, "customRange default should be false");
+check(typeof card._customFrom === "string", "customFrom should be string");
+check(typeof card._customTo === "string", "customTo should be string");
+
+// Render contract
+card._render();
+const html = card.innerHTML;
+check(html.includes('data-group="power_flow"'), "missing power flow tab");
+check(html.includes('data-group="inverter"'), "missing inverter tab");
+check(html.includes('data-group="grid"'), "missing grid tab");
+check(html.includes('data-group="load"'), "missing load tab");
+check(html.includes('data-group="battery"'), "missing battery tab");
+check(html.includes('grid-template-columns:1fr'), "charts should be full width");
+check(html.includes('type="datetime-local"'), "missing datetime-local inputs");
+check(html.includes('g-apply'), "missing apply range button");
+check(html.includes('Apply range'), "missing Apply range label");
+
+// History parsing: minimal_response entity_id only on first item
+card._hass = {
+  states: { "sensor.deye_battery_soc": { last_updated: "2026-11-21T16:00:00Z" } },
+  connected: true,
+  callApi: async () => [[
+    { entity_id: "sensor.deye_battery_soc", state: "64", last_changed: "2026-11-21T15:00:00Z" },
+    { state: "63", last_changed: "2026-11-21T15:05:00Z" },
+  ]],
+};
+card._config = { entities: { battery_soc: "sensor.deye_battery_soc" } };
+card._group = "battery";
+card._loading = false;
+card._history = {};
+(async () => {
+  card._lastFetch = 0;
+  await card._fetchHistory();
+  const pts = card._history["sensor.deye_battery_soc"] || [];
+  check(pts.length === 2, `expected 2 parsed points, got ${pts.length}`);
+  check(pts[0][1] === 64, "first point value mismatch");
+  check(pts[1][1] === 63, "second point value mismatch");
+
+  check(/^\/\/ Resource revision: v=\d+\.\d+\.\d+(\.\d+)?\n/.test(source), "resource revision header missing/invalid");
+  console.log("Graphs card tests passed");
+})().catch(e => { console.error(e); process.exit(1); });

@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.65
+// Resource revision: v=0.8.0.66
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -2988,7 +2988,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.65 (resource revision v=0.8.0.65)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.66 (resource revision v=0.8.0.66)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -10401,6 +10401,9 @@ class DeyeEnergyGraphsCard extends HTMLElement {
     this._config = {};
     this._range = '6h';
     this._group = 'power_flow';
+    this._customRange = false;
+    this._customFrom = '';
+    this._customTo = '';
     this._loading = false;
     this._error = '';
     this._history = {};
@@ -10446,6 +10449,9 @@ class DeyeEnergyGraphsCard extends HTMLElement {
       ['1h', '1h', 60 * 60 * 1000],
       ['6h', '6h', 6 * 60 * 60 * 1000],
       ['24h', '24h', 24 * 60 * 60 * 1000],
+      ['7d', '7d', 7 * 24 * 60 * 60 * 1000],
+      ['30d', '30d', 30 * 24 * 60 * 60 * 1000],
+      ['1y', '1y', 365 * 24 * 60 * 60 * 1000],
     ];
   }
 
@@ -10559,8 +10565,18 @@ class DeyeEnergyGraphsCard extends HTMLElement {
     this._error = '';
     this._render();
     try {
-      const end = new Date();
-      const start = new Date(end.getTime() - this._rangeMs());
+      let start;
+      let end;
+      if (this._customRange && this._customFrom && this._customTo) {
+        start = new Date(this._customFrom);
+        end = new Date(this._customTo);
+        if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || start >= end) {
+          throw new Error('Invalid custom date range. Ensure From is before To.');
+        }
+      } else {
+        end = new Date();
+        start = new Date(end.getTime() - this._rangeMs());
+      }
       const url = `history/period/${start.toISOString()}?filter_entity_id=${ids.join(',')}&end_time=${end.toISOString()}&minimal_response=1&no_attributes=1&significant_changes_only=0`;
       const data = await this._hass.callApi('GET', url);
       const map = {};
@@ -10653,11 +10669,20 @@ class DeyeEnergyGraphsCard extends HTMLElement {
     const groups = this._groupDefs();
     const activeGroup = groups.find(g => g.key === this._group) || groups[0];
     if (activeGroup && this._group !== activeGroup.key) this._group = activeGroup.key;
-    const sig = JSON.stringify({ r: this._range, g: this._group, l: this._loading, e: this._error, lf: this._lastFetch, ids: this._allEntityIds().map(id => this._hass.states[id]?.last_updated || '') });
+    const sig = JSON.stringify({ r: this._range, g: this._group, c: this._customRange, cf: this._customFrom, ct: this._customTo, l: this._loading, e: this._error, lf: this._lastFetch, ids: this._allEntityIds().map(id => this._hass.states[id]?.last_updated || '') });
     if (sig === this._lastSig && this.querySelector('.graphs-root')) return;
     this._lastSig = sig;
 
-    const ranges = this._ranges().map(([k, label]) => `<button class="rg" data-range="${k}" style="padding:5px 12px;border-radius:999px;border:1px solid ${this._range === k ? 'rgba(77,163,255,.7)' : 'rgba(118,166,190,.28)'};background:${this._range === k ? 'rgba(77,163,255,.18)' : 'rgba(255,255,255,.03)'};color:#eef7ff;cursor:pointer;font-size:12px;">${label}</button>`).join('');
+    const ranges = this._ranges().map(([k, label]) => {
+      const active = !this._customRange && this._range === k;
+      return `<button class="rg" data-range="${k}" style="padding:5px 12px;border-radius:999px;border:1px solid ${active ? 'rgba(77,163,255,.7)' : 'rgba(118,166,190,.28)'};background:${active ? 'rgba(77,163,255,.18)' : 'rgba(255,255,255,.03)'};color:#eef7ff;cursor:pointer;font-size:12px;">${label}</button>`;
+    }).join('');
+    const customControls = `
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px;">
+        <label style="font-size:12px;color:#9eb8c8;">From <input class="g-from" type="datetime-local" value="${this._esc(this._customFrom)}" style="margin-left:4px;background:rgba(255,255,255,.04);color:#eef7ff;border:1px solid rgba(118,166,190,.28);border-radius:8px;padding:4px 6px;"></label>
+        <label style="font-size:12px;color:#9eb8c8;">To <input class="g-to" type="datetime-local" value="${this._esc(this._customTo)}" style="margin-left:4px;background:rgba(255,255,255,.04);color:#eef7ff;border:1px solid rgba(118,166,190,.28);border-radius:8px;padding:4px 6px;"></label>
+        <button class="g-apply" style="padding:5px 12px;border-radius:999px;border:1px solid ${this._customRange ? 'rgba(126,226,45,.65)' : 'rgba(118,166,190,.28)'};background:${this._customRange ? 'rgba(126,226,45,.14)' : 'rgba(255,255,255,.03)'};color:#eef7ff;cursor:pointer;font-size:12px;">Apply range</button>
+      </div>`;
     const groupTabs = groups.map(g => {
       const active = g.key === this._group;
       return `<button class="gg" data-group="${g.key}" style="padding:7px 14px;border-radius:999px;border:1px solid ${active ? 'rgba(126,226,45,.65)' : 'rgba(118,166,190,.28)'};background:${active ? 'rgba(126,226,45,.14)' : 'rgba(255,255,255,.03)'};color:#eef7ff;cursor:pointer;font-size:13px;font-weight:${active ? '600' : '500'};">${this._esc(g.title)}</button>`;
@@ -10682,6 +10707,7 @@ class DeyeEnergyGraphsCard extends HTMLElement {
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">${ranges}</div>
           </div>
+          ${customControls}
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;">${groupTabs}</div>
           ${err}
           <section style="margin-top:14px;">
@@ -10693,6 +10719,7 @@ class DeyeEnergyGraphsCard extends HTMLElement {
     this.querySelectorAll('[data-range]').forEach(btn => {
       btn.addEventListener('click', () => {
         this._range = btn.getAttribute('data-range');
+        this._customRange = false;
         this._lastSig = '';
         this._render();
         this._fetchHistory();
@@ -10705,6 +10732,19 @@ class DeyeEnergyGraphsCard extends HTMLElement {
         this._render();
       });
     });
+    const applyBtn = this.querySelector('.g-apply');
+    if (applyBtn) {
+      applyBtn.addEventListener('click', () => {
+        const from = this.querySelector('.g-from')?.value || '';
+        const to = this.querySelector('.g-to')?.value || '';
+        this._customFrom = from;
+        this._customTo = to;
+        this._customRange = true;
+        this._lastSig = '';
+        this._render();
+        this._fetchHistory();
+      });
+    }
   }
 }
 
@@ -10716,7 +10756,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.0.65",
+  description: "Deye Energy 0.8.0.66",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

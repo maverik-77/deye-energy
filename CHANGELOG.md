@@ -6,6 +6,21 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.66] - 2026-11-21
+
+### Added
+
+- **Graphs card range options**: Added `7d`, `30d`, and `1y` preset ranges plus
+  a custom From/To date+time range selector in `custom:deye-energy-graphs-card`.
+- **Graphs card tests**: Added `tests/test_graphs_card.js` covering range
+  presets, group sub-tabs, full-width layout, custom range controls, and
+  minimal_response history parsing.
+
+### Changed
+
+- **Graphs documentation**: Updated README and release notes to document the
+  expanded graph range controls and custom date+time selection.
+
 ## [0.8.0.65] - 2026-11-21
 
 ### Fixed
