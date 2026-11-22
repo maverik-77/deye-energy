@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.71
+// Resource revision: v=0.8.0.73
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -1709,7 +1709,7 @@ class DeyeEnergyCard extends HTMLElement {
 
   normalizeSlotEditValue(field, value) {
     if (field === "mode") return this.normalizeManagerMode(value);
-    if (field === "enabled" || field === "charge_enabled") {
+    if (field === "enabled" || field === "charge_enabled" || field === "battery_charge_enabled") {
       if (typeof value === "string") return ["true", "on", "1", "yes", "yes"].includes(value.trim().toLowerCase());
       return Boolean(value);
     }
@@ -2988,7 +2988,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.71 (resource revision v=0.8.0.71)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.73 (resource revision v=0.8.0.73)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -4304,7 +4304,7 @@ class DeyeEnergyCard extends HTMLElement {
   }
 
   manualScheduleFields() {
-    return ["enabled", "mode", "sell_power", "charge_enabled", "minimum_sell_soc"];
+    return ["enabled", "mode", "sell_power", "charge_enabled", "battery_charge_enabled", "minimum_sell_soc"];
   }
 
   manualScheduleDefaults() {
@@ -4319,6 +4319,7 @@ class DeyeEnergyCard extends HTMLElement {
       sell_power: number(profile.sell_power, 0),
       minimum_sell_soc: 0,
       charge_enabled: false,
+      battery_charge_enabled: false,
     };
   }
 
@@ -4492,6 +4493,7 @@ class DeyeEnergyCard extends HTMLElement {
         sell_power: numeric("sell_power"),
         minimum_sell_soc: numeric("minimum_sell_soc"),
         charge_enabled: Boolean(row.charge_enabled),
+        battery_charge_enabled: Boolean(row.battery_charge_enabled),
       };
     });
   }
@@ -4640,6 +4642,7 @@ class DeyeEnergyCard extends HTMLElement {
       <td data-label="Mode">${editing ? selectControl("mode", modeOptions) : this.modePill(mode, row.enabled)}</td>
       <td data-label="Sell power" class="metric sell">${editing ? numberControl("sell_power", 0, 100000) : row.enabled ? `${this.iconSvg("sell")} ${sellPower} W` : "-"}</td>
       <td data-label="Grid charging" class="metric grid">${editing ? selectControl("charge_enabled", [["false", "No"], ["true", "Yes"]]) : `<span class="pill ${row.charge_enabled ? "on" : "off"}">${row.charge_enabled ? "yes" : "no"}</span>`}</td>
+      <td data-label="Battery charge" class="metric battery-charge">${editing ? selectControl("battery_charge_enabled", [["false", "No"], ["true", "Yes"]]) : `<span class="pill ${row.battery_charge_enabled ? "on" : "off"}">${row.battery_charge_enabled ? "yes" : "no"}</span>`}</td>
       <td data-label="Stop selling at SOC" class="metric soc">${!isSelling ? "-" : editing ? numberControl("minimum_sell_soc", 0, 100) : `◇ ${soc}%`}</td>
       <td data-label="Active">${editing ? `<input type="checkbox" data-manual-field="enabled" data-manual-index="${index}" ${row.enabled ? "checked" : ""}>` : `<span class="pill ${row.enabled ? "on" : "off"}">${row.enabled ? "ON" : "OFF"}</span>`}</td>
       <td data-label="Action"><div class="manual-action-cell">
@@ -4678,8 +4681,8 @@ class DeyeEnergyCard extends HTMLElement {
       </div>
       <div class="schedule-table-card">
         <table class="schedule-table manual-schedule-table">
-          <colgroup><col class="col-time"><col class="col-time"><col class="col-mode"><col class="col-power"><col class="col-grid"><col class="col-soc"><col class="col-active"><col class="col-action"></colgroup>
-          <thead><tr><th class="time-col">From</th><th class="time-col">To</th><th>Mode</th><th>Sell power</th><th>Grid charging</th><th>Stop selling at SOC</th><th>Active</th><th>Action</th></tr></thead>
+          <colgroup><col class="col-time"><col class="col-time"><col class="col-mode"><col class="col-power"><col class="col-grid"><col class="col-battery-charge"><col class="col-soc"><col class="col-active"><col class="col-action"></colgroup>
+          <thead><tr><th class="time-col">From</th><th class="time-col">To</th><th>Mode</th><th>Sell power</th><th>Grid charging</th><th>Battery charge</th><th>Stop selling at SOC</th><th>Active</th><th>Action</th></tr></thead>
           <tbody>${rowHtml}</tbody>
         </table>
       </div>
@@ -10891,7 +10894,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
 
   _esc(v) { return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
   _num(entityId) { const st = this._hass?.states?.[entityId]; if (!st) return null; const v = Number(st.state); return Number.isFinite(v) ? v : null; }
-  _fmtW(v) { if (v == null || !Number.isFinite(v)) return '—'; const abs = Math.abs(v); if (abs >= 1000) return `${(v / 1000).toFixed(abs >= 10000 ? 1 : 2)} kW`; return `${Math.round(v)} W`; }
+  _fmtW(v) { if (v == null || !Number.isFinite(v)) return '—'; const abs = Math.abs(v); if (abs >= 10000) return `${(v / 1000).toFixed(1)} kW`; return `${Math.round(v)} W`; }
   _fmtKwh(v) { return v == null || !Number.isFinite(v) ? '—' : `${v.toFixed(2)} kWh`; }
   _fmtNum(v, d=1, unit='') { return v == null || !Number.isFinite(v) ? '—' : `${v.toFixed(d)}${unit}`; }
   _entities() { const d = DeyeEnergyPowerFlowCard.getStubConfig().entities; return { ...d, ...(this._config.entities || {}) }; }
@@ -10938,8 +10941,9 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     if (!ids.length) return;
     const range = this._periodRange(period);
     const key = period + '|' + ids.join(',') + '|' + range.start.slice(0,13);
-    if (this._statsKey === key || this._statsLoading) return;
-    this._statsKey = key; this._statsLoading = true;
+    if (this._statsKey === key) return;
+    const fetchKey = key;
+    this._statsKey = key; this._statsLoading = true; this._stats = {};
     try {
       const periodType = period === 'month' ? 'day' : period === 'week' ? 'day' : period === '24h' ? 'hour' : 'day';
       const res = await this._hass.connection.sendMessagePromise({
@@ -10950,19 +10954,27 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
         period: periodType,
         types: ['change'],
       });
+      if (this._statsKey !== fetchKey) return;
+      const data = res?.statistics && typeof res.statistics === 'object' && !Array.isArray(res.statistics) ? res.statistics : res;
       const out = {};
       for (const id of ids) {
-        const rows = Array.isArray(res?.[id]) ? res[id] : [];
+        const rows = Array.isArray(data?.[id]) ? data[id] : [];
         let sum = 0; let seen = false;
-        for (const r of rows) { const v = Number(r.change); if (Number.isFinite(v)) { sum += v; seen = true; } }
+        for (const r of rows) {
+          const raw = r?.change ?? r?.sum ?? r?.state;
+          const v = Number(raw);
+          if (Number.isFinite(v)) { sum += v; seen = true; }
+        }
         out[id] = seen ? sum : null;
       }
       this._stats = out;
-    } catch (_e) {
-      // keep old stats / empty
+    } catch (e) {
+      if (this._statsKey === fetchKey) console.warn('[deye-energy-power-flow-card] statistics fetch failed', e);
     } finally {
-      this._statsLoading = false;
-      this._render();
+      if (this._statsKey === fetchKey) {
+        this._statsLoading = false;
+        this._render();
+      }
     }
   }
 
@@ -11084,9 +11096,10 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const gridImport = isPower ? Math.max(0, gridP || 0) : Math.max(0, gridImportE || 0);
     const gridExport = isPower ? Math.max(0, -(gridP || 0)) : Math.max(0, gridExportE || 0);
     const battRaw = isPower ? battP : (battChargeE != null || battDischargeE != null ? (Number(battChargeE||0) - Number(battDischargeE||0)) : null);
-    const battCharge = isPower ? Math.max(0, battP || 0) : Math.max(0, battChargeE || 0);
-    const battDischarge = isPower ? Math.max(0, -(battP || 0)) : Math.max(0, battDischargeE || 0);
-    const loadVal = isPower ? Math.max(0, loadP || 0) : Math.max(0, loadE || 0);
+    const battCharge = isPower ? Math.max(0, -(battP || 0)) : Math.max(0, battChargeE || 0);
+    const battDischarge = isPower ? Math.max(0, (battP || 0)) : Math.max(0, battDischargeE || 0);
+    const calcLoadP = Math.max(0, (pvP || 0) + Math.max(0, gridP || 0) + Math.max(0, battP || 0) - (Math.max(0, -(gridP || 0)) + Math.max(0, -(battP || 0))));
+    const loadVal = isPower ? calcLoadP : Math.max(0, loadE || 0);
     const invVal = isPower ? invP : (pvE != null || gridImportE != null || gridExportE != null || battChargeE != null || battDischargeE != null ? Math.max(0, Number(pvE||0)+Number(gridImportE||0)+Number(battDischargeE||0)-Number(gridExportE||0)-Number(battChargeE||0)) : null);
 
     const consumers = this._consumerDefs();
@@ -11098,19 +11111,29 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const namedConsumers = consumerData.filter(c => c.type !== 'rest');
     const restDef = consumerData.find(c => c.type === 'rest');
     const namedSum = namedConsumers.reduce((a,c)=>a + (c.abs || 0), 0);
-    const restPower = Math.max(0, (isPower ? (loadP || 0) : loadVal) - namedSum);
+    const restPower = Math.max(0, loadVal - namedSum);
     const showRest = !!restDef;
     const displayConsumers = namedConsumers.concat(showRest ? [{...restDef, name: restDef.name || 'Rest', icon: restDef.icon || 'mdi:cloud-question', power: restPower, abs: restPower, active: restPower >= (restDef.min_w||0) && restPower > 1, entity: ''}] : []);
 
-    const W = 1200, H = 760;
-    const N = { pv:[600,120], grid:[170,380], inv:[600,380], home:[1030,380], batt:[600,640] };
+    const W = 1200, H = 800;
+    const N = { pv:[600,120], grid:[175,400], inv:[600,400], home:[1025,400], batt:[600,680] };
     const pos = N;
-    const pvToInv = `M ${N.pv[0]} ${N.pv[1]+72} C ${N.pv[0]-40} ${N.pv[1]+190}, ${N.inv[0]-40} ${N.inv[1]-190}, ${N.inv[0]} ${N.inv[1]-72}`;
-    const gridToInv = `M ${N.grid[0]+120} ${N.grid[1]} C ${N.grid[0]+290} ${N.grid[1]-80}, ${N.inv[0]-290} ${N.inv[1]-80}, ${N.inv[0]-120} ${N.inv[1]}`;
-    const invToGrid = `M ${N.inv[0]-120} ${N.inv[1]} C ${N.inv[0]-290} ${N.inv[1]+80}, ${N.grid[0]+290} ${N.grid[1]+80}, ${N.grid[0]+120} ${N.grid[1]}`;
-    const invToHome = `M ${N.inv[0]+120} ${N.inv[1]} C ${N.inv[0]+290} ${N.inv[1]-80}, ${N.home[0]-290} ${N.home[1]-80}, ${N.home[0]-120} ${N.home[1]}`;
-    const battToInv = `M ${N.batt[0]} ${N.batt[1]-72} C ${N.batt[0]+40} ${N.batt[1]-190}, ${N.inv[0]+40} ${N.inv[1]+190}, ${N.inv[0]} ${N.inv[1]+72}`;
-    const invToBatt = `M ${N.inv[0]} ${N.inv[1]+72} C ${N.inv[0]-40} ${N.inv[1]+190}, ${N.batt[0]-40} ${N.batt[1]-190}, ${N.batt[0]} ${N.batt[1]-72}`;
+    // Node boxes: width 248 (±124), height 220 (±110) when details are present.
+    const NW = 124, NH = 110, GAP = 10;
+    const edge = {
+      pv:   { b: N.pv[1] + NH + GAP, t: N.pv[1] - NH - GAP, l: N.pv[0] - NW - GAP, r: N.pv[0] + NW + GAP },
+      grid: { b: N.grid[1] + NH + GAP, t: N.grid[1] - NH - GAP, l: N.grid[0] - NW - GAP, r: N.grid[0] + NW + GAP },
+      inv:  { b: N.inv[1] + NH + GAP, t: N.inv[1] - NH - GAP, l: N.inv[0] - NW - GAP, r: N.inv[0] + NW + GAP },
+      home: { b: N.home[1] + NH + GAP, t: N.home[1] - NH - GAP, l: N.home[0] - NW - GAP, r: N.home[0] + NW + GAP },
+      batt: { b: N.batt[1] + NH + GAP, t: N.batt[1] - NH - GAP, l: N.batt[0] - NW - GAP, r: N.batt[0] + NW + GAP },
+    };
+    const straight = (x1, y1, x2, y2) => `M ${x1} ${y1} L ${x2} ${y2}`;
+    const pvToInv = straight(N.pv[0], edge.pv.b, N.inv[0], edge.inv.t);
+    const gridToInv = straight(edge.grid.r, N.grid[1], edge.inv.l, N.inv[1]);
+    const invToGrid = straight(edge.inv.l, N.inv[1], edge.grid.r, N.grid[1]);
+    const invToHome = straight(edge.inv.r, N.inv[1], edge.home.l, N.home[1]);
+    const battToInv = straight(N.batt[0], edge.batt.t, N.inv[0], edge.inv.b);
+    const invToBatt = straight(N.inv[0], edge.inv.b, N.batt[0], edge.batt.t);
 
     const flows = [];
     flows.push(this._flow('pf-pv-inv', pvToInv, '#f6c945', isPower ? pvVal : (pvVal>0.01?1000:0), false, isPower ? (pvVal>10?this._fmtW(pvVal):'') : (pvVal>0.01?this._fmtKwh(pvVal):'')));
@@ -11136,7 +11159,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const chips = [
       ['PV', fmtVal(pvVal, pvE), '#f6c945', isPower ? (pvDaily!=null?`Today ${this._fmtKwh(pvDaily)}`:'') : this._periodLabel(period)],
       ['Grid', isPower ? this._fmtW(gridP) : (gridImportE!=null||gridExportE!=null?`${this._fmtKwh(gridImportE)} / ${this._fmtKwh(gridExportE)}`:'—'), '#5bc0ff', gridImport>(isPower?10:0.01)?'Importing':gridExport>(isPower?10:0.01)?'Exporting':'Idle'],
-      ['Battery', fmtVal(isPower?battP:battRaw, isPower?null:(battChargeE!=null||battDischargeE!=null?Math.abs(Number(battChargeE||0)-Number(battDischargeE||0)):null)), '#7ee22d', socText],
+      ['Battery', fmtVal(isPower?(battP!=null?-battP:null):battRaw, isPower?null:(battChargeE!=null||battDischargeE!=null?Math.abs(Number(battChargeE||0)-Number(battDischargeE||0)):null)), '#7ee22d', socText],
       ['Home', fmtVal(loadVal, loadE), '#ff8a4c', isPower ? (loadDaily!=null?`Today ${this._fmtKwh(loadDaily)}`:'') : this._periodLabel(period)],
     ].map(([l,v,c,s2]) => `<div style="flex:1;min-width:130px;padding:12px 14px;border-radius:14px;background:rgba(255,255,255,.035);border:1px solid rgba(118,166,190,.18);"><div style="font-size:11px;color:#9eb8c8;letter-spacing:.4px;text-transform:uppercase;">${this._esc(l)}</div><div style="font-size:22px;font-weight:800;color:${c};margin-top:4px;text-shadow:0 0 18px ${c}33;">${this._esc(v==null?'—':v)}</div><div style="font-size:11px;color:#93adbc;margin-top:2px;">${this._esc(s2||'')}</div></div>`).join('');
 
@@ -11155,7 +11178,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       this._detailLine(isPower?'Today':this._periodLabel(period), this._fmtKwh(isPower?loadDaily:loadE),'#ff8a4c'),
       this._detailLine('Consumers', String(displayConsumers.length)),
     ]);
-    const battNode = this._node(pos.batt[0],pos.batt[1],'🔋','Battery',fmtVal(isPower?battP:battRaw, isPower?null:null), [battLabel,socText].filter(Boolean).join(' · '),'#7ee22d',(battCharge>(isPower?10:0.01)||battDischarge>(isPower?10:0.01)),e.battery,[
+    const battNode = this._node(pos.batt[0],pos.batt[1],'🔋','Battery',fmtVal(isPower?(battP!=null?-battP:null):battRaw, isPower?null:null), [battLabel,socText].filter(Boolean).join(' · '),'#7ee22d',(battCharge>(isPower?10:0.01)||battDischarge>(isPower?10:0.01)),e.battery,[
       this._detailLine('SOC', soc!=null?`${Math.round(soc)} %`:'—','#7ee22d'),
       this._detailLine('Voltage', this._fmtNum(battV,1,' V')),
       this._detailLine('Current', this._fmtNum(battA,1,' A')),
@@ -11192,7 +11215,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       </div>` : '';
 
     this.innerHTML = `
-      <ha-card style="height:100%;min-height:720px;display:flex;flex-direction:column;overflow:hidden;font-family:Roboto,Arial,sans-serif;background:radial-gradient(ellipse at 20% 0%,rgba(39,120,190,.25),transparent 35%),radial-gradient(ellipse at 80% 100%,rgba(126,226,45,.10),transparent 30%),linear-gradient(180deg,#020913,#06131c 55%,#040b11);border:1px solid rgba(101,142,164,.34);box-shadow:0 24px 60px rgba(0,0,0,.45);color:#eef7ff;">
+      <ha-card style="width:100%;max-width:none;box-sizing:border-box;height:100%;min-height:980px;display:flex;flex-direction:column;overflow:hidden;font-family:Roboto,Arial,sans-serif;background:radial-gradient(ellipse at 20% 0%,rgba(39,120,190,.25),transparent 35%),radial-gradient(ellipse at 80% 100%,rgba(126,226,45,.10),transparent 30%),linear-gradient(180deg,#020913,#06131c 55%,#040b11);border:1px solid rgba(101,142,164,.34);box-shadow:0 24px 60px rgba(0,0,0,.45);color:#eef7ff;">
         <style>@keyframes pfPulse{0%,100%{opacity:.35;transform:scale(1)}50%{opacity:.05;transform:scale(1.08)}}</style>
         <div style="display:flex;flex-direction:column;height:100%;padding:18px;box-sizing:border-box;">
           <div style="display:flex;justify-content:space-between;gap:14px;align-items:flex-start;flex-wrap:wrap;">
@@ -11206,8 +11229,8 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
             </div>
           </div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;">${chips}</div>
-          <div style="flex:1;min-height:560px;margin-top:14px;border-radius:20px;overflow:hidden;border:1px solid rgba(118,166,190,.18);background:linear-gradient(180deg,rgba(255,255,255,.025),rgba(255,255,255,.008));position:relative;">
-            <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:100%;display:block;min-height:560px;">
+          <div style="flex:1;min-height:820px;margin-top:14px;border-radius:20px;overflow:hidden;border:1px solid rgba(118,166,190,.18);background:linear-gradient(180deg,rgba(255,255,255,.025),rgba(255,255,255,.008));position:relative;">
+            <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:100%;display:block;min-height:820px;">
               <defs>
                 <linearGradient id="pf-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="rgba(77,163,255,.10)"/><stop offset="100%" stop-color="rgba(126,226,45,.04)"/></linearGradient>
                 <filter id="pf-glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3.2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
@@ -11247,7 +11270,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.0.71",
+  description: "Deye Energy 0.8.0.73",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

@@ -6,6 +6,40 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.73] - 2026-11-22
+
+### Changed
+
+- **Manual schedule battery charge**: added a **Battery charge** column to the
+  Manual schedule, stored as `battery_charge_enabled` in manual schedule rows.
+- **Schedule enforcement**: when Manual schedule is active, the current row’s
+  `battery_charge_enabled` is enforced on `switch.deye_grid_charge_enabled`
+  during ticks and immediately on activate/save/init-from-TOU.
+- **Trigger logging**: battery charge switch toggles triggered by the Manual
+  schedule are recorded in trigger logs, including failures.
+- **Power flow geometry**: replaced bent Bezier flow paths with straight
+  edge-anchored paths so arrows and glow reach node edges cleanly; increased
+  power-flow viewBox/spacing for clearer layout.
+- **Power flow sizing**: increased power-flow card/SVG min-heights and added
+  full-width card styling so the card fills its dashboard container; updated
+  power-flow contract tests.
+- **Power flow battery sign**: in power mode, battery sensor is treated as
+  positive = discharging/releasing, negative = charging; displayed battery power
+  is flipped accordingly (`-battP`), and charge/discharge flow/labels follow
+  that convention.
+- **Power flow power formatting**: values below `10000 W` display in watts;
+  `10000 W` and above display in kW with one decimal.
+- **Power flow home consumption**: in power mode, home load is calculated as
+  `max(0, pv + gridImport + battDischarge - (gridExport + battCharge))`, the
+  same formula as Energy Status “House (Loads)”; energy-period mode still uses
+  configured load energy entities/stats.
+- **Power flow period stats**: 24h/week/month statistics fetch now accepts
+  wrapped `statistics` responses and `change/sum/state` numeric values, clears
+  stale period stats on new fetch, and logs fetch failures to console.
+- **Power flow period responsiveness**: period selection uses a fetch race guard
+  so newer period clicks override in-flight requests and stale responses are
+  ignored.
+
 ## [0.8.0.71] - 2026-11-21
 
 ### Changed

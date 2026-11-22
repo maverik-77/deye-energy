@@ -66,6 +66,7 @@ function manualRow(overrides = {}) {
     sell_power: 0,
     minimum_sell_soc: 0,
     charge_enabled: false,
+    battery_charge_enabled: false,
     ...overrides,
   };
 }
@@ -193,6 +194,7 @@ function test_manual_add_and_remove_rows_keep_the_chain_contiguous() {
 function test_manual_save_sends_normalized_rows_once() {
   const { card, calls } = makeCard();
   card.ensureManualScheduleDraft()[1].sell_power = 4321;
+  card.ensureManualScheduleDraft()[1].battery_charge_enabled = true;
   return card.saveManualSchedule().then((saved) => {
     assertTrue(saved, "save must succeed");
     const saveCalls = serviceCalls(calls, "save_manual_schedule");
@@ -200,6 +202,7 @@ function test_manual_save_sends_normalized_rows_once() {
     const payload = JSON.parse(saveCalls[0].data.data);
     assertEqual(payload.length, 2, "payload must contain every row");
     assertEqual(payload[1].sell_power, 4321, "payload must contain the edited value");
+    assertEqual(payload[1].battery_charge_enabled, true, "payload must contain battery charge");
     assertEqual(payload[0].from, "00:00", "first row must start at 00:00");
     assertEqual(payload[1].to, "00:00", "last row must end at 00:00");
   });
@@ -231,6 +234,7 @@ function test_manual_rows_and_payload_exclude_removed_fields() {
   });
   assertEqual(payload[0].sell_power, 0, "Sell power must remain a row field");
   assertEqual(payload[0].charge_enabled, false, "Grid charging must remain a row field");
+  assertEqual(payload[0].battery_charge_enabled, false, "Battery charge must remain a row field");
 }
 
 function test_manual_tab_hides_removed_controls() {
@@ -247,6 +251,7 @@ function test_manual_tab_hides_removed_controls() {
   ].forEach((marker) => assertTrue(!html.includes(marker), `removed control must be absent: ${marker}`));
   assertTrue(html.includes('data-manual-field="sell_power"'), "Sell power must stay editable");
   assertTrue(html.includes('data-manual-field="charge_enabled"'), "Grid charging must stay editable");
+  assertTrue(html.includes('data-manual-field="battery_charge_enabled"'), "Battery charge must stay editable");
 }
 
 function test_manual_save_rejects_invalid_rows_before_calling_the_service() {
@@ -385,7 +390,7 @@ function test_manual_tab_uses_work_schedule_table_styling() {
   const html = card.renderManualScheduleTab();
   assertTrue(html.includes('<div class="schedule-table-card">'), "manual rows must use the work schedule table card");
   assertTrue(html.includes('<table class="schedule-table manual-schedule-table">'), "manual rows must use the work schedule table styling");
-  assertTrue(html.includes('<thead><tr><th class="time-col">From</th><th class="time-col">To</th><th>Mode</th><th>Sell power</th><th>Grid charging</th><th>Stop selling at SOC</th><th>Active</th><th>Action</th></tr></thead>'), "manual table headers must describe the manual fields");
+  assertTrue(html.includes('<thead><tr><th class="time-col">From</th><th class="time-col">To</th><th>Mode</th><th>Sell power</th><th>Grid charging</th><th>Battery charge</th><th>Stop selling at SOC</th><th>Active</th><th>Action</th></tr></thead>'), "manual table headers must describe the manual fields");
   assertTrue(html.indexOf('<td data-label="Active">') < html.indexOf('<td data-label="Action">'), "Active must sit immediately before the Action icons");
   assertTrue(html.includes('data-manual-edit="0"'), "edit icon must be in the Action column");
   assertTrue(html.includes('data-manual-remove="0"'), "remove icon must be in the Action column");
