@@ -4912,7 +4912,7 @@ class DeyeEnergyRuntime:
             if not tou["ok"]
             else "OK"
         )
-        return {"integration_version": "0.8.0.71", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
+        return {"integration_version": "0.8.0.72", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
                 "inverter_provider": self.inverter_provider,
                 "inverter_device_id": self.data.get(CONF_INVERTER_DEVICE_ID),
                 "inverter_provider_label": provider_profile(self.data).label,
@@ -12653,6 +12653,7 @@ class DeyeEnergyRuntime:
             "sell_power": float(self.normal_profile_sell_power if self.normal_profile_sell_power >= 0 else self.default_sell_power),
             "minimum_sell_soc": 0.0,
             "charge_enabled": False,
+            "battery_charge_enabled": False,
         }
 
     def _normalize_manual_row(self, raw: Any, index: int) -> dict[str, Any]:
@@ -12668,7 +12669,7 @@ class DeyeEnergyRuntime:
         }
         unknown = set(raw) - {
             "from", "to", "enabled", "mode", "sell_power",
-            "charge_enabled", "minimum_sell_soc",
+            "charge_enabled", "minimum_sell_soc", "battery_charge_enabled",
         } - obsolete
         if unknown:
             raise ValueError(
@@ -12685,6 +12686,7 @@ class DeyeEnergyRuntime:
             "charge_enabled": bool(raw.get("charge_enabled", defaults["charge_enabled"])),
             "sell_power": self.safe_float(raw.get("sell_power", defaults["sell_power"]), 0),
             "minimum_sell_soc": self.safe_float(raw.get("minimum_sell_soc", defaults["minimum_sell_soc"]), 0),
+            "battery_charge_enabled": bool(raw.get("battery_charge_enabled", defaults["battery_charge_enabled"])),
         }
         if row["mode"] not in SLOT_MODES:
             raise ValueError(f"Unsupported manual schedule mode in row {index + 1}: {row['mode']}")
@@ -13360,6 +13362,77 @@ class DeyeEnergyRuntime:
         if self._control_is_active() and not self.emergency_stop:
             self._schedule_schedule_reconciliation()
 
+    def _manual_schedule_row_for_minute(self, rows: list[dict[str, Any]], minute: int) -> dict[str, Any] | None:
+        minute = int(minute) % (24 * 60)
+        for index, row in enumerate(rows):
+            try:
+                start = self._manual_time_to_minutes(row.get("from"), f"Row {index + 1} start time")
+                end = self._manual_time_to_minutes(row.get("to"), f"Row {index + 1} end time")
+            except Exception:
+                continue
+            end_cmp = 24 * 60 if index == len(rows) - 1 and end == 0 else end
+            if start <= minute < end_cmp:
+                return row
+        return None
+
+    async def _async_enforce_manual_schedule_battery_charge(self, now: datetime | None = None) -> None:
+        """Apply the active manual schedule row's Battery charge switch."""
+        if not self.manual_schedule_active:
+            return
+        manual = self._ensure_manual_schedule()
+        try:
+            rows = self._validate_manual_schedule_rows(manual.get("rows", []))
+        except Exception:
+            return
+        current = now or ha_now()
+        minute = int(current.hour) * 60 + int(current.minute)
+        row = self._manual_schedule_row_for_minute(rows, minute)
+        if row is None:
+            return
+        desired = bool(row.get("battery_charge_enabled", False))
+        entity_id = "switch.deye_grid_charge_enabled"
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in ("unknown", "unavailable"):
+            return
+        current_on = str(state.state).lower() == "on"
+        if current_on == desired:
+            return
+        domain, service = ("switch", "turn_on" if desired else "turn_off")
+        timestamp = ha_now().isoformat(timespec="seconds")
+        try:
+            await self.hass.services.async_call(
+                domain,
+                service,
+                {"entity_id": entity_id},
+                blocking=True,
+            )
+            await self._async_append_trigger_log(
+                timestamp=timestamp,
+                entity_id=entity_id,
+                domain=domain,
+                service=service,
+                value=desired,
+                success=True,
+                error="Manual schedule battery charge",
+            )
+            self._notify_update_for("manual_schedule_battery_charge")
+        except Exception as err:  # noqa: BLE001 - schedule enforcement must not break tick
+            await self._async_append_trigger_log(
+                timestamp=timestamp,
+                entity_id=entity_id,
+                domain=domain,
+                service=service,
+                value=desired,
+                success=False,
+                error=f"Manual schedule battery charge: {err}",
+            )
+            _LOGGER.warning(
+                "Manual schedule failed to set %s to %s: %s",
+                entity_id,
+                desired,
+                err,
+            )
+
     def _load_manual_schedule_state(self, raw: Any) -> dict[str, Any]:
         state = self._default_manual_schedule()
         if not isinstance(raw, dict):
@@ -13416,6 +13489,7 @@ class DeyeEnergyRuntime:
                 self._rebuild_manual_effective_rows(validated_rows)
                 self.scheduler_enabled = True
                 self._request_manual_schedule_reconciliation()
+                await self._async_enforce_manual_schedule_battery_charge()
         except Exception:
             manual["rows"] = previous_rows
             try:
@@ -13442,6 +13516,7 @@ class DeyeEnergyRuntime:
                 self._rebuild_manual_effective_rows(validated_rows)
                 self.scheduler_enabled = True
                 self._request_manual_schedule_reconciliation()
+                await self._async_enforce_manual_schedule_battery_charge()
         except Exception:
             manual["rows"] = previous_rows
             try:
@@ -13474,6 +13549,7 @@ class DeyeEnergyRuntime:
             self.mark_config_saved()
             await self.async_save_ai_data()
             self._request_manual_schedule_reconciliation()
+            await self._async_enforce_manual_schedule_battery_charge()
         except Exception:
             manual["active"] = previous_active
             manual["activation_snapshot"] = previous_snapshot
@@ -14712,6 +14788,8 @@ class DeyeEnergyRuntime:
         # No service call is made by this diagnostic comparison.
         self._refresh_tou_reconciliation_state()
         self.planned_manager_action = self._planned_manager_action_text()
+        if self.manual_schedule_active and not self.emergency_stop:
+            await self._async_enforce_manual_schedule_battery_charge()
         if not self._control_is_active():
             self.executed_manager_action = (
                 "Not performed — emergency stop"

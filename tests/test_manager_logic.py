@@ -5314,7 +5314,7 @@ class ControlMasterTests(unittest.IsolatedAsyncioTestCase):
 
     def test_source_audit_leaves_only_guarded_writes_and_weather_read(self):
         source = (PACKAGE / "manager.py").read_text(encoding="utf-8")
-        self.assertEqual(source.count("self.hass.services.async_call("), 4)
+        self.assertEqual(source.count("self.hass.services.async_call("), 5)
         self.assertIn("async def _async_physical_service_call", source)
         self.assertIn('"weather",\n                "get_forecasts"', source)
         self.assertIn("async def _async_ensure_install_battery_restart_capacity_default", source)
@@ -5327,6 +5327,12 @@ class ControlMasterTests(unittest.IsolatedAsyncioTestCase):
             "\n    async def ", 1
         )[0]
         self.assertIn("self.hass.services.async_call(", datetime_body)
+        self.assertIn("async def _async_enforce_manual_schedule_battery_charge", source)
+        manual_battery_body = source.split(
+            "async def _async_enforce_manual_schedule_battery_charge", 1
+        )[1].split("\n    async def ", 1)[0]
+        self.assertIn("self.hass.services.async_call(", manual_battery_body)
+        self.assertIn("_async_append_trigger_log", manual_battery_body)
         for helper in (
             "async_set_work_mode",
             "async_set_number",
@@ -7717,6 +7723,7 @@ def manual_row(**overrides):
         "sell_power": 0,
         "minimum_sell_soc": 0,
         "charge_enabled": False,
+        "battery_charge_enabled": False,
     }
     row.update(overrides)
     return row
