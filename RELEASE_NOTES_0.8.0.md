@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.76`.
+Card resource revision: `v=0.8.0.77`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the original
@@ -9,6 +9,14 @@ integrated through MQTT. Attribution is recorded at the bottom of README.md.
 
 ## Revision history
 
+- `v=0.8.0.77` — Fixed power-flow links so they connect the outer edges of the
+  node shapes: thinner lines and glow, and arrowheads with a proper marker
+  viewBox so they are no longer clipped. Centred the inverter image inside its
+  pink ring and resized the ring to enclose the node. Added thin coloured
+  rounded-square halos around the PV, Grid, Home and Battery nodes on a taller
+  diagram, with links and flow balls adjusted to travel between the shapes.
+  Removed the duplicate click listener that opened the Home Assistant more-info
+  dialog twice for every node and consumer. Updated tests and versioned docs.
 - `v=0.8.0.76` — Enlarged the power-flow node icons, tightened the active glow
   around each image and removed the oversized pulsing ring. Replaced all five
   light and five dark node images with the updated square PNG references,

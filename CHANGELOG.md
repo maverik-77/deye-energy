@@ -6,6 +6,28 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.77] - 2026-11-23
+
+### Changed
+
+- **Power flow links**: links now run from the outer edge of one node to the
+  next, with thinner strokes and a narrower glow. Arrow markers have a proper
+  viewBox so arrowheads render whole instead of being clipped.
+- **Power flow layout**: the inverter image is centred inside its pink ring and
+  the ring encloses the node without crossing it. Added thin coloured rounded
+  squares around the PV, Grid, Home and Battery nodes on a taller diagram, with
+  links and flow balls updated to travel between the shapes.
+- **Node clicks**: removed a duplicate click listener that opened the Home
+  Assistant more-info dialog twice for every node and consumer.
+- **Tests/docs**: extended the power-flow card tests for the new geometry,
+  halos and click handling; bumped the card resource revision and documentation
+  versions.
+
+### Fixed
+
+- Clicking any of the five power-flow nodes no longer reopens the linked entity
+  dataset after the dialog is closed.
+
 ## [0.8.0.76] - 2026-11-23
 
 ### Changed

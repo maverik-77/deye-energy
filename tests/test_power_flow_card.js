@@ -70,19 +70,36 @@ check(html.includes("SOC 77%"), "missing SOC label");
 check(html.includes("<svg"), "missing svg");
 check(html.includes("animateMotion"), "missing animated flow");
 check(!html.includes("Missing/unavailable entities"), "should not warn when all entities present");
-check(html.includes('viewBox="0 0 1200 800"'), "missing larger viewBox");
+check(html.includes('viewBox="0 0 1200 940"'), "missing taller viewBox for node halos");
 check(html.includes('preserveAspectRatio="xMidYMid meet"'), "missing responsive preserveAspectRatio");
 check(html.includes('height:100%'), "missing height scaling");
 check(/<path[^>]*d="M [^"]* [LC] /.test(html), "missing flow path");
 check(html.includes('pf-icon-glow'), "missing icon glow filter");
 check(html.includes('pf-glow'), "missing glow filter");
 check(html.includes('pf-arrow-pf-pv-inv'), "missing arrow marker");
-check(html.includes('markerWidth="3.5" markerHeight="3.5"'), "missing smaller arrow marker");
-check(!html.includes('markerWidth="10" markerHeight="10"'), "oversized arrow marker should be gone");
+check(html.includes('viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5"'), "arrow marker should have a viewBox and a visible tip");
+check(html.includes('M 0 0 L 10 5 L 0 10 L 2.5 5 Z'), "arrow marker should use a complete arrow shape");
+check(!html.includes('markerWidth="3.5" markerHeight="3.5"'), "clipped arrow marker should be gone");
 check(!html.includes('width="84" height="30" rx="15"'), "on-arrow power label should not be rendered");
-check(html.includes('r="150"') && html.includes('stroke-width="28"'), "shrunken inverter ring should be rendered");
-check(!html.includes('r="210" stroke="rgba(188,99,255,.05)" stroke-width="38"'), "oversized inverter ring should be gone");
+check(html.includes('stroke-width="2.6"') && !html.includes('stroke-width="4.5"'), "flow links should be thin");
+check(!html.includes('stroke-width="14"'), "oversized link glow should be gone");
+check(html.includes('d="M 600 270 L 600 296"'), "PV link should run from the halo edge to the inverter ring");
+check(html.includes('d="M 774 470 L 881 470"'), "inverter-to-home link should run from the ring to the halo edge");
+check(html.includes('d="M 426 470 L 319 470"'), "grid link should run from the ring to the halo edge");
+check(html.includes('d="M 600 670 L 600 644"'), "battery link should run from the halo edge to the ring");
+for (const [coords, color] of [
+  ['x="460" y="14"', 'rgba(246,201,69,.10)'],
+  ['x="35" y="344"', 'rgba(91,192,255,.10)'],
+  ['x="885" y="344"', 'rgba(255,138,76,.10)'],
+  ['x="460" y="674"', 'rgba(126,226,45,.10)'],
+]) {
+  check(html.includes(`${coords} width="280" height="252" rx="36" fill="none" stroke="${color}" stroke-width="8"`), `missing halo for ${color}`);
+}
+check(source.includes('count = Math.min(count, len < 80 ? 1 : len < 150 ? 2 : 3)'), "flow balls should scale with link length");
+check(html.includes('r="168"') && html.includes('stroke-width="12"'), "inverter ring should enclose the node without crossing it");
+check(!html.includes('r="150"') && !html.includes('stroke-width="28"'), "old overlapping inverter ring should be gone");
 check(html.includes('display:flex;flex-direction:column;justify-content:center;width:248px'), "node content should be vertically centered");
+check(html.includes('position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)'), "inverter image should be centred in its node and ring");
 
 // Node images (light theme) and active glow
 for (const key of ['solar-pv', 'grid', 'inverter', 'home', 'battery']) {
@@ -104,6 +121,10 @@ check(html.includes('Export today'), "missing grid export today detail");
 check(html.includes('Charged today'), "missing battery charged today detail");
 check(html.includes('Discharged today'), "missing battery discharged today detail");
 check(html.includes('Today'), "missing daily detail label");
+
+// Clicks must be delegated once from the host; per-node listeners would dispatch twice
+check(source.includes("e.target.closest('.pf-node-click[data-entity], .pf-consumer-click[data-entity]')"), "delegated node click handler missing");
+check(!source.includes("this.querySelectorAll('.pf-node-click[data-entity], .pf-consumer-click[data-entity]')"), "duplicate per-node click listener should be gone");
 
 // Click dispatch
 let fired = null;
