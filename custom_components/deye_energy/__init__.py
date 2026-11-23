@@ -1,23 +1,20 @@
 from __future__ import annotations
 
 import json
+import logging
+
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
+from . import entity_map
 from .const import (
     ABSOLUTE_INVERTER_MAX_POWER_W,
     CONF_BUY_SELLER_ID,
     CONF_BUY_SELLER_TARIFF_ID,
-    CONF_CHARGE_CURRENT_NUMBER,
-    CONF_DISCHARGE_CURRENT_NUMBER,
-    CONF_GRID_CHARGE_CURRENT_NUMBER,
     CONF_INVERTER_PROVIDER,
-    CONF_MAX_SELL_POWER_NUMBER,
-    CONF_WORK_MODE_AUX_ENTITY,
-    CONF_WORK_MODE_SELECT,
     DEFAULT_BUY_SELLER_ID,
     DEFAULT_BUY_SELLER_TARIFF_ID,
     DEFAULT_INVERTER_PROVIDER,
@@ -29,7 +26,6 @@ from .const import (
     PROVIDER_SUNSYNK,
     WORK_MODES,
     WORK_MODE_SERVICE_VALUES,
-    conf_tou_entity,
 )
 from .frontend import async_setup_frontend, cancel_frontend_followup
 from .inverter_config import INVERTER_CONFIG_GROUP_KEYS
@@ -41,6 +37,8 @@ from .price_sources import (
     rebuild_price_contract,
     resolve_contract_schemas,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 APPLY_SCHEMA = vol.Schema(
     {
@@ -160,42 +158,21 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     and the frontend resource from loading.
     """
     hass.data.setdefault(DOMAIN, {})
+
+    # An optional entity-map override in the HA config directory is loaded
+    # before any config entry is set up.  Invalid overrides fail closed to the
+    # bundled catalogue; disk I/O stays off the event loop.
+    config = getattr(hass, "config", None)
+    config_dir = getattr(config, "config_dir", None) if config is not None else None
+    if config_dir:
+        await hass.async_add_executor_job(entity_map.configure, config_dir)
+        for error in entity_map.override_errors():
+            _LOGGER.warning("Ignoring Deye entity map override: %s", error)
     return True
 
 
-_SUNSYNK_ENTITY_FALLBACKS: dict[str, str] = {
-    CONF_WORK_MODE_SELECT: "select.deye_load_limit",
-    CONF_WORK_MODE_AUX_ENTITY: "switch.deye_solar_export",
-    CONF_MAX_SELL_POWER_NUMBER: "number.deye_max_sell_power",
-    CONF_DISCHARGE_CURRENT_NUMBER: "number.deye_battery_max_discharge_current",
-    CONF_CHARGE_CURRENT_NUMBER: "number.deye_battery_max_charge_current",
-    CONF_GRID_CHARGE_CURRENT_NUMBER: "number.deye_grid_charge_battery_current",
-}
-for _tou_index in range(1, 7):
-    _SUNSYNK_ENTITY_FALLBACKS[conf_tou_entity(_tou_index, "start")] = (
-        f"select.deye_prog{_tou_index}_time"
-    )
-    _SUNSYNK_ENTITY_FALLBACKS[conf_tou_entity(_tou_index, "soc")] = (
-        f"number.deye_prog{_tou_index}_capacity"
-    )
-    _SUNSYNK_ENTITY_FALLBACKS[conf_tou_entity(_tou_index, "grid")] = (
-        f"select.deye_prog{_tou_index}_charge"
-    )
-    _SUNSYNK_ENTITY_FALLBACKS[conf_tou_entity(_tou_index, "charge")] = (
-        f"select.deye_prog{_tou_index}_charge"
-    )
-    _SUNSYNK_ENTITY_FALLBACKS[conf_tou_entity(_tou_index, "mode")] = (
-        f"select.deye_prog{_tou_index}_mode"
-    )
-    _SUNSYNK_ENTITY_FALLBACKS[conf_tou_entity(_tou_index, "sell")] = (
-        f"switch.deye_prog{_tou_index}_sell"
-    )
-    _SUNSYNK_ENTITY_FALLBACKS[conf_tou_entity(_tou_index, "power")] = (
-        f"number.deye_prog{_tou_index}_power"
-    )
-    _SUNSYNK_ENTITY_FALLBACKS[conf_tou_entity(_tou_index, "voltage")] = (
-        f"number.deye_prog{_tou_index}_voltage"
-    )
+# Sunsynk migration fallbacks come from the shared entity-map catalogue.
+_SUNSYNK_ENTITY_FALLBACKS: dict[str, str] = entity_map.fallback_map(PROVIDER_SUNSYNK)
 
 
 def _entity_exists(hass: HomeAssistant, entity_id: str) -> bool:

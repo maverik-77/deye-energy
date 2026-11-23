@@ -4,11 +4,25 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import importlib.util
 from pathlib import Path
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_entity_map():
+    """Load the shared entity-map module without importing Home Assistant."""
+    path = ROOT / "custom_components" / "deye_energy" / "entity_map.py"
+    spec = importlib.util.spec_from_file_location("deye_test_entity_map", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+entity_map = _load_entity_map()
 INIT_SOURCE = (ROOT / "custom_components" / "deye_energy" / "__init__.py").read_text(
     encoding="utf-8"
 )
@@ -64,6 +78,7 @@ def _load_migration_helpers():
         "PROVIDER_SUNSYNK": "sunsynk",
         "DEFAULT_INVERTER_PROVIDER": "sunsynk",
         "conf_tou_entity": _tou_key,
+        "entity_map": entity_map,
         **CONF_KEYS,
     }
     exec("\n\n".join(chunks), namespace)  # noqa: S102 - local source under test
@@ -108,28 +123,24 @@ class ProviderWritableMigrationTests(unittest.TestCase):
 
     def test_fallbacks_cover_all_sunsynk_controls(self):
         fallbacks = self.helpers["_SUNSYNK_ENTITY_FALLBACKS"]
-        self.assertEqual(fallbacks["work_mode_select"], "select.deye_load_limit")
-        self.assertEqual(fallbacks["work_mode_aux_entity"], "switch.deye_solar_export")
+        expected = entity_map.fallback_map("sunsynk")
+        self.assertEqual(fallbacks, expected)
+        self.assertEqual(fallbacks["work_mode_select"], entity_map.entity_default("work_mode_select"))
+        self.assertEqual(
+            fallbacks["work_mode_aux_entity"],
+            entity_map.bundled_document()["profiles"]["sunsynk"]["fallbacks"]["work_mode_aux_entity"],
+        )
         self.assertEqual(
             fallbacks["grid_charge_current_number"],
-            "number.deye_grid_charge_battery_current",
+            entity_map.entity_default("grid_charge_current_number"),
         )
-        for index in range(1, 7):
-            self.assertEqual(fallbacks[_tou_key(index, "start")], f"select.deye_prog{index}_time")
-            self.assertEqual(fallbacks[_tou_key(index, "soc")], f"number.deye_prog{index}_capacity")
-            self.assertEqual(fallbacks[_tou_key(index, "grid")], f"select.deye_prog{index}_charge")
-            self.assertEqual(fallbacks[_tou_key(index, "charge")], f"select.deye_prog{index}_charge")
-            self.assertEqual(fallbacks[_tou_key(index, "mode")], f"select.deye_prog{index}_mode")
-            self.assertEqual(fallbacks[_tou_key(index, "sell")], f"switch.deye_prog{index}_sell")
-            self.assertEqual(fallbacks[_tou_key(index, "power")], f"number.deye_prog{index}_power")
-            self.assertEqual(fallbacks[_tou_key(index, "voltage")], f"number.deye_prog{index}_voltage")
 
     def test_deye_addon_entry_switches_to_sunsynk_and_maps_tou(self):
         fallbacks = self.helpers["_SUNSYNK_ENTITY_FALLBACKS"]
         hass = self._hass(fallbacks.values())
         entry = FakeEntry(
             data={"inverter_provider": "deye_addon"},
-            options={"work_mode_select": "select.deye_load_limit"},
+            options={"work_mode_select": entity_map.entity_default("work_mode_select")},
         )
         self.assertTrue(asyncio.run(self.helpers["_migrate_24_to_25"](hass, entry)))
         merged = {**entry.data, **entry.options}
@@ -160,16 +171,12 @@ class ProviderWritableMigrationTests(unittest.TestCase):
         self.assertEqual(hass.config_entries.updates[-1], {"minor_version": 25})
 
     def test_fill_missing_sunsynk_fallbacks_maps_tou_fields(self):
+        fallbacks = entity_map.fallback_map("sunsynk")
+        kinds = ("mode", "charge", "sell", "power", "voltage")
         present = [
-            f"select.deye_prog{index}_mode" for index in range(1, 7)
-        ] + [
-            f"select.deye_prog{index}_charge" for index in range(1, 7)
-        ] + [
-            f"switch.deye_prog{index}_sell" for index in range(1, 7)
-        ] + [
-            f"number.deye_prog{index}_power" for index in range(1, 7)
-        ] + [
-            f"number.deye_prog{index}_voltage" for index in range(1, 7)
+            fallbacks[_tou_key(index, kind)]
+            for index in range(1, 7)
+            for kind in kinds
         ]
         hass = self._hass(present)
         entry = FakeEntry(options={"inverter_provider": "sunsynk"})
@@ -177,14 +184,13 @@ class ProviderWritableMigrationTests(unittest.TestCase):
         self.assertTrue(changed)
         merged = {**data, **options}
         for index in range(1, 7):
-            self.assertEqual(merged[_tou_key(index, "mode")], f"select.deye_prog{index}_mode")
-            self.assertEqual(merged[_tou_key(index, "charge")], f"select.deye_prog{index}_charge")
-            self.assertEqual(merged[_tou_key(index, "sell")], f"switch.deye_prog{index}_sell")
-            self.assertEqual(merged[_tou_key(index, "power")], f"number.deye_prog{index}_power")
-            self.assertEqual(merged[_tou_key(index, "voltage")], f"number.deye_prog{index}_voltage")
+            for kind in kinds:
+                key = _tou_key(index, kind)
+                self.assertEqual(merged[key], fallbacks[key])
 
     def test_fill_missing_sunsynk_fallbacks_preserves_existing_mappings(self):
-        present = [f"select.deye_prog{index}_mode" for index in range(1, 7)]
+        fallbacks = entity_map.fallback_map("sunsynk")
+        present = [fallbacks[_tou_key(index, "mode")] for index in range(1, 7)]
         hass = self._hass(present)
         entry = FakeEntry(
             options={
@@ -196,7 +202,7 @@ class ProviderWritableMigrationTests(unittest.TestCase):
         self.assertTrue(changed)
         merged = {**data, **options}
         self.assertEqual(merged[_tou_key(1, "mode")], "select.my_custom_mode")
-        self.assertEqual(merged[_tou_key(2, "mode")], "select.deye_prog2_mode")
+        self.assertEqual(merged[_tou_key(2, "mode")], fallbacks[_tou_key(2, "mode")])
 
     def test_fill_missing_sunsynk_fallbacks_skips_missing_entities_and_other_providers(self):
         hass = self._hass([])

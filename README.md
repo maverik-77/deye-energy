@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.0.80-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.0.81-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -77,12 +77,16 @@ add-on profile) and to a UK-style tariff.
   `1 18` variant on small screens. The direction is taken from the flow itself
   so the arrowhead and dot movement always agree, and both disappear at idle
   while the link remains. The PV and Home cards are sized 70% × 60% and the Grid
-  card 70% × 70% of the original node card; the Battery card keeps its original
-  size. The ring around the Inverter is 10% smaller in both radius and stroke
-  width, and node halos and link endpoints follow the resized cards. Grid no
-  longer shows the frequency detail row, and label/value gaps in all detail rows
-  are tighter. Entity mappings are config-overridable and the card is addable to
-  any dashboard.
+  card 70% × 70% of the original node card; the Battery card is 90% of the
+  original width (223 × 220). The ring around the Inverter is a further 20%
+  smaller in both radius (151 → 121) and stroke (11 → 9), and node halos and
+  link endpoints follow the resized cards. The visible gaps to the Inverter are
+  70% for Grid and Home, 80% for PV and 230% for Battery, on a 1200 × 980 canvas;
+  the Inverter's Temperature and Status rows are centred inside its ring. Grid
+  is active at any non-zero power (importing or exporting) and idle only at 0,
+  so sub-watt flows still animate. Grid no longer shows the frequency detail
+  row, and label/value gaps in all detail rows are tighter. Entity mappings are
+  config-overridable and the card is addable to any dashboard.
 
 ## Requirements
 
@@ -184,7 +188,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.80
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.81
       type: module
 ```
 

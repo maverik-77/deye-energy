@@ -6,6 +6,34 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.81] - 2026-11-23
+
+### Added
+
+- **Shared MQTT entity map**: `mqtt_entity_map.json` and `entity_map.py` provide
+  one catalogue of MQTT-discovered entity IDs with profiles named after the
+  inverter providers (`sunsynk`, `solarman`, `deye_addon`, `lewa_reka`,
+  `custom`). An optional `/homeassistant/deye_energy_entity_map.json` override
+  is deep-merged over the bundled defaults; config-entry mappings still win and
+  an invalid or unreadable override fails closed to the bundled map. Setup,
+  config flow, settings fields and the manager now all read from this map.
+
+### Changed
+
+- **Power flow Grid activation**: the Grid node, its link and the
+  Importing/Exporting labels activate at any non-zero power and stay idle only
+  at exactly 0 W (0 kWh in energy periods). Active links pass a
+  guaranteed-active value to the flow renderer so sub-10 W flows still animate.
+- **Power flow geometry**: the Inverter ring is a further 20% smaller (151 → 121
+  radius, 11 → 9 stroke) and the Battery card is 90% of its previous width
+  (248 → 223). Visible gaps to the Inverter are now 70% for Grid and Home, 80%
+  for PV and 230% for Battery, on a taller 1200 × 980 canvas. Temperature and
+  Status are centred inside the Inverter ring.
+- **Docs/tests**: README, INSTALL and release notes describe the shared entity
+  map and the new Power Flow behaviour; tests cover the map profiles and
+  override precedence, Grid activation at 0.5 W, and the new geometry; bumped
+  the card resource revision and versioned docs.
+
 ## [0.8.0.80] - 2026-11-23
 
 ### Changed

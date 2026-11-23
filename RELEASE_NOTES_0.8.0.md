@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.80`.
+Card resource revision: `v=0.8.0.81`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the original
@@ -9,6 +9,13 @@ integrated through MQTT. Attribution is recorded at the bottom of README.md.
 
 ## Revision history
 
+- `v=0.8.0.81` — Added a shared MQTT entity map with provider profiles and an
+  optional user override file; config-entry mappings still take precedence.
+  Grid now activates at any non-zero power and is idle only at 0, including the
+  link and the Importing/Exporting labels. The Inverter ring is a further 20%
+  smaller, the Battery card is 10% narrower, the visible gaps to the Inverter
+  are 70% (Grid/Home), 80% (PV) and 230% (Battery) on a 1200 × 980 canvas, and
+  Temperature/Status are centred in the ring. Updated README, tests and docs.
 - `v=0.8.0.80` — Resized the Power Flow node cards: PV and Home to 174×132
   (70% × 60%), Grid to 174×154 (70% × 70%), with Battery unchanged. Halos and
   link endpoints follow the new cards; the Inverter ring is 10% smaller in both

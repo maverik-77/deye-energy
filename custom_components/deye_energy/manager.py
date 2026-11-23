@@ -46,6 +46,7 @@ from homeassistant.helpers.event import (
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import now as ha_now
 
+from . import entity_map
 from .const import (
     ENERGY_STATUS_DISPLAY_SCHEMA_VERSION,
     ENERGY_STATUS_ROLES,
@@ -208,7 +209,6 @@ from .const import (
     DEFAULT_TARIFF_CATALOG_URL,
     DEFAULT_BUY_SELLER_ID,
     DEFAULT_BUY_SELLER_TARIFF_ID,
-    DEFAULT_INVERTER_DATETIME_ENTITY,
     DEFAULT_GRID_POSITIVE_IS_IMPORT,
     DEFAULT_BATTERY_POSITIVE_IS_DISCHARGE,
     DEFAULT_MAX_SELL_POWER,
@@ -4912,7 +4912,7 @@ class DeyeEnergyRuntime:
             if not tou["ok"]
             else "OK"
         )
-        return {"integration_version": "0.8.0.80", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
+        return {"integration_version": "0.8.0.81", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
                 "inverter_provider": self.inverter_provider,
                 "inverter_device_id": self.data.get(CONF_INVERTER_DEVICE_ID),
                 "inverter_provider_label": provider_profile(self.data).label,
@@ -12961,7 +12961,7 @@ class DeyeEnergyRuntime:
     def _resolve_inverter_datetime_entity_id(self) -> str:
         """Return configured inverter datetime entity, falling back to the Deye default."""
         entity_id = str(self.data.get(CONF_INVERTER_DATETIME_ENTITY) or "").strip()
-        return entity_id or DEFAULT_INVERTER_DATETIME_ENTITY
+        return entity_id or entity_map.special_entity("inverter_datetime")
 
     @staticmethod
     def _parse_inverter_datetime(value: Any) -> datetime | None:
@@ -13390,7 +13390,7 @@ class DeyeEnergyRuntime:
         if row is None:
             return
         desired = bool(row.get("battery_charge_enabled", False))
-        entity_id = "switch.deye_grid_charge_enabled"
+        entity_id = entity_map.special_entity("grid_charge_enable")
         state = self.hass.states.get(entity_id)
         if state is None or state.state in ("unknown", "unavailable"):
             return
@@ -14975,7 +14975,7 @@ class DeyeEnergyRuntime:
         """One-time install setup: set Start battery discharge capacity to 10%."""
         if self._install_init_battery_restart_capacity_done:
             return
-        entity_id = "number.deye_battery_restart_capacity"
+        entity_id = entity_map.special_entity("battery_restart_capacity")
         target = 10.0
         state = self.hass.states.get(entity_id)
         if state is None or state.state in ("unknown", "unavailable"):

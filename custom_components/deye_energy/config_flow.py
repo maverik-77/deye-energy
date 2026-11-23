@@ -9,6 +9,7 @@ from homeassistant.const import CONF_NAME
 from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er, selector
 
+from . import entity_map
 from .const import (
     ABSOLUTE_INVERTER_MAX_POWER_W,
     CONF_BATTERY_BMS_VOLTAGE_SENSOR,
@@ -159,62 +160,70 @@ from .inverter_provider import (
 )
 
 
+# Entity defaults, selector domains and discovery tokens all come from the
+# shared mqtt_entity_map.json catalogue through ``entity_map``.  The config
+# keys are identical to the catalogue keys, so no literal entity id is needed
+# here.
+_ENTITY_SPEC_KEYS = (
+    CONF_WORK_MODE_SELECT,
+    CONF_MAX_SELL_POWER_NUMBER,
+    CONF_DISCHARGE_CURRENT_NUMBER,
+    CONF_CHARGE_CURRENT_NUMBER,
+    CONF_GRID_CHARGE_CURRENT_NUMBER,
+    CONF_BATTERY_SOC_SENSOR,
+    CONF_GRID_POWER_SENSOR,
+    CONF_PV_POWER_SENSOR,
+    CONF_LOAD_POWER_SENSOR,
+    CONF_BATTERY_POWER_SENSOR,
+    CONF_DAILY_PV_PRODUCTION_SENSOR,
+    CONF_PRICE_SENSOR,
+    CONF_SELL_PRICE_TOMORROW_SENSOR,
+    CONF_BUY_PRICE_TODAY_SENSOR,
+    CONF_BUY_PRICE_TOMORROW_SENSOR,
+    CONF_SOLCAST_CURRENT_POWER_SENSOR,
+    CONF_SOLCAST_FORECAST_TODAY_SENSOR,
+    CONF_SOLCAST_FORECAST_TOMORROW_SENSOR,
+    CONF_SOLCAST_FORECAST_DAY_3_SENSOR,
+    CONF_SOLCAST_FORECAST_DAY_4_SENSOR,
+    CONF_SOLCAST_FORECAST_DAY_5_SENSOR,
+    CONF_SOLCAST_FORECAST_DAY_6_SENSOR,
+    CONF_SOLCAST_FORECAST_DAY_7_SENSOR,
+    CONF_SOLCAST_REMAINING_TODAY_SENSOR,
+    CONF_SOLCAST_PEAK_POWER_TODAY_SENSOR,
+    CONF_SOLCAST_PEAK_TIME_TODAY_SENSOR,
+    CONF_WEATHER_ENTITY,
+    CONF_PV1_POWER_SENSOR,
+    CONF_PV1_VOLTAGE_SENSOR,
+    CONF_PV1_CURRENT_SENSOR,
+    CONF_PV2_POWER_SENSOR,
+    CONF_PV2_VOLTAGE_SENSOR,
+    CONF_PV2_CURRENT_SENSOR,
+    CONF_PV3_POWER_SENSOR,
+    CONF_BATTERY_BMS_VOLTAGE_SENSOR,
+    CONF_BATTERY_CURRENT_SENSOR,
+    CONF_BATTERY_TEMPERATURE_SENSOR,
+    CONF_BATTERY_SOH_SENSOR,
+    CONF_DAILY_BATTERY_CHARGE_SENSOR,
+    CONF_DAILY_BATTERY_DISCHARGE_SENSOR,
+    CONF_DAILY_ENERGY_BOUGHT_SENSOR,
+    CONF_DAILY_ENERGY_SOLD_SENSOR,
+    CONF_GRID_L1_POWER_SENSOR,
+    CONF_GRID_L1_VOLTAGE_SENSOR,
+    CONF_GRID_L2_POWER_SENSOR,
+    CONF_GRID_L2_VOLTAGE_SENSOR,
+    CONF_GRID_L3_POWER_SENSOR,
+    CONF_GRID_L3_VOLTAGE_SENSOR,
+    CONF_LOAD_FREQUENCY_SENSOR,
+    CONF_DAILY_LOAD_CONSUMPTION_SENSOR,
+    CONF_LOAD_L1_POWER_SENSOR,
+    CONF_LOAD_L2_POWER_SENSOR,
+    CONF_LOAD_L3_POWER_SENSOR,
+    CONF_INVERTER_AC_TEMPERATURE_SENSOR,
+    CONF_WORK_MODE_AUX_ENTITY,
+)
 ENTITY_SPECS: dict[str, tuple[str, str | tuple[str, ...], tuple[str, ...]]] = {
-    CONF_WORK_MODE_SELECT: (DEFAULT_WORK_MODE_SELECT, "select", ("system work mode", "work mode")),
-    CONF_MAX_SELL_POWER_NUMBER: (DEFAULT_MAX_SELL_POWER, "number", ("max sell power",)),
-    CONF_DISCHARGE_CURRENT_NUMBER: (DEFAULT_DISCHARGE_CURRENT, "number", ("battery discharge current",)),
-    CONF_CHARGE_CURRENT_NUMBER: (DEFAULT_CHARGE_CURRENT, "number", ("battery charge current",)),
-    CONF_GRID_CHARGE_CURRENT_NUMBER: (DEFAULT_GRID_CHARGE_CURRENT, "number", ("grid charge current",)),
-    CONF_BATTERY_SOC_SENSOR: (DEFAULT_BATTERY_SOC, "sensor", ("battery", "soc")),
-    CONF_GRID_POWER_SENSOR: (DEFAULT_GRID_POWER_SENSOR, "sensor", ("grid power",)),
-    CONF_PV_POWER_SENSOR: (DEFAULT_PV_POWER_SENSOR, "sensor", ("pv power",)),
-    CONF_LOAD_POWER_SENSOR: (DEFAULT_LOAD_POWER_SENSOR, "sensor", ("load power",)),
-    CONF_BATTERY_POWER_SENSOR: (DEFAULT_BATTERY_POWER_SENSOR, "sensor", ("battery power",)),
-    CONF_DAILY_PV_PRODUCTION_SENSOR: (DEFAULT_DAILY_PV_PRODUCTION_SENSOR, "sensor", ("daily pv production",)),
-    CONF_PRICE_SENSOR: (DEFAULT_PRICE_SENSOR, "sensor", ("export current rate", "export rate", "sell price")),
-    CONF_SELL_PRICE_TOMORROW_SENSOR: (DEFAULT_SELL_PRICE_TOMORROW_SENSOR, "sensor", ("sell price tomorrow", "export next day rates")),
-    CONF_BUY_PRICE_TODAY_SENSOR: (DEFAULT_BUY_PRICE_TODAY_SENSOR, "sensor", ("buy price today", "import current rate")),
-    CONF_BUY_PRICE_TOMORROW_SENSOR: (DEFAULT_BUY_PRICE_TOMORROW_SENSOR, "sensor", ("buy price tomorrow", "import next day rates")),
-    CONF_SOLCAST_CURRENT_POWER_SENSOR: (DEFAULT_SOLCAST_CURRENT_POWER_SENSOR, "sensor", ("solcast", "power now")),
-    CONF_SOLCAST_FORECAST_TODAY_SENSOR: (DEFAULT_SOLCAST_FORECAST_TODAY_SENSOR, "sensor", ("solcast", "forecast today")),
-    CONF_SOLCAST_FORECAST_TOMORROW_SENSOR: (DEFAULT_SOLCAST_FORECAST_TOMORROW_SENSOR, "sensor", ("solcast", "forecast tomorrow")),
-    CONF_SOLCAST_FORECAST_DAY_3_SENSOR: (DEFAULT_SOLCAST_FORECAST_DAY_3_SENSOR, "sensor", ("solcast", "day 3")),
-    CONF_SOLCAST_FORECAST_DAY_4_SENSOR: (DEFAULT_SOLCAST_FORECAST_DAY_4_SENSOR, "sensor", ("solcast", "day 4")),
-    CONF_SOLCAST_FORECAST_DAY_5_SENSOR: (DEFAULT_SOLCAST_FORECAST_DAY_5_SENSOR, "sensor", ("solcast", "day 5")),
-    CONF_SOLCAST_FORECAST_DAY_6_SENSOR: (DEFAULT_SOLCAST_FORECAST_DAY_6_SENSOR, "sensor", ("solcast", "day 6")),
-    CONF_SOLCAST_FORECAST_DAY_7_SENSOR: (DEFAULT_SOLCAST_FORECAST_DAY_7_SENSOR, "sensor", ("solcast", "day 7")),
-    CONF_SOLCAST_REMAINING_TODAY_SENSOR: (DEFAULT_SOLCAST_REMAINING_TODAY_SENSOR, "sensor", ("solcast", "remaining")),
-    CONF_SOLCAST_PEAK_POWER_TODAY_SENSOR: (DEFAULT_SOLCAST_PEAK_POWER_TODAY_SENSOR, "sensor", ("solcast", "peak forecast")),
-    CONF_SOLCAST_PEAK_TIME_TODAY_SENSOR: (DEFAULT_SOLCAST_PEAK_TIME_TODAY_SENSOR, "sensor", ("solcast", "peak time")),
-    CONF_WEATHER_ENTITY: (DEFAULT_WEATHER_ENTITY, "weather", ("forecast home", "weather")),
-    # Status panel detail sources
-    CONF_PV1_POWER_SENSOR: (DEFAULT_PV1_POWER_SENSOR, "sensor", ("pv1 power", "moc pv1")),
-    CONF_PV1_VOLTAGE_SENSOR: (DEFAULT_PV1_VOLTAGE_SENSOR, "sensor", ("pv1 voltage",)),
-    CONF_PV1_CURRENT_SENSOR: (DEFAULT_PV1_CURRENT_SENSOR, "sensor", ("pv1 current",)),
-    CONF_PV2_POWER_SENSOR: (DEFAULT_PV2_POWER_SENSOR, "sensor", ("pv2 power", "moc pv2")),
-    CONF_PV2_VOLTAGE_SENSOR: (DEFAULT_PV2_VOLTAGE_SENSOR, "sensor", ("pv2 voltage",)),
-    CONF_PV2_CURRENT_SENSOR: (DEFAULT_PV2_CURRENT_SENSOR, "sensor", ("pv2 current",)),
-    CONF_PV3_POWER_SENSOR: (DEFAULT_PV3_POWER_SENSOR, "sensor", ("pv3 power", "moc pv3")),
-    CONF_BATTERY_BMS_VOLTAGE_SENSOR: (DEFAULT_BATTERY_BMS_VOLTAGE_SENSOR, "sensor", ("battery bms voltage",)),
-    CONF_BATTERY_CURRENT_SENSOR: (DEFAULT_BATTERY_CURRENT_SENSOR, "sensor", ("battery current",)),
-    CONF_BATTERY_TEMPERATURE_SENSOR: (DEFAULT_BATTERY_TEMPERATURE_SENSOR, "sensor", ("battery temperature",)),
-    CONF_BATTERY_SOH_SENSOR: (DEFAULT_BATTERY_SOH_SENSOR, "sensor", ("battery soh", "state of health")),
-    CONF_DAILY_BATTERY_CHARGE_SENSOR: (DEFAULT_DAILY_BATTERY_CHARGE_SENSOR, "sensor", ("daily battery charge",)),
-    CONF_DAILY_BATTERY_DISCHARGE_SENSOR: (DEFAULT_DAILY_BATTERY_DISCHARGE_SENSOR, "sensor", ("daily battery discharge",)),
-    CONF_DAILY_ENERGY_BOUGHT_SENSOR: (DEFAULT_DAILY_ENERGY_BOUGHT_SENSOR, "sensor", ("daily energy bought",)),
-    CONF_DAILY_ENERGY_SOLD_SENSOR: (DEFAULT_DAILY_ENERGY_SOLD_SENSOR, "sensor", ("daily energy sold",)),
-    CONF_GRID_L1_POWER_SENSOR: (DEFAULT_GRID_L1_POWER_SENSOR, "sensor", ("grid l1 power",)),
-    CONF_GRID_L1_VOLTAGE_SENSOR: (DEFAULT_GRID_L1_VOLTAGE_SENSOR, "sensor", ("grid l1 voltage",)),
-    CONF_GRID_L2_POWER_SENSOR: (DEFAULT_GRID_L2_POWER_SENSOR, "sensor", ("grid l2 power",)),
-    CONF_GRID_L2_VOLTAGE_SENSOR: (DEFAULT_GRID_L2_VOLTAGE_SENSOR, "sensor", ("grid l2 voltage",)),
-    CONF_GRID_L3_POWER_SENSOR: (DEFAULT_GRID_L3_POWER_SENSOR, "sensor", ("grid l3 power",)),
-    CONF_GRID_L3_VOLTAGE_SENSOR: (DEFAULT_GRID_L3_VOLTAGE_SENSOR, "sensor", ("grid l3 voltage",)),
-    CONF_LOAD_FREQUENCY_SENSOR: (DEFAULT_LOAD_FREQUENCY_SENSOR, "sensor", ("load frequency",)),
-    CONF_DAILY_LOAD_CONSUMPTION_SENSOR: (DEFAULT_DAILY_LOAD_CONSUMPTION_SENSOR, "sensor", ("daily load consumption",)),
-    CONF_LOAD_L1_POWER_SENSOR: (DEFAULT_LOAD_L1_POWER_SENSOR, "sensor", ("load l1 power",)),
-    CONF_LOAD_L2_POWER_SENSOR: (DEFAULT_LOAD_L2_POWER_SENSOR, "sensor", ("load l2 power",)),
-    CONF_LOAD_L3_POWER_SENSOR: (DEFAULT_LOAD_L3_POWER_SENSOR, "sensor", ("load l3 power",)),
-    CONF_INVERTER_AC_TEMPERATURE_SENSOR: (DEFAULT_INVERTER_AC_TEMPERATURE_SENSOR, "sensor", ("ac temperature",)),
+    key: (entity_map.entity_default(key), *entity_map.spec(key))
+    for key in _ENTITY_SPEC_KEYS
 }
 
 TOU_FIELDS = tuple(
@@ -223,23 +232,14 @@ TOU_FIELDS = tuple(
     for kind in ("start", "soc", "grid")
 )
 
-ENTITY_SPECS[CONF_WORK_MODE_AUX_ENTITY] = ("", "switch", ("solar export", "export solar"))
+ENTITY_SPECS[CONF_WORK_MODE_AUX_ENTITY] = (
+    entity_map.entity_default(CONF_WORK_MODE_AUX_ENTITY),
+    *entity_map.spec(CONF_WORK_MODE_AUX_ENTITY),
+)
 for _index in range(1, 7):
-    ENTITY_SPECS[conf_tou_entity(_index, "start")] = (
-        "",
-        ("time", "select"),
-        (f"time of use {_index} start", f"program {_index} time", f"prog{_index} time"),
-    )
-    ENTITY_SPECS[conf_tou_entity(_index, "soc")] = (
-        "",
-        "number",
-        (f"time of use {_index} soc", f"program {_index} soc", f"prog{_index} capacity"),
-    )
-    ENTITY_SPECS[conf_tou_entity(_index, "grid")] = (
-        "",
-        ("switch", "select"),
-        (f"time of use {_index} grid charge", f"program {_index} charging", f"prog{_index} charge"),
-    )
+    for _kind in ("start", "soc", "grid"):
+        _key = conf_tou_entity(_index, _kind)
+        ENTITY_SPECS[_key] = ("", *entity_map.spec(_key))
 
 INVERTER_FIELDS = (
     CONF_WORK_MODE_SELECT, CONF_MAX_SELL_POWER_NUMBER, CONF_DISCHARGE_CURRENT_NUMBER,
@@ -304,48 +304,12 @@ CUSTOM_OPTION_FIELDS = (
     CONF_TOU_GRID_BOTH_OPTION,
 )
 
+# Provider-specific discovery tokens are defined in mqtt_entity_map.json.
+# This mapping is derived from that catalogue for code/tests that inspect it
+# directly; ``entity_map.match_tokens`` is the runtime accessor.
 PROVIDER_ENTITY_TOKENS: dict[str, dict[str, tuple[str, ...]]] = {
-    PROVIDER_SOLARMAN: {
-        CONF_WORK_MODE_SELECT: ("work mode",),
-        CONF_MAX_SELL_POWER_NUMBER: ("export surplus power", "max sell power"),
-        CONF_DISCHARGE_CURRENT_NUMBER: ("battery max discharging current",),
-        CONF_CHARGE_CURRENT_NUMBER: ("battery max charging current",),
-        CONF_GRID_CHARGE_CURRENT_NUMBER: ("battery grid charging current",),
-        CONF_BATTERY_SOC_SENSOR: ("battery soc",),
-        CONF_GRID_POWER_SENSOR: ("total grid power", "grid total power", "external ct power"),
-        CONF_GRID_L1_POWER_SENSOR: ("grid l1 power", "grid phase 1 power", "grid power l1"),
-        CONF_GRID_L2_POWER_SENSOR: ("grid l2 power", "grid phase 2 power", "grid power l2"),
-        CONF_GRID_L3_POWER_SENSOR: ("grid l3 power", "grid phase 3 power", "grid power l3"),
-        CONF_PV_POWER_SENSOR: ("total pv power", "pv total power", "dc power"),
-        CONF_LOAD_POWER_SENSOR: ("total load power", "load total power", "load power"),
-        CONF_BATTERY_POWER_SENSOR: ("battery power",),
-        CONF_DAILY_ENERGY_BOUGHT_SENSOR: ("daily energy bought", "daily grid import", "daily energy from grid"),
-        CONF_DAILY_ENERGY_SOLD_SENSOR: ("daily energy sold", "daily grid export", "daily energy to grid"),
-        CONF_DAILY_PV_PRODUCTION_SENSOR: ("daily production", "daily pv production", "daily solar production"),
-        CONF_DAILY_LOAD_CONSUMPTION_SENSOR: ("daily load consumption", "daily load energy"),
-    },
-    PROVIDER_SUNSYNK: {
-        CONF_WORK_MODE_SELECT: ("load limit",),
-        CONF_WORK_MODE_AUX_ENTITY: ("solar export",),
-        CONF_MAX_SELL_POWER_NUMBER: ("max sell power",),
-        CONF_DISCHARGE_CURRENT_NUMBER: ("battery max discharge current",),
-        CONF_CHARGE_CURRENT_NUMBER: ("battery max charge current",),
-        CONF_GRID_CHARGE_CURRENT_NUMBER: ("grid charge battery current",),
-        CONF_BATTERY_SOC_SENSOR: ("battery soc",),
-        CONF_GRID_POWER_SENSOR: ("grid power", "grid total power"),
-        CONF_GRID_L1_POWER_SENSOR: ("grid l1 power", "grid phase 1 power"),
-        CONF_GRID_L2_POWER_SENSOR: ("grid l2 power", "grid phase 2 power"),
-        CONF_GRID_L3_POWER_SENSOR: ("grid l3 power", "grid phase 3 power"),
-        CONF_DAILY_ENERGY_BOUGHT_SENSOR: ("daily grid import", "daily energy bought"),
-        CONF_DAILY_ENERGY_SOLD_SENSOR: ("daily grid export", "daily energy sold"),
-    },
-    PROVIDER_DEYE_ADDON: {
-        CONF_BATTERY_SOC_SENSOR: ("battery soc", "battery state of charge"),
-        CONF_GRID_POWER_SENSOR: ("grid power", "external ct power"),
-        CONF_PV_POWER_SENSOR: ("pv power", "dc power"),
-        CONF_LOAD_POWER_SENSOR: ("load power", "load total power"),
-        CONF_BATTERY_POWER_SENSOR: ("battery power",),
-    },
+    provider: {key: entity_map.match_tokens(key, provider) for key in ENTITY_SPECS}
+    for provider in INVERTER_PROVIDERS
 }
 
 
@@ -548,23 +512,8 @@ class MappingWizardMixin:
         if current:
             return str(current)
         provider = str(self._values.get(CONF_INVERTER_PROVIDER, DEFAULT_INVERTER_PROVIDER))
-        tokens = PROVIDER_ENTITY_TOKENS.get(provider, {}).get(key, tokens)
-        if key.startswith("tou_") and provider == PROVIDER_SOLARMAN:
-            index = key.split("_", 2)[1]
-            kind = key.rsplit("_", 2)[-2]
-            tokens = {
-                "start": (f"program {index} time",),
-                "soc": (f"program {index} soc",),
-                "grid": (f"program {index} charging",),
-            }.get(kind, tokens)
-        if key.startswith("tou_") and provider == PROVIDER_SUNSYNK:
-            index = key.split("_", 2)[1]
-            kind = key.rsplit("_", 2)[-2]
-            tokens = {
-                "start": (f"prog{index} time", f"prog {index} time"),
-                "soc": (f"prog{index} capacity", f"prog {index} capacity"),
-                "grid": (f"prog{index} charge", f"prog {index} charge"),
-            }.get(kind, tokens)
+        # Profile-specific and TOU discovery tokens come from the shared map.
+        tokens = entity_map.match_tokens(key, provider) or tokens
         if provider != PROVIDER_LEWA_REKA and default.startswith(("select.deye_inverter_", "number.deye_inverter_", "sensor.deye_inverter_", "switch.deye_inverter_", "time.deye_inverter_")):
             default = ""
         if self._values.get(CONF_MAPPING_MODE, DEFAULT_MAPPING_MODE) == "automatic":

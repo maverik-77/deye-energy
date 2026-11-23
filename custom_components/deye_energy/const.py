@@ -1,5 +1,20 @@
+"""Integration constants.
+
+Home Assistant entity identifiers are *not* defined here.  They live in the
+shared ``mqtt_entity_map.json`` catalogue and are exposed through
+``entity_map``; the ``DEFAULT_*`` names below remain as aliases so existing
+imports keep working.
+"""
+
+from . import entity_map
+
 DOMAIN = "deye_energy"
 PLATFORMS = ["switch", "select", "number", "sensor", "binary_sensor", "button"]
+
+# Optional user override file in the Home Assistant configuration directory.
+CONF_ENTITY_MAP_OVERRIDE_FILE = entity_map.bundled_document().get(
+    "override_file", "deye_energy_entity_map.json"
+)
 
 CONF_WORK_MODE_SELECT = "work_mode_select"
 CONF_MAX_SELL_POWER_NUMBER = "max_sell_power_number"
@@ -74,11 +89,7 @@ DEFAULT_INVERTER_PROVIDER = PROVIDER_SUNSYNK
 
 def conf_tou_entity(index: int, kind: str) -> str:
     """Return a stable config key for one physical TOU field."""
-    if kind == "grid_charge":
-        kind = "grid"
-    if kind not in ("start", "soc", "grid", "charge", "mode", "sell", "power", "voltage") or not 1 <= int(index) <= 6:
-        raise ValueError("Invalid TOU config key")
-    return f"tou_{int(index)}_{kind}_entity"
+    return entity_map.tou_key(index, kind)
 
 # Status panel detailed entity mapping
 CONF_PV1_POWER_SENSOR = "pv1_power_sensor"
@@ -149,34 +160,34 @@ ENERGY_STATUS_ROLES: tuple[tuple[str, str, str], ...] = (
 ENERGY_STATUS_ROLE_KEYS = frozenset(role for role, _, _ in ENERGY_STATUS_ROLES)
 ENERGY_STATUS_DISPLAY_SCHEMA_VERSION = 1
 
-DEFAULT_WORK_MODE_SELECT = "select.deye_load_limit"
-DEFAULT_MAX_SELL_POWER = "number.deye_max_sell_power"
-DEFAULT_INVERTER_DATETIME_ENTITY = "text.deye_date_time"
-DEFAULT_DISCHARGE_CURRENT = "number.deye_battery_max_discharge_current"
-DEFAULT_CHARGE_CURRENT = "number.deye_battery_max_charge_current"
-DEFAULT_GRID_CHARGE_CURRENT = "number.deye_grid_charge_battery_current"
-DEFAULT_BATTERY_SOC = "sensor.deye_battery_soc"
-DEFAULT_PRICE_SENSOR = "sensor.octopus_energy_electricity_17m0034926_1470001581693_export_current_rate"
-DEFAULT_SELL_PRICE_TOMORROW_SENSOR = ""
-DEFAULT_BUY_PRICE_TODAY_SENSOR = "sensor.electricity_17m0034926_1415291530000_current_rate"
-DEFAULT_BUY_PRICE_TOMORROW_SENSOR = ""
-DEFAULT_GRID_POWER_SENSOR = "sensor.deye_grid_power"
-DEFAULT_PV_POWER_SENSOR = "sensor.deye_pv_power"
-DEFAULT_LOAD_POWER_SENSOR = "sensor.deye_load_power"
-DEFAULT_BATTERY_POWER_SENSOR = "sensor.deye_battery_power"
-DEFAULT_SOLCAST_CURRENT_POWER_SENSOR = "sensor.solcast_pv_forecast_power_now"
-DEFAULT_SOLCAST_FORECAST_TODAY_SENSOR = "sensor.solcast_pv_forecast_forecast_today"
-DEFAULT_SOLCAST_FORECAST_TOMORROW_SENSOR = "sensor.solcast_pv_forecast_forecast_tomorrow"
-DEFAULT_SOLCAST_FORECAST_DAY_3_SENSOR = "sensor.solcast_pv_forecast_forecast_day_3"
-DEFAULT_SOLCAST_FORECAST_DAY_4_SENSOR = "sensor.solcast_pv_forecast_forecast_day_4"
-DEFAULT_SOLCAST_FORECAST_DAY_5_SENSOR = "sensor.solcast_pv_forecast_forecast_day_5"
-DEFAULT_SOLCAST_FORECAST_DAY_6_SENSOR = "sensor.solcast_pv_forecast_forecast_day_6"
-DEFAULT_SOLCAST_FORECAST_DAY_7_SENSOR = "sensor.solcast_pv_forecast_forecast_day_7"
-DEFAULT_SOLCAST_REMAINING_TODAY_SENSOR = "sensor.solcast_pv_forecast_forecast_remaining_today"
-DEFAULT_SOLCAST_PEAK_POWER_TODAY_SENSOR = "sensor.solcast_pv_forecast_peak_forecast_today"
-DEFAULT_SOLCAST_PEAK_TIME_TODAY_SENSOR = "sensor.solcast_pv_forecast_peak_time_today"
-DEFAULT_DAILY_PV_PRODUCTION_SENSOR = "sensor.deye_day_pv_energy"
-DEFAULT_WEATHER_ENTITY = "weather.home"
+DEFAULT_WORK_MODE_SELECT = entity_map.entity_default("work_mode_select")
+DEFAULT_MAX_SELL_POWER = entity_map.entity_default("max_sell_power_number")
+DEFAULT_INVERTER_DATETIME_ENTITY = entity_map.special_entity("inverter_datetime")
+DEFAULT_DISCHARGE_CURRENT = entity_map.entity_default("discharge_current_number")
+DEFAULT_CHARGE_CURRENT = entity_map.entity_default("charge_current_number")
+DEFAULT_GRID_CHARGE_CURRENT = entity_map.entity_default("grid_charge_current_number")
+DEFAULT_BATTERY_SOC = entity_map.entity_default("battery_soc_sensor")
+DEFAULT_PRICE_SENSOR = entity_map.entity_default("price_sensor")
+DEFAULT_SELL_PRICE_TOMORROW_SENSOR = entity_map.entity_default("sell_price_tomorrow_sensor")
+DEFAULT_BUY_PRICE_TODAY_SENSOR = entity_map.entity_default("buy_price_today_sensor")
+DEFAULT_BUY_PRICE_TOMORROW_SENSOR = entity_map.entity_default("buy_price_tomorrow_sensor")
+DEFAULT_GRID_POWER_SENSOR = entity_map.entity_default("grid_power_sensor")
+DEFAULT_PV_POWER_SENSOR = entity_map.entity_default("pv_power_sensor")
+DEFAULT_LOAD_POWER_SENSOR = entity_map.entity_default("load_power_sensor")
+DEFAULT_BATTERY_POWER_SENSOR = entity_map.entity_default("battery_power_sensor")
+DEFAULT_SOLCAST_CURRENT_POWER_SENSOR = entity_map.entity_default("solcast_current_power_sensor")
+DEFAULT_SOLCAST_FORECAST_TODAY_SENSOR = entity_map.entity_default("solcast_forecast_today_sensor")
+DEFAULT_SOLCAST_FORECAST_TOMORROW_SENSOR = entity_map.entity_default("solcast_forecast_tomorrow_sensor")
+DEFAULT_SOLCAST_FORECAST_DAY_3_SENSOR = entity_map.entity_default("solcast_forecast_day_3_sensor")
+DEFAULT_SOLCAST_FORECAST_DAY_4_SENSOR = entity_map.entity_default("solcast_forecast_day_4_sensor")
+DEFAULT_SOLCAST_FORECAST_DAY_5_SENSOR = entity_map.entity_default("solcast_forecast_day_5_sensor")
+DEFAULT_SOLCAST_FORECAST_DAY_6_SENSOR = entity_map.entity_default("solcast_forecast_day_6_sensor")
+DEFAULT_SOLCAST_FORECAST_DAY_7_SENSOR = entity_map.entity_default("solcast_forecast_day_7_sensor")
+DEFAULT_SOLCAST_REMAINING_TODAY_SENSOR = entity_map.entity_default("solcast_remaining_today_sensor")
+DEFAULT_SOLCAST_PEAK_POWER_TODAY_SENSOR = entity_map.entity_default("solcast_peak_power_today_sensor")
+DEFAULT_SOLCAST_PEAK_TIME_TODAY_SENSOR = entity_map.entity_default("solcast_peak_time_today_sensor")
+DEFAULT_DAILY_PV_PRODUCTION_SENSOR = entity_map.entity_default("daily_pv_production_sensor")
+DEFAULT_WEATHER_ENTITY = entity_map.entity_default("weather_entity")
 DEFAULT_PRICE_SOURCE = "octopus_energy"
 DEFAULT_DSO_PROVIDER = "octopus"
 DEFAULT_TARIFF_PLAN = "intelligent_go"
@@ -201,33 +212,33 @@ MIRRORED_CHARGE_PROFILE_GRID_ENABLED = True
 DEFAULT_MAPPING_MODE = "automatic"
 
 # Default status panel detail sources
-DEFAULT_PV1_POWER_SENSOR = "sensor.deye_pv1_power"
-DEFAULT_PV1_VOLTAGE_SENSOR = "sensor.deye_pv1_voltage"
-DEFAULT_PV1_CURRENT_SENSOR = "sensor.deye_pv1_current"
-DEFAULT_PV2_POWER_SENSOR = "sensor.deye_pv2_power"
-DEFAULT_PV2_VOLTAGE_SENSOR = "sensor.deye_pv2_voltage"
-DEFAULT_PV2_CURRENT_SENSOR = "sensor.deye_pv2_current"
-DEFAULT_PV3_POWER_SENSOR = "sensor.deye_pv3_power"
-DEFAULT_BATTERY_BMS_VOLTAGE_SENSOR = "sensor.deye_battery_voltage"
-DEFAULT_BATTERY_CURRENT_SENSOR = "sensor.deye_battery_current"
-DEFAULT_BATTERY_TEMPERATURE_SENSOR = "sensor.deye_battery_temperature"
-DEFAULT_BATTERY_SOH_SENSOR = ""
-DEFAULT_DAILY_BATTERY_CHARGE_SENSOR = "sensor.deye_day_battery_charge"
-DEFAULT_DAILY_BATTERY_DISCHARGE_SENSOR = "sensor.deye_day_battery_discharge"
-DEFAULT_DAILY_ENERGY_BOUGHT_SENSOR = "sensor.deye_day_grid_import"
-DEFAULT_DAILY_ENERGY_SOLD_SENSOR = "sensor.deye_day_grid_export"
-DEFAULT_GRID_L1_POWER_SENSOR = "sensor.deye_inverter_grid_l1_power"
-DEFAULT_GRID_L2_POWER_SENSOR = "sensor.deye_inverter_grid_l2_power"
-DEFAULT_GRID_L3_POWER_SENSOR = "sensor.deye_inverter_grid_l3_power"
-DEFAULT_GRID_L1_VOLTAGE_SENSOR = "sensor.deye_inverter_grid_l1_voltage"
-DEFAULT_GRID_L2_VOLTAGE_SENSOR = "sensor.deye_inverter_grid_l2_voltage"
-DEFAULT_GRID_L3_VOLTAGE_SENSOR = "sensor.deye_inverter_grid_l3_voltage"
-DEFAULT_LOAD_FREQUENCY_SENSOR = "sensor.deye_load_frequency"
-DEFAULT_DAILY_LOAD_CONSUMPTION_SENSOR = "sensor.deye_day_load_energy"
-DEFAULT_LOAD_L1_POWER_SENSOR = "sensor.deye_load_l1_power"
-DEFAULT_LOAD_L2_POWER_SENSOR = "sensor.deye_load_l2_power"
-DEFAULT_LOAD_L3_POWER_SENSOR = "sensor.deye_inverter_load_l3_power"
-DEFAULT_INVERTER_AC_TEMPERATURE_SENSOR = "sensor.deye_inverter_ac_temperature"
+DEFAULT_PV1_POWER_SENSOR = entity_map.entity_default("pv1_power_sensor")
+DEFAULT_PV1_VOLTAGE_SENSOR = entity_map.entity_default("pv1_voltage_sensor")
+DEFAULT_PV1_CURRENT_SENSOR = entity_map.entity_default("pv1_current_sensor")
+DEFAULT_PV2_POWER_SENSOR = entity_map.entity_default("pv2_power_sensor")
+DEFAULT_PV2_VOLTAGE_SENSOR = entity_map.entity_default("pv2_voltage_sensor")
+DEFAULT_PV2_CURRENT_SENSOR = entity_map.entity_default("pv2_current_sensor")
+DEFAULT_PV3_POWER_SENSOR = entity_map.entity_default("pv3_power_sensor")
+DEFAULT_BATTERY_BMS_VOLTAGE_SENSOR = entity_map.entity_default("battery_bms_voltage_sensor")
+DEFAULT_BATTERY_CURRENT_SENSOR = entity_map.entity_default("battery_current_sensor")
+DEFAULT_BATTERY_TEMPERATURE_SENSOR = entity_map.entity_default("battery_temperature_sensor")
+DEFAULT_BATTERY_SOH_SENSOR = entity_map.entity_default("battery_soh_sensor")
+DEFAULT_DAILY_BATTERY_CHARGE_SENSOR = entity_map.entity_default("daily_battery_charge_sensor")
+DEFAULT_DAILY_BATTERY_DISCHARGE_SENSOR = entity_map.entity_default("daily_battery_discharge_sensor")
+DEFAULT_DAILY_ENERGY_BOUGHT_SENSOR = entity_map.entity_default("daily_energy_bought_sensor")
+DEFAULT_DAILY_ENERGY_SOLD_SENSOR = entity_map.entity_default("daily_energy_sold_sensor")
+DEFAULT_GRID_L1_POWER_SENSOR = entity_map.entity_default("grid_l1_power_sensor")
+DEFAULT_GRID_L2_POWER_SENSOR = entity_map.entity_default("grid_l2_power_sensor")
+DEFAULT_GRID_L3_POWER_SENSOR = entity_map.entity_default("grid_l3_power_sensor")
+DEFAULT_GRID_L1_VOLTAGE_SENSOR = entity_map.entity_default("grid_l1_voltage_sensor")
+DEFAULT_GRID_L2_VOLTAGE_SENSOR = entity_map.entity_default("grid_l2_voltage_sensor")
+DEFAULT_GRID_L3_VOLTAGE_SENSOR = entity_map.entity_default("grid_l3_voltage_sensor")
+DEFAULT_LOAD_FREQUENCY_SENSOR = entity_map.entity_default("load_frequency_sensor")
+DEFAULT_DAILY_LOAD_CONSUMPTION_SENSOR = entity_map.entity_default("daily_load_consumption_sensor")
+DEFAULT_LOAD_L1_POWER_SENSOR = entity_map.entity_default("load_l1_power_sensor")
+DEFAULT_LOAD_L2_POWER_SENSOR = entity_map.entity_default("load_l2_power_sensor")
+DEFAULT_LOAD_L3_POWER_SENSOR = entity_map.entity_default("load_l3_power_sensor")
+DEFAULT_INVERTER_AC_TEMPERATURE_SENSOR = entity_map.entity_default("inverter_ac_temperature_sensor")
 
 PRICE_SOURCES = ["octopus_energy", "other", "none"]
 DSO_PROVIDERS = ["octopus", "other"]
