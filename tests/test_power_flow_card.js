@@ -81,7 +81,9 @@ check(html.includes("<svg"), "missing svg");
 check(html.includes("pfFlowDash") && html.includes("stroke-dasharray:1 22"), "missing animated flow");
 check(!html.includes("Missing/unavailable entities"), "should not warn when all entities present");
 check(html.includes('viewBox="0 0 1200 980"'), "missing taller viewBox for node halos");
-check(html.includes('preserveAspectRatio="xMidYMid meet"'), "missing responsive preserveAspectRatio");
+check(html.includes('preserveAspectRatio="xMidYMin meet"'), "missing top-aligned responsive preserveAspectRatio");
+check(html.includes('aspect-ratio:1200 / 980'), "diagram frame should scale with the viewBox");
+check(!html.includes('min-height:980px'), "diagram frame should not keep a fixed minimum height");
 check(html.includes('height:100%'), "missing height scaling");
 
 // Summary widget row above the existing PV/Grid/Battery/Home chips
