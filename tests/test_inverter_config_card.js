@@ -355,7 +355,7 @@ function withPowerFlowState(card) {
     ],
     node_detail_keys: ["pv"],
     node_details: {},
-    chip_rows: { main: [], summary: [] },
+    chip_rows: { summary: [] },
     formats: ["w", "num"],
     chip_kinds: ["bolt"],
   };
@@ -386,8 +386,9 @@ function testPowerFlowTabRendersGroupsAndControls() {
   assert.match(html, /data-pf-move-detail="pv:0:down"/);
   assert.match(html, /data-pf-remove-detail="pv:0"/);
   assert.match(html, /class="pf-entity-input"/);
-  assert.match(html, /Top chips — main row/);
-  assert.match(html, /data-pf-add-chip="main"/);
+  assert.doesNotMatch(html, /Top chips — main row/);
+  assert.doesNotMatch(html, /data-pf-add-chip="main"/);
+  assert.doesNotMatch(html, /data-pf-chip="main:/);
   assert.match(html, /Top chips — summary row/);
   assert.match(html, /data-pf-add-chip="summary"/);
   assert.match(html, /data-pf-save="1"/);
@@ -403,7 +404,16 @@ async function testPowerFlowSaveSendsDraftPayload() {
     { label: "Temperature", entity: "sensor.inv_temp", format: "num" },
     { builtin: "pv_energy" },
   ];
-  draft.chip_rows.main = [{ label: "Extra", entity: "sensor.extra", format: "num" }];
+  draft.chip_rows.summary = [{
+    label: "Extra",
+    items: [{
+      label: "Reading",
+      entity: "sensor.extra",
+      format: "num",
+      kind: "bolt",
+      color: "#bc63ff",
+    }],
+  }];
   card._powerFlowDraftDirty = true;
   setServiceResponses(card, {
     save_power_flow_display: () => ({
@@ -429,7 +439,10 @@ async function testPowerFlowSaveSendsDraftPayload() {
   assert.deepEqual(payload.node_details.pv, [
     { label: "Temperature", entity: "sensor.inv_temp", format: "num" },
   ]);
-  assert.equal(payload.chip_rows.main[0].label, "Extra");
+  assert.deepEqual(Object.keys(payload.chip_rows), ["summary"]);
+  assert.equal(payload.chip_rows.main, undefined);
+  assert.equal(payload.chip_rows.summary[0].label, "Extra");
+  assert.equal(payload.chip_rows.summary[0].items[0].entity, "sensor.extra");
   assert.match(renderHtml(card), /Power flow mapping saved\./);
 }
 

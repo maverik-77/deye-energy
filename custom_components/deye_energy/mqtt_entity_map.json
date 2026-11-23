@@ -270,7 +270,7 @@
     "formats": ["w", "kw", "kwh", "num", "gbp", "pct"],
     "chip_kinds": ["import", "export", "bolt", "flame", "pound"],
     "node_details": {},
-    "chip_rows": { "main": [], "summary": [] }
+    "chip_rows": { "summary": [] }
   },
   "profiles": {
     "sunsynk": {

@@ -163,13 +163,14 @@ def validate_power_flow_payload(payload: Any) -> dict[str, Any]:
     unknown_rows = set(chip_rows) - {"main", "summary"}
     if unknown_rows:
         raise ValueError(f"unknown Power Flow chip row: {sorted(unknown_rows)}")
-    normalized_chips: dict[str, list[dict[str, Any]]] = {}
-    for row_key, chips in chip_rows.items():
-        if not isinstance(chips, list) or len(chips) > _POWER_FLOW_MAX_ROWS:
-            raise ValueError(f"Power Flow chip row {row_key} must be a list of at most {_POWER_FLOW_MAX_ROWS} chips")
-        for chip in chips:
-            _validate_power_flow_row(chip, source, formats, kinds, summary=(row_key == "summary"))
-        normalized_chips[str(row_key)] = chips
+    # "main" was the removed PV/Grid/Battery/Home chip row.  Tolerate it in
+    # submissions from a stale editor, but never persist it again.
+    summary_chips = chip_rows.get("summary", [])
+    if not isinstance(summary_chips, list) or len(summary_chips) > _POWER_FLOW_MAX_ROWS:
+        raise ValueError(f"Power Flow chip row summary must be a list of at most {_POWER_FLOW_MAX_ROWS} chips")
+    for chip in summary_chips:
+        _validate_power_flow_row(chip, source, formats, kinds, summary=True)
+    normalized_chips: dict[str, list[dict[str, Any]]] = {"summary": summary_chips}
     return {
         "schema_version": 1,
         "entities": normalized_entities,
@@ -218,10 +219,14 @@ def _validate_power_flow(document: dict[str, Any], source: str) -> None:
     if not isinstance(chip_rows, dict):
         raise ValueError(f"power_flow.chip_rows in {source} must be an object")
     for row_key, chips in chip_rows.items():
-        if row_key not in ("main", "summary") or not isinstance(chips, list) or len(chips) > _POWER_FLOW_MAX_ROWS:
+        if row_key == "main":
+            # Legacy overrides may still carry the removed main chip row; it is
+            # ignored and will be dropped the next time settings are saved.
+            continue
+        if row_key != "summary" or not isinstance(chips, list) or len(chips) > _POWER_FLOW_MAX_ROWS:
             raise ValueError(f"invalid power_flow chip row in {source}: {row_key}")
         for chip in chips:
-            _validate_power_flow_row(chip, source, formats, kinds, summary=(row_key == "summary"))
+            _validate_power_flow_row(chip, source, formats, kinds, summary=True)
 
 
 def _load_document(path: Path, *, require_full: bool = True) -> dict[str, Any]:
@@ -331,10 +336,8 @@ def _document() -> dict[str, Any]:
                 if isinstance(rows, list):
                     target.setdefault("node_details", {})[group] = rows
         chip_rows = power_flow.get("chip_rows")
-        if isinstance(chip_rows, dict):
-            for row_key, chips in chip_rows.items():
-                if isinstance(chips, list):
-                    target.setdefault("chip_rows", {})[row_key] = chips
+        if isinstance(chip_rows, dict) and isinstance(chip_rows.get("summary"), list):
+            target.setdefault("chip_rows", {})["summary"] = chip_rows["summary"]
         layout = power_flow.get("node_detail_layout")
         if isinstance(layout, dict):
             for group, rows in layout.items():

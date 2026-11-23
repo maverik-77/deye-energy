@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.84
+// Resource revision: v=0.8.0.85
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -2988,7 +2988,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.84 (resource revision v=0.8.0.84)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.85 (resource revision v=0.8.0.85)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -9872,7 +9872,11 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
         entities: { ...(display.entities || {}) },
         node_details: this._pfCopy(display.node_details || {}),
         node_detail_layout: this.powerFlowEffectiveDetailLayout(display),
-        chip_rows: this._pfCopy(display.chip_rows || {}),
+        chip_rows: {
+          summary: Array.isArray(display.chip_rows?.summary)
+            ? this._pfCopy(display.chip_rows.summary)
+            : [],
+        },
       };
       this._pfDraftSource = key;
       this._powerFlowDraftDirty = false;
@@ -10081,24 +10085,6 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
     }).join("");
   }
 
-  renderPowerFlowMainChips() {
-    const draft = this.powerFlowDraft();
-    const rows = Array.isArray(draft.chip_rows?.main) ? draft.chip_rows.main : [];
-    const formats = this.powerFlowFormats();
-    const body = rows.map((chip, index) => `<tr>
-      <td><input type="text" value="${this.escapeHtml(String(chip.label ?? ""))}" data-pf-chip="main:${index}:label" aria-label="Main chip label ${index + 1}"></td>
-      <td><input type="text" value="${this.escapeHtml(String(chip.entity ?? ""))}" data-pf-chip="main:${index}:entity" aria-label="Main chip entity ${index + 1}"></td>
-      <td><select data-pf-chip="main:${index}:format">${this.powerFlowSelect(formats, chip.format || "num")}</select></td>
-      <td><span class="ic-mono">${this.escapeHtml(this.powerFlowLive(chip.entity).text)}</span></td>
-      <td><button class="ic-btn ic-btn-secondary" data-pf-remove-chip="main:${index}">Remove</button></td>
-    </tr>`).join("");
-    return `<div class="pf-edit">
-      <div class="pf-edit-title">Extra chips on the main PV / Grid / Battery / Home row</div>
-      <div class="ic-table-wrap"><table class="ic-table"><thead><tr><th>Label</th><th>Entity ID</th><th>Format</th><th>Live value</th><th></th></tr></thead><tbody>${body || `<tr><td colspan="5" class="ic-muted">No extra chips yet.</td></tr>`}</tbody></table></div>
-      <button class="ic-btn ic-btn-secondary" data-pf-add-chip="main">Add chip</button>
-    </div>`;
-  }
-
   renderPowerFlowSummaryChips() {
     const draft = this.powerFlowDraft();
     const rows = Array.isArray(draft.chip_rows?.summary) ? draft.chip_rows.summary : [];
@@ -10138,13 +10124,9 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
       : "";
     return `<section class="ic-section">
         <h4>Power flow mapping</h4>
-        <p class="ic-hint">Edit the entity IDs used by the Power Flow card, add extra detail rows to each node, and extend either chip row. Save writes the shared entity-map override; the Power Flow card then updates without a restart.</p>
+        <p class="ic-hint">Edit the entity IDs used by the Power Flow card, add extra detail rows to each node, and extend the summary chip row. Save writes the shared entity-map override; the Power Flow card then updates without a restart.</p>
       </section>
       ${this.renderPowerFlowSensorGroups()}
-      <section class="ic-section pf-group">
-        <h4>Top chips — main row</h4>
-        ${this.renderPowerFlowMainChips()}
-      </section>
       <section class="ic-section pf-group">
         <h4>Top chips — summary row</h4>
         ${this.renderPowerFlowSummaryChips()}
@@ -10179,7 +10161,11 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
         entities: { ...(draft.entities || {}) },
         node_details: legacyDetails,
         node_detail_layout: layout,
-        chip_rows: this._pfCopy(draft.chip_rows || {}),
+        chip_rows: {
+          summary: Array.isArray(draft.chip_rows?.summary)
+            ? this._pfCopy(draft.chip_rows.summary)
+            : [],
+        },
       };
       const response = await this.callServiceWithResponse(
         "deye_energy",
@@ -10198,7 +10184,11 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
           entities: { ...(response.entities || {}) },
           node_details: this._pfCopy(response.node_details || {}),
           node_detail_layout: this.powerFlowEffectiveDetailLayout(response),
-          chip_rows: this._pfCopy(response.chip_rows || {}),
+          chip_rows: {
+            summary: Array.isArray(response.chip_rows?.summary)
+              ? this._pfCopy(response.chip_rows.summary)
+              : [],
+          },
         };
       }
     } catch (error) {
@@ -10543,8 +10533,9 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
     });
     this.querySelectorAll("[data-pf-chip]").forEach((el) => {
       const [row, index, field] = String(el.dataset.pfChip).split(":");
+      if (row !== "summary") return;
       const update = () => {
-        const rows = this.powerFlowDraft().chip_rows[row];
+        const rows = this.powerFlowDraft().chip_rows.summary;
         if (!Array.isArray(rows) || !rows[Number(index)]) return;
         rows[Number(index)][field] = el.value;
         this._powerFlowDraftDirty = true;
@@ -10580,18 +10571,20 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
       this.movePowerFlowDetailRow(group, index, direction);
     }));
     this.querySelectorAll("[data-pf-add-chip]").forEach((el) => el.addEventListener("click", () => {
-      const row = el.dataset.pfAddChip;
+      if (el.dataset.pfAddChip !== "summary") return;
       const draft = this.powerFlowDraft();
-      draft.chip_rows[row] = Array.isArray(draft.chip_rows[row]) ? draft.chip_rows[row] : [];
-      draft.chip_rows[row].push(row === "summary"
-        ? { label: "New group", items: [{ label: "New reading", entity: "", format: "num", kind: "bolt", color: "#bc63ff" }] }
-        : { label: "New chip", entity: "", format: "num" });
+      draft.chip_rows.summary = Array.isArray(draft.chip_rows.summary) ? draft.chip_rows.summary : [];
+      draft.chip_rows.summary.push({
+        label: "New group",
+        items: [{ label: "New reading", entity: "", format: "num", kind: "bolt", color: "#bc63ff" }],
+      });
       this._powerFlowDraftDirty = true;
       this._render();
     }));
     this.querySelectorAll("[data-pf-remove-chip]").forEach((el) => el.addEventListener("click", () => {
       const [row, index] = String(el.dataset.pfRemoveChip).split(":");
-      const rows = this.powerFlowDraft().chip_rows[row];
+      if (row !== "summary") return;
+      const rows = this.powerFlowDraft().chip_rows.summary;
       if (Array.isArray(rows)) rows.splice(Number(index), 1);
       this._powerFlowDraftDirty = true;
       this._render();
@@ -11590,7 +11583,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const border = active ? color : 'rgba(148,173,189,.28)';
     const det = details.length ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(118,166,190,.16);display:flex;flex-direction:column;gap:2px;${opts.centerDetails ? 'align-items:center;' : ''}">${details.join('')}</div>` : '';
     const nodeW = opts.nodeW ?? 248, nodeH = opts.nodeH ?? (details.length ? 220 : 112);
-    const nx = x - nodeW/2, ny = y - nodeH/2;
+    const nx = Number.isFinite(opts.nodeX) ? opts.nodeX : x - nodeW/2, ny = y - nodeH/2;
     const iconTile = `<div style="width:64px;height:64px;border-radius:18px;display:flex;align-items:center;justify-content:center;font-size:28px;background:${color}18;border:1px solid ${color}55;box-shadow:${active ? `0 0 8px ${color}33` : 'none'};position:relative;flex:0 0 64px;">
               <span style="filter:${active ? `drop-shadow(0 0 2px ${color}) drop-shadow(0 0 5px ${color}99)` : 'none'}">${icon}</span>
             </div>`;
@@ -11692,6 +11685,8 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const SZ = { pv:{w:174,h:132}, grid:{w:174,h:154}, inv:{w:248,h:220}, home:{w:174,h:132}, batt:{w:223,h:220} };
     // Entity surrounds share Battery's width; node cards keep their own sizes.
     const SURROUND_W = SZ.batt.w + HALO_PAD * 2;
+    // Entity cards start at Battery's inset from the left edge of the surround.
+    const entityNodeX = (key) => N[key][0] - SURROUND_W / 2 + HALO_PAD;
     const ringR = RING_R + RING_SW / 2;
     const boxEdge = (key) => {
       const c = N[key], hw = SURROUND_W/2 + HALO_SW/2, hh = SZ[key].h/2 + HALO_PAD + HALO_SW/2;
@@ -11739,14 +11734,6 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
 
     const display = this._powerFlowDisplay();
     const statMap = this._statEntityMap();
-    const extraChips = Array.isArray(display.chip_rows?.main) ? display.chip_rows.main : [];
-    const chips = [
-      ['PV', fmtVal(pvVal, pvE), '#f6c945', isPower ? (pvDaily!=null?`Today ${this._fmtKwh(pvDaily)}`:'') : this._periodLabel(period), isPower ? e.pv : statMap.pv],
-      ['Grid', isPower ? this._fmtW(gridP) : (gridImportE!=null||gridExportE!=null?`${this._fmtKwh(gridImportE)} / ${this._fmtKwh(gridExportE)}`:'—'), '#5bc0ff', gridImport>0?'Importing':gridExport>0?'Exporting':'Idle', isPower ? e.grid : statMap.grid_import],
-      ['Battery', fmtVal(isPower?(battP!=null?-battP:null):battRaw, isPower?null:(battChargeE!=null||battDischargeE!=null?Math.abs(Number(battChargeE||0)-Number(battDischargeE||0)):null)), '#7ee22d', socText, isPower ? e.battery : statMap.batt_charge],
-      ['Home', fmtVal(loadVal, loadE), '#ff8a4c', isPower ? (loadDaily!=null?`Today ${this._fmtKwh(loadDaily)}`:'') : this._periodLabel(period), isPower ? e.load : statMap.load],
-      ...extraChips.map((chip) => [chip.label, this._configValue(chip.entity, chip.format), '#bc63ff', '', chip.entity]),
-    ].map(([l,v,c,s2,entity]) => `<div style="flex:1;min-width:130px;padding:12px 14px;border-radius:14px;background:rgba(255,255,255,.035);border:1px solid rgba(118,166,190,.18);"><div style="font-size:11px;color:#9eb8c8;letter-spacing:.4px;text-transform:uppercase;">${this._esc(l)}</div><div style="font-size:22px;font-weight:800;color:${c};margin-top:4px;text-shadow:0 0 18px ${c}33;">${this._entityValue(v==null?'—':v, entity)}</div><div style="font-size:11px;color:#93adbc;margin-top:2px;">${this._esc(s2||'')}</div></div>`).join('');
 
     const summaryChips = [
       ['Overall grid', [
@@ -11783,12 +11770,12 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
 
     const pvNode = this._node(pos.pv[0],pos.pv[1],this._nodeIcon('solar-pv'),'PV',fmtVal(pvVal,pvE), isPower?(pvVal>10?'Generating':'Idle'):this._periodLabel(period),'#f6c945',(isPower?pvVal>10:pvVal>0.01),e.pv,this._nodeDetailRows('pv', {
       pv_energy: () => this._detailLine(isPower?'Today':this._periodLabel(period), this._fmtKwh(isPower?pvDaily:pvE),'#f6c945',statMap.pv),
-    }, ['pv_energy']), { nodeW: SZ.pv.w, nodeH: SZ.pv.h });
+    }, ['pv_energy']), { nodeW: SZ.pv.w, nodeH: SZ.pv.h, nodeX: entityNodeX('pv') });
     const gridNode = this._node(pos.grid[0],pos.grid[1],this._nodeIcon('grid'),'Grid', isPower?this._fmtW(gridP):(gridImportE!=null||gridExportE!=null?`${this._fmtKwh(gridImportE)} in`:'—'), gridLabel,'#5bc0ff',(gridImport>0||gridExport>0),e.grid,this._nodeDetailRows('grid', {
       grid_import: () => this._detailLine('Import '+(isPower?'today':period), this._fmtKwh(isPower?gridBought:gridImportE),'#5bc0ff',statMap.grid_import),
       grid_export: () => this._detailLine('Export '+(isPower?'today':period), this._fmtKwh(isPower?gridSold:gridExportE),'#7ee22d',statMap.grid_export),
       grid_voltage: () => this._detailLine('Voltage', this._fmtNum(gridV,1,' V'),'#9eb8c8',e.grid_l1_voltage),
-    }, ['grid_import', 'grid_export', 'grid_voltage']), { nodeW: SZ.grid.w, nodeH: SZ.grid.h });
+    }, ['grid_import', 'grid_export', 'grid_voltage']), { nodeW: SZ.grid.w, nodeH: SZ.grid.h, nodeX: entityNodeX('grid') });
     const invNode = this._node(pos.inv[0],pos.inv[1],this._nodeIcon('inverter'),'Inverter',fmtVal(invVal,invVal), invP!=null||!isPower?'Active':'Unavailable','#bc63ff',(isPower?invP!=null&&Math.abs(invP)>10:invVal!=null&&invVal>0.01),e.inverter,this._nodeDetailRows('inverter', {
       inv_temperature: () => this._detailLine('Temperature', this._fmtNum(invT,1,' °C'),'#bc63ff',e.inverter_temperature),
       inv_status: () => this._detailLine('Status', invP!=null||!isPower?'Online':'—'),
@@ -11796,7 +11783,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const homeNode = this._node(pos.home[0],pos.home[1],this._nodeIcon('home'),'Home',fmtVal(loadVal,loadE), isPower?(loadVal>10?'Consuming':'Idle'):this._periodLabel(period),'#ff8a4c',(isPower?loadVal>10:loadVal>0.01),e.load,this._nodeDetailRows('home', {
       home_energy: () => this._detailLine(isPower?'Today':this._periodLabel(period), this._fmtKwh(isPower?loadDaily:loadE),'#ff8a4c',statMap.load),
       home_consumers: () => this._detailLine('Consumers', String(displayConsumers.length)),
-    }, ['home_energy', 'home_consumers']), { nodeW: SZ.home.w, nodeH: SZ.home.h });
+    }, ['home_energy', 'home_consumers']), { nodeW: SZ.home.w, nodeH: SZ.home.h, nodeX: entityNodeX('home') });
     const battNode = this._node(pos.batt[0],pos.batt[1],this._batteryNodeIcon(soc),'Battery',fmtVal(isPower?(battP!=null?-battP:null):battRaw, isPower?null:null), [battLabel,socText].filter(Boolean).join(' · '),'#7ee22d',(battCharge>(isPower?10:0.01)||battDischarge>(isPower?10:0.01)),e.battery,this._nodeDetailRows('battery', {
       batt_soc: () => this._detailLine('SOC', soc!=null?`${Math.round(soc)} %`:'—','#7ee22d',e.battery_soc),
       batt_voltage: () => this._detailLine('Voltage', this._fmtNum(battV,1,' V'),'#9eb8c8',e.battery_voltage),
@@ -11804,7 +11791,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       batt_temperature: () => this._detailLine('Temp', this._fmtNum(battT,1,' °C'),'#9eb8c8',e.battery_temperature),
       batt_charged: () => this._detailLine('Charged '+(isPower?'today':period), this._fmtKwh(isPower?battChargeDaily:battChargeE),'#7ee22d',statMap.batt_charge),
       batt_discharged: () => this._detailLine('Discharged '+(isPower?'today':period), this._fmtKwh(isPower?battDischargeDaily:battDischargeE),'#ff8a4c',statMap.batt_discharge),
-    }, ['batt_soc', 'batt_voltage', 'batt_current', 'batt_temperature', 'batt_charged', 'batt_discharged']), { nodeW: SZ.batt.w, nodeH: SZ.batt.h });
+    }, ['batt_soc', 'batt_voltage', 'batt_current', 'batt_temperature', 'batt_charged', 'batt_discharged']), { nodeW: SZ.batt.w, nodeH: SZ.batt.h, nodeX: entityNodeX('batt') });
 
     const consumerHtml = displayConsumers.length ? `
       <div style="margin-top:14px;padding:14px;border-radius:18px;border:1px solid rgba(118,166,190,.18);background:rgba(255,255,255,.02);">
@@ -11853,12 +11840,11 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
               <div style="font-size:13px;color:#9eb8c8;margin-top:4px;">${isPower ? 'Live energy flow' : 'Energy period view'} · click any node for details</div>
             </div>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-              <div style="display:flex;gap:6px;flex-wrap:wrap;">${periodBtns}</div>
               <div style="font-size:12px;color:#9eb8c8;padding:7px 12px;border-radius:999px;background:rgba(255,255,255,.04);border:1px solid rgba(118,166,190,.18);">${this._statsLoading ? 'Loading…' : new Date().toLocaleString()}</div>
             </div>
           </div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;">${summaryChips}</div>
-          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;">${chips}</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;">${periodBtns}</div>
           <div style="width:100%;aspect-ratio:${W} / ${H};margin-top:14px;border-radius:20px;overflow:hidden;border:1px solid rgba(118,166,190,.18);background:linear-gradient(180deg,rgba(255,255,255,.025),rgba(255,255,255,.008));position:relative;">
             <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMin meet" style="width:100%;height:100%;display:block;">
               <defs>
@@ -11901,7 +11887,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.0.84",
+  description: "Deye Energy 0.8.0.85",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

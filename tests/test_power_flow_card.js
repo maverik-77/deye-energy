@@ -103,11 +103,13 @@ check(
   "grid background should remain outside the content transform",
 );
 
-// Summary widget row above the existing PV/Grid/Battery/Home chips
+// Summary widget row; the PV/Grid/Battery/Home chip row has been removed
 for (const title of ["Overall grid", "Electricity", "Gas", "Export"]) {
   check(html.includes(`>${title}</div>`), `missing summary widget ${title}`);
 }
-check(html.indexOf(">Overall grid</div>") < html.indexOf(">PV</div>"), "summary row should be above PV/Grid/Battery/Home chips");
+check(html.includes('min-width:220px'), "summary chip widgets should remain");
+check(!html.includes('min-width:130px'), "PV/Grid/Battery/Home chip row should be removed");
+check(!html.includes('gap:10px;flex-wrap:wrap;margin-top:10px'), "second chip row container should be removed");
 check(html.includes("0 W") && html.includes("3331 W"), "missing overall grid import/export values");
 check(html.includes("77.60 kWh") && html.includes("£4.64"), "missing electricity values");
 check(html.includes("2.34 kWh") && html.includes("£0.44"), "missing gas values");
@@ -147,6 +149,11 @@ check((html.match(/<foreignObject[^>]* width="174" height="132"/g) || []).length
 check((html.match(/<foreignObject[^>]* width="174" height="154"/g) || []).length === 1, "Grid card should be 174x154");
 check((html.match(/<foreignObject[^>]* width="248" height="220"/g) || []).length === 1, "Inverter card should stay 248x220");
 check((html.match(/<foreignObject[^>]* width="223" height="220"/g) || []).length === 1, "Battery card should be 223x220");
+// Entity cards start at Battery's 16 px inset from the left edge of their surround
+check(html.includes('<foreignObject x="488.5" y="122.5" width="174" height="132"'), "PV card should start at Battery's left inset");
+check(html.includes('<foreignObject x="143" y="393" width="174" height="154"'), "Grid card should start at Battery's left inset");
+check(html.includes('<foreignObject x="834" y="404" width="174" height="132"'), "Home card should start at Battery's left inset");
+check(html.includes('<foreignObject x="488.5" y="715.5" width="223" height="220"'), "Battery card should keep its left inset");
 // Energy Status style dots: CSS dash stream, fixed spacing, config-driven speed
 const flowPath = (markup, id) => (markup.match(new RegExp(`<path id="${id}"[^>]*>`)) || [''])[0];
 check(flowPath(html, 'pf-grid-inv').includes('stroke-width="4"'), "flow paths should keep an explicit stroke width for idle links");
@@ -219,7 +226,7 @@ gridCard.hass = { states: { p: { state: '0' }, g: { state: '0' }, b: { state: '0
 const zeroGridHtml = gridCard.innerHTML;
 check(!flowPath(zeroGridHtml, 'pf-grid-inv').includes('pf-flow-active') && !flowPath(zeroGridHtml, 'pf-grid-inv').includes('marker-end='), "0 W grid should leave the link idle");
 check(gridNodeHtml(zeroGridHtml).includes('border:1px solid rgba(148,173,189,.28);'), "0 W grid should leave the Grid node idle");
-check(zeroGridHtml.slice(zeroGridHtml.indexOf('>Grid</div>'), zeroGridHtml.indexOf('>Grid</div>') + 400).includes('Idle'), "0 W grid chip should read Idle");
+check(zeroGridHtml.slice(zeroGridHtml.indexOf('>Grid</div>'), zeroGridHtml.indexOf('>Grid</div>') + 400).includes('Idle'), "0 W Grid node should read Idle");
 
 check(html.includes('r="121"') && html.includes('stroke-width="9"'), "inverter ring radius and stroke should be reduced by a further 20%");
 check(!html.includes('r="151"') && !html.includes('stroke-width="11"'), "previous larger inverter ring should be gone");
@@ -329,6 +336,8 @@ check(h2.includes("Rest"), "missing rest consumer");
 check(h2.includes("pf-period"), "missing period selector");
 check(h2.includes('data-period="today"'), "missing today period");
 check(h2.includes('data-period="24h"'), "missing 24h period");
+check(h2.indexOf('class="pf-period"') > h2.indexOf('min-width:220px'), "period selector should render below the summary chips");
+check(h2.indexOf('class="pf-period"') < h2.indexOf('<svg viewBox="0 0 1200 1081"'), "period selector should render above the power flow diagram");
 check(h2.includes("pf-consumer-click"), "missing consumer click class");
 check(card2._period === "power", "default period should be power");
 card2._period = "today"; card2._render();
@@ -357,7 +366,7 @@ check(socCard.innerHTML.includes('width:35%;height:100%;border-radius:999px;back
 socCard.hass = { states: socStates };
 check(socCard.innerHTML.includes('width:0%;height:100%;border-radius:999px;background:#9eb8c8'), "missing SOC bar should be empty and grey");
 
-// Shared entity-map override: defaults -> override -> card config, plus extra
+// Shared entity-map override: defaults -> override -> card config, plus summary
 // chips and node detail rows.
 const overrideCard = new sandbox.PowerFlowCard();
 overrideCard.setConfig({ entities: { pv: "sensor.card_pv" } });
@@ -394,6 +403,7 @@ overrideCard.hass = { states: {
           battery: [{ label: "Extra Battery", entity: "sensor.override_soc", format: "pct" }],
         },
         chip_rows: {
+          // Legacy main row retained in the fixture to prove it is ignored.
           main: [{ label: "Water", entity: "sensor.water", format: "num" }],
           summary: [{
             label: "Extra group",
@@ -408,7 +418,7 @@ const overrideHtml = overrideCard.innerHTML;
 check(overrideHtml.includes("8888 W"), "card config entity should win over the override for PV");
 check(!overrideHtml.includes("1111 W"), "override PV entity should not replace card config");
 check(overrideHtml.includes("250 W") || overrideHtml.includes("250 W"), "override grid entity should be used when card config omits it");
-check(overrideHtml.includes(">Water</div>") && overrideHtml.includes('class="pf-value-click" data-entity="sensor.water"') && overrideHtml.includes(">7</span>"), "extra main chip should render with its live, clickable value");
+check(!overrideHtml.includes(">Water</div>") && !overrideHtml.includes('data-entity="sensor.water"'), "legacy main chip row should be ignored");
 check(overrideHtml.includes(">Extra group</div>") && overrideHtml.includes('class="pf-value-click" data-entity="sensor.extra_summary"') && overrideHtml.includes(">42</span>"), "extra summary chip group should render with its clickable value");
 for (const [label, entity] of [
   ["Extra PV", "sensor.extra_pv"],

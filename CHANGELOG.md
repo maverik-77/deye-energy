@@ -4,15 +4,28 @@ All notable changes to Deye Energy. Versions before 0.8.0 are the history of the
 upstream Deye Energy Manager project and are not repeated here. Attribution is
 recorded at the bottom of README.md.
 
-## [Unreleased]
+## [0.8.0.85] - 2026-11-23
+
+### Changed
+
+- **Power flow layout**: PV, Grid and Home entity cards now start at Battery's
+  16 px left inset inside their surrounds. The period selector moved to its own
+  row below the summary chips and above the diagram.
+
+### Removed
+
+- **Power flow main chip row**: the PV/Grid/Battery/Home chip row and its
+  editor controls were removed. Only the summary chip row remains configurable;
+  legacy `chip_rows.main` entries are ignored and dropped on the next save.
 
 ## [0.8.0.84] - 2026-11-23
 
 ### Added
 
 - **Power flow display editor**: the Inverter configuration card can edit node
-  entities, ordered detail rows and chip rows, including removing and reordering
-  built-in detail rows. Saved settings persist through the backend override.
+  entities, ordered detail rows and summary chip rows, including removing and
+  reordering built-in detail rows. Saved settings persist through the backend
+  override.
 
 ### Changed
 

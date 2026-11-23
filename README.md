@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.0.84-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.0.85-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -71,7 +71,9 @@ add-on profile) and to a UK-style tariff.
   four main nodes shows Overall grid (import/export power), Electricity (import
   energy and cost today), Gas (import and cost today) and Export (export energy
   and income today), with both values in each widget sharing the same font
-  format. Flow links use the same animated stroke-dash dots as the Energy Status
+  format. The period selector sits on its own row directly below the chips and
+  above the diagram. Flow links use the same animated stroke-dash dots as the
+  Energy Status
   card: a fixed 1px-dot/22px-gap stream scrolls along the whole link at a speed
   set by the `flow_animation_speed` config option (default 6), with a tighter
   `1 18` variant on small screens. The direction is taken from the flow itself
@@ -79,8 +81,9 @@ add-on profile) and to a UK-style tariff.
   while the link remains. The PV and Home cards are sized 70% × 60% and the Grid
   card 70% × 70% of the original node card; the Battery card is 90% of the
   original width (223 × 220). PV, Grid and Home outer surrounds are now the
-  same 255 px width as Battery, while their inner cards stay 174 px wide. The
-  ring around the Inverter is a further 20% smaller in both radius (151 → 121)
+  same 255 px width as Battery, while their inner cards stay 174 px wide and
+  start at Battery's 16 px left inset. The ring around the Inverter is a further
+  20% smaller in both radius (151 → 121)
   and stroke (11 → 9), and node halos and link endpoints follow the surrounds.
   The visible gaps to the Inverter are 88.5 px for Grid and Home, 70 px for PV
   and 100 px for Battery, on a 1200 × 1081 canvas; the Inverter's Temperature
@@ -190,7 +193,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.84
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.85
       type: module
 ```
 

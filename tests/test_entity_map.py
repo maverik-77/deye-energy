@@ -195,7 +195,7 @@ class EntityMapCatalogueTests(unittest.TestCase):
 
     def test_override_deep_merges_and_defaults_fail_closed(self):
         with tempfile.TemporaryDirectory(
-            dir="/data/v2/cache/opencode", prefix="deye_entity_map_"
+            prefix="deye_entity_map_"
         ) as tmp:
             path = Path(tmp) / BUNDLED["override_file"]
             path.write_text(
@@ -275,10 +275,10 @@ class EntityMapCatalogueTests(unittest.TestCase):
             defaults["node_detail_keys"],
             ["grid", "pv", "inverter", "home", "battery"],
         )
-        self.assertEqual(defaults["chip_rows"], {"main": [], "summary": []})
+        self.assertEqual(defaults["chip_rows"], {"summary": []})
 
         with tempfile.TemporaryDirectory(
-            dir="/data/v2/cache/opencode", prefix="deye_power_flow_map_"
+            prefix="deye_power_flow_map_"
         ) as tmp:
             path = Path(tmp) / BUNDLED["override_file"]
             path.write_text(
@@ -290,7 +290,17 @@ class EntityMapCatalogueTests(unittest.TestCase):
                                 "pv": [{"label": "Extra", "entity": "sensor.extra", "format": "w"}]
                             },
                             "chip_rows": {
-                                "main": [{"label": "Extra", "entity": "sensor.chip", "format": "num"}]
+                                "main": [{"label": "Legacy", "entity": "sensor.chip", "format": "num"}],
+                                "summary": [{
+                                    "label": "Extra",
+                                    "items": [{
+                                        "label": "Reading",
+                                        "entity": "sensor.summary_chip",
+                                        "format": "num",
+                                        "kind": "bolt",
+                                        "color": "#123abc",
+                                    }],
+                                }],
                             },
                         }
                     }
@@ -304,12 +314,13 @@ class EntityMapCatalogueTests(unittest.TestCase):
                 merged["entities"]["grid"], defaults["entities"]["grid"]
             )
             self.assertEqual(merged["node_details"]["pv"][0]["label"], "Extra")
-            self.assertEqual(merged["chip_rows"]["main"][0]["label"], "Extra")
+            self.assertEqual(set(merged["chip_rows"]), {"summary"})
+            self.assertEqual(merged["chip_rows"]["summary"][0]["label"], "Extra")
             self.assertEqual(merged["sensor_groups"], defaults["sensor_groups"])
 
     def test_save_power_flow_display_preserves_other_sections_and_fails_closed(self):
         with tempfile.TemporaryDirectory(
-            dir="/data/v2/cache/opencode", prefix="deye_power_flow_save_"
+            prefix="deye_power_flow_save_"
         ) as tmp:
             entity_map.configure(tmp)
             path = entity_map.power_flow_override_path()
@@ -323,6 +334,7 @@ class EntityMapCatalogueTests(unittest.TestCase):
                         "grid": [{"label": "Frequency", "entity": "sensor.freq", "format": "num"}]
                     },
                     "chip_rows": {
+                        "main": [{"label": "Legacy", "entity": "sensor.legacy", "format": "num"}],
                         "summary": [
                             {
                                 "label": "Water",
@@ -343,7 +355,9 @@ class EntityMapCatalogueTests(unittest.TestCase):
             saved = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(set(saved), {"power_flow"})
             self.assertEqual(result["entities"]["pv"], "sensor.saved_pv")
+            self.assertEqual(set(result["chip_rows"]), {"summary"})
             self.assertEqual(result["chip_rows"]["summary"][0]["label"], "Water")
+            self.assertEqual(set(saved["power_flow"]["chip_rows"]), {"summary"})
             self.assertEqual(entity_map.power_flow_display()["entities"]["pv"], "sensor.saved_pv")
 
             saved["common"] = {"entities": {"battery_soc_sensor": "sensor.keep_me"}}
@@ -363,7 +377,7 @@ class EntityMapCatalogueTests(unittest.TestCase):
                 entity_map.save_power_flow_display({"entities": {"nope": "sensor.bad"}})
             with self.assertRaises(ValueError):
                 entity_map.save_power_flow_display(
-                    {"chip_rows": {"main": [{"label": "Bad", "entity": "light.x"}]}}
+                    {"chip_rows": {"unknown": []}}
                 )
             self.assertEqual(path.read_text(encoding="utf-8"), before)
 
@@ -390,7 +404,7 @@ class EntityMapCatalogueTests(unittest.TestCase):
                 entity_map.validate_power_flow_payload(bad)
 
         with tempfile.TemporaryDirectory(
-            dir="/data/v2/cache/opencode", prefix="deye_power_flow_layout_"
+            prefix="deye_power_flow_layout_"
         ) as tmp:
             entity_map.configure(tmp)
             path = entity_map.power_flow_override_path()
