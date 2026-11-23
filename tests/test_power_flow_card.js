@@ -109,23 +109,31 @@ check(!html.includes('markerWidth="3.5" markerHeight="3.5"'), "clipped arrow mar
 check(!html.includes('width="84" height="30" rx="15"'), "on-arrow power label should not be rendered");
 check(html.includes('.pf-flow-active{stroke-dasharray:1 22;stroke-width:7!important') && html.includes('.pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34'), "flow links should use Energy Status style dashes");
 check(!html.includes('stroke-width="14"'), "oversized link glow should be gone");
-check(html.includes('d="M 600 270 L 600 296"'), "PV link should run from the halo edge to the inverter ring");
-check(html.includes('d="M 774 470 L 881 470"'), "inverter-to-home link should run from the ring to the halo edge");
-check(html.includes('d="M 426 470 L 319 470"'), "grid link should run from the ring to the halo edge");
-check(html.includes('d="M 600 670 L 600 644"'), "battery link should run from the halo edge to the ring");
-for (const [coords, color] of [
-  ['x="460" y="14"', 'rgba(246,201,69,.10)'],
-  ['x="35" y="344"', 'rgba(91,192,255,.10)'],
-  ['x="885" y="344"', 'rgba(255,138,76,.10)'],
-  ['x="460" y="674"', 'rgba(126,226,45,.10)'],
+check(html.includes('d="M 600 226 L 600 313.5"'), "PV link should run from the resized halo edge to the shrunk inverter ring");
+check(html.includes('d="M 756.5 470 L 918 470"'), "inverter-to-home link should run from the ring to the resized halo edge");
+check(html.includes('d="M 443.5 470 L 282 470"'), "grid link should run from the ring to the resized halo edge");
+check(html.includes('d="M 600 670 L 600 626.5"'), "battery link should run from the unchanged halo edge to the shrunk ring");
+for (const [coords, dims, color] of [
+  ['x="497" y="58"', 'width="206" height="164"', 'rgba(246,201,69,.10)'],
+  ['x="72" y="377"', 'width="206" height="186"', 'rgba(91,192,255,.10)'],
+  ['x="922" y="388"', 'width="206" height="164"', 'rgba(255,138,76,.10)'],
+  ['x="460" y="674"', 'width="280" height="252"', 'rgba(126,226,45,.10)'],
 ]) {
-  check(html.includes(`${coords} width="280" height="252" rx="36" fill="none" stroke="${color}" stroke-width="8"`), `missing halo for ${color}`);
+  check(html.includes(`${coords} ${dims} rx="36" fill="none" stroke="${color}" stroke-width="8"`), `missing halo for ${color}`);
 }
+// Whole-card sizes: PV/Home 174x132, Grid 174x154, Inverter/Battery unchanged at 248x220
+check((html.match(/<foreignObject[^>]* width="174" height="132"/g) || []).length === 2, "PV and Home cards should be 174x132");
+check((html.match(/<foreignObject[^>]* width="174" height="154"/g) || []).length === 1, "Grid card should be 174x154");
+check((html.match(/<foreignObject[^>]* width="248" height="220"/g) || []).length === 2, "Inverter and Battery cards should stay 248x220");
 // Energy Status style dots: CSS dash stream, fixed spacing, config-driven speed
 const flowPath = (markup, id) => (markup.match(new RegExp(`<path id="${id}"[^>]*>`)) || [''])[0];
+check(flowPath(html, 'pf-grid-inv').includes('stroke-width="4"'), "flow paths should keep an explicit stroke width for idle links");
 check(!html.includes('<animateMotion') && !html.includes('<mpath') && !html.includes('keyPoints='), "SVG ball animation should be gone");
 check(!source.includes('const gap = 30;') && !source.includes('Math.abs(power) * 0.11'), "power-scaled ball logic should be gone");
 check(html.includes('.pf-flow-active{stroke-dasharray:1 22;stroke-width:7!important;animation:pfFlowDash 3.00s linear infinite}'), "dot stream should use config-driven duration");
+check(html.includes('filter id="pf-line-glow" filterUnits="userSpaceOnUse" x="0" y="0" width="1200" height="940"'), "line glow filter should use a user-space region");
+check(html.includes('.pf-flow-line{fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;filter:url(#pf-line-glow)}') && html.includes('.pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34;filter:url(#pf-line-glow)}'), "flow paths should use the user-space glow filter");
+check(!html.includes('stroke-dasharray:none;filter:url(#pf-glow)'), "straight links should not use the bounding-box glow filter");
 check(html.includes('@keyframes pfFlowDash{to{stroke-dashoffset:-220}}'), "dot stream should use the fixed Energy Status offset formula");
 check(html.includes('@media (max-width:640px){.pf-flow-active{stroke-dasharray:1 18;animation-name:pfFlowDashMobile}}'), "mobile dot variant should be present");
 check(html.includes('class="pf-flow-line pf-flow-active"'), "active links should carry the scrolling-dot class");
@@ -144,22 +152,25 @@ const dirCard = new sandbox.PowerFlowCard();
 dirCard.setConfig({ entities: { pv: 'p', grid: 'g', battery: 'b', battery_soc: 's', load: 'l', inverter: 'i' } });
 dirCard.hass = { states: { p: { state: '0' }, g: { state: '400' }, b: { state: '-300' }, s: { state: '50' }, l: { state: '0' }, i: { state: '0' } } };
 const dirHtml = dirCard.innerHTML;
-check(flowPath(dirHtml, 'pf-grid-inv').includes('d="M 319 470 L 426 470"') && flowPath(dirHtml, 'pf-grid-inv').includes('marker-end=') && flowPath(dirHtml, 'pf-grid-inv').includes('pf-flow-active'), "import should point from grid to inverter and scroll toward it");
-check(flowPath(dirHtml, 'pf-batt-inv').includes('d="M 600 644 L 600 670"') && flowPath(dirHtml, 'pf-batt-inv').includes('marker-end=') && flowPath(dirHtml, 'pf-batt-inv').includes('pf-flow-active'), "charging should point from inverter to battery and scroll toward it");
+check(flowPath(dirHtml, 'pf-grid-inv').includes('d="M 282 470 L 443.5 470"') && flowPath(dirHtml, 'pf-grid-inv').includes('marker-end=') && flowPath(dirHtml, 'pf-grid-inv').includes('pf-flow-active'), "import should point from grid to inverter and scroll toward it");
+check(flowPath(dirHtml, 'pf-batt-inv').includes('d="M 600 626.5 L 600 670"') && flowPath(dirHtml, 'pf-batt-inv').includes('marker-end=') && flowPath(dirHtml, 'pf-batt-inv').includes('pf-flow-active'), "charging should point from inverter to battery and scroll toward it");
 
 // Idle: the link stays, but direction-dependent decorations disappear
 const idleCard = new sandbox.PowerFlowCard();
 idleCard.setConfig({ entities: { pv: 'p', grid: 'g', battery: 'b', battery_soc: 's', load: 'l', inverter: 'i' } });
 idleCard.hass = { states: { p: { state: '0' }, g: { state: '0' }, b: { state: '0' }, s: { state: '50' }, l: { state: '0' }, i: { state: '0' } } };
 const idleHtml = idleCard.innerHTML;
-check(flowPath(idleHtml, 'pf-grid-inv').includes('d="M 319 470 L 426 470"'), "idle grid link should remain rendered");
-check(flowPath(idleHtml, 'pf-batt-inv').includes('d="M 600 670 L 600 644"'), "idle battery link should remain rendered");
+check(flowPath(idleHtml, 'pf-grid-inv').includes('d="M 282 470 L 443.5 470"'), "idle grid link should remain rendered");
+check(flowPath(idleHtml, 'pf-batt-inv').includes('d="M 600 670 L 600 626.5"'), "idle battery link should remain rendered");
 check(!idleHtml.includes('marker-end='), "idle links should have no arrowheads");
 check(!idleHtml.includes('class="pf-flow-line pf-flow-active"'), "idle links should have no scrolling dots");
 check((idleHtml.match(/class="pf-flow-line-bg"/g) || []).length === 4 && (idleHtml.match(/class="pf-flow-line"/g) || []).length === 4, "idle links should remain as plain background and line paths");
-check(html.includes('r="168"') && html.includes('stroke-width="12"'), "inverter ring should enclose the node without crossing it");
-check(!html.includes('r="150"') && !html.includes('stroke-width="28"'), "old overlapping inverter ring should be gone");
+check(html.includes('r="151"') && html.includes('stroke-width="11"'), "inverter ring radius and stroke should be reduced by 10%");
+check(!html.includes('r="168"') && !html.includes('stroke-width="12"'), "old larger inverter ring should be gone");
 check(html.includes('display:flex;flex-direction:column;justify-content:center;width:248px'), "node content should be vertically centered");
+check(html.includes('display:flex;justify-content:flex-start;gap:5px;font-size:12px;line-height:1.5;'), "detail rows should use a tight label/value gap");
+check(!html.includes('justify-content:space-between;gap:10px;font-size:12px;line-height:1.5;'), "old wide-spaced detail rows should be gone");
+check(!html.includes('>Frequency</span>'), "Grid Frequency detail row should be removed");
 check(html.includes('position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)'), "inverter image should be centred in its node and ring");
 
 // Node images (light theme) and active glow

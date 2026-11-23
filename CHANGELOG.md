@@ -6,6 +6,30 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.80] - 2026-11-23
+
+### Changed
+
+- **Power flow node sizing**: PV and Home cards are now 174×132 (70% × 60% of
+  the original 248×220), Grid is 174×154 (70% × 70%), and Battery is unchanged.
+  Node halos and link endpoints were recalculated to keep links meeting each
+  card's outer edge. The Inverter ring shrank by 10% in both radius (168 → 151)
+  and stroke width (12 → 11).
+- **Power flow details**: removed the Grid Frequency row and tightened the
+  label/value gap in every detail row (`space-between; gap:10px` →
+  `flex-start; gap:5px`).
+- **Docs/tests**: README describes the new card proportions, ring and detail
+  spacing; power-flow tests cover the new sizes, link/halo coordinates, ring
+  dimensions, removed Frequency row and detail-row style; bumped the card
+  resource revision and versioned docs.
+
+### Fixed
+
+- Restored visible flow lines and glow on the straight Power Flow links by
+  giving `#pf-line-glow` an explicit `userSpaceOnUse` region and putting an
+  explicit `stroke-width="4"` back on the path markup. The old object-bounding-
+  box filter collapsed to zero area on axis-aligned links.
+
 ## [0.8.0.79] - 2026-11-23
 
 ### Changed

@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.0.79-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.0.80-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -58,8 +58,8 @@ add-on profile) and to a UK-style tariff.
   selected tab; default entity mappings are overridable in card config; addable
   to any dashboard.
 - **Power flow** card (`custom:deye-energy-power-flow-card`) showing live
-  animated power flow between PV, Grid, Inverter, Battery, and Home, with curved
-  flows, glow balls, directional arrows, glowing node widgets, richer per-node
+  animated power flow between PV, Grid, Inverter, Battery, and Home, with straight
+  glowing links, directional arrows, glowing node widgets, richer per-node
   details (daily energy, voltage/frequency/current/temperature/SOC), optional
   consumers (including `rest` untracked load), energy period switching
   (`power/today/24h/week/month`), battery sign convention in power mode
@@ -76,8 +76,13 @@ add-on profile) and to a UK-style tariff.
   set by the `flow_animation_speed` config option (default 6), with a tighter
   `1 18` variant on small screens. The direction is taken from the flow itself
   so the arrowhead and dot movement always agree, and both disappear at idle
-  while the link remains. Entity mappings are config-overridable and the card is
-  addable to any dashboard.
+  while the link remains. The PV and Home cards are sized 70% × 60% and the Grid
+  card 70% × 70% of the original node card; the Battery card keeps its original
+  size. The ring around the Inverter is 10% smaller in both radius and stroke
+  width, and node halos and link endpoints follow the resized cards. Grid no
+  longer shows the frequency detail row, and label/value gaps in all detail rows
+  are tighter. Entity mappings are config-overridable and the card is addable to
+  any dashboard.
 
 ## Requirements
 
@@ -179,7 +184,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.79
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.80
       type: module
 ```
 

@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.79
+// Resource revision: v=0.8.0.80
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -2988,7 +2988,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.79 (resource revision v=0.8.0.79)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.80 (resource revision v=0.8.0.80)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -11025,11 +11025,11 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     return `
       <defs><marker id="pf-arrow-${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto" markerUnits="strokeWidth"><path d="M 0 0 L 10 5 L 0 10 L 2.5 5 Z" fill="${color}" opacity="0.95"/></marker></defs>
       <path class="pf-flow-line-bg" d="${d}" stroke="${color}" fill="none"/>
-      <path id="${id}" class="pf-flow-line${active ? ' pf-flow-active' : ''}" d="${d}" stroke="${active ? color : 'rgba(158,184,200,.18)'}" stroke-opacity="${active ? 0.96 : 0.18}" fill="none" ${marker ? `marker-end="${marker}"` : ''}/>`;
+      <path id="${id}" class="pf-flow-line${active ? ' pf-flow-active' : ''}" d="${d}" stroke="${active ? color : 'rgba(158,184,200,.18)'}" stroke-width="4" stroke-opacity="${active ? 0.96 : 0.18}" fill="none" ${marker ? `marker-end="${marker}"` : ''}/>`;
   }
 
   _detailLine(label, value, color='#9eb8c8') {
-    return `<div style="display:flex;justify-content:space-between;gap:10px;font-size:12px;line-height:1.5;"><span style="color:#93adbc;">${this._esc(label)}</span><span style="color:${this._esc(color)};font-weight:600;white-space:nowrap;">${this._esc(value)}</span></div>`;
+    return `<div style="display:flex;justify-content:flex-start;gap:5px;font-size:12px;line-height:1.5;"><span style="color:#93adbc;">${this._esc(label)}</span><span style="color:${this._esc(color)};font-weight:600;white-space:nowrap;">${this._esc(value)}</span></div>`;
   }
 
   _nodeIconSrc(key) {
@@ -11057,7 +11057,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const click = entityId ? `class="pf-node-click" data-entity="${this._esc(entityId)}" style="cursor:pointer"` : '';
     const border = active ? color : 'rgba(148,173,189,.28)';
     const det = details.length ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(118,166,190,.16);display:flex;flex-direction:column;gap:2px;">${details.join('')}</div>` : '';
-    const nodeW = 248, nodeH = details.length ? 220 : 112;
+    const nodeW = opts.nodeW ?? 248, nodeH = opts.nodeH ?? (details.length ? 220 : 112);
     const nx = x - nodeW/2, ny = y - nodeH/2;
     const iconTile = `<div style="width:64px;height:64px;border-radius:18px;display:flex;align-items:center;justify-content:center;font-size:28px;background:${color}18;border:1px solid ${color}55;box-shadow:${active ? `0 0 8px ${color}33` : 'none'};position:relative;flex:0 0 64px;">
               <span style="filter:${active ? `drop-shadow(0 0 2px ${color}) drop-shadow(0 0 5px ${color}99)` : 'none'}">${icon}</span>
@@ -11150,18 +11150,25 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const W = 1200, H = 940;
     const N = { pv:[600,140], grid:[175,470], inv:[600,470], home:[1025,470], batt:[600,800] };
     const pos = N;
-    // Node boxes: width 248 (±124), height 220 (±110). Links meet the outer edge of each halo.
-    const NW = 124, NH = 110, HALO_PAD = 16, HALO_SW = 8, RING_R = 168, RING_SW = 12;
-    const boxX = NW + HALO_PAD + HALO_SW / 2, boxY = NH + HALO_PAD + HALO_SW / 2, ringR = RING_R + RING_SW / 2;
-    const boxEdge = (c) => ({ b: c[1] + boxY, t: c[1] - boxY, l: c[0] - boxX, r: c[0] + boxX });
-    const edge = {
-      pv:   boxEdge(N.pv),
-      grid: boxEdge(N.grid),
-      inv:  { b: N.inv[1] + ringR, t: N.inv[1] - ringR, l: N.inv[0] - ringR, r: N.inv[0] + ringR },
-      home: boxEdge(N.home),
-      batt: boxEdge(N.batt),
+    // Per-node card sizes. Links meet the outer edge of each halo.
+    const HALO_PAD = 16, HALO_SW = 8, RING_R = 151, RING_SW = 11;
+    const SZ = { pv:{w:174,h:132}, grid:{w:174,h:154}, inv:{w:248,h:220}, home:{w:174,h:132}, batt:{w:248,h:220} };
+    const ringR = RING_R + RING_SW / 2;
+    const boxEdge = (key) => {
+      const c = N[key], hw = SZ[key].w/2 + HALO_PAD + HALO_SW/2, hh = SZ[key].h/2 + HALO_PAD + HALO_SW/2;
+      return { b: c[1] + hh, t: c[1] - hh, l: c[0] - hw, r: c[0] + hw };
     };
-    const haloRect = (c, color) => `<rect x="${c[0]-NW-HALO_PAD}" y="${c[1]-NH-HALO_PAD}" width="${(NW+HALO_PAD)*2}" height="${(NH+HALO_PAD)*2}" rx="36" fill="none" stroke="${color}" stroke-width="${HALO_SW}"/>`;
+    const edge = {
+      pv:   boxEdge('pv'),
+      grid: boxEdge('grid'),
+      inv:  { b: N.inv[1] + ringR, t: N.inv[1] - ringR, l: N.inv[0] - ringR, r: N.inv[0] + ringR },
+      home: boxEdge('home'),
+      batt: boxEdge('batt'),
+    };
+    const haloRect = (key, color) => {
+      const c = N[key], hw = SZ[key].w/2 + HALO_PAD, hh = SZ[key].h/2 + HALO_PAD;
+      return `<rect x="${c[0]-hw}" y="${c[1]-hh}" width="${hw*2}" height="${hh*2}" rx="36" fill="none" stroke="${color}" stroke-width="${HALO_SW}"/>`;
+    };
     const straight = (x1, y1, x2, y2) => `M ${x1} ${y1} L ${x2} ${y2}`;
     const pvToInv = straight(N.pv[0], edge.pv.b, N.inv[0], edge.inv.t);
     const gridToInv = straight(edge.grid.r, N.grid[1], edge.inv.l, N.inv[1]);
@@ -11222,13 +11229,12 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
         </div>
       </div>`).join('');
 
-    const pvNode = this._node(pos.pv[0],pos.pv[1],this._nodeIcon('solar-pv'),'PV',fmtVal(pvVal,pvE), isPower?(pvVal>10?'Generating':'Idle'):this._periodLabel(period),'#f6c945',(isPower?pvVal>10:pvVal>0.01),e.pv,[this._detailLine(isPower?'Today':this._periodLabel(period), this._fmtKwh(isPower?pvDaily:pvE),'#f6c945')]);
+    const pvNode = this._node(pos.pv[0],pos.pv[1],this._nodeIcon('solar-pv'),'PV',fmtVal(pvVal,pvE), isPower?(pvVal>10?'Generating':'Idle'):this._periodLabel(period),'#f6c945',(isPower?pvVal>10:pvVal>0.01),e.pv,[this._detailLine(isPower?'Today':this._periodLabel(period), this._fmtKwh(isPower?pvDaily:pvE),'#f6c945')], { nodeW: SZ.pv.w, nodeH: SZ.pv.h });
     const gridNode = this._node(pos.grid[0],pos.grid[1],this._nodeIcon('grid'),'Grid', isPower?this._fmtW(gridP):(gridImportE!=null||gridExportE!=null?`${this._fmtKwh(gridImportE)} in`:'—'), gridLabel,'#5bc0ff',(gridImport>(isPower?10:0.01)||gridExport>(isPower?10:0.01)),e.grid,[
       this._detailLine('Import '+(isPower?'today':period), this._fmtKwh(isPower?gridBought:gridImportE),'#5bc0ff'),
       this._detailLine('Export '+(isPower?'today':period), this._fmtKwh(isPower?gridSold:gridExportE),'#7ee22d'),
       this._detailLine('Voltage', this._fmtNum(gridV,1,' V')),
-      this._detailLine('Frequency', this._fmtNum(gridFreq,2,' Hz')),
-    ]);
+    ], { nodeW: SZ.grid.w, nodeH: SZ.grid.h });
     const invNode = this._node(pos.inv[0],pos.inv[1],this._nodeIcon('inverter'),'Inverter',fmtVal(invVal,invVal), invP!=null||!isPower?'Active':'Unavailable','#bc63ff',(isPower?invP!=null&&Math.abs(invP)>10:invVal!=null&&invVal>0.01),e.inverter,[
       this._detailLine('Temperature', this._fmtNum(invT,1,' °C'),'#bc63ff'),
       this._detailLine('Status', invP!=null||!isPower?'Online':'—'),
@@ -11236,7 +11242,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const homeNode = this._node(pos.home[0],pos.home[1],this._nodeIcon('home'),'Home',fmtVal(loadVal,loadE), isPower?(loadVal>10?'Consuming':'Idle'):this._periodLabel(period),'#ff8a4c',(isPower?loadVal>10:loadVal>0.01),e.load,[
       this._detailLine(isPower?'Today':this._periodLabel(period), this._fmtKwh(isPower?loadDaily:loadE),'#ff8a4c'),
       this._detailLine('Consumers', String(displayConsumers.length)),
-    ]);
+    ], { nodeW: SZ.home.w, nodeH: SZ.home.h });
     const battNode = this._node(pos.batt[0],pos.batt[1],this._batteryNodeIcon(soc),'Battery',fmtVal(isPower?(battP!=null?-battP:null):battRaw, isPower?null:null), [battLabel,socText].filter(Boolean).join(' · '),'#7ee22d',(battCharge>(isPower?10:0.01)||battDischarge>(isPower?10:0.01)),e.battery,[
       this._detailLine('SOC', soc!=null?`${Math.round(soc)} %`:'—','#7ee22d'),
       this._detailLine('Voltage', this._fmtNum(battV,1,' V')),
@@ -11277,8 +11283,8 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       <ha-card style="width:100%;max-width:none;box-sizing:border-box;height:100%;min-height:1100px;display:flex;flex-direction:column;overflow:hidden;font-family:Roboto,Arial,sans-serif;background:radial-gradient(ellipse at 20% 0%,rgba(39,120,190,.25),transparent 35%),radial-gradient(ellipse at 80% 100%,rgba(126,226,45,.10),transparent 30%),linear-gradient(180deg,#020913,#06131c 55%,#040b11);border:1px solid rgba(101,142,164,.34);box-shadow:0 24px 60px rgba(0,0,0,.45);color:#eef7ff;">
         <style>
           @keyframes pfPulse{0%,100%{opacity:.35;transform:scale(1)}50%{opacity:.05;transform:scale(1.08)}}
-          .pf-flow-line{fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;filter:url(#pf-glow)}
-          .pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34;filter:url(#pf-glow)}
+          .pf-flow-line{fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;filter:url(#pf-line-glow)}
+          .pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34;filter:url(#pf-line-glow)}
           .pf-flow-active{stroke-dasharray:1 22;stroke-width:7!important;animation:pfFlowDash ${pfDuration}s linear infinite}
           @keyframes pfFlowDash{to{stroke-dashoffset:-${pfOffset}}}
           @keyframes pfFlowDashMobile{to{stroke-dashoffset:-${Math.round(pfOffset * 18 / 22)}}}
@@ -11302,16 +11308,17 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
               <defs>
                 <linearGradient id="pf-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="rgba(77,163,255,.10)"/><stop offset="100%" stop-color="rgba(126,226,45,.04)"/></linearGradient>
                 <filter id="pf-glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3.2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+                <filter id="pf-line-glow" filterUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}"><feGaussianBlur stdDeviation="3.2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
                 <filter id="pf-icon-glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="1.8" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
                 <pattern id="pf-grid" width="44" height="44" patternUnits="userSpaceOnUse"><path d="M 44 0 L 0 0 0 44" fill="none" stroke="rgba(158,184,200,.045)" stroke-width="1"/></pattern>
               </defs>
               <rect x="0" y="0" width="${W}" height="${H}" fill="url(#pf-bg)" opacity="0.55"/>
               <rect x="0" y="0" width="${W}" height="${H}" fill="url(#pf-grid)"/>
               <circle cx="${N.inv[0]}" cy="${N.inv[1]}" r="${RING_R}" fill="none" stroke="rgba(188,99,255,.05)" stroke-width="${RING_SW}"/>
-              ${haloRect(N.pv, 'rgba(246,201,69,.10)')}
-              ${haloRect(N.grid, 'rgba(91,192,255,.10)')}
-              ${haloRect(N.home, 'rgba(255,138,76,.10)')}
-              ${haloRect(N.batt, 'rgba(126,226,45,.10)')}
+              ${haloRect('pv', 'rgba(246,201,69,.10)')}
+              ${haloRect('grid', 'rgba(91,192,255,.10)')}
+              ${haloRect('home', 'rgba(255,138,76,.10)')}
+              ${haloRect('batt', 'rgba(126,226,45,.10)')}
               ${flows.join('')}
               ${pvNode}
               ${gridNode}
@@ -11336,7 +11343,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.0.79",
+  description: "Deye Energy 0.8.0.80",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

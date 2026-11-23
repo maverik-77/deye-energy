@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.79`.
+Card resource revision: `v=0.8.0.80`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the original
@@ -9,6 +9,13 @@ integrated through MQTT. Attribution is recorded at the bottom of README.md.
 
 ## Revision history
 
+- `v=0.8.0.80` — Resized the Power Flow node cards: PV and Home to 174×132
+  (70% × 60%), Grid to 174×154 (70% × 70%), with Battery unchanged. Halos and
+  link endpoints follow the new cards; the Inverter ring is 10% smaller in both
+  radius and stroke. Removed the Grid Frequency detail row and tightened
+  label/value gaps in all detail rows. Also restored visible lines and glow on
+  the straight links by using a user-space glow filter region and an explicit
+  path stroke width. Updated README, tests and versioned docs.
 - `v=0.8.0.79` — Replaced the Power Flow card's discrete SMIL glow balls with
   the Energy Status card's animated stroke-dash dots: a fixed `1 22` dot stream
   scrolls along each active link at a speed set by `flow_animation_speed`
