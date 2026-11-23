@@ -6,6 +6,21 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.76] - 2026-11-23
+
+### Changed
+
+- **Power flow node images**: enlarged the node icon tiles and images, tightened
+  the active glow to hug each image, and removed the oversized pulsing ring.
+- **Node image assets**: replaced the five light and five dark node images with
+  the updated square PNG references, deleted the old JPEG assets, and restored
+  full-image alignment with the Battery SOC bar at the bottom of the icon.
+- **Integration/brand icons**: all icon and branding assets now use the new
+  Integration image as their base; light and dark assets are identical.
+- **Banner**: updated the integration icon in `docs/banner.svg` to the same image.
+- **Tests/docs**: updated power-flow card tests for the new image paths and
+  alignment; bumped the card resource revision and documentation versions.
+
 ## [0.8.0.75] - 2026-11-23
 
 ### Changed

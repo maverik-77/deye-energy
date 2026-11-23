@@ -86,14 +86,15 @@ check(html.includes('display:flex;flex-direction:column;justify-content:center;w
 
 // Node images (light theme) and active glow
 for (const key of ['solar-pv', 'grid', 'inverter', 'home', 'battery']) {
-  check(html.includes(`src="/deye_energy/pf-${key}.jpeg"`), `missing ${key} node image`);
-  check(!html.includes(`src="/deye_energy/pf-${key}-dark.jpeg"`), `${key} dark image should not be used in light theme`);
+  check(html.includes(`src="/deye_energy/pf-${key}.png"`), `missing ${key} node image`);
+  check(!html.includes(`src="/deye_energy/pf-${key}-dark.png"`), `${key} dark image should not be used in light theme`);
 }
-check(html.includes('object-fit:contain;display:block;border-radius:8px'), "node images should be contained and rounded");
+check(html.includes('width:64px;height:64px') && !html.includes('clip-path:'), "node images should be enlarged and shown in full");
 check(html.includes('width:77%;height:100%;border-radius:999px;background:#7ee22d'), "77% SOC bar should be green at 77% width");
-check(html.includes('position:absolute;left:8%;right:8%;bottom:8%;height:14%'), "SOC bar should be proportionally positioned within the image");
-check(html.includes('drop-shadow(0 0 5px #') && html.includes('drop-shadow(0 0 14px #'), "active nodes should have a coloured glow");
-check(html.includes('box-shadow:0 0 12px #') && html.includes('border:1px solid #'), "active node ring should glow");
+check(html.includes('position:absolute;left:8%;right:8%;bottom:8%;height:14%'), "SOC bar should sit at the bottom of the full image");
+check(html.includes('drop-shadow(0 0 2px #') && html.includes('drop-shadow(0 0 5px #'), "active nodes should have a tight coloured glow");
+check(!html.includes('drop-shadow(0 0 14px #'), "oversized glow should be gone");
+check(!html.includes('animation:pfPulse') && !html.includes('box-shadow:0 0 12px #'), "pulsing ring should be gone");
 
 check(html.includes('pf-node-click'), "missing clickable node class");
 check(html.includes('data-entity="sensor.my_pv"'), "missing node entity data attribute");
@@ -153,8 +154,8 @@ card2.hass = { themes: { darkMode: true }, states: {
 }};
 const darkHtml = card2.innerHTML;
 for (const key of ['solar-pv', 'grid', 'inverter', 'home', 'battery']) {
-  check(darkHtml.includes(`src="/deye_energy/pf-${key}-dark.jpeg"`), `missing ${key} dark node image`);
-  check(!darkHtml.includes(`src="/deye_energy/pf-${key}.jpeg"`), `${key} light image should not be used in dark theme`);
+  check(darkHtml.includes(`src="/deye_energy/pf-${key}-dark.png"`), `missing ${key} dark node image`);
+  check(!darkHtml.includes(`src="/deye_energy/pf-${key}.png"`), `${key} light image should not be used in dark theme`);
 }
 
 // Battery SOC bar colour thresholds and unavailable fallback

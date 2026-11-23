@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.75
+// Resource revision: v=0.8.0.76
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -2988,7 +2988,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.75 (resource revision v=0.8.0.75)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.76 (resource revision v=0.8.0.76)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -11018,18 +11018,18 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
 
   _nodeIconSrc(key) {
     const dark = !!(this._hass && this._hass.themes && this._hass.themes.darkMode);
-    return `/deye_energy/pf-${key}${dark ? '-dark' : ''}.jpeg`;
+    return `/deye_energy/pf-${key}${dark ? '-dark' : ''}.png`;
   }
 
   _nodeIcon(key) {
-    return `<img src="${this._nodeIconSrc(key)}" alt="" style="width:34px;height:34px;max-width:100%;box-sizing:border-box;object-fit:contain;display:block;border-radius:8px;">`;
+    return `<img src="${this._nodeIconSrc(key)}" alt="" style="width:64px;height:64px;max-width:100%;box-sizing:border-box;object-fit:contain;display:block;border-radius:8px;">`;
   }
 
   _batteryNodeIcon(soc) {
     const pct = Number.isFinite(soc) ? Math.max(0, Math.min(100, soc)) : null;
     const color = pct == null ? '#9eb8c8' : (pct < 20 ? '#ff5d70' : pct < 50 ? '#ffb020' : '#7ee22d');
     const fill = pct == null ? '0%' : `${pct}%`;
-    return `<span style="position:relative;display:block;width:34px;height:34px;max-width:100%;box-sizing:border-box;">
+    return `<span style="position:relative;display:block;width:64px;height:64px;max-width:100%;box-sizing:border-box;">
         <img src="${this._nodeIconSrc('battery')}" alt="" style="width:100%;height:100%;max-width:100%;box-sizing:border-box;object-fit:contain;display:block;border-radius:8px;">
         <span style="position:absolute;left:8%;right:8%;bottom:8%;height:14%;min-height:3px;max-height:6px;box-sizing:border-box;overflow:hidden;border-radius:999px;background:rgba(2,9,19,.78);border:1px solid rgba(158,184,200,.38);">
           <span style="display:block;width:${fill};height:100%;border-radius:999px;background:${color};box-shadow:0 0 6px ${color};"></span>
@@ -11047,9 +11047,8 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       <foreignObject x="${nx}" y="${ny}" width="${nodeW}" height="${nodeH}" overflow="visible">
         <div xmlns="http://www.w3.org/1999/xhtml" ${click} style="box-sizing:border-box;display:flex;flex-direction:column;justify-content:center;width:${nodeW}px;min-height:${nodeH}px;padding:14px 14px 12px;border-radius:22px;background:linear-gradient(180deg,rgba(11,24,40,.90),rgba(7,16,28,.82));border:1px solid ${border};box-shadow:${active ? `0 0 0 1px ${color}22,0 0 28px ${color}22,0 18px 40px rgba(0,0,0,.35)` : '0 12px 30px rgba(0,0,0,.28)'};backdrop-filter:blur(6px);font-family:Roboto,Arial,sans-serif;color:#eef7ff;">
           <div style="display:flex;align-items:center;gap:12px;">
-            <div style="width:50px;height:50px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:28px;background:${color}18;border:1px solid ${color}55;box-shadow:${active ? `0 0 24px ${color}44` : 'none'};position:relative;flex:0 0 50px;">
-              ${active ? `<span style="position:absolute;inset:-4px;border-radius:18px;border:1px solid ${color}88;box-shadow:0 0 12px ${color}55;animation:pfPulse 2.6s infinite;"></span>` : ''}
-              <span style="filter:${active ? `drop-shadow(0 0 5px ${color}) drop-shadow(0 0 14px ${color}aa)` : 'none'}">${icon}</span>
+            <div style="width:64px;height:64px;border-radius:18px;display:flex;align-items:center;justify-content:center;font-size:28px;background:${color}18;border:1px solid ${color}55;box-shadow:${active ? `0 0 8px ${color}33` : 'none'};position:relative;flex:0 0 64px;">
+              <span style="filter:${active ? `drop-shadow(0 0 2px ${color}) drop-shadow(0 0 5px ${color}99)` : 'none'}">${icon}</span>
             </div>
             <div style="min-width:0;">
               <div style="font-size:12px;color:#93adbc;letter-spacing:.5px;text-transform:uppercase;">${this._esc(title)}</div>
@@ -11282,7 +11281,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.0.75",
+  description: "Deye Energy 0.8.0.76",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

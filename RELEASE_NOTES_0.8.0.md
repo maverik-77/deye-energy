@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.75`.
+Card resource revision: `v=0.8.0.76`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the original
@@ -9,6 +9,13 @@ integrated through MQTT. Attribution is recorded at the bottom of README.md.
 
 ## Revision history
 
+- `v=0.8.0.76` — Enlarged the power-flow node icons, tightened the active glow
+  around each image and removed the oversized pulsing ring. Replaced all five
+  light and five dark node images with the updated square PNG references,
+  deleted the old JPEG assets, and restored full-image alignment with the
+  Battery SOC bar at the bottom of the icon. Rebased every integration/brand
+  icon on the new Integration image and updated the icon in `docs/banner.svg`;
+  refreshed tests and versioned documentation.
 - `v=0.8.0.75` — Replaced the five power-flow node emoji with theme-aware
   images (dark variants follow Home Assistant dark mode), added a coloured glow
   and stronger pulsing ring to active nodes, and added a proportional Battery
