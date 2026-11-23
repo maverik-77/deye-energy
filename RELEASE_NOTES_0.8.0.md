@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.77`.
+Card resource revision: `v=0.8.0.78`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the original
@@ -9,6 +9,16 @@ integrated through MQTT. Attribution is recorded at the bottom of README.md.
 
 ## Revision history
 
+- `v=0.8.0.78` — Added a summary row above the PV/Grid/Battery/Home chips with
+  four new widgets: Overall grid (green import and export power), Electricity
+  (blue import energy today and red cost today), Gas (blue import today and red
+  cost today) and Export (blue export energy today and green income today). Both
+  values in each widget use the same font format. Reworked the flow animation so
+  glow balls travel the full length of each link, keep a tight constant spatial
+  gap and move at a speed scaled to the power magnitude. Direction now comes
+  from the path geometry, so the arrowhead flips and the balls follow it when
+  power reverses; at idle the link stays but the arrowhead and balls disappear.
+  Updated README, tests and versioned docs.
 - `v=0.8.0.77` — Fixed power-flow links so they connect the outer edges of the
   node shapes: thinner lines and glow, and arrowheads with a proper marker
   viewBox so they are no longer clipped. Centred the inverter image inside its

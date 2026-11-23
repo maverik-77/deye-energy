@@ -51,6 +51,14 @@ card.hass = {
     "sensor.my_soc": { state: "77" },
     "sensor.my_load": { state: "1800" },
     "sensor.my_inv": { state: "2100" },
+    "sensor.givenergy_ed2253g336_import_power": { state: "0" },
+    "sensor.givenergy_ed2253g336_export_power": { state: "3331" },
+    "sensor.givenergy_ed2253g336_import_energy_today_kwh": { state: "77.6" },
+    "sensor.smart_meter_electricity_cost_today": { state: "4.64" },
+    "sensor.smart_meter_gas_import_today": { state: "2.344" },
+    "sensor.smart_meter_gas_cost_today": { state: "0.44" },
+    "sensor.givenergy_ed2253g336_export_energy_today_kwh": { state: "3.7" },
+    "sensor.smart_meter_electricity_income_today": { state: "0.444" },
   },
 };
 
@@ -73,6 +81,24 @@ check(!html.includes("Missing/unavailable entities"), "should not warn when all 
 check(html.includes('viewBox="0 0 1200 940"'), "missing taller viewBox for node halos");
 check(html.includes('preserveAspectRatio="xMidYMid meet"'), "missing responsive preserveAspectRatio");
 check(html.includes('height:100%'), "missing height scaling");
+
+// Summary widget row above the existing PV/Grid/Battery/Home chips
+for (const title of ["Overall grid", "Electricity", "Gas", "Export"]) {
+  check(html.includes(`>${title}</div>`), `missing summary widget ${title}`);
+}
+check(html.indexOf(">Overall grid</div>") < html.indexOf(">PV</div>"), "summary row should be above PV/Grid/Battery/Home chips");
+check(html.includes("0 W") && html.includes("3331 W"), "missing overall grid import/export values");
+check(html.includes("77.60 kWh") && html.includes("£4.64"), "missing electricity values");
+check(html.includes("2.34 kWh") && html.includes("£0.44"), "missing gas values");
+check(html.includes("3.70 kWh"), "missing export energy value");
+const overallGridHtml = html.slice(html.indexOf(">Overall grid</div>"), html.indexOf(">Electricity</div>"));
+const electricityHtml = html.slice(html.indexOf(">Electricity</div>"), html.indexOf(">Gas</div>"));
+const gasHtml = html.slice(html.indexOf(">Gas</div>"), html.indexOf(">Export</div>"));
+check((overallGridHtml.match(/font-size:18px;font-weight:800;color:#7ee22d;text-shadow:0 0 14px #7ee22d55/g) || []).length === 2, "overall grid values should share one font format");
+check((electricityHtml.match(/font-size:18px;font-weight:800;/g) || []).length === 2, "electricity values should share one font format");
+check((gasHtml.match(/font-size:18px;font-weight:800;/g) || []).length === 2, "gas values should share one font format");
+check(html.includes('stroke="#7ee22d"') && html.includes('stroke="#5bc0ff"') && html.includes('stroke="#ff5d70"'), "summary icons should use the specified colours");
+check(html.includes('font-weight="800" fill="#ff5d70" stroke="none">£</text>'), "missing red pound glyph");
 check(/<path[^>]*d="M [^"]* [LC] /.test(html), "missing flow path");
 check(html.includes('pf-icon-glow'), "missing icon glow filter");
 check(html.includes('pf-glow'), "missing glow filter");
@@ -95,7 +121,34 @@ for (const [coords, color] of [
 ]) {
   check(html.includes(`${coords} width="280" height="252" rx="36" fill="none" stroke="${color}" stroke-width="8"`), `missing halo for ${color}`);
 }
-check(source.includes('count = Math.min(count, len < 80 ? 1 : len < 150 ? 2 : 3)'), "flow balls should scale with link length");
+// Glow balls: full-link travel, tight constant spacing, power-scaled speed
+const flowPath = (markup, id) => (markup.match(new RegExp(`<path id="${id}"[^>]*>`)) || [''])[0];
+check(source.includes('const speed = 26 + Math.min(300, Math.abs(power) * 0.11);'), "glow speed should scale with power magnitude");
+check(source.includes('const gap = 30;') && source.includes('Math.floor(len / gap) + 1'), "glow balls should keep a tight constant spatial gap");
+check(!html.includes('<mpath') && !html.includes('keyPoints='), "glow balls should follow the explicit path without reversed keyframes");
+check(html.includes('path="M 600 270 L 600 296"'), "glow balls should traverse the full PV link");
+check(html.includes('path="M 426 470 L 319 470"'), "glow balls should follow the export direction");
+check(flowPath(html, 'pf-grid-inv').includes('marker-end='), "active link should carry an arrowhead");
+check((html.match(/<animateMotion /g) || []).length >= 6, "multiple glow balls should follow one another");
+
+// Direction: reversing power reverses both the arrowhead and the glow travel
+const dirCard = new sandbox.PowerFlowCard();
+dirCard.setConfig({ entities: { pv: 'p', grid: 'g', battery: 'b', battery_soc: 's', load: 'l', inverter: 'i' } });
+dirCard.hass = { states: { p: { state: '0' }, g: { state: '400' }, b: { state: '-300' }, s: { state: '50' }, l: { state: '0' }, i: { state: '0' } } };
+const dirHtml = dirCard.innerHTML;
+check(flowPath(dirHtml, 'pf-grid-inv').includes('d="M 319 470 L 426 470"') && flowPath(dirHtml, 'pf-grid-inv').includes('marker-end='), "import should point from grid to inverter");
+check(flowPath(dirHtml, 'pf-batt-inv').includes('d="M 600 644 L 600 670"') && flowPath(dirHtml, 'pf-batt-inv').includes('marker-end='), "charging should point from inverter to battery");
+check(dirHtml.includes('path="M 319 470 L 426 470"') && dirHtml.includes('path="M 600 644 L 600 670"'), "glow balls should follow the reversed links");
+
+// Idle: the link stays, but direction-dependent decorations disappear
+const idleCard = new sandbox.PowerFlowCard();
+idleCard.setConfig({ entities: { pv: 'p', grid: 'g', battery: 'b', battery_soc: 's', load: 'l', inverter: 'i' } });
+idleCard.hass = { states: { p: { state: '0' }, g: { state: '0' }, b: { state: '0' }, s: { state: '50' }, l: { state: '0' }, i: { state: '0' } } };
+const idleHtml = idleCard.innerHTML;
+check(flowPath(idleHtml, 'pf-grid-inv').includes('d="M 319 470 L 426 470"'), "idle grid link should remain rendered");
+check(flowPath(idleHtml, 'pf-batt-inv').includes('d="M 600 670 L 600 644"'), "idle battery link should remain rendered");
+check(!idleHtml.includes('marker-end='), "idle links should have no arrowheads");
+check(!idleHtml.includes('<animateMotion'), "idle links should have no glow balls");
 check(html.includes('r="168"') && html.includes('stroke-width="12"'), "inverter ring should enclose the node without crossing it");
 check(!html.includes('r="150"') && !html.includes('stroke-width="28"'), "old overlapping inverter ring should be gone");
 check(html.includes('display:flex;flex-direction:column;justify-content:center;width:248px'), "node content should be vertically centered");

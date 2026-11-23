@@ -6,6 +6,29 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.78] - 2026-11-23
+
+### Added
+
+- **Power flow summary row**: four new widgets above the PV/Grid/Battery/Home
+  chips — Overall grid (green import and export power), Electricity (blue import
+  energy today and red cost today), Gas (blue import today and red cost today)
+  and Export (blue export energy today and green income today). Both values in
+  each widget share the same font format. The eight source entities are exposed
+  as config-overridable defaults.
+
+### Changed
+
+- **Power flow animation**: glow balls now travel the full length of each link
+  instead of stopping partway, keep a tight constant spatial gap, and move at a
+  speed scaled to the power magnitude (faster at high flow, slow at low flow).
+- **Flow direction**: direction is carried by the link path, so the arrowhead
+  flips and the glow balls follow it when grid or battery power reverses. At
+  idle the link stays visible while the arrowhead and balls disappear.
+- **Docs/tests**: README now describes the summary widgets and flow behaviour;
+  extended power-flow card tests for spacing, speed, full-path travel, direction
+  reversal and idle links; bumped the card resource revision and versioned docs.
+
 ## [0.8.0.77] - 2026-11-23
 
 ### Changed
