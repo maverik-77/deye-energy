@@ -77,6 +77,24 @@ check(/<path[^>]*d="M [^"]* [LC] /.test(html), "missing flow path");
 check(html.includes('pf-icon-glow'), "missing icon glow filter");
 check(html.includes('pf-glow'), "missing glow filter");
 check(html.includes('pf-arrow-pf-pv-inv'), "missing arrow marker");
+check(html.includes('markerWidth="3.5" markerHeight="3.5"'), "missing smaller arrow marker");
+check(!html.includes('markerWidth="10" markerHeight="10"'), "oversized arrow marker should be gone");
+check(!html.includes('width="84" height="30" rx="15"'), "on-arrow power label should not be rendered");
+check(html.includes('r="150"') && html.includes('stroke-width="28"'), "shrunken inverter ring should be rendered");
+check(!html.includes('r="210" stroke="rgba(188,99,255,.05)" stroke-width="38"'), "oversized inverter ring should be gone");
+check(html.includes('display:flex;flex-direction:column;justify-content:center;width:248px'), "node content should be vertically centered");
+
+// Node images (light theme) and active glow
+for (const key of ['solar-pv', 'grid', 'inverter', 'home', 'battery']) {
+  check(html.includes(`src="/deye_energy/pf-${key}.jpeg"`), `missing ${key} node image`);
+  check(!html.includes(`src="/deye_energy/pf-${key}-dark.jpeg"`), `${key} dark image should not be used in light theme`);
+}
+check(html.includes('object-fit:contain;display:block;border-radius:8px'), "node images should be contained and rounded");
+check(html.includes('width:77%;height:100%;border-radius:999px;background:#7ee22d'), "77% SOC bar should be green at 77% width");
+check(html.includes('position:absolute;left:8%;right:8%;bottom:8%;height:14%'), "SOC bar should be proportionally positioned within the image");
+check(html.includes('drop-shadow(0 0 5px #') && html.includes('drop-shadow(0 0 14px #'), "active nodes should have a coloured glow");
+check(html.includes('box-shadow:0 0 12px #') && html.includes('border:1px solid #'), "active node ring should glow");
+
 check(html.includes('pf-node-click'), "missing clickable node class");
 check(html.includes('data-entity="sensor.my_pv"'), "missing node entity data attribute");
 check(html.toLowerCase().includes('click any node for details'), "missing click hint");
@@ -126,6 +144,29 @@ check(h2.includes("pf-consumer-click"), "missing consumer click class");
 check(card2._period === "power", "default period should be power");
 card2._period = "today"; card2._render();
 check(card2.innerHTML.includes("Energy period view"), "missing period view label");
+
+// Dark theme node images
+card2.hass = { themes: { darkMode: true }, states: {
+  "sensor.pv": { state: "1000" }, "sensor.grid": { state: "200" }, "sensor.batt": { state: "0" },
+  "sensor.soc": { state: "50" }, "sensor.load": { state: "1200" }, "sensor.inv": { state: "1000" },
+  "sensor.ac": { state: "500" }, "sensor.uni": { state: "50" }
+}};
+const darkHtml = card2.innerHTML;
+for (const key of ['solar-pv', 'grid', 'inverter', 'home', 'battery']) {
+  check(darkHtml.includes(`src="/deye_energy/pf-${key}-dark.jpeg"`), `missing ${key} dark node image`);
+  check(!darkHtml.includes(`src="/deye_energy/pf-${key}.jpeg"`), `${key} light image should not be used in dark theme`);
+}
+
+// Battery SOC bar colour thresholds and unavailable fallback
+const socStates = { p: { state: '0' }, g: { state: '0' }, b: { state: '0' }, l: { state: '0' }, i: { state: '0' } };
+const socCard = new sandbox.PowerFlowCard();
+socCard.setConfig({ entities: { pv: 'p', grid: 'g', battery: 'b', battery_soc: 's', load: 'l', inverter: 'i' } });
+socCard.hass = { states: { ...socStates, s: { state: '12' } } };
+check(socCard.innerHTML.includes('width:12%;height:100%;border-radius:999px;background:#ff5d70'), "low SOC bar should be red");
+socCard.hass = { states: { ...socStates, s: { state: '35' } } };
+check(socCard.innerHTML.includes('width:35%;height:100%;border-radius:999px;background:#ffb020'), "mid SOC bar should be amber");
+socCard.hass = { states: socStates };
+check(socCard.innerHTML.includes('width:0%;height:100%;border-radius:999px;background:#9eb8c8'), "missing SOC bar should be empty and grey");
 
 check(/^\/\/ Resource revision: v=\d+\.\d+\.\d+(\.\d+)?\n/.test(source), "resource revision header missing/invalid");
 console.log("Power flow card tests passed");

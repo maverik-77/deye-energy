@@ -6,6 +6,22 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.75] - 2026-11-23
+
+### Changed
+
+- **Power flow node images**: replaced the PV, Grid, Inverter, Home and Battery
+  emoji with theme-aware raster icons; dark variants follow Home Assistant dark
+  mode. Active nodes now get a coloured glow and a stronger pulsing ring.
+- **Battery SOC bar**: the Battery node shows a proportional SOC bar with colour
+  by charge level: red below 20%, amber from 20% to 49%, green at 50% and above,
+  and an empty grey track when SOC is unavailable.
+- **Integration/brand icons**: the Hybrid inverter image is now used for the
+  integration and HACS brand icons at 256/256 and 512/512, with its dark variant
+  for the dark assets and both `icon.svg` files embedding the same image.
+- **Tests/docs**: extended power-flow card tests for node images, dark-mode
+  switching, active glow and SOC bar colours; updated README and install docs.
+
 ## [0.8.0.74] - 2026-11-23
 
 ### Changed

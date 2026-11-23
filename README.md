@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.0.74-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.0.75-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -65,9 +65,10 @@ add-on profile) and to a UK-style tariff.
   (`power/today/24h/week/month`), battery sign convention in power mode
   (positive = discharging, negative = charging; display flipped), W/kW
   formatting (`<10000 W` in watts, `>=10000 W` in kW), power-mode home load
-  calculated like Energy Status “House (Loads)”, and per-node click to open Home
-  Assistant more-info; entity mappings are config-overridable and the card is
-  addable to any dashboard.
+  calculated like Energy Status “House (Loads)”, theme-aware node images with
+  coloured active glow, an SOC bar on the Battery node coloured by charge level,
+  and per-node click to open Home Assistant more-info; entity mappings are
+  config-overridable and the card is addable to any dashboard.
 
 ## Requirements
 
@@ -169,7 +170,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.74
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.75
       type: module
 ```
 

@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.74`.
+Card resource revision: `v=0.8.0.75`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the original
@@ -9,6 +9,13 @@ integrated through MQTT. Attribution is recorded at the bottom of README.md.
 
 ## Revision history
 
+- `v=0.8.0.75` — Replaced the five power-flow node emoji with theme-aware
+  images (dark variants follow Home Assistant dark mode), added a coloured glow
+  and stronger pulsing ring to active nodes, and added a proportional Battery
+  SOC bar coloured by charge level (red below 20%, amber 20–49%, green at 50%+,
+  grey when unavailable). Reused the Hybrid inverter image and its dark variant
+  for all integration/brand icons at 256/256 and 512/512, with both `icon.svg`
+  files embedding the same image; extended card tests and updated docs.
 - `v=0.8.0.74` — Replaced integration/brand icon assets with a new Deye-based
   icon and cleaned up documentation: removed Solarman, Solar Assistant and
   ESPHome Deye Inverter references from the README, and documented the kbialek
