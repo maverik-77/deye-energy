@@ -6,6 +6,23 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.79] - 2026-11-23
+
+### Changed
+
+- **Power flow animation**: replaced the discrete SMIL glow balls with the
+  Energy Status card's animated stroke-dash dots. Active links now carry a
+  scrolling `1 22` dot pattern along the whole path at a speed controlled by
+  the `flow_animation_speed` config option (default 6, clamped 1–20), with a
+  tighter `1 18` variant on small screens. Each link keeps a persistent
+  background path; at idle the dots and arrowhead disappear while the link
+  remains. The arrowhead still follows the flow direction, which is carried by
+  the path geometry.
+- **Docs/tests**: README now describes the CSS-dash animation and its config
+  option; power-flow card tests cover the dash classes, timing formulas,
+  mobile variant and idle links; bumped the card resource revision and
+  versioned docs.
+
 ## [0.8.0.78] - 2026-11-23
 
 ### Added

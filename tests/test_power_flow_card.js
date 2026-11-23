@@ -76,7 +76,7 @@ check(html.includes("Discharging"), "missing battery discharging label");
 check(html.includes("-300 W"), "missing flipped battery power display");
 check(html.includes("SOC 77%"), "missing SOC label");
 check(html.includes("<svg"), "missing svg");
-check(html.includes("animateMotion"), "missing animated flow");
+check(html.includes("pfFlowDash") && html.includes("stroke-dasharray:1 22"), "missing animated flow");
 check(!html.includes("Missing/unavailable entities"), "should not warn when all entities present");
 check(html.includes('viewBox="0 0 1200 940"'), "missing taller viewBox for node halos");
 check(html.includes('preserveAspectRatio="xMidYMid meet"'), "missing responsive preserveAspectRatio");
@@ -107,7 +107,7 @@ check(html.includes('viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" marke
 check(html.includes('M 0 0 L 10 5 L 0 10 L 2.5 5 Z'), "arrow marker should use a complete arrow shape");
 check(!html.includes('markerWidth="3.5" markerHeight="3.5"'), "clipped arrow marker should be gone");
 check(!html.includes('width="84" height="30" rx="15"'), "on-arrow power label should not be rendered");
-check(html.includes('stroke-width="2.6"') && !html.includes('stroke-width="4.5"'), "flow links should be thin");
+check(html.includes('.pf-flow-active{stroke-dasharray:1 22;stroke-width:7!important') && html.includes('.pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34'), "flow links should use Energy Status style dashes");
 check(!html.includes('stroke-width="14"'), "oversized link glow should be gone");
 check(html.includes('d="M 600 270 L 600 296"'), "PV link should run from the halo edge to the inverter ring");
 check(html.includes('d="M 774 470 L 881 470"'), "inverter-to-home link should run from the ring to the halo edge");
@@ -121,24 +121,31 @@ for (const [coords, color] of [
 ]) {
   check(html.includes(`${coords} width="280" height="252" rx="36" fill="none" stroke="${color}" stroke-width="8"`), `missing halo for ${color}`);
 }
-// Glow balls: full-link travel, tight constant spacing, power-scaled speed
+// Energy Status style dots: CSS dash stream, fixed spacing, config-driven speed
 const flowPath = (markup, id) => (markup.match(new RegExp(`<path id="${id}"[^>]*>`)) || [''])[0];
-check(source.includes('const speed = 26 + Math.min(300, Math.abs(power) * 0.11);'), "glow speed should scale with power magnitude");
-check(source.includes('const gap = 30;') && source.includes('Math.floor(len / gap) + 1'), "glow balls should keep a tight constant spatial gap");
-check(!html.includes('<mpath') && !html.includes('keyPoints='), "glow balls should follow the explicit path without reversed keyframes");
-check(html.includes('path="M 600 270 L 600 296"'), "glow balls should traverse the full PV link");
-check(html.includes('path="M 426 470 L 319 470"'), "glow balls should follow the export direction");
+check(!html.includes('<animateMotion') && !html.includes('<mpath') && !html.includes('keyPoints='), "SVG ball animation should be gone");
+check(!source.includes('const gap = 30;') && !source.includes('Math.abs(power) * 0.11'), "power-scaled ball logic should be gone");
+check(html.includes('.pf-flow-active{stroke-dasharray:1 22;stroke-width:7!important;animation:pfFlowDash 3.00s linear infinite}'), "dot stream should use config-driven duration");
+check(html.includes('@keyframes pfFlowDash{to{stroke-dashoffset:-220}}'), "dot stream should use the fixed Energy Status offset formula");
+check(html.includes('@media (max-width:640px){.pf-flow-active{stroke-dasharray:1 18;animation-name:pfFlowDashMobile}}'), "mobile dot variant should be present");
+check(html.includes('class="pf-flow-line pf-flow-active"'), "active links should carry the scrolling-dot class");
+check((html.match(/class="pf-flow-line-bg"/g) || []).length === 4, "each link should have a persistent background path");
 check(flowPath(html, 'pf-grid-inv').includes('marker-end='), "active link should carry an arrowhead");
-check((html.match(/<animateMotion /g) || []).length >= 6, "multiple glow balls should follow one another");
+
+// Speed setting drives duration/offset, not live power
+const fastCard = new sandbox.PowerFlowCard();
+fastCard.setConfig({ entities: { pv: 'p', grid: 'g', battery: 'b', battery_soc: 's', load: 'l', inverter: 'i' }, flow_animation_speed: 12 });
+fastCard.hass = { states: { p: { state: '0' }, g: { state: '400' }, b: { state: '0' }, s: { state: '50' }, l: { state: '0' }, i: { state: '0' } } };
+const fastHtml = fastCard.innerHTML;
+check(fastHtml.includes('animation:pfFlowDash 1.50s linear infinite}') && fastHtml.includes('stroke-dashoffset:-110'), "flow_animation_speed should control dot speed");
 
 // Direction: reversing power reverses both the arrowhead and the glow travel
 const dirCard = new sandbox.PowerFlowCard();
 dirCard.setConfig({ entities: { pv: 'p', grid: 'g', battery: 'b', battery_soc: 's', load: 'l', inverter: 'i' } });
 dirCard.hass = { states: { p: { state: '0' }, g: { state: '400' }, b: { state: '-300' }, s: { state: '50' }, l: { state: '0' }, i: { state: '0' } } };
 const dirHtml = dirCard.innerHTML;
-check(flowPath(dirHtml, 'pf-grid-inv').includes('d="M 319 470 L 426 470"') && flowPath(dirHtml, 'pf-grid-inv').includes('marker-end='), "import should point from grid to inverter");
-check(flowPath(dirHtml, 'pf-batt-inv').includes('d="M 600 644 L 600 670"') && flowPath(dirHtml, 'pf-batt-inv').includes('marker-end='), "charging should point from inverter to battery");
-check(dirHtml.includes('path="M 319 470 L 426 470"') && dirHtml.includes('path="M 600 644 L 600 670"'), "glow balls should follow the reversed links");
+check(flowPath(dirHtml, 'pf-grid-inv').includes('d="M 319 470 L 426 470"') && flowPath(dirHtml, 'pf-grid-inv').includes('marker-end=') && flowPath(dirHtml, 'pf-grid-inv').includes('pf-flow-active'), "import should point from grid to inverter and scroll toward it");
+check(flowPath(dirHtml, 'pf-batt-inv').includes('d="M 600 644 L 600 670"') && flowPath(dirHtml, 'pf-batt-inv').includes('marker-end=') && flowPath(dirHtml, 'pf-batt-inv').includes('pf-flow-active'), "charging should point from inverter to battery and scroll toward it");
 
 // Idle: the link stays, but direction-dependent decorations disappear
 const idleCard = new sandbox.PowerFlowCard();
@@ -148,7 +155,8 @@ const idleHtml = idleCard.innerHTML;
 check(flowPath(idleHtml, 'pf-grid-inv').includes('d="M 319 470 L 426 470"'), "idle grid link should remain rendered");
 check(flowPath(idleHtml, 'pf-batt-inv').includes('d="M 600 670 L 600 644"'), "idle battery link should remain rendered");
 check(!idleHtml.includes('marker-end='), "idle links should have no arrowheads");
-check(!idleHtml.includes('<animateMotion'), "idle links should have no glow balls");
+check(!idleHtml.includes('class="pf-flow-line pf-flow-active"'), "idle links should have no scrolling dots");
+check((idleHtml.match(/class="pf-flow-line-bg"/g) || []).length === 4 && (idleHtml.match(/class="pf-flow-line"/g) || []).length === 4, "idle links should remain as plain background and line paths");
 check(html.includes('r="168"') && html.includes('stroke-width="12"'), "inverter ring should enclose the node without crossing it");
 check(!html.includes('r="150"') && !html.includes('stroke-width="28"'), "old overlapping inverter ring should be gone");
 check(html.includes('display:flex;flex-direction:column;justify-content:center;width:248px'), "node content should be vertically centered");

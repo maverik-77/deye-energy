@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.0.78-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.0.79-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -71,11 +71,13 @@ add-on profile) and to a UK-style tariff.
   four main nodes shows Overall grid (import/export power), Electricity (import
   energy and cost today), Gas (import and cost today) and Export (export energy
   and income today), with both values in each widget sharing the same font
-  format. Flow links keep a continuous glow-ball stream with a tight, constant
-  spacing and speed that scales with the power magnitude; the direction is taken
-  from the flow itself so the arrowhead and balls always move together, and both
-  disappear at idle while the link remains. Entity mappings are config-overridable
-  and the card is addable to any dashboard.
+  format. Flow links use the same animated stroke-dash dots as the Energy Status
+  card: a fixed 1px-dot/22px-gap stream scrolls along the whole link at a speed
+  set by the `flow_animation_speed` config option (default 6), with a tighter
+  `1 18` variant on small screens. The direction is taken from the flow itself
+  so the arrowhead and dot movement always agree, and both disappear at idle
+  while the link remains. Entity mappings are config-overridable and the card is
+  addable to any dashboard.
 
 ## Requirements
 
@@ -177,7 +179,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.78
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.79
       type: module
 ```
 

@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.78`.
+Card resource revision: `v=0.8.0.79`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the original
@@ -9,6 +9,13 @@ integrated through MQTT. Attribution is recorded at the bottom of README.md.
 
 ## Revision history
 
+- `v=0.8.0.79` — Replaced the Power Flow card's discrete SMIL glow balls with
+  the Energy Status card's animated stroke-dash dots: a fixed `1 22` dot stream
+  scrolls along each active link at a speed set by `flow_animation_speed`
+  (default 6), with a `1 18` variant on small screens. Each link keeps a
+  persistent background path; the arrowhead still follows the flow direction,
+  and both arrow and dots disappear at idle while the link remains. Updated
+  README, tests and versioned docs.
 - `v=0.8.0.78` — Added a summary row above the PV/Grid/Battery/Home chips with
   four new widgets: Overall grid (green import and export power), Electricity
   (blue import energy today and red cost today), Gas (blue import today and red
