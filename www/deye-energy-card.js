@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.85
+// Resource revision: v=0.8.0.86
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -2988,7 +2988,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.85 (resource revision v=0.8.0.85)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.86 (resource revision v=0.8.0.86)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -11589,7 +11589,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
             </div>`;
     const labels = `<div style="min-width:0;">
               <div style="font-size:12px;color:#93adbc;letter-spacing:.5px;text-transform:uppercase;">${this._esc(title)}</div>
-              <div style="font-size:26px;font-weight:800;color:#f4fbff;line-height:1.15;margin-top:2px;">${this._entityValue(value, entityId)}</div>
+              <div style="font-size:26px;font-weight:800;color:#f4fbff;line-height:1.15;margin-top:2px;white-space:nowrap;">${this._entityValue(value, entityId)}</div>
               <div style="font-size:12px;color:${this._esc(color)};font-weight:700;margin-top:2px;">${this._esc(sub || '')}</div>
             </div>`;
     const body = opts.centerIcon ? `
@@ -11837,14 +11837,12 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
           <div style="display:flex;justify-content:space-between;gap:14px;align-items:flex-start;flex-wrap:wrap;">
             <div>
               <div style="font-size:30px;font-weight:800;letter-spacing:.2px;">${this._esc(this._config.title || 'Deye Energy Power Flow')}</div>
-              <div style="font-size:13px;color:#9eb8c8;margin-top:4px;">${isPower ? 'Live energy flow' : 'Energy period view'} · click any node for details</div>
             </div>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
               <div style="font-size:12px;color:#9eb8c8;padding:7px 12px;border-radius:999px;background:rgba(255,255,255,.04);border:1px solid rgba(118,166,190,.18);">${this._statsLoading ? 'Loading…' : new Date().toLocaleString()}</div>
             </div>
           </div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;">${summaryChips}</div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;">${periodBtns}</div>
           <div style="width:100%;aspect-ratio:${W} / ${H};margin-top:14px;border-radius:20px;overflow:hidden;border:1px solid rgba(118,166,190,.18);background:linear-gradient(180deg,rgba(255,255,255,.025),rgba(255,255,255,.008));position:relative;">
             <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMin meet" style="width:100%;height:100%;display:block;">
               <defs>
@@ -11870,6 +11868,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
                 ${battNode}
               </g>
             </svg>
+            <div style="position:absolute;top:12px;right:12px;z-index:2;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100% - 24px);">${periodBtns}</div>
           </div>
           ${consumerHtml}
           ${warn}
@@ -11887,7 +11886,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.0.85",
+  description: "Deye Energy 0.8.0.86",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

@@ -252,7 +252,7 @@ check(!html.includes('animation:pfPulse') && !html.includes('box-shadow:0 0 12px
 
 check(html.includes('pf-node-click'), "missing clickable node class");
 check(html.includes('data-entity="sensor.my_pv"'), "missing node entity data attribute");
-check(html.toLowerCase().includes('click any node for details'), "missing click hint");
+check(!html.toLowerCase().includes('click any node for details'), "header subtitle should be removed");
 check(html.includes('Import today'), "missing grid import today detail");
 check(html.includes('Export today'), "missing grid export today detail");
 check(html.includes('Charged today'), "missing battery charged today detail");
@@ -336,12 +336,44 @@ check(h2.includes("Rest"), "missing rest consumer");
 check(h2.includes("pf-period"), "missing period selector");
 check(h2.includes('data-period="today"'), "missing today period");
 check(h2.includes('data-period="24h"'), "missing 24h period");
-check(h2.indexOf('class="pf-period"') > h2.indexOf('min-width:220px'), "period selector should render below the summary chips");
-check(h2.indexOf('class="pf-period"') < h2.indexOf('<svg viewBox="0 0 1200 1081"'), "period selector should render above the power flow diagram");
+const periodAt = h2.indexOf('class="pf-period"');
+const frameAt = h2.indexOf('aspect-ratio:1200 / 1081');
+const frameEndAt = h2.indexOf('</div>', h2.indexOf('</svg>', frameAt));
+check(periodAt > h2.indexOf('min-width:220px'), "period selector should render below the summary chips");
+check(periodAt > frameAt && periodAt < frameEndAt, "period selector should render inside the power flow display outline");
+check(h2.includes('position:absolute;top:12px;right:12px;z-index:2;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100% - 24px);'), "period selector should be pinned to the top-right of the display");
+check(!h2.includes('gap:6px;flex-wrap:wrap;margin-top:10px'), "period selector should not be a separate row outside the display");
 check(h2.includes("pf-consumer-click"), "missing consumer click class");
 check(card2._period === "power", "default period should be power");
 card2._period = "today"; card2._render();
-check(card2.innerHTML.includes("Energy period view"), "missing period view label");
+check(!card2.innerHTML.includes("Energy period view"), "period header subtitle should be removed");
+
+// Today/energy periods: PV, Grid and Home must keep the kWh unit on the value's row
+const kwhCard = new sandbox.PowerFlowCard();
+kwhCard.setConfig({
+  view: { energy_periods: ["power", "today"] },
+  entities: {
+    pv: "sensor.kwh_pv", grid: "sensor.kwh_grid", battery: "sensor.kwh_batt", battery_soc: "sensor.kwh_soc",
+    load: "sensor.kwh_load", inverter: "sensor.kwh_inv",
+    pv_energy: "sensor.kwh_pv_energy", grid_import_energy: "sensor.kwh_grid_import",
+    grid_export_energy: "sensor.kwh_grid_export", load_energy: "sensor.kwh_load_energy",
+  },
+});
+kwhCard.hass = { states: {
+  "sensor.kwh_pv": { state: "0" }, "sensor.kwh_grid": { state: "0" }, "sensor.kwh_batt": { state: "0" },
+  "sensor.kwh_soc": { state: "50" }, "sensor.kwh_load": { state: "0" }, "sensor.kwh_inv": { state: "0" },
+  "sensor.kwh_pv_energy": { state: "12.34" }, "sensor.kwh_grid_import": { state: "5.67" },
+  "sensor.kwh_grid_export": { state: "1.23" }, "sensor.kwh_load_energy": { state: "9.87" },
+} };
+kwhCard._period = "today"; kwhCard._render();
+const kwhHtml = kwhCard.innerHTML;
+for (const [title, text] of [["PV", "12.34 kWh"], ["Grid", "5.67 kWh in"], ["Home", "9.87 kWh"]]) {
+  const at = kwhHtml.indexOf(`>${title}</div>`);
+  const segment = kwhHtml.slice(at, at + 500);
+  const valueDiv = (segment.match(/<div style="font-size:26px[^>]*>[\s\S]*?<\/div>/) || [''])[0];
+  check(valueDiv.includes(text), `${title} node should render the full ${text} value`);
+  check(valueDiv.includes('white-space:nowrap;'), `${title} node value should keep kWh on the same row`);
+}
 
 // Dark theme node images
 card2.hass = { themes: { darkMode: true }, states: {

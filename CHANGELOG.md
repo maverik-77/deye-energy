@@ -4,6 +4,25 @@ All notable changes to Deye Energy. Versions before 0.8.0 are the history of the
 upstream Deye Energy Manager project and are not repeated here. Attribution is
 recorded at the bottom of README.md.
 
+## [0.8.0.86] - 2026-11-23
+
+### Changed
+
+- **Power flow node values**: in energy periods, PV, Grid and Home now keep the
+  number and `kWh` unit on one row, using the free space inside the node
+  surround instead of wrapping the unit to a second line.
+- **Power flow period selector**: Power / Today / 24h / Week / Month now sits in
+  the top-right corner inside the power flow display outline instead of in a
+  separate row above the diagram.
+- **Maintenance**: bumped the integration version and card resource revision to
+  0.8.0.86, with matching README and regression tests.
+
+### Removed
+
+- **Power flow header subtitle**: the "Live energy flow" / "Energy period view"
+  and "click any node for details" line was removed so the summary chips move
+  up. Nodes remain clickable.
+
 ## [0.8.0.85] - 2026-11-23
 
 ### Changed

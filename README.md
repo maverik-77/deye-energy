@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.0.85-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.0.86-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -71,8 +71,9 @@ add-on profile) and to a UK-style tariff.
   four main nodes shows Overall grid (import/export power), Electricity (import
   energy and cost today), Gas (import and cost today) and Export (export energy
   and income today), with both values in each widget sharing the same font
-  format. The period selector sits on its own row directly below the chips and
-  above the diagram. Flow links use the same animated stroke-dash dots as the
+  format. The period selector is pinned to the top-right corner inside the
+  diagram outline; the header shows only the title and live timestamp. Energy
+  period values keep the kWh unit on the same row. Flow links use the same
   Energy Status
   card: a fixed 1px-dot/22px-gap stream scrolls along the whole link at a speed
   set by the `flow_animation_speed` config option (default 6), with a tighter
@@ -193,7 +194,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.85
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.86
       type: module
 ```
 
