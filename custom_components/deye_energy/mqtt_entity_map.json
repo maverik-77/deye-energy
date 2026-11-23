@@ -154,6 +154,124 @@
       "near_realtime": "switch.deye_near_realtime"
     }
   },
+  "power_flow": {
+    "schema_version": 1,
+    "entities": {
+      "pv": "sensor.garage_deye_energy_pv_power",
+      "grid": "sensor.garage_deye_energy_grid_power",
+      "battery": "sensor.garage_deye_energy_battery_power",
+      "battery_soc": "sensor.garage_deye_energy_battery_soc",
+      "load": "sensor.garage_deye_energy_load_power",
+      "inverter": "sensor.deye_inverter_power",
+      "daily_pv_production": "sensor.garage_deye_energy_daily_pv_production",
+      "daily_energy_bought": "sensor.garage_deye_energy_daily_energy_bought",
+      "daily_energy_sold": "sensor.garage_deye_energy_daily_energy_sold",
+      "daily_battery_charge": "sensor.garage_deye_energy_daily_battery_charge",
+      "daily_battery_discharge": "sensor.garage_deye_energy_daily_battery_discharge",
+      "daily_load_consumption": "sensor.garage_deye_energy_daily_load_consumption",
+      "battery_voltage": "sensor.garage_deye_energy_battery_bms_voltage",
+      "battery_current": "sensor.garage_deye_energy_battery_current",
+      "battery_temperature": "sensor.garage_deye_energy_battery_temperature",
+      "grid_frequency": "sensor.garage_deye_energy_load_frequency",
+      "inverter_temperature": "sensor.garage_deye_energy_inverter_ac_temperature",
+      "grid_l1_voltage": "sensor.garage_deye_energy_grid_l1_voltage",
+      "overall_grid_import": "sensor.givenergy_ed2253g336_import_power",
+      "overall_grid_export": "sensor.givenergy_ed2253g336_export_power",
+      "electricity_import_today": "sensor.givenergy_ed2253g336_import_energy_today_kwh",
+      "electricity_cost_today": "sensor.smart_meter_electricity_cost_today",
+      "gas_import_today": "sensor.smart_meter_gas_import_today",
+      "gas_cost_today": "sensor.smart_meter_gas_cost_today",
+      "electricity_export_today": "sensor.givenergy_ed2253g336_export_energy_today_kwh",
+      "electricity_income_today": "sensor.smart_meter_electricity_income_today"
+    },
+    "sensor_groups": [
+      {
+        "key": "grid",
+        "label": "Grid",
+        "sensors": [
+          { "key": "grid", "label": "Grid power" },
+          { "key": "daily_energy_bought", "label": "Energy bought today" },
+          { "key": "daily_energy_sold", "label": "Energy sold today" },
+          { "key": "grid_l1_voltage", "label": "Grid L1 voltage" }
+        ]
+      },
+      {
+        "key": "pv",
+        "label": "PV",
+        "sensors": [
+          { "key": "pv", "label": "PV power" },
+          { "key": "daily_pv_production", "label": "PV production today" }
+        ]
+      },
+      {
+        "key": "inverter",
+        "label": "Inverter",
+        "sensors": [
+          { "key": "inverter", "label": "Inverter power" },
+          { "key": "inverter_temperature", "label": "Inverter temperature" }
+        ]
+      },
+      {
+        "key": "home",
+        "label": "Home",
+        "sensors": [
+          { "key": "load", "label": "Home load power" },
+          { "key": "daily_load_consumption", "label": "Load consumption today" },
+          { "key": "grid_frequency", "label": "Grid frequency" }
+        ]
+      },
+      {
+        "key": "battery",
+        "label": "Battery",
+        "sensors": [
+          { "key": "battery", "label": "Battery power" },
+          { "key": "battery_soc", "label": "Battery SOC" },
+          { "key": "daily_battery_charge", "label": "Battery charged today" },
+          { "key": "daily_battery_discharge", "label": "Battery discharged today" },
+          { "key": "battery_voltage", "label": "Battery voltage" },
+          { "key": "battery_current", "label": "Battery current" },
+          { "key": "battery_temperature", "label": "Battery temperature" }
+        ]
+      },
+      {
+        "key": "overall_grid",
+        "label": "Overall grid",
+        "sensors": [
+          { "key": "overall_grid_import", "label": "Overall grid import" },
+          { "key": "overall_grid_export", "label": "Overall grid export" }
+        ]
+      },
+      {
+        "key": "electricity",
+        "label": "Electricity",
+        "sensors": [
+          { "key": "electricity_import_today", "label": "Electricity imported today" },
+          { "key": "electricity_cost_today", "label": "Electricity cost today" }
+        ]
+      },
+      {
+        "key": "gas",
+        "label": "Gas",
+        "sensors": [
+          { "key": "gas_import_today", "label": "Gas imported today" },
+          { "key": "gas_cost_today", "label": "Gas cost today" }
+        ]
+      },
+      {
+        "key": "export",
+        "label": "Export",
+        "sensors": [
+          { "key": "electricity_export_today", "label": "Electricity exported today" },
+          { "key": "electricity_income_today", "label": "Export income today" }
+        ]
+      }
+    ],
+    "node_detail_keys": ["grid", "pv", "inverter", "home", "battery"],
+    "formats": ["w", "kw", "kwh", "num", "gbp", "pct"],
+    "chip_kinds": ["import", "export", "bolt", "flame", "pound"],
+    "node_details": {},
+    "chip_rows": { "main": [], "summary": [] }
+  },
   "profiles": {
     "sunsynk": {
       "label": "Sunsynk / Deye MQTT (writable)",

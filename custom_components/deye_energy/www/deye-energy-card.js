@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.81
+// Resource revision: v=0.8.0.82
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -2988,7 +2988,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.81 (resource revision v=0.8.0.81)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.82 (resource revision v=0.8.0.82)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -9443,6 +9443,14 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
     this._pendingApply = null; // {groupKey, groupLabel, values, changes}
     this._forceReloadOnConnect = true;
     this._lastRenderSig = "";
+    this._powerFlowDraft = null;
+    this._powerFlowSaving = false;
+    this._powerFlowMessage = "";
+    this._powerFlowDraftDirty = false;
+    this._pfDraftSource = null;
+    this._pfDisplaySource = null;
+    this._pfDisplayCache = null;
+    this._pfDisplayKey = null;
   }
 
   setConfig(config) {
@@ -9787,6 +9795,7 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
       { key: "power", label: "Power" },
       { key: "battery", label: "Battery" },
       { key: "energy", label: "Energy" },
+      { key: "power_flow", label: "Power flow" },
     ];
   }
 
@@ -9836,6 +9845,250 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
       ${message ? `<div class="${message.ok ? "ic-hint ic-ok" : "ic-hint ic-bad"}">${this.escapeHtml(String(message.text))}</div>` : ""}
       <button class="ic-action" data-apply-inverter-config="${this.escapeHtml(String(group.key))}" ${group.writable && !saving ? "" : "disabled"}>${saving ? "Applying…" : `Apply ${label}`}</button>
     </section>`;
+  }
+
+  powerFlowDisplay() {
+    const states = this._hass?.states || {};
+    const entry = Object.entries(states).find(([id, state]) => id.startsWith("sensor.") && id.endsWith("_ai_state") && state?.attributes?.power_flow_display);
+    const source = entry?.[1]?.attributes?.power_flow_display;
+    if (!source || typeof source !== "object" || Array.isArray(source)) return {};
+    const key = JSON.stringify(source);
+    if (this._pfDisplayKey === key) return this._pfDisplayCache;
+    this._pfDisplayKey = key;
+    this._pfDisplayCache = source;
+    return source;
+  }
+
+  _pfCopy(value) {
+    return value === undefined || value === null ? {} : JSON.parse(JSON.stringify(value));
+  }
+
+  powerFlowDraft() {
+    const display = this.powerFlowDisplay();
+    const key = JSON.stringify(display);
+    if (!this._powerFlowDraft || (this._pfDraftSource !== key && !this._powerFlowDraftDirty)) {
+      this._powerFlowDraft = {
+        schema_version: 1,
+        entities: { ...(display.entities || {}) },
+        node_details: this._pfCopy(display.node_details || {}),
+        chip_rows: this._pfCopy(display.chip_rows || {}),
+      };
+      this._pfDraftSource = key;
+      this._powerFlowDraftDirty = false;
+    }
+    return this._powerFlowDraft;
+  }
+
+  powerFlowFormats() {
+    const formats = this.powerFlowDisplay().formats;
+    return Array.isArray(formats) && formats.length ? formats : ["w", "kw", "kwh", "num", "gbp", "pct"];
+  }
+
+  powerFlowChipKinds() {
+    const kinds = this.powerFlowDisplay().chip_kinds;
+    return Array.isArray(kinds) && kinds.length ? kinds : ["import", "export", "bolt", "flame", "pound"];
+  }
+
+  powerFlowNodeGroups() {
+    const groups = this.powerFlowDisplay().node_detail_keys;
+    return Array.isArray(groups) && groups.length ? groups : ["grid", "pv", "inverter", "home", "battery"];
+  }
+
+  powerFlowLive(entityId) {
+    return this.inverterConfigMonitorEntityState(entityId);
+  }
+
+  powerFlowSelect(options, selected) {
+    const chosen = String(selected ?? "");
+    return options.map((option) => {
+      const value = String(option);
+      return `<option value="${this.escapeHtml(value)}"${value === chosen ? " selected" : ""}>${this.escapeHtml(value.toUpperCase())}</option>`;
+    }).join("");
+  }
+
+  powerFlowStateSignature() {
+    const display = this.powerFlowDisplay();
+    const draft = this._powerFlowDraft || {};
+    const ids = new Set();
+    const addEntity = (value) => { if (typeof value === "string" && value.trim()) ids.add(value.trim()); };
+    Object.values(display.entities || {}).forEach(addEntity);
+    Object.values(draft.entities || {}).forEach(addEntity);
+    const collectRows = (groups) => Object.values(groups || {}).forEach((rows) => {
+      if (!Array.isArray(rows)) return;
+      rows.forEach((row) => {
+        addEntity(row?.entity);
+        (Array.isArray(row?.items) ? row.items : []).forEach((item) => addEntity(item?.entity));
+      });
+    });
+    collectRows(display.node_details);
+    collectRows(draft.node_details);
+    collectRows(display.chip_rows);
+    collectRows(draft.chip_rows);
+    return [...ids].sort().map((id) => {
+      const state = this._hass?.states?.[id];
+      return `${id}=${state ? `${state.state}|${state.attributes?.unit_of_measurement || ""}` : ""}`;
+    }).join(";");
+  }
+
+  renderPowerFlowDetailRows(group) {
+    const draft = this.powerFlowDraft();
+    const rows = Array.isArray(draft.node_details?.[group]) ? draft.node_details[group] : [];
+    const formats = this.powerFlowFormats();
+    const body = rows.map((row, index) => `<tr>
+      <td><input type="text" value="${this.escapeHtml(String(row.label ?? ""))}" data-pf-detail="${this.escapeHtml(group)}:${index}:label" aria-label="Detail label ${index + 1}"></td>
+      <td><input type="text" value="${this.escapeHtml(String(row.entity ?? ""))}" data-pf-detail="${this.escapeHtml(group)}:${index}:entity" aria-label="Detail entity ${index + 1}"></td>
+      <td><select data-pf-detail="${this.escapeHtml(group)}:${index}:format">${this.powerFlowSelect(formats, row.format || "num")}</select></td>
+      <td><span class="ic-mono">${this.escapeHtml(this.powerFlowLive(row.entity).text)}</span></td>
+      <td><button class="ic-btn ic-btn-secondary" data-pf-remove-detail="${this.escapeHtml(group)}:${index}">Remove</button></td>
+    </tr>`).join("");
+    return `<div class="pf-edit">
+      <div class="pf-edit-title">Additional data shown in the ${this.escapeHtml(group)} node</div>
+      <div class="ic-table-wrap"><table class="ic-table"><thead><tr><th>Label</th><th>Entity ID</th><th>Format</th><th>Live value</th><th></th></tr></thead><tbody>${body || `<tr><td colspan="5" class="ic-muted">No additional rows yet.</td></tr>`}</tbody></table></div>
+      <button class="ic-btn ic-btn-secondary" data-pf-add-detail="${this.escapeHtml(group)}">Add data row</button>
+    </div>`;
+  }
+
+  renderPowerFlowSensorGroups() {
+    const display = this.powerFlowDisplay();
+    const draft = this.powerFlowDraft();
+    const groups = Array.isArray(display.sensor_groups) ? display.sensor_groups : [];
+    const nodeGroups = new Set(this.powerFlowNodeGroups());
+    return groups.map((group) => {
+      const sensors = Array.isArray(group.sensors) ? group.sensors : [];
+      const rows = sensors.map((sensor) => {
+        const entity = String(draft.entities?.[sensor.key] ?? "");
+        const live = this.powerFlowLive(entity);
+        return `<tr>
+          <td><strong>${this.escapeHtml(String(sensor.label ?? sensor.key))}</strong></td>
+          <td><input type="text" value="${this.escapeHtml(entity)}" data-pf-entity="${this.escapeHtml(String(sensor.key))}" aria-label="Source entity for ${this.escapeHtml(String(sensor.label ?? sensor.key))}"></td>
+          <td class="ic-mono">${this.escapeHtml(live.text)}</td>
+        </tr>`;
+      }).join("");
+      return `<section class="ic-section pf-group">
+        <h4>${this.escapeHtml(String(group.label ?? group.key))}</h4>
+        <div class="ic-table-wrap"><table class="ic-table"><thead><tr><th>Sensor</th><th>Entity ID</th><th>Live value</th></tr></thead><tbody>${rows || `<tr><td colspan="3" class="ic-muted">No sensors listed.</td></tr>`}</tbody></table></div>
+        ${nodeGroups.has(group.key) ? this.renderPowerFlowDetailRows(group.key) : ""}
+      </section>`;
+    }).join("");
+  }
+
+  renderPowerFlowMainChips() {
+    const draft = this.powerFlowDraft();
+    const rows = Array.isArray(draft.chip_rows?.main) ? draft.chip_rows.main : [];
+    const formats = this.powerFlowFormats();
+    const body = rows.map((chip, index) => `<tr>
+      <td><input type="text" value="${this.escapeHtml(String(chip.label ?? ""))}" data-pf-chip="main:${index}:label" aria-label="Main chip label ${index + 1}"></td>
+      <td><input type="text" value="${this.escapeHtml(String(chip.entity ?? ""))}" data-pf-chip="main:${index}:entity" aria-label="Main chip entity ${index + 1}"></td>
+      <td><select data-pf-chip="main:${index}:format">${this.powerFlowSelect(formats, chip.format || "num")}</select></td>
+      <td><span class="ic-mono">${this.escapeHtml(this.powerFlowLive(chip.entity).text)}</span></td>
+      <td><button class="ic-btn ic-btn-secondary" data-pf-remove-chip="main:${index}">Remove</button></td>
+    </tr>`).join("");
+    return `<div class="pf-edit">
+      <div class="pf-edit-title">Extra chips on the main PV / Grid / Battery / Home row</div>
+      <div class="ic-table-wrap"><table class="ic-table"><thead><tr><th>Label</th><th>Entity ID</th><th>Format</th><th>Live value</th><th></th></tr></thead><tbody>${body || `<tr><td colspan="5" class="ic-muted">No extra chips yet.</td></tr>`}</tbody></table></div>
+      <button class="ic-btn ic-btn-secondary" data-pf-add-chip="main">Add chip</button>
+    </div>`;
+  }
+
+  renderPowerFlowSummaryChips() {
+    const draft = this.powerFlowDraft();
+    const rows = Array.isArray(draft.chip_rows?.summary) ? draft.chip_rows.summary : [];
+    const formats = this.powerFlowFormats();
+    const kinds = this.powerFlowChipKinds();
+    const groups = rows.map((chip, chipIndex) => {
+      const items = Array.isArray(chip.items) ? chip.items : [];
+      const itemRows = items.map((item, itemIndex) => `<tr>
+        <td><input type="text" value="${this.escapeHtml(String(item.label ?? ""))}" data-pf-summary="${chipIndex}:${itemIndex}:label" aria-label="Summary item label ${itemIndex + 1}"></td>
+        <td><input type="text" value="${this.escapeHtml(String(item.entity ?? ""))}" data-pf-summary="${chipIndex}:${itemIndex}:entity" aria-label="Summary item entity ${itemIndex + 1}"></td>
+        <td><select data-pf-summary="${chipIndex}:${itemIndex}:format">${this.powerFlowSelect(formats, item.format || "num")}</select></td>
+        <td><select data-pf-summary="${chipIndex}:${itemIndex}:kind">${this.powerFlowSelect(kinds, item.kind || "bolt")}</select></td>
+        <td><input type="color" value="${this.escapeHtml(String(item.color || "#bc63ff"))}" data-pf-summary="${chipIndex}:${itemIndex}:color" aria-label="Summary item colour ${itemIndex + 1}"></td>
+        <td><span class="ic-mono">${this.escapeHtml(this.powerFlowLive(item.entity).text)}</span></td>
+        <td><button class="ic-btn ic-btn-secondary" data-pf-remove-summary-item="${chipIndex}:${itemIndex}">Remove</button></td>
+      </tr>`).join("");
+      return `<div class="pf-group">
+        <div class="pf-edit-row">
+          <input type="text" value="${this.escapeHtml(String(chip.label ?? ""))}" data-pf-chip="summary:${chipIndex}:label" aria-label="Summary chip label ${chipIndex + 1}">
+          <button class="ic-btn ic-btn-secondary" data-pf-remove-chip="summary:${chipIndex}">Remove chip group</button>
+        </div>
+        <div class="ic-table-wrap"><table class="ic-table"><thead><tr><th>Label</th><th>Entity ID</th><th>Format</th><th>Icon</th><th>Colour</th><th>Live value</th><th></th></tr></thead><tbody>${itemRows || `<tr><td colspan="7" class="ic-muted">No items yet.</td></tr>`}</tbody></table></div>
+        <button class="ic-btn ic-btn-secondary" data-pf-add-summary-item="${chipIndex}">Add item</button>
+      </div>`;
+    }).join("");
+    return `<div class="pf-edit">
+      <div class="pf-edit-title">Extra chip groups above the Power Flow diagram</div>
+      ${groups || `<div class="ic-hint">No extra summary chip groups yet.</div>`}
+      <button class="ic-btn ic-btn-secondary" data-pf-add-chip="summary">Add chip group</button>
+    </div>`;
+  }
+
+  renderPowerFlowConfigTab() {
+    this.powerFlowDraft();
+    const message = this._powerFlowMessage
+      ? `<div class="ic-hint ${/failed|unavailable/i.test(this._powerFlowMessage) ? "ic-bad" : "ic-ok"}">${this.escapeHtml(this._powerFlowMessage)}</div>`
+      : "";
+    return `<section class="ic-section">
+        <h4>Power flow mapping</h4>
+        <p class="ic-hint">Edit the entity IDs used by the Power Flow card, add extra detail rows to each node, and extend either chip row. Save writes the shared entity-map override; the Power Flow card then updates without a restart.</p>
+      </section>
+      ${this.renderPowerFlowSensorGroups()}
+      <section class="ic-section pf-group">
+        <h4>Top chips — main row</h4>
+        ${this.renderPowerFlowMainChips()}
+      </section>
+      <section class="ic-section pf-group">
+        <h4>Top chips — summary row</h4>
+        ${this.renderPowerFlowSummaryChips()}
+      </section>
+      <section class="ic-section">
+        <button class="ic-action" data-pf-save="1" ${this._powerFlowSaving ? "disabled" : ""}>${this._powerFlowSaving ? "Saving…" : "Save power flow mapping"}</button>
+        ${message}
+      </section>`;
+  }
+
+  async savePowerFlowDisplay() {
+    if (this._powerFlowSaving) return;
+    if (!this.hasService("deye_energy", "save_power_flow_display")) {
+      this._powerFlowMessage = "The save_power_flow_display service is unavailable. Update and restart the integration.";
+      this._render();
+      return;
+    }
+    this._powerFlowSaving = true;
+    this._powerFlowMessage = "";
+    this._render();
+    try {
+      const draft = this.powerFlowDraft();
+      const payload = {
+        schema_version: 1,
+        entities: { ...(draft.entities || {}) },
+        node_details: this._pfCopy(draft.node_details || {}),
+        chip_rows: this._pfCopy(draft.chip_rows || {}),
+      };
+      const response = await this.callServiceWithResponse(
+        "deye_energy",
+        "save_power_flow_display",
+        { data: JSON.stringify(payload) }
+      );
+      this._powerFlowMessage = "Power flow mapping saved.";
+      this._powerFlowDraftDirty = false;
+      if (response && typeof response === "object") {
+        this._pfDisplayKey = JSON.stringify(response);
+        this._pfDisplayCache = response;
+        this._pfDisplaySource = response;
+        this._pfDraftSource = this._pfDisplayKey;
+        this._powerFlowDraft = {
+          schema_version: 1,
+          entities: { ...(response.entities || {}) },
+          node_details: this._pfCopy(response.node_details || {}),
+          chip_rows: this._pfCopy(response.chip_rows || {}),
+        };
+      }
+    } catch (error) {
+      this._powerFlowMessage = `Save failed: ${String(error?.message || error)}`;
+    } finally {
+      this._powerFlowSaving = false;
+      this._render();
+    }
   }
 
   renderInverterDatetimeSection() {
@@ -9921,7 +10174,8 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
       this._inverterDatetimeSyncing, this._inverterDatetimeMessage, this._inverterDatetimeStatus,
       this._inverterConfig, this._inverterConfigDrafts, this._inverterConfigSaving,
       this._inverterConfigMessages, this._pendingApply, this._config?.title || "",
-      monitorStates,
+      monitorStates, this.powerFlowStateSignature(), JSON.stringify(this.powerFlowDisplay()),
+      JSON.stringify(this._powerFlowDraft), this._powerFlowSaving, this._powerFlowMessage,
     ]);
   }
 
@@ -10032,6 +10286,8 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
           { label: "Grid Export Year", entity: "sensor.deye_year_grid_export" },
         ] },
       ], shownEntities);
+    } else if (active === "power_flow") {
+      body = this.renderPowerFlowConfigTab();
     }
     if (!body) body = `<div class="ic-hint">No data available for this section.</div>`;
 
@@ -10075,6 +10331,12 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
           .ic-unit { color: var(--ic-muted); font-size: .88rem; }
           .ic-readonly { color: var(--ic-text); }
           .ic-new { color: var(--ic-accent); font-weight: 600; }
+          .pf-edit { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--ic-line); }
+          .pf-edit-title { color: var(--ic-muted); font-size: .88rem; font-weight: 600; }
+          .pf-edit-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+          .pf-group > .pf-edit + .pf-edit { margin-top: 16px; }
+          .pf-edit input[type="text"], .pf-edit select { min-width: 120px; }
+          .pf-edit input[type="color"] { width: 48px; height: 36px; padding: 2px; }
           .ic-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 1000; }
           .ic-overlay-card { width: min(760px, 100%); max-height: min(85vh, 900px); overflow: auto; background: var(--card-background-color, #1c1c1c); color: var(--ic-text); border: 1px solid var(--ic-line); border-radius: 16px; box-shadow: 0 12px 40px rgba(0,0,0,.45); }
           .ic-overlay-head { padding: 16px 18px; border-bottom: 1px solid var(--ic-line); }
@@ -10138,6 +10400,95 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
       el.addEventListener("input", update);
       el.addEventListener("change", update);
     });
+    this.querySelectorAll("[data-pf-entity]").forEach((el) => {
+      const update = () => {
+        this.powerFlowDraft().entities[el.dataset.pfEntity] = el.value;
+        this._powerFlowDraftDirty = true;
+      };
+      el.addEventListener("input", update);
+      el.addEventListener("change", update);
+    });
+    this.querySelectorAll("[data-pf-detail]").forEach((el) => {
+      const [group, index, field] = String(el.dataset.pfDetail).split(":");
+      const update = () => {
+        const rows = this.powerFlowDraft().node_details[group];
+        if (!Array.isArray(rows) || !rows[Number(index)]) return;
+        rows[Number(index)][field] = el.value;
+        this._powerFlowDraftDirty = true;
+      };
+      el.addEventListener("input", update);
+      el.addEventListener("change", update);
+    });
+    this.querySelectorAll("[data-pf-chip]").forEach((el) => {
+      const [row, index, field] = String(el.dataset.pfChip).split(":");
+      const update = () => {
+        const rows = this.powerFlowDraft().chip_rows[row];
+        if (!Array.isArray(rows) || !rows[Number(index)]) return;
+        rows[Number(index)][field] = el.value;
+        this._powerFlowDraftDirty = true;
+      };
+      el.addEventListener("input", update);
+      el.addEventListener("change", update);
+    });
+    this.querySelectorAll("[data-pf-summary]").forEach((el) => {
+      const [chipIndex, itemIndex, field] = String(el.dataset.pfSummary).split(":");
+      const update = () => {
+        const chip = this.powerFlowDraft().chip_rows.summary?.[Number(chipIndex)];
+        if (!chip || !Array.isArray(chip.items) || !chip.items[Number(itemIndex)]) return;
+        chip.items[Number(itemIndex)][field] = el.value;
+        this._powerFlowDraftDirty = true;
+      };
+      el.addEventListener("input", update);
+      el.addEventListener("change", update);
+    });
+    this.querySelectorAll("[data-pf-add-detail]").forEach((el) => el.addEventListener("click", () => {
+      const group = el.dataset.pfAddDetail;
+      const draft = this.powerFlowDraft();
+      draft.node_details[group] = Array.isArray(draft.node_details[group]) ? draft.node_details[group] : [];
+      draft.node_details[group].push({ label: "New reading", entity: "", format: "num" });
+      this._powerFlowDraftDirty = true;
+      this._render();
+    }));
+    this.querySelectorAll("[data-pf-remove-detail]").forEach((el) => el.addEventListener("click", () => {
+      const [group, index] = String(el.dataset.pfRemoveDetail).split(":");
+      const rows = this.powerFlowDraft().node_details[group];
+      if (Array.isArray(rows)) rows.splice(Number(index), 1);
+      this._powerFlowDraftDirty = true;
+      this._render();
+    }));
+    this.querySelectorAll("[data-pf-add-chip]").forEach((el) => el.addEventListener("click", () => {
+      const row = el.dataset.pfAddChip;
+      const draft = this.powerFlowDraft();
+      draft.chip_rows[row] = Array.isArray(draft.chip_rows[row]) ? draft.chip_rows[row] : [];
+      draft.chip_rows[row].push(row === "summary"
+        ? { label: "New group", items: [{ label: "New reading", entity: "", format: "num", kind: "bolt", color: "#bc63ff" }] }
+        : { label: "New chip", entity: "", format: "num" });
+      this._powerFlowDraftDirty = true;
+      this._render();
+    }));
+    this.querySelectorAll("[data-pf-remove-chip]").forEach((el) => el.addEventListener("click", () => {
+      const [row, index] = String(el.dataset.pfRemoveChip).split(":");
+      const rows = this.powerFlowDraft().chip_rows[row];
+      if (Array.isArray(rows)) rows.splice(Number(index), 1);
+      this._powerFlowDraftDirty = true;
+      this._render();
+    }));
+    this.querySelectorAll("[data-pf-add-summary-item]").forEach((el) => el.addEventListener("click", () => {
+      const chip = this.powerFlowDraft().chip_rows.summary?.[Number(el.dataset.pfAddSummaryItem)];
+      if (!chip) return;
+      chip.items = Array.isArray(chip.items) ? chip.items : [];
+      chip.items.push({ label: "New reading", entity: "", format: "num", kind: "bolt", color: "#bc63ff" });
+      this._powerFlowDraftDirty = true;
+      this._render();
+    }));
+    this.querySelectorAll("[data-pf-remove-summary-item]").forEach((el) => el.addEventListener("click", () => {
+      const [chipIndex, itemIndex] = String(el.dataset.pfRemoveSummaryItem).split(":");
+      const chip = this.powerFlowDraft().chip_rows.summary?.[Number(chipIndex)];
+      if (chip && Array.isArray(chip.items)) chip.items.splice(Number(itemIndex), 1);
+      this._powerFlowDraftDirty = true;
+      this._render();
+    }));
+    this.querySelectorAll("[data-pf-save]").forEach((el) => el.addEventListener("click", () => this.savePowerFlowDisplay()));
     this.querySelectorAll("[data-ic-cancel-apply]").forEach((el) => el.addEventListener("click", () => this.cancelPendingApply()));
     this.querySelectorAll("[data-ic-confirm-apply]").forEach((el) => el.addEventListener("click", () => this.confirmPendingApply()));
     const overlay = this.querySelector("[data-ic-overlay]");
@@ -10852,7 +11203,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     this._statsKey = '';
     if (typeof this.addEventListener === 'function') {
       this.addEventListener('click', (e) => {
-        const t = e?.target?.closest ? e.target.closest('.pf-node-click[data-entity], .pf-consumer-click[data-entity]') : null;
+        const t = e?.target?.closest ? e.target.closest('.pf-value-click[data-entity], .pf-node-click[data-entity], .pf-consumer-click[data-entity]') : null;
         if (t) this._openMoreInfo(t.getAttribute('data-entity'));
         const p = e?.target?.closest ? e.target.closest('.pf-period[data-period]') : null;
         if (p) { this._period = p.getAttribute('data-period') || 'power'; this._maybeFetchStats(); this._render(); }
@@ -10922,7 +11273,41 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     }[kind] || '';
     return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:0 0 auto;filter:drop-shadow(0 0 5px ${color}66);">${glyph}</svg>`;
   }
-  _entities() { const d = DeyeEnergyPowerFlowCard.getStubConfig().entities; return { ...d, ...(this._config.entities || {}) }; }
+  _powerFlowDisplay() {
+    const states = this._hass?.states || {};
+    const entry = Object.entries(states).find(([id, state]) => id.startsWith("sensor.") && id.endsWith("_ai_state") && state?.attributes?.power_flow_display);
+    const source = entry?.[1]?.attributes?.power_flow_display;
+    if (!source || typeof source !== "object" || Array.isArray(source)) return {};
+    if (this._pfDisplaySource === source) return this._pfDisplayCache;
+    this._pfDisplaySource = source;
+    this._pfDisplayCache = source;
+    return source;
+  }
+  _configValue(entityId, format) {
+    const raw = this._hass?.states?.[entityId]?.state;
+    if (format === 'num' || !format) {
+      if (raw == null || raw === 'unknown' || raw === 'unavailable') return '—';
+      const value = Number(raw);
+      return Number.isFinite(value) ? String(Math.round(value * 100) / 100) : raw;
+    }
+    const value = this._num(entityId);
+    if (format === 'w') return this._fmtW(value);
+    if (format === 'kwh') return this._fmtKwh(value);
+    if (format === 'gbp') return this._fmtGbp(value);
+    if (format === 'pct') return value == null || !Number.isFinite(value) ? '—' : `${Math.round(value)} %`;
+    if (format === 'kw') return value == null || !Number.isFinite(value) ? '—' : `${(value / 1000).toFixed(2)} kW`;
+    return value == null || !Number.isFinite(value) ? '—' : String(Math.round(value * 100) / 100);
+  }
+  _extraNodeDetails(group) {
+    const details = this._powerFlowDisplay().node_details || {};
+    const rows = Array.isArray(details[group]) ? details[group] : [];
+    return rows.map((row) => this._detailLine(row.label, this._configValue(row.entity, row.format), '#9eb8c8', row.entity));
+  }
+  _entities() {
+    const d = DeyeEnergyPowerFlowCard.getStubConfig().entities;
+    const override = this._powerFlowDisplay().entities || {};
+    return { ...d, ...override, ...(this._config.entities || {}) };
+  }
   _periods() { const p = this._config?.view?.energy_periods; return Array.isArray(p) && p.length ? p.filter(x => ['power','today','24h','week','month'].includes(x)) : ['power','today','24h','week','month']; }
   _isEnergyPeriod() { return this._period !== 'power'; }
   _periodLabel(p) { return ({power:'Power',today:'Today','24h':'24h',week:'Week',month:'Month'})[p] || p; }
@@ -11028,8 +11413,14 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       <path id="${id}" class="pf-flow-line${active ? ' pf-flow-active' : ''}" d="${d}" stroke="${active ? color : 'rgba(158,184,200,.18)'}" stroke-width="4" stroke-opacity="${active ? 0.96 : 0.18}" fill="none" ${marker ? `marker-end="${marker}"` : ''}/>`;
   }
 
-  _detailLine(label, value, color='#9eb8c8') {
-    return `<div style="display:flex;justify-content:flex-start;gap:5px;font-size:12px;line-height:1.5;"><span style="color:#93adbc;">${this._esc(label)}</span><span style="color:${this._esc(color)};font-weight:600;white-space:nowrap;">${this._esc(value)}</span></div>`;
+  _entityValue(value, entityId, style='') {
+    const text = this._esc(value == null ? '—' : value);
+    const attrs = entityId ? ` class="pf-value-click" data-entity="${this._esc(entityId)}"` : '';
+    return `<span${attrs}${style ? ` style="${style}"` : ''}>${text}</span>`;
+  }
+
+  _detailLine(label, value, color='#9eb8c8', entityId='') {
+    return `<div style="display:flex;justify-content:flex-start;gap:5px;font-size:12px;line-height:1.5;"><span style="color:#93adbc;">${this._esc(label)}</span>${this._entityValue(value, entityId, `color:${this._esc(color)};font-weight:600;white-space:nowrap;`)}</div>`;
   }
 
   _nodeIconSrc(key) {
@@ -11064,7 +11455,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
             </div>`;
     const labels = `<div style="min-width:0;">
               <div style="font-size:12px;color:#93adbc;letter-spacing:.5px;text-transform:uppercase;">${this._esc(title)}</div>
-              <div style="font-size:26px;font-weight:800;color:#f4fbff;line-height:1.15;margin-top:2px;">${this._esc(value)}</div>
+              <div style="font-size:26px;font-weight:800;color:#f4fbff;line-height:1.15;margin-top:2px;">${this._entityValue(value, entityId)}</div>
               <div style="font-size:12px;color:${this._esc(color)};font-weight:700;margin-top:2px;">${this._esc(sub || '')}</div>
             </div>`;
     const body = opts.centerIcon ? `
@@ -11198,58 +11589,75 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       return `<button class="pf-period" data-period="${this._esc(p)}" style="cursor:pointer;padding:7px 12px;border-radius:999px;border:1px solid ${active?'rgba(126,226,45,.55)':'rgba(118,166,190,.20)'};background:${active?'rgba(126,226,45,.14)':'rgba(255,255,255,.03)'};color:${active?'#d9ffb0':'#9eb8c8'};font-size:12px;font-weight:700;">${this._esc(this._periodLabel(p))}</button>`;
     }).join('');
 
+    const display = this._powerFlowDisplay();
+    const statMap = this._statEntityMap();
+    const extraChips = Array.isArray(display.chip_rows?.main) ? display.chip_rows.main : [];
     const chips = [
-      ['PV', fmtVal(pvVal, pvE), '#f6c945', isPower ? (pvDaily!=null?`Today ${this._fmtKwh(pvDaily)}`:'') : this._periodLabel(period)],
-      ['Grid', isPower ? this._fmtW(gridP) : (gridImportE!=null||gridExportE!=null?`${this._fmtKwh(gridImportE)} / ${this._fmtKwh(gridExportE)}`:'—'), '#5bc0ff', gridImport>0?'Importing':gridExport>0?'Exporting':'Idle'],
-      ['Battery', fmtVal(isPower?(battP!=null?-battP:null):battRaw, isPower?null:(battChargeE!=null||battDischargeE!=null?Math.abs(Number(battChargeE||0)-Number(battDischargeE||0)):null)), '#7ee22d', socText],
-      ['Home', fmtVal(loadVal, loadE), '#ff8a4c', isPower ? (loadDaily!=null?`Today ${this._fmtKwh(loadDaily)}`:'') : this._periodLabel(period)],
-    ].map(([l,v,c,s2]) => `<div style="flex:1;min-width:130px;padding:12px 14px;border-radius:14px;background:rgba(255,255,255,.035);border:1px solid rgba(118,166,190,.18);"><div style="font-size:11px;color:#9eb8c8;letter-spacing:.4px;text-transform:uppercase;">${this._esc(l)}</div><div style="font-size:22px;font-weight:800;color:${c};margin-top:4px;text-shadow:0 0 18px ${c}33;">${this._esc(v==null?'—':v)}</div><div style="font-size:11px;color:#93adbc;margin-top:2px;">${this._esc(s2||'')}</div></div>`).join('');
+      ['PV', fmtVal(pvVal, pvE), '#f6c945', isPower ? (pvDaily!=null?`Today ${this._fmtKwh(pvDaily)}`:'') : this._periodLabel(period), isPower ? e.pv : statMap.pv],
+      ['Grid', isPower ? this._fmtW(gridP) : (gridImportE!=null||gridExportE!=null?`${this._fmtKwh(gridImportE)} / ${this._fmtKwh(gridExportE)}`:'—'), '#5bc0ff', gridImport>0?'Importing':gridExport>0?'Exporting':'Idle', isPower ? e.grid : statMap.grid_import],
+      ['Battery', fmtVal(isPower?(battP!=null?-battP:null):battRaw, isPower?null:(battChargeE!=null||battDischargeE!=null?Math.abs(Number(battChargeE||0)-Number(battDischargeE||0)):null)), '#7ee22d', socText, isPower ? e.battery : statMap.batt_charge],
+      ['Home', fmtVal(loadVal, loadE), '#ff8a4c', isPower ? (loadDaily!=null?`Today ${this._fmtKwh(loadDaily)}`:'') : this._periodLabel(period), isPower ? e.load : statMap.load],
+      ...extraChips.map((chip) => [chip.label, this._configValue(chip.entity, chip.format), '#bc63ff', '', chip.entity]),
+    ].map(([l,v,c,s2,entity]) => `<div style="flex:1;min-width:130px;padding:12px 14px;border-radius:14px;background:rgba(255,255,255,.035);border:1px solid rgba(118,166,190,.18);"><div style="font-size:11px;color:#9eb8c8;letter-spacing:.4px;text-transform:uppercase;">${this._esc(l)}</div><div style="font-size:22px;font-weight:800;color:${c};margin-top:4px;text-shadow:0 0 18px ${c}33;">${this._entityValue(v==null?'—':v, entity)}</div><div style="font-size:11px;color:#93adbc;margin-top:2px;">${this._esc(s2||'')}</div></div>`).join('');
 
     const summaryChips = [
       ['Overall grid', [
-        ['import', this._fmtW(this._num(e.overall_grid_import)), '#7ee22d'],
-        ['export', this._fmtW(this._num(e.overall_grid_export)), '#7ee22d'],
+        ['import', this._fmtW(this._num(e.overall_grid_import)), '#7ee22d', e.overall_grid_import],
+        ['export', this._fmtW(this._num(e.overall_grid_export)), '#7ee22d', e.overall_grid_export],
       ]],
       ['Electricity', [
-        ['bolt', this._fmtKwh(this._num(e.electricity_import_today)), '#5bc0ff'],
-        ['pound', this._fmtGbp(this._num(e.electricity_cost_today)), '#ff5d70'],
+        ['bolt', this._fmtKwh(this._num(e.electricity_import_today)), '#5bc0ff', e.electricity_import_today],
+        ['pound', this._fmtGbp(this._num(e.electricity_cost_today)), '#ff5d70', e.electricity_cost_today],
       ]],
       ['Gas', [
-        ['flame', this._fmtKwh(this._num(e.gas_import_today)), '#5bc0ff'],
-        ['pound', this._fmtGbp(this._num(e.gas_cost_today)), '#ff5d70'],
+        ['flame', this._fmtKwh(this._num(e.gas_import_today)), '#5bc0ff', e.gas_import_today],
+        ['pound', this._fmtGbp(this._num(e.gas_cost_today)), '#ff5d70', e.gas_cost_today],
       ]],
       ['Export', [
-        ['export', this._fmtKwh(this._num(e.electricity_export_today)), '#5bc0ff'],
-        ['pound', this._fmtGbp(this._num(e.electricity_income_today)), '#7ee22d'],
+        ['export', this._fmtKwh(this._num(e.electricity_export_today)), '#5bc0ff', e.electricity_export_today],
+        ['pound', this._fmtGbp(this._num(e.electricity_income_today)), '#7ee22d', e.electricity_income_today],
       ]],
+      ...(Array.isArray(display.chip_rows?.summary) ? display.chip_rows.summary : []).map((chip) => [
+        chip.label,
+        (Array.isArray(chip.items) ? chip.items : []).map((item) => [
+          item.kind,
+          this._configValue(item.entity, item.format),
+          item.color || '#bc63ff',
+          item.entity,
+        ]),
+      ]),
     ].map(([title, items]) => `<div style="flex:1;min-width:220px;padding:12px 14px;border-radius:14px;background:rgba(255,255,255,.035);border:1px solid rgba(118,166,190,.18);">
         <div style="font-size:11px;color:#9eb8c8;letter-spacing:.4px;text-transform:uppercase;">${this._esc(title)}</div>
         <div style="display:flex;align-items:center;gap:16px;margin-top:8px;">
-          ${items.map(([kind, value, color]) => `<div style="display:flex;align-items:center;gap:7px;min-width:0;">${this._summaryIcon(kind, color)}<span style="font-size:18px;font-weight:800;color:${color};text-shadow:0 0 14px ${color}55;white-space:nowrap;">${this._esc(value)}</span></div>`).join('')}
+          ${items.map(([kind, value, color, entity]) => `<div style="display:flex;align-items:center;gap:7px;min-width:0;">${this._summaryIcon(kind, color)}${this._entityValue(value, entity, `font-size:18px;font-weight:800;color:${color};text-shadow:0 0 14px ${color}55;white-space:nowrap;`)}</div>`).join('')}
         </div>
       </div>`).join('');
 
-    const pvNode = this._node(pos.pv[0],pos.pv[1],this._nodeIcon('solar-pv'),'PV',fmtVal(pvVal,pvE), isPower?(pvVal>10?'Generating':'Idle'):this._periodLabel(period),'#f6c945',(isPower?pvVal>10:pvVal>0.01),e.pv,[this._detailLine(isPower?'Today':this._periodLabel(period), this._fmtKwh(isPower?pvDaily:pvE),'#f6c945')], { nodeW: SZ.pv.w, nodeH: SZ.pv.h });
+    const pvNode = this._node(pos.pv[0],pos.pv[1],this._nodeIcon('solar-pv'),'PV',fmtVal(pvVal,pvE), isPower?(pvVal>10?'Generating':'Idle'):this._periodLabel(period),'#f6c945',(isPower?pvVal>10:pvVal>0.01),e.pv,[this._detailLine(isPower?'Today':this._periodLabel(period), this._fmtKwh(isPower?pvDaily:pvE),'#f6c945',statMap.pv),...this._extraNodeDetails('pv')], { nodeW: SZ.pv.w, nodeH: SZ.pv.h });
     const gridNode = this._node(pos.grid[0],pos.grid[1],this._nodeIcon('grid'),'Grid', isPower?this._fmtW(gridP):(gridImportE!=null||gridExportE!=null?`${this._fmtKwh(gridImportE)} in`:'—'), gridLabel,'#5bc0ff',(gridImport>0||gridExport>0),e.grid,[
-      this._detailLine('Import '+(isPower?'today':period), this._fmtKwh(isPower?gridBought:gridImportE),'#5bc0ff'),
-      this._detailLine('Export '+(isPower?'today':period), this._fmtKwh(isPower?gridSold:gridExportE),'#7ee22d'),
-      this._detailLine('Voltage', this._fmtNum(gridV,1,' V')),
+      this._detailLine('Import '+(isPower?'today':period), this._fmtKwh(isPower?gridBought:gridImportE),'#5bc0ff',statMap.grid_import),
+      this._detailLine('Export '+(isPower?'today':period), this._fmtKwh(isPower?gridSold:gridExportE),'#7ee22d',statMap.grid_export),
+      this._detailLine('Voltage', this._fmtNum(gridV,1,' V'),'#9eb8c8',e.grid_l1_voltage),
+      ...this._extraNodeDetails('grid'),
     ], { nodeW: SZ.grid.w, nodeH: SZ.grid.h });
     const invNode = this._node(pos.inv[0],pos.inv[1],this._nodeIcon('inverter'),'Inverter',fmtVal(invVal,invVal), invP!=null||!isPower?'Active':'Unavailable','#bc63ff',(isPower?invP!=null&&Math.abs(invP)>10:invVal!=null&&invVal>0.01),e.inverter,[
-      this._detailLine('Temperature', this._fmtNum(invT,1,' °C'),'#bc63ff'),
+      this._detailLine('Temperature', this._fmtNum(invT,1,' °C'),'#bc63ff',e.inverter_temperature),
       this._detailLine('Status', invP!=null||!isPower?'Online':'—'),
+      ...this._extraNodeDetails('inverter'),
     ], { centerIcon: true, centerDetails: true });
     const homeNode = this._node(pos.home[0],pos.home[1],this._nodeIcon('home'),'Home',fmtVal(loadVal,loadE), isPower?(loadVal>10?'Consuming':'Idle'):this._periodLabel(period),'#ff8a4c',(isPower?loadVal>10:loadVal>0.01),e.load,[
-      this._detailLine(isPower?'Today':this._periodLabel(period), this._fmtKwh(isPower?loadDaily:loadE),'#ff8a4c'),
+      this._detailLine(isPower?'Today':this._periodLabel(period), this._fmtKwh(isPower?loadDaily:loadE),'#ff8a4c',statMap.load),
       this._detailLine('Consumers', String(displayConsumers.length)),
+      ...this._extraNodeDetails('home'),
     ], { nodeW: SZ.home.w, nodeH: SZ.home.h });
     const battNode = this._node(pos.batt[0],pos.batt[1],this._batteryNodeIcon(soc),'Battery',fmtVal(isPower?(battP!=null?-battP:null):battRaw, isPower?null:null), [battLabel,socText].filter(Boolean).join(' · '),'#7ee22d',(battCharge>(isPower?10:0.01)||battDischarge>(isPower?10:0.01)),e.battery,[
-      this._detailLine('SOC', soc!=null?`${Math.round(soc)} %`:'—','#7ee22d'),
-      this._detailLine('Voltage', this._fmtNum(battV,1,' V')),
-      this._detailLine('Current', this._fmtNum(battA,1,' A')),
-      this._detailLine('Temp', this._fmtNum(battT,1,' °C')),
-      this._detailLine('Charged '+(isPower?'today':period), this._fmtKwh(isPower?battChargeDaily:battChargeE),'#7ee22d'),
-      this._detailLine('Discharged '+(isPower?'today':period), this._fmtKwh(isPower?battDischargeDaily:battDischargeE),'#ff8a4c'),
+      this._detailLine('SOC', soc!=null?`${Math.round(soc)} %`:'—','#7ee22d',e.battery_soc),
+      this._detailLine('Voltage', this._fmtNum(battV,1,' V'),'#9eb8c8',e.battery_voltage),
+      this._detailLine('Current', this._fmtNum(battA,1,' A'),'#9eb8c8',e.battery_current),
+      this._detailLine('Temp', this._fmtNum(battT,1,' °C'),'#9eb8c8',e.battery_temperature),
+      this._detailLine('Charged '+(isPower?'today':period), this._fmtKwh(isPower?battChargeDaily:battChargeE),'#7ee22d',statMap.batt_charge),
+      this._detailLine('Discharged '+(isPower?'today':period), this._fmtKwh(isPower?battDischargeDaily:battDischargeE),'#ff8a4c',statMap.batt_discharge),
+      ...this._extraNodeDetails('battery'),
     ], { nodeW: SZ.batt.w, nodeH: SZ.batt.h });
 
     const consumerHtml = displayConsumers.length ? `
@@ -11286,6 +11694,8 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
           .pf-flow-line{fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;filter:url(#pf-line-glow)}
           .pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34;filter:url(#pf-line-glow)}
           .pf-flow-active{stroke-dasharray:1 22;stroke-width:7!important;animation:pfFlowDash ${pfDuration}s linear infinite}
+          .pf-value-click{cursor:pointer;text-decoration:underline dotted rgba(158,184,200,.45);text-underline-offset:3px}
+          .pf-value-click:hover{text-decoration-color:currentColor}
           @keyframes pfFlowDash{to{stroke-dashoffset:-${pfOffset}}}
           @keyframes pfFlowDashMobile{to{stroke-dashoffset:-${Math.round(pfOffset * 18 / 22)}}}
           @media (max-width:640px){.pf-flow-active{stroke-dasharray:1 18;animation-name:pfFlowDashMobile}}
@@ -11343,7 +11753,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.0.81",
+  description: "Deye Energy 0.8.0.82",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

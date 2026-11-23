@@ -3379,6 +3379,7 @@ class DeyeEnergyRuntime:
             "future_plan": self.future_plan,
             "manual_schedule": self.manual_schedule_state(),
             "energy_status_display": self.energy_status_display_state(),
+            "power_flow_display": entity_map.power_flow_display(),
             "plan_execution_index": self.plan_execution_index(),
             "plan_execution_today": self.plan_execution_day(),
         }
@@ -4912,7 +4913,7 @@ class DeyeEnergyRuntime:
             if not tou["ok"]
             else "OK"
         )
-        return {"integration_version": "0.8.0.81", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
+        return {"integration_version": "0.8.0.82", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
                 "inverter_provider": self.inverter_provider,
                 "inverter_device_id": self.data.get(CONF_INVERTER_DEVICE_ID),
                 "inverter_provider_label": provider_profile(self.data).label,

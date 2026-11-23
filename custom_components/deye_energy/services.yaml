@@ -374,3 +374,19 @@ apply_inverter_configuration_group:
 sync_inverter_datetime:
   name: Sync inverter datetime
   description: Force-sync the Home Assistant server time to the configured inverter datetime entity. Returns the sync result and current datetime status.
+
+get_power_flow_display:
+  name: Get Power Flow display configuration
+  description: Return the effective Power Flow sensor mappings, sensor groups, node detail rows and chip row definitions.
+
+save_power_flow_display:
+  name: Save Power Flow display configuration
+  description: Save Power Flow sensor entity overrides, extra node detail rows and extra chip rows to the shared entity-map override file. Only the power_flow section is changed.
+  fields:
+    data:
+      name: Display configuration JSON
+      description: JSON object with optional schema_version, entities, node_details and chip_rows. Unknown keys and invalid entity ids are rejected.
+      required: true
+      selector:
+        text:
+          multiline: true

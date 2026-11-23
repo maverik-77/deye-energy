@@ -323,6 +323,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     "tariff",
                     "planner_48h",
                     "future_plan",
+                    "power_flow_display",
                 },
             ),
             DeyeManagerSensor(runtime, "daily_pv_production", "Daily PV production", lambda r: r.daily_energy_value(r.daily_pv_production_sensor), "kWh", SensorDeviceClass.ENERGY, attrs_fn=source_sensor_attrs(lambda r: r.daily_pv_production_sensor), source_fn=lambda r: r.daily_pv_production_sensor),

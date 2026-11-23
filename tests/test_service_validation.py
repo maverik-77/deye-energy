@@ -490,6 +490,25 @@ class ServiceJsonValidationTests(unittest.TestCase):
         self.assertIn("apply_inverter_configuration_group", init.SERVICE_NAMES)
         self.assertIn("sync_inverter_datetime", init.SERVICE_NAMES)
 
+    def test_power_flow_display_services_are_registered_and_validated(self):
+        self.assertEqual(
+            init.POWER_FLOW_DISPLAY_DATA_SCHEMA({"data": "{}"}), {"data": "{}"}
+        )
+        with self.assertRaises(Exception):
+            init.POWER_FLOW_DISPLAY_DATA_SCHEMA({})
+        with self.assertRaises(Exception):
+            init.POWER_FLOW_DISPLAY_DATA_SCHEMA({"data": 123})
+        source = (PACKAGE / "__init__.py").read_text(encoding="utf-8")
+        for name in ("get_power_flow_display", "save_power_flow_display"):
+            self.assertIn(name, init.SERVICE_NAMES)
+            self.assertIn(f'"{name}"', source)
+        self.assertIn("return entity_map.power_flow_display()", source)
+        self.assertIn("entity_map.save_power_flow_display, payload", source)
+        self.assertIn('runtime.request_sensor_snapshot_refresh({"ai_state"})', source)
+        yaml = (PACKAGE / "services.yaml").read_text(encoding="utf-8")
+        self.assertIn("get_power_flow_display:", yaml)
+        self.assertIn("save_power_flow_display:", yaml)
+
     def test_inverter_config_catalog_groups_and_direct_currents(self):
         catalog = sys.modules[f"{package.__name__}.inverter_config"]
         self.assertEqual(

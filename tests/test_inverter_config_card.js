@@ -346,6 +346,82 @@ async function testLoadsLiveOnConnectedCallback() {
   assert.ok(reads >= 1, "should load live values on connect");
 }
 
+function withPowerFlowState(card) {
+  const display = {
+    schema_version: 1,
+    entities: { pv: "sensor.custom_pv" },
+    sensor_groups: [
+      { key: "pv", label: "PV", sensors: [{ key: "pv", label: "PV power" }] },
+    ],
+    node_detail_keys: ["pv"],
+    node_details: {},
+    chip_rows: { main: [], summary: [] },
+    formats: ["w", "num"],
+    chip_kinds: ["bolt"],
+  };
+  card._hass.states["sensor.test_ai_state"] = {
+    state: "ready",
+    attributes: { power_flow_display: display },
+  };
+  card._hass.states["sensor.custom_pv"] = {
+    state: "1234",
+    attributes: { unit_of_measurement: "W" },
+  };
+  card._hass.services.deye_energy.save_power_flow_display = {};
+  return display;
+}
+
+function testPowerFlowTabRendersGroupsAndControls() {
+  const card = makeCard();
+  withPowerFlowState(card);
+  card._inverterConfigSubTab = "power_flow";
+  const html = renderHtml(card);
+  assert.match(html, /data-inverter-config-subtab="power_flow"/);
+  assert.match(html, /Power flow mapping/);
+  assert.match(html, /data-pf-entity="pv"/);
+  assert.match(html, /sensor\.custom_pv/);
+  assert.match(html, /1234 W/);
+  assert.match(html, /Additional data shown in the pv node/);
+  assert.match(html, /data-pf-add-detail="pv"/);
+  assert.match(html, /Top chips — main row/);
+  assert.match(html, /data-pf-add-chip="main"/);
+  assert.match(html, /Top chips — summary row/);
+  assert.match(html, /data-pf-add-chip="summary"/);
+  assert.match(html, /data-pf-save="1"/);
+}
+
+async function testPowerFlowSaveSendsDraftPayload() {
+  const card = makeCard();
+  withPowerFlowState(card);
+  card._inverterConfigSubTab = "power_flow";
+  renderHtml(card);
+  const draft = card.powerFlowDraft();
+  draft.node_details.pv = [{ label: "Temperature", entity: "sensor.inv_temp", format: "num" }];
+  draft.chip_rows.main = [{ label: "Extra", entity: "sensor.extra", format: "num" }];
+  card._powerFlowDraftDirty = true;
+  setServiceResponses(card, {
+    save_power_flow_display: () => ({
+      schema_version: 1,
+      entities: { pv: "sensor.custom_pv" },
+      node_details: draft.node_details,
+      chip_rows: draft.chip_rows,
+    }),
+  });
+  await card.savePowerFlowDisplay();
+  const calls = card._serviceCalls.filter(
+    (args) => args[0] === "deye_energy" && args[1] === "save_power_flow_display"
+  );
+  assert.equal(calls.length, 1);
+  const payload = JSON.parse(calls[0][2].data);
+  assert.deepEqual(Object.keys(payload).sort(), [
+    "chip_rows", "entities", "node_details", "schema_version",
+  ]);
+  assert.equal(payload.entities.pv, "sensor.custom_pv");
+  assert.equal(payload.node_details.pv[0].label, "Temperature");
+  assert.equal(payload.chip_rows.main[0].label, "Extra");
+  assert.match(renderHtml(card), /Power flow mapping saved\./);
+}
+
 module.exports = async function run() {
   testStandaloneCardRegistered();
   testWorkScheduleHeaderHasNoRemovedCurrentColumns();
@@ -358,7 +434,9 @@ module.exports = async function run() {
   await testNoChangeDoesNotOpenConfirmation();
   await testInverterDatetimeSectionRendersAndSyncs();
   await testLoadsLiveOnConnectedCallback();
-  console.log("inverter config card: 11 checks passed");
+  testPowerFlowTabRendersGroupsAndControls();
+  await testPowerFlowSaveSendsDraftPayload();
+  console.log("inverter config card: 13 checks passed");
 };
 
 if (require.main === module) module.exports().catch((err) => {

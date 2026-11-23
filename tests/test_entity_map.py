@@ -260,6 +260,113 @@ class EntityMapCatalogueTests(unittest.TestCase):
         ):
             self.assertNotIn(literal, sources["const.py"])
 
+    def test_power_flow_defaults_and_effective_merge(self):
+        defaults = entity_map.power_flow_display()
+        self.assertEqual(defaults["schema_version"], 1)
+        self.assertEqual(len(defaults["entities"]), 26)
+        self.assertEqual(
+            [group["key"] for group in defaults["sensor_groups"]],
+            [
+                "grid", "pv", "inverter", "home", "battery",
+                "overall_grid", "electricity", "gas", "export",
+            ],
+        )
+        self.assertEqual(
+            defaults["node_detail_keys"],
+            ["grid", "pv", "inverter", "home", "battery"],
+        )
+        self.assertEqual(defaults["chip_rows"], {"main": [], "summary": []})
+
+        with tempfile.TemporaryDirectory(
+            dir="/data/v2/cache/opencode", prefix="deye_power_flow_map_"
+        ) as tmp:
+            path = Path(tmp) / BUNDLED["override_file"]
+            path.write_text(
+                json.dumps(
+                    {
+                        "power_flow": {
+                            "entities": {"pv": "sensor.my_pv"},
+                            "node_details": {
+                                "pv": [{"label": "Extra", "entity": "sensor.extra", "format": "w"}]
+                            },
+                            "chip_rows": {
+                                "main": [{"label": "Extra", "entity": "sensor.chip", "format": "num"}]
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertTrue(entity_map.configure(tmp))
+            merged = entity_map.power_flow_display()
+            self.assertEqual(merged["entities"]["pv"], "sensor.my_pv")
+            self.assertEqual(
+                merged["entities"]["grid"], defaults["entities"]["grid"]
+            )
+            self.assertEqual(merged["node_details"]["pv"][0]["label"], "Extra")
+            self.assertEqual(merged["chip_rows"]["main"][0]["label"], "Extra")
+            self.assertEqual(merged["sensor_groups"], defaults["sensor_groups"])
+
+    def test_save_power_flow_display_preserves_other_sections_and_fails_closed(self):
+        with tempfile.TemporaryDirectory(
+            dir="/data/v2/cache/opencode", prefix="deye_power_flow_save_"
+        ) as tmp:
+            entity_map.configure(tmp)
+            path = entity_map.power_flow_override_path()
+            self.assertIsNotNone(path)
+            assert path is not None
+            result = entity_map.save_power_flow_display(
+                {
+                    "schema_version": 1,
+                    "entities": {"pv": "sensor.saved_pv"},
+                    "node_details": {
+                        "grid": [{"label": "Frequency", "entity": "sensor.freq", "format": "num"}]
+                    },
+                    "chip_rows": {
+                        "summary": [
+                            {
+                                "label": "Water",
+                                "items": [
+                                    {
+                                        "label": "Litres",
+                                        "entity": "sensor.water",
+                                        "format": "num",
+                                        "kind": "bolt",
+                                        "color": "#123abc",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                }
+            )
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(set(saved), {"power_flow"})
+            self.assertEqual(result["entities"]["pv"], "sensor.saved_pv")
+            self.assertEqual(result["chip_rows"]["summary"][0]["label"], "Water")
+            self.assertEqual(entity_map.power_flow_display()["entities"]["pv"], "sensor.saved_pv")
+
+            saved["common"] = {"entities": {"battery_soc_sensor": "sensor.keep_me"}}
+            path.write_text(json.dumps(saved), encoding="utf-8")
+            self.assertTrue(entity_map.configure(tmp))
+            entity_map.save_power_flow_display({"entities": {"grid": "sensor.new_grid"}})
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                saved["common"]["entities"]["battery_soc_sensor"], "sensor.keep_me"
+            )
+            self.assertEqual(
+                entity_map.power_flow_display()["entities"]["grid"], "sensor.new_grid"
+            )
+
+            before = path.read_text(encoding="utf-8")
+            with self.assertRaises(ValueError):
+                entity_map.save_power_flow_display({"entities": {"nope": "sensor.bad"}})
+            with self.assertRaises(ValueError):
+                entity_map.save_power_flow_display(
+                    {"chip_rows": {"main": [{"label": "Bad", "entity": "light.x"}]}}
+                )
+            self.assertEqual(path.read_text(encoding="utf-8"), before)
+
 
 if __name__ == "__main__":
     unittest.main()

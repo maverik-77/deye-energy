@@ -105,6 +105,9 @@ MANUAL_SCHEDULE_DATA_SCHEMA = vol.Schema(
 ENERGY_STATUS_DISPLAY_DATA_SCHEMA = vol.Schema(
     {vol.Required("data"): vol.All(cv.string, vol.Length(max=50000))}
 )
+POWER_FLOW_DISPLAY_DATA_SCHEMA = vol.Schema(
+    {vol.Required("data"): vol.All(cv.string, vol.Length(max=50000))}
+)
 INVERTER_CONFIG_SCHEMA = vol.Schema({})
 APPLY_INVERTER_CONFIG_SCHEMA = vol.Schema(
     {
@@ -148,6 +151,8 @@ SERVICE_NAMES = (
     "get_inverter_configuration",
     "apply_inverter_configuration_group",
     "sync_inverter_datetime",
+    "get_power_flow_display",
+    "save_power_flow_display",
 )
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the integration domain before config entries are loaded.
@@ -582,6 +587,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_sync_inverter_datetime(call: ServiceCall) -> dict[str, Any]:
         return await runtime.async_sync_inverter_datetime(reason="manual_service")
 
+    async def handle_get_power_flow_display(call: ServiceCall) -> dict[str, Any]:
+        return entity_map.power_flow_display()
+
+    async def handle_save_power_flow_display(call: ServiceCall) -> dict[str, Any]:
+        payload = _parse_json_payload(call.data["data"], dict)
+        result = await hass.async_add_executor_job(
+            entity_map.save_power_flow_display, payload
+        )
+        runtime.request_sensor_snapshot_refresh({"ai_state"})
+        runtime.notify_update()
+        return result
+
     hass.services.async_register(DOMAIN, "apply_settings", handle_apply_settings, schema=APPLY_SCHEMA)
     hass.services.async_register(DOMAIN, "manual_sell", handle_manual_sell, schema=MANUAL_SELL_SCHEMA)
     hass.services.async_register(DOMAIN, "charge_now", handle_charge_now, schema=CHARGE_SCHEMA)
@@ -700,6 +717,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_sync_inverter_datetime,
         schema=SYNC_INVERTER_DATETIME_SCHEMA,
         supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "get_power_flow_display",
+        handle_get_power_flow_display,
+        schema=INVERTER_CONFIG_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "save_power_flow_display",
+        handle_save_power_flow_display,
+        schema=POWER_FLOW_DISPLAY_DATA_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     return True
 

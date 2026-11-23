@@ -16,13 +16,19 @@ a config entry always take precedence over anything in this catalogue.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import re
 from typing import Any
 
 BUNDLED_PATH = Path(__file__).with_name("mqtt_entity_map.json")
 
 _TOU_KINDS = ("start", "soc", "grid", "charge", "mode", "sell", "power", "voltage")
 _ENTITY_ID_KINDS = ("sensor", "number", "select", "switch", "time", "text", "weather", "button", "binary_sensor")
+_POWER_FLOW_FORMATS = ("w", "kw", "kwh", "num", "gbp", "pct")
+_POWER_FLOW_CHIP_KINDS = ("import", "export", "bolt", "flame", "pound")
+_POWER_FLOW_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+_POWER_FLOW_MAX_ROWS = 20
 
 _state: dict[str, Any] = {
     "bundled": None,
@@ -32,21 +38,169 @@ _state: dict[str, Any] = {
 }
 
 
-def _load_document(path: Path) -> dict[str, Any]:
+def _validate_entity_id(value: Any, source: str) -> str:
+    entity_id = str(value or "").strip()
+    if not entity_id:
+        return ""
+    domain, _, object_id = entity_id.partition(".")
+    if domain not in _ENTITY_ID_KINDS or not object_id:
+        raise ValueError(f"invalid entity id in {source}: {entity_id}")
+    return entity_id
+
+
+def _validate_power_flow_row(row: Any, source: str, formats: set[str], kinds: set[str], summary: bool) -> None:
+    if not isinstance(row, dict):
+        raise ValueError(f"power flow chip/detail row in {source} must be an object")
+    allowed = {"label", "items"} if summary else {"label", "entity", "format"}
+    unknown = set(row) - allowed
+    if unknown:
+        raise ValueError(f"unsupported power flow row fields in {source}: {sorted(unknown)}")
+    label = str(row.get("label", "")).strip()
+    if not label or len(label) > 64:
+        raise ValueError(f"invalid power flow row label in {source}: {label!r}")
+    if not summary:
+        if str(row.get("format", "num")) not in formats:
+            raise ValueError(f"unsupported power flow format in {source}")
+        _validate_entity_id(row.get("entity"), source)
+        return
+    items = row.get("items", [])
+    if not isinstance(items, list) or len(items) > 6:
+        raise ValueError(f"power flow summary items in {source} must be a list of at most 6 entries")
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError(f"power flow summary item in {source} must be an object")
+        unknown = set(item) - {"label", "entity", "format", "kind", "color"}
+        if unknown:
+            raise ValueError(f"unsupported power flow item fields in {source}: {sorted(unknown)}")
+        item_label = str(item.get("label", "")).strip()
+        if not item_label or len(item_label) > 64:
+            raise ValueError(f"invalid power flow item label in {source}: {item_label!r}")
+        if str(item.get("format", "num")) not in formats:
+            raise ValueError(f"unsupported power flow format in {source}")
+        if str(item.get("kind", "")) not in kinds:
+            raise ValueError(f"unsupported power flow chip kind in {source}")
+        color = str(item.get("color", "")).strip()
+        if color and not _POWER_FLOW_COLOR.match(color):
+            raise ValueError(f"invalid power flow chip colour in {source}")
+        _validate_entity_id(item.get("entity"), source)
+
+
+def validate_power_flow_payload(payload: Any) -> dict[str, Any]:
+    """Validate a card submission for the Power Flow display override."""
+    source = "power flow display payload"
+    if not isinstance(payload, dict):
+        raise ValueError("Power Flow display must be an object")
+    defaults = _state["bundled"].get("power_flow", {})
+    known = set(defaults.get("entities", {}))
+    formats = set(defaults.get("formats", _POWER_FLOW_FORMATS))
+    kinds = set(defaults.get("chip_kinds", _POWER_FLOW_CHIP_KINDS))
+    allowed_groups = set(defaults.get("node_detail_keys", ()))
+    unknown = set(payload) - {"schema_version", "entities", "node_details", "chip_rows"}
+    if unknown:
+        raise ValueError(f"unsupported Power Flow display fields: {sorted(unknown)}")
+    entities = payload.get("entities", {})
+    if not isinstance(entities, dict):
+        raise ValueError("Power Flow entities must be an object")
+    normalized_entities: dict[str, str] = {}
+    for key, value in entities.items():
+        if key not in known:
+            raise ValueError(f"unknown Power Flow sensor key: {key}")
+        normalized_entities[str(key)] = _validate_entity_id(value, source)
+    node_details = payload.get("node_details", {})
+    if not isinstance(node_details, dict):
+        raise ValueError("Power Flow node details must be an object")
+    normalized_details: dict[str, list[dict[str, Any]]] = {}
+    for group, rows in node_details.items():
+        if group not in allowed_groups:
+            raise ValueError(f"unknown Power Flow node group: {group}")
+        if not isinstance(rows, list) or len(rows) > _POWER_FLOW_MAX_ROWS:
+            raise ValueError(f"Power Flow node details for {group} must be a list of at most {_POWER_FLOW_MAX_ROWS} rows")
+        for row in rows:
+            _validate_power_flow_row(row, source, formats, kinds, summary=False)
+        normalized_details[str(group)] = rows
+    chip_rows = payload.get("chip_rows", {})
+    if not isinstance(chip_rows, dict):
+        raise ValueError("Power Flow chip rows must be an object")
+    unknown_rows = set(chip_rows) - {"main", "summary"}
+    if unknown_rows:
+        raise ValueError(f"unknown Power Flow chip row: {sorted(unknown_rows)}")
+    normalized_chips: dict[str, list[dict[str, Any]]] = {}
+    for row_key, chips in chip_rows.items():
+        if not isinstance(chips, list) or len(chips) > _POWER_FLOW_MAX_ROWS:
+            raise ValueError(f"Power Flow chip row {row_key} must be a list of at most {_POWER_FLOW_MAX_ROWS} chips")
+        for chip in chips:
+            _validate_power_flow_row(chip, source, formats, kinds, summary=(row_key == "summary"))
+        normalized_chips[str(row_key)] = chips
+    return {
+        "schema_version": 1,
+        "entities": normalized_entities,
+        "node_details": normalized_details,
+        "chip_rows": normalized_chips,
+    }
+
+
+def _validate_power_flow(document: dict[str, Any], source: str) -> None:
+    power_flow = document.get("power_flow")
+    if power_flow is None:
+        return
+    defaults = _state["bundled"] if _state.get("bundled") else document
+    bundled = defaults.get("power_flow", {})
+    known = set(bundled.get("entities", {}))
+    formats = set(bundled.get("formats", _POWER_FLOW_FORMATS))
+    kinds = set(bundled.get("chip_kinds", _POWER_FLOW_CHIP_KINDS))
+    groups = set(bundled.get("node_detail_keys", ()))
+    if not isinstance(power_flow, dict):
+        raise ValueError(f"power_flow in {source} must be an object")
+    allowed = {
+        "schema_version", "entities", "sensor_groups", "node_detail_keys",
+        "formats", "chip_kinds", "node_details", "chip_rows",
+    }
+    unknown = set(power_flow) - allowed
+    if unknown:
+        raise ValueError(f"unsupported power_flow fields in {source}: {sorted(unknown)}")
+    entities = power_flow.get("entities", {})
+    if not isinstance(entities, dict):
+        raise ValueError(f"power_flow.entities in {source} must be an object")
+    for key, value in entities.items():
+        if key not in known:
+            raise ValueError(f"unknown power_flow entity key in {source}: {key}")
+        _validate_entity_id(value, source)
+    details = power_flow.get("node_details", {})
+    if not isinstance(details, dict):
+        raise ValueError(f"power_flow.node_details in {source} must be an object")
+    for group, rows in details.items():
+        if group not in groups or not isinstance(rows, list) or len(rows) > _POWER_FLOW_MAX_ROWS:
+            raise ValueError(f"invalid power_flow node details in {source}: {group}")
+        for row in rows:
+            _validate_power_flow_row(row, source, formats, kinds, summary=False)
+    chip_rows = power_flow.get("chip_rows", {})
+    if not isinstance(chip_rows, dict):
+        raise ValueError(f"power_flow.chip_rows in {source} must be an object")
+    for row_key, chips in chip_rows.items():
+        if row_key not in ("main", "summary") or not isinstance(chips, list) or len(chips) > _POWER_FLOW_MAX_ROWS:
+            raise ValueError(f"invalid power_flow chip row in {source}: {row_key}")
+        for chip in chips:
+            _validate_power_flow_row(chip, source, formats, kinds, summary=(row_key == "summary"))
+
+
+def _load_document(path: Path, *, require_full: bool = True) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as handle:
         document = json.load(handle)
     if not isinstance(document, dict):
         raise ValueError("entity map must be a JSON object")
     common = document.get("common")
     profiles = document.get("profiles")
-    if not isinstance(common, dict) or not isinstance(profiles, dict):
+    if require_full and (not isinstance(common, dict) or not isinstance(profiles, dict)):
         raise ValueError("entity map needs common and profiles objects")
+    common = common if isinstance(common, dict) else {}
+    profiles = profiles if isinstance(profiles, dict) else {}
     for section in ("entities", "specs", "special", "config_fields"):
         if section in common and not isinstance(common[section], dict):
             raise ValueError(f"common.{section} must be an object")
     default_profile = document.get("default_profile")
-    if not isinstance(default_profile, str) or default_profile not in profiles:
-        raise ValueError("default_profile must name a bundled profile")
+    if require_full or default_profile is not None:
+        if not isinstance(default_profile, str) or default_profile not in profiles:
+            raise ValueError("default_profile must name a bundled profile")
     for name, profile in profiles.items():
         if not isinstance(profile, dict):
             raise ValueError(f"profile {name} must be an object")
@@ -59,6 +213,7 @@ def _load_document(path: Path) -> dict[str, Any]:
         ):
             if section in profile and not isinstance(profile[section], dict):
                 raise ValueError(f"profiles.{name}.{section} must be an object")
+    _validate_power_flow(document, str(path))
     return document
 
 
@@ -123,6 +278,22 @@ def _document() -> dict[str, Any]:
                 target[section] = values
     if override.get("default_profile") in merged["profiles"]:
         merged["default_profile"] = override["default_profile"]
+    power_flow = override.get("power_flow")
+    if isinstance(power_flow, dict):
+        target = merged.setdefault("power_flow", {})
+        entities = power_flow.get("entities")
+        if isinstance(entities, dict) and isinstance(target.get("entities"), dict):
+            target["entities"].update(entities)
+        details = power_flow.get("node_details")
+        if isinstance(details, dict):
+            for group, rows in details.items():
+                if isinstance(rows, list):
+                    target.setdefault("node_details", {})[group] = rows
+        chip_rows = power_flow.get("chip_rows")
+        if isinstance(chip_rows, dict):
+            for row_key, chips in chip_rows.items():
+                if isinstance(chips, list):
+                    target.setdefault("chip_rows", {})[row_key] = chips
     return merged
 
 
@@ -142,7 +313,7 @@ def configure(config_dir: str | Path | None = None) -> bool:
     if not path.is_file():
         return False
     try:
-        document = _load_document(path)
+        document = _load_document(path, require_full=False)
         _validate_values(document, str(path))
     except (OSError, ValueError, json.JSONDecodeError) as err:
         _state["override_errors"].append(f"{path}: {err}")
@@ -268,3 +439,58 @@ def fallback_map(profile: str | None = None) -> dict[str, str]:
 def bundled_document() -> dict[str, Any]:
     """Return a copy of the bundled catalogue (for diagnostics/tests)."""
     return json.loads(json.dumps(_state["bundled"]))
+
+
+def power_flow_display() -> dict[str, Any]:
+    """Return the effective Power Flow mapping/display config for the cards."""
+    power_flow = _document().get("power_flow", {})
+    return json.loads(json.dumps(power_flow))
+
+
+def power_flow_override_path() -> Path | None:
+    """Return the user override path, or None outside a config entry."""
+    override_dir = _state.get("override_dir")
+    if not override_dir:
+        return None
+    filename = _state["bundled"].get("override_file", "deye_energy_entity_map.json")
+    return Path(override_dir) / str(filename)
+
+
+def save_power_flow_display(payload: Any) -> dict[str, Any]:
+    """Persist the card's Power Flow display config to the user override file.
+
+    Only the ``power_flow`` section is replaced; every other section of an
+    existing override is preserved.  The candidate file is validated before it
+    replaces the live one, so an invalid submission never corrupts the map.
+    """
+    normalized = validate_power_flow_payload(payload)
+    path = power_flow_override_path()
+    if path is None:
+        raise ValueError("Home Assistant configuration directory is unavailable")
+    document: dict[str, Any] = {}
+    if path.is_file():
+        with path.open("r", encoding="utf-8") as handle:
+            loaded = json.load(handle)
+        if not isinstance(loaded, dict):
+            raise ValueError("entity map override must be a JSON object")
+        document = loaded
+    document["power_flow"] = normalized
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(document, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        _load_document(temporary, require_full=False)
+        os.replace(temporary, path)
+    except (OSError, ValueError, json.JSONDecodeError) as err:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise ValueError(f"refusing to write invalid entity map override: {err}") from err
+    configure(_state["override_dir"])
+    if _state["override_errors"]:
+        raise ValueError("; ".join(_state["override_errors"]))
+    return power_flow_display()

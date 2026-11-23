@@ -8,9 +8,11 @@ const source = fs.readFileSync(
 const sandbox = {
   console,
   HTMLElement: class {
-    constructor() { this._inner = ""; }
+    constructor() { this._inner = ""; this._listeners = {}; }
     set innerHTML(v) { this._inner = v; }
     get innerHTML() { return this._inner; }
+    addEventListener(type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); }
+    dispatchEvent(ev) { (this._listeners[ev.type] || []).forEach(fn => fn(ev)); return true; }
   },
   customElements: { define(name, cls) { this._defs = this._defs || {}; this._defs[name] = cls; } },
   setTimeout: () => 1,
@@ -232,8 +234,45 @@ check(html.includes('Discharged today'), "missing battery discharged today detai
 check(html.includes('Today'), "missing daily detail label");
 
 // Clicks must be delegated once from the host; per-node listeners would dispatch twice
-check(source.includes("e.target.closest('.pf-node-click[data-entity], .pf-consumer-click[data-entity]')"), "delegated node click handler missing");
+check(source.includes("e.target.closest('.pf-value-click[data-entity], .pf-node-click[data-entity], .pf-consumer-click[data-entity]')"), "delegated value click handler missing");
 check(!source.includes("this.querySelectorAll('.pf-node-click[data-entity], .pf-consumer-click[data-entity]')"), "duplicate per-node click listener should be gone");
+
+// Every rendered sensor value carries the entity whose more-info dialog it opens
+check(html.includes('class="pf-value-click" data-entity="sensor.my_pv"'), "PV node value should open its own entity");
+check(html.includes('class="pf-value-click" data-entity="sensor.my_soc"'), "SOC detail value should open its own entity");
+check(html.includes('class="pf-value-click" data-entity="sensor.givenergy_ed2253g336_import_power"'), "summary grid import value should open its own entity");
+check(html.includes('class="pf-value-click" data-entity="sensor.givenergy_ed2253g336_import_energy_today_kwh"'), "electricity import value should open its own entity");
+
+// Nested value clicks win over the node fallback; blank node area still opens the node entity
+const clickCard = new sandbox.PowerFlowCard();
+clickCard.setConfig({ entities: {
+  pv: "sensor.my_pv", grid: "sensor.my_grid", battery: "sensor.my_batt",
+  battery_soc: "sensor.my_soc", load: "sensor.my_load", inverter: "sensor.my_inv",
+} });
+clickCard.hass = { states: {
+  "sensor.my_pv": { state: "0" },
+  "sensor.my_soc": { state: "77" },
+} };
+let nestedFired = null;
+clickCard.dispatchEvent = (ev) => { nestedFired = ev; return true; };
+clickCard._listeners.click[0]({ target: {
+  closest(selector) {
+    if (selector.includes(".pf-value-click")) return { getAttribute: () => "sensor.my_soc" };
+    if (selector.includes(".pf-period")) return null;
+    return null;
+  },
+} });
+check(nestedFired && nestedFired.detail && nestedFired.detail.entityId === "sensor.my_soc", "nested value click should open the value entity");
+let fallbackFired = null;
+clickCard.dispatchEvent = (ev) => { fallbackFired = ev; return true; };
+clickCard._listeners.click[0]({ target: {
+  closest(selector) {
+    if (selector.includes(".pf-value-click")) return { getAttribute: () => "sensor.my_pv" };
+    if (selector.includes(".pf-period")) return null;
+    return null;
+  },
+} });
+check(fallbackFired && fallbackFired.detail && fallbackFired.detail.entityId === "sensor.my_pv", "node fallback should still open the node entity");
 
 // Click dispatch
 let fired = null;
@@ -298,6 +337,71 @@ socCard.hass = { states: { ...socStates, s: { state: '35' } } };
 check(socCard.innerHTML.includes('width:35%;height:100%;border-radius:999px;background:#ffb020'), "mid SOC bar should be amber");
 socCard.hass = { states: socStates };
 check(socCard.innerHTML.includes('width:0%;height:100%;border-radius:999px;background:#9eb8c8'), "missing SOC bar should be empty and grey");
+
+// Shared entity-map override: defaults -> override -> card config, plus extra
+// chips and node detail rows.
+const overrideCard = new sandbox.PowerFlowCard();
+overrideCard.setConfig({ entities: { pv: "sensor.card_pv" } });
+overrideCard.hass = { states: {
+  "sensor.card_pv": { state: "8888" },
+  "sensor.override_pv": { state: "1111" },
+  "sensor.override_grid": { state: "-250" },
+  "sensor.override_batt": { state: "0" },
+  "sensor.override_soc": { state: "60" },
+  "sensor.override_load": { state: "9000" },
+  "sensor.override_inv": { state: "8600" },
+  "sensor.extra_pv": { state: "123" },
+  "sensor.extra_grid": { state: "50.5" },
+  "sensor.water": { state: "7" },
+  "sensor.extra_summary": { state: "42" },
+  "sensor.deye_ai_state": {
+    state: "ready",
+    attributes: {
+      power_flow_display: {
+        schema_version: 1,
+        entities: {
+          pv: "sensor.override_pv",
+          grid: "sensor.override_grid",
+          battery: "sensor.override_batt",
+          battery_soc: "sensor.override_soc",
+          load: "sensor.override_load",
+          inverter: "sensor.override_inv",
+        },
+        node_details: {
+          pv: [{ label: "Extra PV", entity: "sensor.extra_pv", format: "w" }],
+          grid: [{ label: "Extra Grid", entity: "sensor.extra_grid", format: "num" }],
+          inverter: [{ label: "Extra Inverter", entity: "sensor.override_inv", format: "w" }],
+          home: [{ label: "Extra Home", entity: "sensor.override_load", format: "w" }],
+          battery: [{ label: "Extra Battery", entity: "sensor.override_soc", format: "pct" }],
+        },
+        chip_rows: {
+          main: [{ label: "Water", entity: "sensor.water", format: "num" }],
+          summary: [{
+            label: "Extra group",
+            items: [{ label: "Reading", entity: "sensor.extra_summary", format: "num", kind: "bolt", color: "#bc63ff" }],
+          }],
+        },
+      },
+    },
+  },
+} };
+const overrideHtml = overrideCard.innerHTML;
+check(overrideHtml.includes("8888 W"), "card config entity should win over the override for PV");
+check(!overrideHtml.includes("1111 W"), "override PV entity should not replace card config");
+check(overrideHtml.includes("250 W") || overrideHtml.includes("250 W"), "override grid entity should be used when card config omits it");
+check(overrideHtml.includes(">Water</div>") && overrideHtml.includes('class="pf-value-click" data-entity="sensor.water"') && overrideHtml.includes(">7</span>"), "extra main chip should render with its live, clickable value");
+check(overrideHtml.includes(">Extra group</div>") && overrideHtml.includes('class="pf-value-click" data-entity="sensor.extra_summary"') && overrideHtml.includes(">42</span>"), "extra summary chip group should render with its clickable value");
+for (const [label, entity] of [
+  ["Extra PV", "sensor.extra_pv"],
+  ["Extra Grid", "sensor.extra_grid"],
+  ["Extra Inverter", "sensor.override_inv"],
+  ["Extra Home", "sensor.override_load"],
+  ["Extra Battery", "sensor.override_soc"],
+]) {
+  check(overrideHtml.includes(label), `missing extra node detail row: ${label}`);
+  check(overrideHtml.includes(`class="pf-value-click" data-entity="${entity}"`), `extra node detail row ${label} should open its own entity`);
+}
+check(overrideHtml.includes("123 W") && overrideHtml.includes("50.5") && overrideHtml.includes("60 %"), "extra node detail values should be formatted");
 
 check(/^\/\/ Resource revision: v=\d+\.\d+\.\d+(\.\d+)?\n/.test(source), "resource revision header missing/invalid");
 console.log("Power flow card tests passed");
