@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.83
+// Resource revision: v=0.8.0.84
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -2988,7 +2988,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.83 (resource revision v=0.8.0.83)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.84 (resource revision v=0.8.0.84)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -9871,6 +9871,7 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
         schema_version: 1,
         entities: { ...(display.entities || {}) },
         node_details: this._pfCopy(display.node_details || {}),
+        node_detail_layout: this.powerFlowEffectiveDetailLayout(display),
         chip_rows: this._pfCopy(display.chip_rows || {}),
       };
       this._pfDraftSource = key;
@@ -9892,6 +9893,73 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
   powerFlowNodeGroups() {
     const groups = this.powerFlowDisplay().node_detail_keys;
     return Array.isArray(groups) && groups.length ? groups : ["grid", "pv", "inverter", "home", "battery"];
+  }
+
+  powerFlowBuiltinDetails() {
+    return {
+      pv: [
+        { builtin: "pv_energy", label: "Today / period" },
+      ],
+      grid: [
+        { builtin: "grid_import", label: "Import today / period" },
+        { builtin: "grid_export", label: "Export today / period" },
+        { builtin: "grid_voltage", label: "Voltage" },
+      ],
+      inverter: [
+        { builtin: "inv_temperature", label: "Temperature" },
+        { builtin: "inv_status", label: "Status" },
+      ],
+      home: [
+        { builtin: "home_energy", label: "Today / period" },
+        { builtin: "home_consumers", label: "Consumers" },
+      ],
+      battery: [
+        { builtin: "batt_soc", label: "SOC" },
+        { builtin: "batt_voltage", label: "Voltage" },
+        { builtin: "batt_current", label: "Current" },
+        { builtin: "batt_temperature", label: "Temp" },
+        { builtin: "batt_charged", label: "Charged today / period" },
+        { builtin: "batt_discharged", label: "Discharged today / period" },
+      ],
+    };
+  }
+
+  powerFlowBuiltinEntity(key, entities) {
+    const mapped = {
+      pv_energy: entities.pv_energy || entities.daily_pv_production,
+      grid_import: entities.grid_import_energy || entities.daily_energy_bought,
+      grid_export: entities.grid_export_energy || entities.daily_energy_sold,
+      grid_voltage: entities.grid_l1_voltage,
+      inv_temperature: entities.inverter_temperature,
+      inv_status: "",
+      home_energy: entities.load_energy || entities.daily_load_consumption,
+      home_consumers: "",
+      batt_soc: entities.battery_soc,
+      batt_voltage: entities.battery_voltage,
+      batt_current: entities.battery_current,
+      batt_temperature: entities.battery_temperature,
+      batt_charged: entities.battery_charge_energy || entities.daily_battery_charge,
+      batt_discharged: entities.battery_discharge_energy || entities.daily_battery_discharge,
+    };
+    return mapped[key] || "";
+  }
+
+  powerFlowEffectiveDetailLayout(display) {
+    const builtins = this.powerFlowBuiltinDetails();
+    const layout = {};
+    this.powerFlowNodeGroups().forEach((group) => {
+      const configured = display.node_detail_layout?.[group];
+      if (Array.isArray(configured)) {
+        layout[group] = this._pfCopy(configured);
+        return;
+      }
+      const extras = Array.isArray(display.node_details?.[group]) ? display.node_details[group] : [];
+      layout[group] = [
+        ...(builtins[group] || []).map((row) => ({ builtin: row.builtin })),
+        ...this._pfCopy(extras),
+      ];
+    });
+    return layout;
   }
 
   powerFlowLive(entityId) {
@@ -9922,6 +9990,8 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
     });
     collectRows(display.node_details);
     collectRows(draft.node_details);
+    collectRows(display.node_detail_layout);
+    collectRows(draft.node_detail_layout);
     collectRows(display.chip_rows);
     collectRows(draft.chip_rows);
     return [...ids].sort().map((id) => {
@@ -9932,20 +10002,59 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
 
   renderPowerFlowDetailRows(group) {
     const draft = this.powerFlowDraft();
-    const rows = Array.isArray(draft.node_details?.[group]) ? draft.node_details[group] : [];
+    const rows = Array.isArray(draft.node_detail_layout?.[group]) ? draft.node_detail_layout[group] : [];
     const formats = this.powerFlowFormats();
-    const body = rows.map((row, index) => `<tr>
-      <td><input type="text" value="${this.escapeHtml(String(row.label ?? ""))}" data-pf-detail="${this.escapeHtml(group)}:${index}:label" aria-label="Detail label ${index + 1}"></td>
-      <td><input type="text" value="${this.escapeHtml(String(row.entity ?? ""))}" data-pf-detail="${this.escapeHtml(group)}:${index}:entity" aria-label="Detail entity ${index + 1}"></td>
-      <td><select data-pf-detail="${this.escapeHtml(group)}:${index}:format">${this.powerFlowSelect(formats, row.format || "num")}</select></td>
-      <td><span class="ic-mono">${this.escapeHtml(this.powerFlowLive(row.entity).text)}</span></td>
-      <td><button class="ic-btn ic-btn-secondary" data-pf-remove-detail="${this.escapeHtml(group)}:${index}">Remove</button></td>
-    </tr>`).join("");
+    const builtinLabels = this.powerFlowBuiltinDetails()[group] || [];
+    const entities = draft.entities || {};
+    const body = rows.map((row, index) => {
+      const builtin = row && row.builtin;
+      const label = builtin
+        ? (builtinLabels.find((item) => item.builtin === builtin)?.label || builtin)
+        : String(row?.label ?? "");
+      const entity = builtin ? this.powerFlowBuiltinEntity(builtin, entities) : String(row?.entity ?? "");
+      const live = this.powerFlowLive(entity);
+      return `<tr>
+        <td>${builtin
+          ? `<span class="ic-muted">${this.escapeHtml(label)}</span>`
+          : `<input type="text" class="pf-detail-label-input" value="${this.escapeHtml(label)}" data-pf-detail="${this.escapeHtml(group)}:${index}:label" aria-label="Detail label ${index + 1}">`}</td>
+        <td>${builtin
+          ? `<span class="ic-mono">${this.escapeHtml(entity || "Built-in")}</span>`
+          : `<input type="text" class="pf-detail-entity-input" value="${this.escapeHtml(entity)}" data-pf-detail="${this.escapeHtml(group)}:${index}:entity" aria-label="Detail entity ${index + 1}">`}</td>
+        <td>${builtin
+          ? `<span class="ic-muted">Built-in</span>`
+          : `<select data-pf-detail="${this.escapeHtml(group)}:${index}:format">${this.powerFlowSelect(formats, row.format || "num")}</select>`}</td>
+        <td><span class="ic-mono">${builtin && !entity ? "—" : this.escapeHtml(live.text)}</span></td>
+        <td class="pf-row-actions">
+          <button class="ic-btn ic-btn-secondary" data-pf-move-detail="${this.escapeHtml(group)}:${index}:up" ${index === 0 ? "disabled" : ""} aria-label="Move row ${index + 1} up">↑</button>
+          <button class="ic-btn ic-btn-secondary" data-pf-move-detail="${this.escapeHtml(group)}:${index}:down" ${index === rows.length - 1 ? "disabled" : ""} aria-label="Move row ${index + 1} down">↓</button>
+          <button class="ic-btn ic-btn-secondary" data-pf-remove-detail="${this.escapeHtml(group)}:${index}">Remove</button>
+        </td>
+      </tr>`;
+    }).join("");
     return `<div class="pf-edit">
       <div class="pf-edit-title">Additional data shown in the ${this.escapeHtml(group)} node</div>
-      <div class="ic-table-wrap"><table class="ic-table"><thead><tr><th>Label</th><th>Entity ID</th><th>Format</th><th>Live value</th><th></th></tr></thead><tbody>${body || `<tr><td colspan="5" class="ic-muted">No additional rows yet.</td></tr>`}</tbody></table></div>
+      <div class="ic-table-wrap"><table class="ic-table"><thead><tr><th>Label</th><th>Entity ID</th><th>Format</th><th>Live value</th><th>Order</th></tr></thead><tbody>${body || `<tr><td colspan="5" class="ic-muted">No rows are shown below the divider in this node.</td></tr>`}</tbody></table></div>
       <button class="ic-btn ic-btn-secondary" data-pf-add-detail="${this.escapeHtml(group)}">Add data row</button>
     </div>`;
+  }
+
+  movePowerFlowDetailRow(group, index, direction) {
+    const rows = this.powerFlowDraft().node_detail_layout?.[group];
+    if (!Array.isArray(rows)) return;
+    const from = Number(index);
+    const to = direction === "up" ? from - 1 : from + 1;
+    if (to < 0 || to >= rows.length) return;
+    [rows[from], rows[to]] = [rows[to], rows[from]];
+    this._powerFlowDraftDirty = true;
+    this._render();
+  }
+
+  removePowerFlowDetailRow(group, index) {
+    const rows = this.powerFlowDraft().node_detail_layout?.[group];
+    if (!Array.isArray(rows)) return;
+    rows.splice(Number(index), 1);
+    this._powerFlowDraftDirty = true;
+    this._render();
   }
 
   renderPowerFlowSensorGroups() {
@@ -9960,7 +10069,7 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
         const live = this.powerFlowLive(entity);
         return `<tr>
           <td><strong>${this.escapeHtml(String(sensor.label ?? sensor.key))}</strong></td>
-          <td><input type="text" value="${this.escapeHtml(entity)}" data-pf-entity="${this.escapeHtml(String(sensor.key))}" aria-label="Source entity for ${this.escapeHtml(String(sensor.label ?? sensor.key))}"></td>
+          <td><input type="text" class="pf-entity-input" value="${this.escapeHtml(entity)}" data-pf-entity="${this.escapeHtml(String(sensor.key))}" aria-label="Source entity for ${this.escapeHtml(String(sensor.label ?? sensor.key))}"></td>
           <td class="ic-mono">${this.escapeHtml(live.text)}</td>
         </tr>`;
       }).join("");
@@ -10058,10 +10167,18 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
     this._render();
     try {
       const draft = this.powerFlowDraft();
+      const layout = this._pfCopy(draft.node_detail_layout || {});
+      const legacyDetails = {};
+      Object.entries(layout).forEach(([group, rows]) => {
+        legacyDetails[group] = (Array.isArray(rows) ? rows : [])
+          .filter((row) => row && !row.builtin)
+          .map((row) => ({ label: row.label, entity: row.entity, format: row.format }));
+      });
       const payload = {
         schema_version: 1,
         entities: { ...(draft.entities || {}) },
-        node_details: this._pfCopy(draft.node_details || {}),
+        node_details: legacyDetails,
+        node_detail_layout: layout,
         chip_rows: this._pfCopy(draft.chip_rows || {}),
       };
       const response = await this.callServiceWithResponse(
@@ -10080,6 +10197,7 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
           schema_version: 1,
           entities: { ...(response.entities || {}) },
           node_details: this._pfCopy(response.node_details || {}),
+          node_detail_layout: this.powerFlowEffectiveDetailLayout(response),
           chip_rows: this._pfCopy(response.chip_rows || {}),
         };
       }
@@ -10337,6 +10455,9 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
           .pf-group > .pf-edit + .pf-edit { margin-top: 16px; }
           .pf-edit input[type="text"], .pf-edit select { min-width: 120px; }
           .pf-edit input[type="color"] { width: 48px; height: 36px; padding: 2px; }
+          .pf-group .pf-entity-input, .pf-edit .pf-detail-entity-input { min-width: 280px; width: 280px; max-width: 100%; }
+          .pf-edit .pf-detail-label-input { min-width: 240px; max-width: 100%; }
+          .pf-row-actions { display: flex; flex-wrap: wrap; gap: 4px; }
           .ic-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 1000; }
           .ic-overlay-card { width: min(760px, 100%); max-height: min(85vh, 900px); overflow: auto; background: var(--card-background-color, #1c1c1c); color: var(--ic-text); border: 1px solid var(--ic-line); border-radius: 16px; box-shadow: 0 12px 40px rgba(0,0,0,.45); }
           .ic-overlay-head { padding: 16px 18px; border-bottom: 1px solid var(--ic-line); }
@@ -10354,6 +10475,7 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
             .ic-table th, .ic-table td { padding: 8px 6px; }
             .ic-field { display: flex; width: 100%; }
             .ic-field input, .ic-select { width: 100%; min-width: 0; }
+            .pf-group .pf-entity-input, .pf-edit .pf-detail-entity-input, .pf-edit .pf-detail-label-input { width: 100%; min-width: 0; }
             .ic-overlay { padding: 10px; align-items: flex-end; }
             .ic-overlay-card { width: 100%; max-height: 90vh; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
             .ic-overlay-actions .ic-btn { flex: 1; }
@@ -10411,7 +10533,7 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
     this.querySelectorAll("[data-pf-detail]").forEach((el) => {
       const [group, index, field] = String(el.dataset.pfDetail).split(":");
       const update = () => {
-        const rows = this.powerFlowDraft().node_details[group];
+        const rows = this.powerFlowDraft().node_detail_layout?.[group];
         if (!Array.isArray(rows) || !rows[Number(index)]) return;
         rows[Number(index)][field] = el.value;
         this._powerFlowDraftDirty = true;
@@ -10444,17 +10566,18 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
     this.querySelectorAll("[data-pf-add-detail]").forEach((el) => el.addEventListener("click", () => {
       const group = el.dataset.pfAddDetail;
       const draft = this.powerFlowDraft();
-      draft.node_details[group] = Array.isArray(draft.node_details[group]) ? draft.node_details[group] : [];
-      draft.node_details[group].push({ label: "New reading", entity: "", format: "num" });
+      draft.node_detail_layout[group] = Array.isArray(draft.node_detail_layout[group]) ? draft.node_detail_layout[group] : [];
+      draft.node_detail_layout[group].push({ label: "New reading", entity: "", format: "num" });
       this._powerFlowDraftDirty = true;
       this._render();
     }));
     this.querySelectorAll("[data-pf-remove-detail]").forEach((el) => el.addEventListener("click", () => {
       const [group, index] = String(el.dataset.pfRemoveDetail).split(":");
-      const rows = this.powerFlowDraft().node_details[group];
-      if (Array.isArray(rows)) rows.splice(Number(index), 1);
-      this._powerFlowDraftDirty = true;
-      this._render();
+      this.removePowerFlowDetailRow(group, index);
+    }));
+    this.querySelectorAll("[data-pf-move-detail]").forEach((el) => el.addEventListener("click", () => {
+      const [group, index, direction] = String(el.dataset.pfMoveDetail).split(":");
+      this.movePowerFlowDetailRow(group, index, direction);
     }));
     this.querySelectorAll("[data-pf-add-chip]").forEach((el) => el.addEventListener("click", () => {
       const row = el.dataset.pfAddChip;
@@ -11303,6 +11426,24 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const rows = Array.isArray(details[group]) ? details[group] : [];
     return rows.map((row) => this._detailLine(row.label, this._configValue(row.entity, row.format), '#9eb8c8', row.entity));
   }
+  _nodeDetailRows(group, builtins, fallbackKeys) {
+    const display = this._powerFlowDisplay();
+    const configured = display.node_detail_layout?.[group];
+    const rows = Array.isArray(configured)
+      ? configured
+      : [
+          ...fallbackKeys.map((key) => ({ builtin: key })),
+          ...(Array.isArray(display.node_details?.[group]) ? display.node_details[group] : []),
+        ];
+    return rows.map((row) => {
+      if (!row) return null;
+      if (row.builtin) {
+        const make = builtins[row.builtin];
+        return typeof make === "function" ? make() : null;
+      }
+      return this._detailLine(row.label, this._configValue(row.entity, row.format), '#9eb8c8', row.entity);
+    }).filter(Boolean);
+  }
   _entities() {
     const d = DeyeEnergyPowerFlowCard.getStubConfig().entities;
     const override = this._powerFlowDisplay().entities || {};
@@ -11538,15 +11679,22 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const showRest = !!restDef;
     const displayConsumers = namedConsumers.concat(showRest ? [{...restDef, name: restDef.name || 'Rest', icon: restDef.icon || 'mdi:cloud-question', power: restPower, abs: restPower, active: restPower >= (restDef.min_w||0) && restPower > 1, entity: ''}] : []);
 
-    const W = 1200, H = 980;
+    const W = 1200, PF_MARGIN = 44;
+    const PF_BOUNDS = { left: 127, right: 1073, top: 106.5, bottom: 951.5 };
+    const PF_SCALE = (W - PF_MARGIN * 2) / (PF_BOUNDS.right - PF_BOUNDS.left);
+    const PF_TX = PF_MARGIN - PF_BOUNDS.left * PF_SCALE;
+    const PF_TY = PF_MARGIN - PF_BOUNDS.top * PF_SCALE;
+    const H = Math.round(PF_MARGIN * 2 + (PF_BOUNDS.bottom - PF_BOUNDS.top) * PF_SCALE);
     const N = { pv:[600,188.5], grid:[254.5,470], inv:[600,470], home:[945.5,470], batt:[600,825.5] };
     const pos = N;
     // Per-node card sizes. Links meet the outer edge of each halo.
     const HALO_PAD = 16, HALO_SW = 8, RING_R = 121, RING_SW = 9;
     const SZ = { pv:{w:174,h:132}, grid:{w:174,h:154}, inv:{w:248,h:220}, home:{w:174,h:132}, batt:{w:223,h:220} };
+    // Entity surrounds share Battery's width; node cards keep their own sizes.
+    const SURROUND_W = SZ.batt.w + HALO_PAD * 2;
     const ringR = RING_R + RING_SW / 2;
     const boxEdge = (key) => {
-      const c = N[key], hw = SZ[key].w/2 + HALO_PAD + HALO_SW/2, hh = SZ[key].h/2 + HALO_PAD + HALO_SW/2;
+      const c = N[key], hw = SURROUND_W/2 + HALO_SW/2, hh = SZ[key].h/2 + HALO_PAD + HALO_SW/2;
       return { b: c[1] + hh, t: c[1] - hh, l: c[0] - hw, r: c[0] + hw };
     };
     const edge = {
@@ -11557,8 +11705,8 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       batt: boxEdge('batt'),
     };
     const haloRect = (key, color) => {
-      const c = N[key], hw = SZ[key].w/2 + HALO_PAD, hh = SZ[key].h/2 + HALO_PAD;
-      return `<rect x="${c[0]-hw}" y="${c[1]-hh}" width="${hw*2}" height="${hh*2}" rx="36" fill="none" stroke="${color}" stroke-width="${HALO_SW}"/>`;
+      const c = N[key], hw = SURROUND_W/2, hh = SZ[key].h/2 + HALO_PAD;
+      return `<rect x="${c[0]-hw}" y="${c[1]-hh}" width="${SURROUND_W}" height="${hh*2}" rx="36" fill="none" stroke="${color}" stroke-width="${HALO_SW}"/>`;
     };
     const straight = (x1, y1, x2, y2) => `M ${x1} ${y1} L ${x2} ${y2}`;
     const pvToInv = straight(N.pv[0], edge.pv.b, N.inv[0], edge.inv.t);
@@ -11633,32 +11781,30 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
         </div>
       </div>`).join('');
 
-    const pvNode = this._node(pos.pv[0],pos.pv[1],this._nodeIcon('solar-pv'),'PV',fmtVal(pvVal,pvE), isPower?(pvVal>10?'Generating':'Idle'):this._periodLabel(period),'#f6c945',(isPower?pvVal>10:pvVal>0.01),e.pv,[this._detailLine(isPower?'Today':this._periodLabel(period), this._fmtKwh(isPower?pvDaily:pvE),'#f6c945',statMap.pv),...this._extraNodeDetails('pv')], { nodeW: SZ.pv.w, nodeH: SZ.pv.h });
-    const gridNode = this._node(pos.grid[0],pos.grid[1],this._nodeIcon('grid'),'Grid', isPower?this._fmtW(gridP):(gridImportE!=null||gridExportE!=null?`${this._fmtKwh(gridImportE)} in`:'—'), gridLabel,'#5bc0ff',(gridImport>0||gridExport>0),e.grid,[
-      this._detailLine('Import '+(isPower?'today':period), this._fmtKwh(isPower?gridBought:gridImportE),'#5bc0ff',statMap.grid_import),
-      this._detailLine('Export '+(isPower?'today':period), this._fmtKwh(isPower?gridSold:gridExportE),'#7ee22d',statMap.grid_export),
-      this._detailLine('Voltage', this._fmtNum(gridV,1,' V'),'#9eb8c8',e.grid_l1_voltage),
-      ...this._extraNodeDetails('grid'),
-    ], { nodeW: SZ.grid.w, nodeH: SZ.grid.h });
-    const invNode = this._node(pos.inv[0],pos.inv[1],this._nodeIcon('inverter'),'Inverter',fmtVal(invVal,invVal), invP!=null||!isPower?'Active':'Unavailable','#bc63ff',(isPower?invP!=null&&Math.abs(invP)>10:invVal!=null&&invVal>0.01),e.inverter,[
-      this._detailLine('Temperature', this._fmtNum(invT,1,' °C'),'#bc63ff',e.inverter_temperature),
-      this._detailLine('Status', invP!=null||!isPower?'Online':'—'),
-      ...this._extraNodeDetails('inverter'),
-    ], { centerIcon: true, centerDetails: true });
-    const homeNode = this._node(pos.home[0],pos.home[1],this._nodeIcon('home'),'Home',fmtVal(loadVal,loadE), isPower?(loadVal>10?'Consuming':'Idle'):this._periodLabel(period),'#ff8a4c',(isPower?loadVal>10:loadVal>0.01),e.load,[
-      this._detailLine(isPower?'Today':this._periodLabel(period), this._fmtKwh(isPower?loadDaily:loadE),'#ff8a4c',statMap.load),
-      this._detailLine('Consumers', String(displayConsumers.length)),
-      ...this._extraNodeDetails('home'),
-    ], { nodeW: SZ.home.w, nodeH: SZ.home.h });
-    const battNode = this._node(pos.batt[0],pos.batt[1],this._batteryNodeIcon(soc),'Battery',fmtVal(isPower?(battP!=null?-battP:null):battRaw, isPower?null:null), [battLabel,socText].filter(Boolean).join(' · '),'#7ee22d',(battCharge>(isPower?10:0.01)||battDischarge>(isPower?10:0.01)),e.battery,[
-      this._detailLine('SOC', soc!=null?`${Math.round(soc)} %`:'—','#7ee22d',e.battery_soc),
-      this._detailLine('Voltage', this._fmtNum(battV,1,' V'),'#9eb8c8',e.battery_voltage),
-      this._detailLine('Current', this._fmtNum(battA,1,' A'),'#9eb8c8',e.battery_current),
-      this._detailLine('Temp', this._fmtNum(battT,1,' °C'),'#9eb8c8',e.battery_temperature),
-      this._detailLine('Charged '+(isPower?'today':period), this._fmtKwh(isPower?battChargeDaily:battChargeE),'#7ee22d',statMap.batt_charge),
-      this._detailLine('Discharged '+(isPower?'today':period), this._fmtKwh(isPower?battDischargeDaily:battDischargeE),'#ff8a4c',statMap.batt_discharge),
-      ...this._extraNodeDetails('battery'),
-    ], { nodeW: SZ.batt.w, nodeH: SZ.batt.h });
+    const pvNode = this._node(pos.pv[0],pos.pv[1],this._nodeIcon('solar-pv'),'PV',fmtVal(pvVal,pvE), isPower?(pvVal>10?'Generating':'Idle'):this._periodLabel(period),'#f6c945',(isPower?pvVal>10:pvVal>0.01),e.pv,this._nodeDetailRows('pv', {
+      pv_energy: () => this._detailLine(isPower?'Today':this._periodLabel(period), this._fmtKwh(isPower?pvDaily:pvE),'#f6c945',statMap.pv),
+    }, ['pv_energy']), { nodeW: SZ.pv.w, nodeH: SZ.pv.h });
+    const gridNode = this._node(pos.grid[0],pos.grid[1],this._nodeIcon('grid'),'Grid', isPower?this._fmtW(gridP):(gridImportE!=null||gridExportE!=null?`${this._fmtKwh(gridImportE)} in`:'—'), gridLabel,'#5bc0ff',(gridImport>0||gridExport>0),e.grid,this._nodeDetailRows('grid', {
+      grid_import: () => this._detailLine('Import '+(isPower?'today':period), this._fmtKwh(isPower?gridBought:gridImportE),'#5bc0ff',statMap.grid_import),
+      grid_export: () => this._detailLine('Export '+(isPower?'today':period), this._fmtKwh(isPower?gridSold:gridExportE),'#7ee22d',statMap.grid_export),
+      grid_voltage: () => this._detailLine('Voltage', this._fmtNum(gridV,1,' V'),'#9eb8c8',e.grid_l1_voltage),
+    }, ['grid_import', 'grid_export', 'grid_voltage']), { nodeW: SZ.grid.w, nodeH: SZ.grid.h });
+    const invNode = this._node(pos.inv[0],pos.inv[1],this._nodeIcon('inverter'),'Inverter',fmtVal(invVal,invVal), invP!=null||!isPower?'Active':'Unavailable','#bc63ff',(isPower?invP!=null&&Math.abs(invP)>10:invVal!=null&&invVal>0.01),e.inverter,this._nodeDetailRows('inverter', {
+      inv_temperature: () => this._detailLine('Temperature', this._fmtNum(invT,1,' °C'),'#bc63ff',e.inverter_temperature),
+      inv_status: () => this._detailLine('Status', invP!=null||!isPower?'Online':'—'),
+    }, ['inv_temperature', 'inv_status']), { centerIcon: true, centerDetails: true });
+    const homeNode = this._node(pos.home[0],pos.home[1],this._nodeIcon('home'),'Home',fmtVal(loadVal,loadE), isPower?(loadVal>10?'Consuming':'Idle'):this._periodLabel(period),'#ff8a4c',(isPower?loadVal>10:loadVal>0.01),e.load,this._nodeDetailRows('home', {
+      home_energy: () => this._detailLine(isPower?'Today':this._periodLabel(period), this._fmtKwh(isPower?loadDaily:loadE),'#ff8a4c',statMap.load),
+      home_consumers: () => this._detailLine('Consumers', String(displayConsumers.length)),
+    }, ['home_energy', 'home_consumers']), { nodeW: SZ.home.w, nodeH: SZ.home.h });
+    const battNode = this._node(pos.batt[0],pos.batt[1],this._batteryNodeIcon(soc),'Battery',fmtVal(isPower?(battP!=null?-battP:null):battRaw, isPower?null:null), [battLabel,socText].filter(Boolean).join(' · '),'#7ee22d',(battCharge>(isPower?10:0.01)||battDischarge>(isPower?10:0.01)),e.battery,this._nodeDetailRows('battery', {
+      batt_soc: () => this._detailLine('SOC', soc!=null?`${Math.round(soc)} %`:'—','#7ee22d',e.battery_soc),
+      batt_voltage: () => this._detailLine('Voltage', this._fmtNum(battV,1,' V'),'#9eb8c8',e.battery_voltage),
+      batt_current: () => this._detailLine('Current', this._fmtNum(battA,1,' A'),'#9eb8c8',e.battery_current),
+      batt_temperature: () => this._detailLine('Temp', this._fmtNum(battT,1,' °C'),'#9eb8c8',e.battery_temperature),
+      batt_charged: () => this._detailLine('Charged '+(isPower?'today':period), this._fmtKwh(isPower?battChargeDaily:battChargeE),'#7ee22d',statMap.batt_charge),
+      batt_discharged: () => this._detailLine('Discharged '+(isPower?'today':period), this._fmtKwh(isPower?battDischargeDaily:battDischargeE),'#ff8a4c',statMap.batt_discharge),
+    }, ['batt_soc', 'batt_voltage', 'batt_current', 'batt_temperature', 'batt_charged', 'batt_discharged']), { nodeW: SZ.batt.w, nodeH: SZ.batt.h });
 
     const consumerHtml = displayConsumers.length ? `
       <div style="margin-top:14px;padding:14px;border-radius:18px;border:1px solid rgba(118,166,190,.18);background:rgba(255,255,255,.02);">
@@ -11713,7 +11859,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
           </div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;">${summaryChips}</div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;">${chips}</div>
-          <div style="width:100%;aspect-ratio:1200 / 980;margin-top:14px;border-radius:20px;overflow:hidden;border:1px solid rgba(118,166,190,.18);background:linear-gradient(180deg,rgba(255,255,255,.025),rgba(255,255,255,.008));position:relative;">
+          <div style="width:100%;aspect-ratio:${W} / ${H};margin-top:14px;border-radius:20px;overflow:hidden;border:1px solid rgba(118,166,190,.18);background:linear-gradient(180deg,rgba(255,255,255,.025),rgba(255,255,255,.008));position:relative;">
             <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMin meet" style="width:100%;height:100%;display:block;">
               <defs>
                 <linearGradient id="pf-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="rgba(77,163,255,.10)"/><stop offset="100%" stop-color="rgba(126,226,45,.04)"/></linearGradient>
@@ -11724,17 +11870,19 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
               </defs>
               <rect x="0" y="0" width="${W}" height="${H}" fill="url(#pf-bg)" opacity="0.55"/>
               <rect x="0" y="0" width="${W}" height="${H}" fill="url(#pf-grid)"/>
-              <circle cx="${N.inv[0]}" cy="${N.inv[1]}" r="${RING_R}" fill="none" stroke="rgba(188,99,255,.05)" stroke-width="${RING_SW}"/>
-              ${haloRect('pv', 'rgba(246,201,69,.10)')}
-              ${haloRect('grid', 'rgba(91,192,255,.10)')}
-              ${haloRect('home', 'rgba(255,138,76,.10)')}
-              ${haloRect('batt', 'rgba(126,226,45,.10)')}
-              ${flows.join('')}
-              ${pvNode}
-              ${gridNode}
-              ${invNode}
-              ${homeNode}
-              ${battNode}
+              <g transform="translate(${PF_TX} ${PF_TY}) scale(${PF_SCALE})">
+                <circle cx="${N.inv[0]}" cy="${N.inv[1]}" r="${RING_R}" fill="none" stroke="rgba(188,99,255,.05)" stroke-width="${RING_SW}"/>
+                ${haloRect('pv', 'rgba(246,201,69,.10)')}
+                ${haloRect('grid', 'rgba(91,192,255,.10)')}
+                ${haloRect('home', 'rgba(255,138,76,.10)')}
+                ${haloRect('batt', 'rgba(126,226,45,.10)')}
+                ${flows.join('')}
+                ${pvNode}
+                ${gridNode}
+                ${invNode}
+                ${homeNode}
+                ${battNode}
+              </g>
             </svg>
           </div>
           ${consumerHtml}
@@ -11753,7 +11901,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.0.83",
+  description: "Deye Energy 0.8.0.84",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

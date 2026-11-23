@@ -368,5 +368,45 @@ class EntityMapCatalogueTests(unittest.TestCase):
             self.assertEqual(path.read_text(encoding="utf-8"), before)
 
 
+    def test_power_flow_detail_layout_validation_and_merge(self):
+        payload = entity_map.validate_power_flow_payload({
+            "node_detail_layout": {
+                "inverter": [
+                    {"builtin": "inv_status"},
+                    {"label": "Extra", "entity": "sensor.extra", "format": "num"},
+                ],
+                "grid": [{"builtin": "grid_export"}, {"builtin": "grid_import"}],
+            }
+        })
+        self.assertEqual(payload["node_detail_layout"]["inverter"][0], {"builtin": "inv_status"})
+        self.assertEqual(payload["node_details"], {})
+        for bad in (
+            {"node_detail_layout": {"inverter": [{"builtin": "nope"}]}},
+            {"node_detail_layout": {"inverter": [{"builtin": "inv_status", "label": "x"}]}},
+            {"node_detail_layout": {"unknown": []}},
+            {"node_detail_layout": {"grid": [{"label": "Bad", "entity": "light.x"}]}},
+        ):
+            with self.assertRaises(ValueError):
+                entity_map.validate_power_flow_payload(bad)
+
+        with tempfile.TemporaryDirectory(
+            dir="/data/v2/cache/opencode", prefix="deye_power_flow_layout_"
+        ) as tmp:
+            entity_map.configure(tmp)
+            path = entity_map.power_flow_override_path()
+            self.assertIsNotNone(path)
+            assert path is not None
+            result = entity_map.save_power_flow_display({
+                "node_detail_layout": {"grid": [{"builtin": "grid_export"}]},
+            })
+            self.assertEqual(result["node_detail_layout"]["grid"], [{"builtin": "grid_export"}])
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(set(saved), {"power_flow"})
+            self.assertEqual(
+                saved["power_flow"]["node_detail_layout"]["grid"],
+                [{"builtin": "grid_export"}],
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

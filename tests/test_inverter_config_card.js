@@ -383,6 +383,9 @@ function testPowerFlowTabRendersGroupsAndControls() {
   assert.match(html, /1234 W/);
   assert.match(html, /Additional data shown in the pv node/);
   assert.match(html, /data-pf-add-detail="pv"/);
+  assert.match(html, /data-pf-move-detail="pv:0:down"/);
+  assert.match(html, /data-pf-remove-detail="pv:0"/);
+  assert.match(html, /class="pf-entity-input"/);
   assert.match(html, /Top chips — main row/);
   assert.match(html, /data-pf-add-chip="main"/);
   assert.match(html, /Top chips — summary row/);
@@ -396,14 +399,18 @@ async function testPowerFlowSaveSendsDraftPayload() {
   card._inverterConfigSubTab = "power_flow";
   renderHtml(card);
   const draft = card.powerFlowDraft();
-  draft.node_details.pv = [{ label: "Temperature", entity: "sensor.inv_temp", format: "num" }];
+  draft.node_detail_layout.pv = [
+    { label: "Temperature", entity: "sensor.inv_temp", format: "num" },
+    { builtin: "pv_energy" },
+  ];
   draft.chip_rows.main = [{ label: "Extra", entity: "sensor.extra", format: "num" }];
   card._powerFlowDraftDirty = true;
   setServiceResponses(card, {
     save_power_flow_display: () => ({
       schema_version: 1,
       entities: { pv: "sensor.custom_pv" },
-      node_details: draft.node_details,
+      node_details: { pv: [{ label: "Temperature", entity: "sensor.inv_temp", format: "num" }] },
+      node_detail_layout: draft.node_detail_layout,
       chip_rows: draft.chip_rows,
     }),
   });
@@ -414,12 +421,36 @@ async function testPowerFlowSaveSendsDraftPayload() {
   assert.equal(calls.length, 1);
   const payload = JSON.parse(calls[0][2].data);
   assert.deepEqual(Object.keys(payload).sort(), [
-    "chip_rows", "entities", "node_details", "schema_version",
+    "chip_rows", "entities", "node_detail_layout", "node_details", "schema_version",
   ]);
   assert.equal(payload.entities.pv, "sensor.custom_pv");
-  assert.equal(payload.node_details.pv[0].label, "Temperature");
+  assert.equal(payload.node_detail_layout.pv[0].label, "Temperature");
+  assert.equal(payload.node_detail_layout.pv[1].builtin, "pv_energy");
+  assert.deepEqual(payload.node_details.pv, [
+    { label: "Temperature", entity: "sensor.inv_temp", format: "num" },
+  ]);
   assert.equal(payload.chip_rows.main[0].label, "Extra");
   assert.match(renderHtml(card), /Power flow mapping saved\./);
+}
+
+function testPowerFlowDetailReorderAndRemove() {
+  const card = makeCard();
+  withPowerFlowState(card);
+  card._inverterConfigSubTab = "power_flow";
+  renderHtml(card);
+  const draft = card.powerFlowDraft();
+  assert.deepEqual(draft.node_detail_layout.pv, [{ builtin: "pv_energy" }]);
+  draft.node_detail_layout.pv.push({ label: "Added", entity: "sensor.added", format: "num" });
+  card.movePowerFlowDetailRow("pv", 1, "up");
+  assert.deepEqual(card.powerFlowDraft().node_detail_layout.pv, [
+    { label: "Added", entity: "sensor.added", format: "num" },
+    { builtin: "pv_energy" },
+  ]);
+  assert.equal(card._powerFlowDraftDirty, true);
+  card.movePowerFlowDetailRow("pv", 0, "up");
+  assert.equal(card.powerFlowDraft().node_detail_layout.pv[0].label, "Added");
+  card.removePowerFlowDetailRow("pv", 0);
+  assert.deepEqual(card.powerFlowDraft().node_detail_layout.pv, [{ builtin: "pv_energy" }]);
 }
 
 module.exports = async function run() {
@@ -436,7 +467,8 @@ module.exports = async function run() {
   await testLoadsLiveOnConnectedCallback();
   testPowerFlowTabRendersGroupsAndControls();
   await testPowerFlowSaveSendsDraftPayload();
-  console.log("inverter config card: 13 checks passed");
+  testPowerFlowDetailReorderAndRemove();
+  console.log("inverter config card: 14 checks passed");
 };
 
 if (require.main === module) module.exports().catch((err) => {

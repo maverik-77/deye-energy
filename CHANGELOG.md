@@ -6,6 +6,20 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.84] - 2026-11-23
+
+### Added
+
+- **Power flow display editor**: the Inverter configuration card can edit node
+  entities, ordered detail rows and chip rows, including removing and reordering
+  built-in detail rows. Saved settings persist through the backend override.
+
+### Changed
+
+- **Power flow node surrounds**: PV, Grid and Home outer surrounds now match
+  Battery at 255 px while their inner cards stay 174 px wide. Flow endpoints and
+  the 1200 × 1081 canvas were recalculated to preserve the 44 px margin.
+
 ## [0.8.0.81] - 2026-11-23
 
 ### Added

@@ -80,11 +80,28 @@ check(html.includes("SOC 77%"), "missing SOC label");
 check(html.includes("<svg"), "missing svg");
 check(html.includes("pfFlowDash") && html.includes("stroke-dasharray:1 22"), "missing animated flow");
 check(!html.includes("Missing/unavailable entities"), "should not warn when all entities present");
-check(html.includes('viewBox="0 0 1200 980"'), "missing taller viewBox for node halos");
+check(html.includes('viewBox="0 0 1200 1081"'), "missing scaled viewBox for widened node surrounds");
 check(html.includes('preserveAspectRatio="xMidYMin meet"'), "missing top-aligned responsive preserveAspectRatio");
-check(html.includes('aspect-ratio:1200 / 980'), "diagram frame should scale with the viewBox");
+check(html.includes('aspect-ratio:1200 / 1081'), "diagram frame should scale with the viewBox");
 check(!html.includes('min-height:980px'), "diagram frame should not keep a fixed minimum height");
 check(html.includes('height:100%'), "missing height scaling");
+check(
+  html.includes('<g transform="translate(-105.28541226215646 -81.18816067653277) scale(1.175475687103594)">'),
+  "diagram content should be scaled to one grid cell of left/top margin",
+);
+const pfContentGroup = (html.match(/<g transform="translate\([^"]+\) scale\([^"]+\)">[\s\S]*?<\/g>/) || [''])[0];
+check(
+  pfContentGroup.includes('cx="600" cy="470" r="121"')
+    && pfContentGroup.includes('x="127" y="377"')
+    && pfContentGroup.includes('<foreignObject'),
+  "ring, halos and nodes should all share the same scale transform",
+);
+const pfSvg = (html.match(/<svg viewBox="0 0 1200 1081"[\s\S]*?<\/svg>/) || [''])[0];
+check(
+  pfSvg.indexOf('fill="url(#pf-grid)"') > -1
+    && pfSvg.indexOf('fill="url(#pf-grid)"') < pfSvg.indexOf('<g transform='),
+  "grid background should remain outside the content transform",
+);
 
 // Summary widget row above the existing PV/Grid/Battery/Home chips
 for (const title of ["Overall grid", "Electricity", "Gas", "Export"]) {
@@ -114,13 +131,13 @@ check(!html.includes('width="84" height="30" rx="15"'), "on-arrow power label sh
 check(html.includes('.pf-flow-active{stroke-dasharray:1 22;stroke-width:7!important') && html.includes('.pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34'), "flow links should use Energy Status style dashes");
 check(!html.includes('stroke-width="14"'), "oversized link glow should be gone");
 check(html.includes('d="M 600 274.5 L 600 344.5"'), "PV link should run from the halo edge to the smaller inverter ring");
-check(html.includes('d="M 725.5 470 L 838.5 470"'), "inverter-to-home link should run from the ring to the halo edge");
-check(html.includes('d="M 474.5 470 L 361.5 470"'), "grid link should run from the smaller inverter ring to the halo edge");
+check(html.includes('d="M 725.5 470 L 814 470"'), "inverter-to-home link should run from the ring to the halo edge");
+check(html.includes('d="M 474.5 470 L 386 470"'), "grid link should run from the smaller inverter ring to the halo edge");
 check(html.includes('d="M 600 695.5 L 600 595.5"'), "battery link should run from the halo edge to the smaller ring");
 for (const [coords, dims, color] of [
-  ['x="497" y="106.5"', 'width="206" height="164"', 'rgba(246,201,69,.10)'],
-  ['x="151.5" y="377"', 'width="206" height="186"', 'rgba(91,192,255,.10)'],
-  ['x="842.5" y="388"', 'width="206" height="164"', 'rgba(255,138,76,.10)'],
+  ['x="472.5" y="106.5"', 'width="255" height="164"', 'rgba(246,201,69,.10)'],
+  ['x="127" y="377"', 'width="255" height="186"', 'rgba(91,192,255,.10)'],
+  ['x="818" y="388"', 'width="255" height="164"', 'rgba(255,138,76,.10)'],
   ['x="472.5" y="699.5"', 'width="255" height="252"', 'rgba(126,226,45,.10)'],
 ]) {
   check(html.includes(`${coords} ${dims} rx="36" fill="none" stroke="${color}" stroke-width="8"`), `missing halo for ${color}`);
@@ -136,7 +153,7 @@ check(flowPath(html, 'pf-grid-inv').includes('stroke-width="4"'), "flow paths sh
 check(!html.includes('<animateMotion') && !html.includes('<mpath') && !html.includes('keyPoints='), "SVG ball animation should be gone");
 check(!source.includes('const gap = 30;') && !source.includes('Math.abs(power) * 0.11'), "power-scaled ball logic should be gone");
 check(html.includes('.pf-flow-active{stroke-dasharray:1 22;stroke-width:7!important;animation:pfFlowDash 3.00s linear infinite}'), "dot stream should use config-driven duration");
-check(html.includes('filter id="pf-line-glow" filterUnits="userSpaceOnUse" x="0" y="0" width="1200" height="980"'), "line glow filter should use a user-space region");
+check(html.includes('filter id="pf-line-glow" filterUnits="userSpaceOnUse" x="0" y="0" width="1200" height="1081"'), "line glow filter should use a user-space region");
 check(html.includes('.pf-flow-line{fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;filter:url(#pf-line-glow)}') && html.includes('.pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34;filter:url(#pf-line-glow)}'), "flow paths should use the user-space glow filter");
 check(!html.includes('stroke-dasharray:none;filter:url(#pf-glow)'), "straight links should not use the bounding-box glow filter");
 check(html.includes('@keyframes pfFlowDash{to{stroke-dashoffset:-220}}'), "dot stream should use the fixed Energy Status offset formula");
@@ -145,14 +162,14 @@ check(html.includes('class="pf-flow-line pf-flow-active"'), "active links should
 check((html.match(/class="pf-flow-line-bg"/g) || []).length === 4, "each link should have a persistent background path");
 check(flowPath(html, 'pf-grid-inv').includes('marker-end='), "active link should carry an arrowhead");
 
-// Requested visible gaps: 70% grid/home, 80% PV, 230% battery
+// Flow gaps after widening entity surrounds: 88.5 grid/home, 70 PV, 100 battery
 const pathLength = (id) => {
   const m = flowPath(html, id).match(/d="M ([\d.]+) ([\d.]+) L ([\d.]+) ([\d.]+)"/);
   return m ? Math.round(Math.hypot(Number(m[3]) - Number(m[1]), Number(m[4]) - Number(m[2])) * 100) / 100 : NaN;
 };
-check(pathLength('pf-grid-inv') === 113, "grid-to-inverter gap should be 70% of the old 161.5");
+check(pathLength('pf-grid-inv') === 88.5, "grid-to-inverter gap should stop at the wider Grid surround");
 check(pathLength('pf-pv-inv') === 70, "PV-to-inverter gap should be 80% of the old 87.5");
-check(pathLength('pf-inv-home') === 113, "inverter-to-home gap should be 70% of the old 161.5");
+check(pathLength('pf-inv-home') === 88.5, "inverter-to-home gap should stop at the wider Home surround");
 check(pathLength('pf-batt-inv') === 100, "inverter-to-battery gap should be 230% of the old 43.5");
 
 // Speed setting drives duration/offset, not live power
@@ -167,7 +184,7 @@ const dirCard = new sandbox.PowerFlowCard();
 dirCard.setConfig({ entities: { pv: 'p', grid: 'g', battery: 'b', battery_soc: 's', load: 'l', inverter: 'i' } });
 dirCard.hass = { states: { p: { state: '0' }, g: { state: '400' }, b: { state: '-300' }, s: { state: '50' }, l: { state: '0' }, i: { state: '0' } } };
 const dirHtml = dirCard.innerHTML;
-check(flowPath(dirHtml, 'pf-grid-inv').includes('d="M 361.5 470 L 474.5 470"') && flowPath(dirHtml, 'pf-grid-inv').includes('marker-end=') && flowPath(dirHtml, 'pf-grid-inv').includes('pf-flow-active'), "import should point from grid to inverter and scroll toward it");
+check(flowPath(dirHtml, 'pf-grid-inv').includes('d="M 386 470 L 474.5 470"') && flowPath(dirHtml, 'pf-grid-inv').includes('marker-end=') && flowPath(dirHtml, 'pf-grid-inv').includes('pf-flow-active'), "import should point from grid to inverter and scroll toward it");
 check(flowPath(dirHtml, 'pf-batt-inv').includes('d="M 600 595.5 L 600 695.5"') && flowPath(dirHtml, 'pf-batt-inv').includes('marker-end=') && flowPath(dirHtml, 'pf-batt-inv').includes('pf-flow-active'), "charging should point from inverter to battery and scroll toward it");
 
 // Idle: the link stays, but direction-dependent decorations disappear
@@ -175,7 +192,7 @@ const idleCard = new sandbox.PowerFlowCard();
 idleCard.setConfig({ entities: { pv: 'p', grid: 'g', battery: 'b', battery_soc: 's', load: 'l', inverter: 'i' } });
 idleCard.hass = { states: { p: { state: '0' }, g: { state: '0' }, b: { state: '0' }, s: { state: '50' }, l: { state: '0' }, i: { state: '0' } } };
 const idleHtml = idleCard.innerHTML;
-check(flowPath(idleHtml, 'pf-grid-inv').includes('d="M 361.5 470 L 474.5 470"'), "idle grid link should remain rendered");
+check(flowPath(idleHtml, 'pf-grid-inv').includes('d="M 386 470 L 474.5 470"'), "idle grid link should remain rendered");
 check(flowPath(idleHtml, 'pf-batt-inv').includes('d="M 600 695.5 L 600 595.5"'), "idle battery link should remain rendered");
 check(!idleHtml.includes('marker-end='), "idle links should have no arrowheads");
 check(!idleHtml.includes('class="pf-flow-line pf-flow-active"'), "idle links should have no scrolling dots");
@@ -194,7 +211,7 @@ check(tinyImportHtml.includes('>Importing<'), "0.5 W import should label the Gri
 
 gridCard.hass = { states: { p: { state: '0' }, g: { state: '-0.5' }, b: { state: '0' }, s: { state: '50' }, l: { state: '0' }, i: { state: '0' } } };
 const tinyExportHtml = gridCard.innerHTML;
-check(flowPath(tinyExportHtml, 'pf-grid-inv').includes('d="M 474.5 470 L 361.5 470"') && flowPath(tinyExportHtml, 'pf-grid-inv').includes('pf-flow-active') && flowPath(tinyExportHtml, 'pf-grid-inv').includes('marker-end='), "0.5 W export should point to the grid and animate");
+check(flowPath(tinyExportHtml, 'pf-grid-inv').includes('d="M 474.5 470 L 386 470"') && flowPath(tinyExportHtml, 'pf-grid-inv').includes('pf-flow-active') && flowPath(tinyExportHtml, 'pf-grid-inv').includes('marker-end='), "0.5 W export should point to the grid and animate");
 check(gridNodeHtml(tinyExportHtml).includes('border:1px solid #5bc0ff;'), "0.5 W export should activate the Grid node");
 check(tinyExportHtml.includes('>Exporting<'), "0.5 W export should label the Grid as exporting");
 
@@ -404,6 +421,46 @@ for (const [label, entity] of [
   check(overrideHtml.includes(`class="pf-value-click" data-entity="${entity}"`), `extra node detail row ${label} should open its own entity`);
 }
 check(overrideHtml.includes("123 W") && overrideHtml.includes("50.5") && overrideHtml.includes("60 %"), "extra node detail values should be formatted");
+
+// Ordered node detail layout: built-ins can be removed/reordered and custom rows stay inline.
+const layoutCard = new sandbox.PowerFlowCard();
+layoutCard.setConfig({ entities: {
+  pv: "sensor.pv2", grid: "sensor.grid2", battery: "sensor.batt2", battery_soc: "sensor.soc2",
+  load: "sensor.load2", inverter: "sensor.inv2",
+}});
+layoutCard.hass = { states: {
+  "sensor.pv2": { state: "1000" },
+  "sensor.grid2": { state: "200" },
+  "sensor.batt2": { state: "0" },
+  "sensor.soc2": { state: "50" },
+  "sensor.load2": { state: "1200" },
+  "sensor.inv2": { state: "1000" },
+  "sensor.temp2": { state: "33" },
+  "sensor.deye_ai_state": { state: "ready", attributes: { power_flow_display: {
+    schema_version: 1,
+    entities: { inverter_temperature: "sensor.temp2" },
+    node_detail_layout: {
+      inverter: [
+        { label: "Custom first", entity: "sensor.temp2", format: "num" },
+        { builtin: "inv_status" },
+      ],
+      grid: [{ builtin: "grid_export" }, { builtin: "grid_import" }],
+    },
+  } } },
+}};
+const layoutHtml = layoutCard.innerHTML;
+check(layoutHtml.includes("Custom first") && layoutHtml.includes('data-entity="sensor.temp2"'), "layout custom row should render in the real card");
+const inverterRows = layoutCard._nodeDetailRows("inverter", {
+  inv_temperature: () => "TEMP-ROW",
+  inv_status: () => "STATUS-ROW",
+}, ["inv_temperature", "inv_status"]);
+check(inverterRows.length === 2 && inverterRows[0].includes("Custom first") && inverterRows[1] === "STATUS-ROW", "layout should preserve configured row order");
+const gridRows = layoutCard._nodeDetailRows("grid", {
+  grid_import: () => "IMPORT-ROW",
+  grid_export: () => "EXPORT-ROW",
+  grid_voltage: () => "VOLTAGE-ROW",
+}, ["grid_import", "grid_export", "grid_voltage"]);
+check(gridRows.length === 2 && gridRows[0] === "EXPORT-ROW" && gridRows[1] === "IMPORT-ROW", "layout should remove and reorder built-in rows");
 
 check(/^\/\/ Resource revision: v=\d+\.\d+\.\d+(\.\d+)?\n/.test(source), "resource revision header missing/invalid");
 console.log("Power flow card tests passed");

@@ -29,6 +29,14 @@ _POWER_FLOW_FORMATS = ("w", "kw", "kwh", "num", "gbp", "pct")
 _POWER_FLOW_CHIP_KINDS = ("import", "export", "bolt", "flame", "pound")
 _POWER_FLOW_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
 _POWER_FLOW_MAX_ROWS = 20
+_POWER_FLOW_BUILTIN_DETAILS = (
+    "pv_energy",
+    "grid_import", "grid_export", "grid_voltage",
+    "inv_temperature", "inv_status",
+    "home_energy", "home_consumers",
+    "batt_soc", "batt_voltage", "batt_current", "batt_temperature",
+    "batt_charged", "batt_discharged",
+)
 
 _state: dict[str, Any] = {
     "bundled": None,
@@ -85,6 +93,33 @@ def _validate_power_flow_row(row: Any, source: str, formats: set[str], kinds: se
         _validate_entity_id(item.get("entity"), source)
 
 
+def _validate_power_flow_layout(
+    layout: Any, source: str, groups: set[str], formats: set[str]
+) -> dict[str, list[dict[str, Any]]]:
+    """Validate the ordered layout of rows shown below a node's divider."""
+    if not isinstance(layout, dict):
+        raise ValueError(f"Power Flow node detail layout in {source} must be an object")
+    normalized: dict[str, list[dict[str, Any]]] = {}
+    for group, rows in layout.items():
+        if group not in groups:
+            raise ValueError(f"unknown Power Flow node group in layout: {group}")
+        if not isinstance(rows, list) or len(rows) > _POWER_FLOW_MAX_ROWS:
+            raise ValueError(
+                f"Power Flow node detail layout for {group} must be a list of at most {_POWER_FLOW_MAX_ROWS} rows"
+            )
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError(f"power flow layout row in {source} must be an object")
+            builtin = row.get("builtin")
+            if builtin is not None:
+                if set(row) != {"builtin"} or str(builtin) not in _POWER_FLOW_BUILTIN_DETAILS:
+                    raise ValueError(f"unsupported power flow built-in row in {source}: {builtin!r}")
+                continue
+            _validate_power_flow_row(row, source, formats, set(), summary=False)
+        normalized[str(group)] = rows
+    return normalized
+
+
 def validate_power_flow_payload(payload: Any) -> dict[str, Any]:
     """Validate a card submission for the Power Flow display override."""
     source = "power flow display payload"
@@ -95,7 +130,9 @@ def validate_power_flow_payload(payload: Any) -> dict[str, Any]:
     formats = set(defaults.get("formats", _POWER_FLOW_FORMATS))
     kinds = set(defaults.get("chip_kinds", _POWER_FLOW_CHIP_KINDS))
     allowed_groups = set(defaults.get("node_detail_keys", ()))
-    unknown = set(payload) - {"schema_version", "entities", "node_details", "chip_rows"}
+    unknown = set(payload) - {
+        "schema_version", "entities", "node_details", "node_detail_layout", "chip_rows"
+    }
     if unknown:
         raise ValueError(f"unsupported Power Flow display fields: {sorted(unknown)}")
     entities = payload.get("entities", {})
@@ -118,6 +155,8 @@ def validate_power_flow_payload(payload: Any) -> dict[str, Any]:
         for row in rows:
             _validate_power_flow_row(row, source, formats, kinds, summary=False)
         normalized_details[str(group)] = rows
+    layout = payload.get("node_detail_layout", {})
+    normalized_layout = _validate_power_flow_layout(layout, source, allowed_groups, formats)
     chip_rows = payload.get("chip_rows", {})
     if not isinstance(chip_rows, dict):
         raise ValueError("Power Flow chip rows must be an object")
@@ -135,6 +174,7 @@ def validate_power_flow_payload(payload: Any) -> dict[str, Any]:
         "schema_version": 1,
         "entities": normalized_entities,
         "node_details": normalized_details,
+        "node_detail_layout": normalized_layout,
         "chip_rows": normalized_chips,
     }
 
@@ -153,7 +193,7 @@ def _validate_power_flow(document: dict[str, Any], source: str) -> None:
         raise ValueError(f"power_flow in {source} must be an object")
     allowed = {
         "schema_version", "entities", "sensor_groups", "node_detail_keys",
-        "formats", "chip_kinds", "node_details", "chip_rows",
+        "formats", "chip_kinds", "node_details", "node_detail_layout", "chip_rows",
     }
     unknown = set(power_flow) - allowed
     if unknown:
@@ -173,6 +213,7 @@ def _validate_power_flow(document: dict[str, Any], source: str) -> None:
             raise ValueError(f"invalid power_flow node details in {source}: {group}")
         for row in rows:
             _validate_power_flow_row(row, source, formats, kinds, summary=False)
+    _validate_power_flow_layout(power_flow.get("node_detail_layout", {}), source, groups, formats)
     chip_rows = power_flow.get("chip_rows", {})
     if not isinstance(chip_rows, dict):
         raise ValueError(f"power_flow.chip_rows in {source} must be an object")
@@ -294,6 +335,11 @@ def _document() -> dict[str, Any]:
             for row_key, chips in chip_rows.items():
                 if isinstance(chips, list):
                     target.setdefault("chip_rows", {})[row_key] = chips
+        layout = power_flow.get("node_detail_layout")
+        if isinstance(layout, dict):
+            for group, rows in layout.items():
+                if isinstance(rows, list):
+                    target.setdefault("node_detail_layout", {})[group] = rows
     return merged
 
 
