@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0
 
-Card resource revision: `v=0.8.0.73`.
+Card resource revision: `v=0.8.0.74`.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 Deye Energy 0.8.0 is the English-language edition of the original
@@ -9,6 +9,10 @@ integrated through MQTT. Attribution is recorded at the bottom of README.md.
 
 ## Revision history
 
+- `v=0.8.0.74` — Replaced integration/brand icon assets with a new Deye-based
+  icon and cleaned up documentation: removed Solarman, Solar Assistant and
+  ESPHome Deye Inverter references from the README, and documented the kbialek
+  Sunsynk / Deye Inverter Add-on (multi) as required for MQTT data.
 - `v=0.8.0.73` — Added Manual schedule **Battery charge** column associated with
   `switch.deye_grid_charge_enabled`, persisted in manual schedule rows, enforced
   per active manual schedule, and logged in trigger logs when toggled. Fixed

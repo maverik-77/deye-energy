@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.0.73-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.0.74-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -73,6 +73,7 @@ add-on profile) and to a UK-style tariff.
 
 - Home Assistant 2026.6 or newer;
 - a Deye inverter whose entities are available in Home Assistant;
+- **[Sunsynk / Deye Inverter Add-on (multi)](https://github.com/kbialek/deye-inverter-mqtt) by kbialek** — required to publish Deye inverter data/control entities over MQTT for this integration to use;
 - optional: the Solcast PV Forecast integration, a weather entity, an energy
   price entity.
 
@@ -80,10 +81,8 @@ add-on profile) and to a UK-style tariff.
 
 | Profile | How the inverter reaches Home Assistant |
 |---|---|
-| **Sunsynk** (default) | Sunsynk / Deye add-on publishing over **MQTT** discovery. Full control of work mode, sell power and the six TOU slots; battery current limits are set separately in **Inverter configuration**. |
+| **Sunsynk / Deye MQTT** (default) | Uses MQTT discovery entities published by the **[Sunsynk / Deye Inverter Add-on (multi)](https://github.com/kbialek/deye-inverter-mqtt)**. Full control of work mode, sell power and the six TOU slots; battery current limits are set separately in **Inverter configuration**. |
 | Deye add-on (read-only) | `kbialek/deye-inverter-mqtt` readings only; control is refused (fail closed). |
-| Solarman | Solarman integration entities. |
-| Lewa-Reka | ESPHome Deye Inverter. |
 | Custom | Map any entities and give the exact option values yourself. |
 
 ### Deye over MQTT
@@ -104,13 +103,12 @@ for the selected entities.
 
 ### Mirrored charge defaults
 
-A fresh install uses the non-current values from the working Solar Assistant
-setup: 0 W sell power, grid charging enabled and a 100% charge target. Existing
-installations receive a one-time `sa_defaults_v1` migration that replaces only
-the original grid-charge-disabled template; a profile you have edited since is
-kept as-is. Battery charge, discharge and grid-charge currents are no longer
-part of any profile or schedule. Set them directly in the **Inverter
-configuration** card, which calls
+A fresh install uses safe defaults: 0 W sell power, grid charging enabled and a
+100% charge target. Existing installations receive a one-time `sa_defaults_v1`
+migration that replaces only the original grid-charge-disabled template; a
+profile you have edited since is kept as-is. Battery charge, discharge and
+grid-charge currents are no longer part of any profile or schedule. Set them
+directly in the **Inverter configuration** card, which calls
 `deye_energy.apply_inverter_configuration_group` and writes only the three
 configured physical number entities. A positive grid-charge current is only a
 limit; Grid Charge permission remains a separate TOU setting.
@@ -122,9 +120,9 @@ is a standalone card, separate from the main Energy Manager settings. The
 `deye-energy` dashboard includes it on its own **Inverter config** tab; you can
 also add it manually to any dashboard.
 
-The card mirrors the Solar Assistant configuration layout in sub-tabs/groups:
-Inverter, Grid, Battery settings in inverter, Battery settings, Mode & control,
-Specification, Voltages, Power, Battery, and Energy. Live values are loaded from
+The card groups inverter configuration in sub-tabs/groups: Inverter, Grid,
+Battery settings in inverter, Battery settings, Mode & control, Specification,
+Voltages, Power, Battery, and Energy. Live values are loaded from
 the inverter every time the page is accessed (and can be refreshed manually). A
 field whose entity is missing, unavailable or has no usable metadata is shown as
 **Not mapped** or **Unavailable** and stays read-only; the backend refuses to
@@ -171,7 +169,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.73
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.74
       type: module
 ```
 

@@ -6,6 +6,16 @@ recorded at the bottom of README.md.
 
 ## [Unreleased]
 
+## [0.8.0.74] - 2026-11-23
+
+### Changed
+
+- **Integration icon**: replaced the integration/brand icon assets with a new
+  Deye-based icon.
+- **Documentation**: removed Solarman, Solar Assistant and ESPHome Deye Inverter
+  references from the README; the kbialek **Sunsynk / Deye Inverter Add-on
+  (multi)** is now shown as required for MQTT data in this integration.
+
 ## [0.8.0.73] - 2026-11-22
 
 ### Changed
