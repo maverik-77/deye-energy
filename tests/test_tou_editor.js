@@ -174,6 +174,11 @@ function tableHtml(card) {
 function test_tou_table_is_inline_editable_without_overlay_controls() {
   const { card } = makeCard();
   const view = tableHtml(card);
+  assertTrue(view.includes('class="schedule-head tou-panel-head"'), "TOU must use the page schedule header");
+  assertTrue(view.includes("<h2>Deye Time Of Use</h2>"), "TOU must have a page-style title");
+  assertTrue(view.includes('<div class="schedule-tools">'), "TOU actions must be in the page tools row");
+  assertTrue(view.includes('class="schedule-table-card"'), "TOU table must be in a page table card");
+  assertTrue(!view.includes('class="dialog-actions"'), "TOU must not use dialog-only action styling");
   assertTrue(!view.includes('data-mapping-field="start" data-mapping-slot="2"'), "view mode must not render inline inputs");
   assertTrue(view.includes('data-edit-mapping="1"') && view.includes(">Edit<"), "view mode must show Edit button");
   assertTrue(view.includes('data-refresh-mapping="1"') && view.includes(">Refresh<"), "view mode must show Refresh button");
@@ -193,21 +198,27 @@ function test_tou_table_is_inline_editable_without_overlay_controls() {
   assertTrue(!html.includes("data-save-tou") && !html.includes("data-rollback-tou"), "overlay action buttons must be gone");
 }
 
-function test_tou_table_has_save_and_rollback_at_the_bottom() {
+function test_tou_table_has_header_tools_and_bottom_save() {
   const { card } = makeCard();
   const view = tableHtml(card);
-  const viewActions = view.slice(view.lastIndexOf("</table>"));
-  assertTrue(viewActions.includes('data-refresh-mapping="1"') && viewActions.includes(">Refresh<"), "view must have Refresh");
-  assertTrue(viewActions.includes('data-edit-mapping="1"') && viewActions.includes(">Edit<"), "view must have Edit");
+  const tableStart = view.indexOf("data-tou-capabilities-table");
+  assertTrue(tableStart > 0, "view table must be rendered");
+  assertTrue(view.indexOf('data-refresh-mapping="1"') < tableStart && view.includes(">Refresh<"), "Refresh must be in the header before the table");
+  assertTrue(view.indexOf('data-edit-mapping="1"') < tableStart && view.includes(">Edit<"), "Edit must be in the header before the table");
+  assertTrue(!view.includes('data-save-mapping="1"'), "view mode must not show Save");
 
   card.startMappingEdit();
   const html = tableHtml(card);
+  const tableStartEdit = html.indexOf("data-tou-capabilities-table");
   const tableEnd = html.lastIndexOf("</table>");
-  assertTrue(tableEnd > 0, "the editor table must be rendered");
-  const actions = html.slice(tableEnd);
-  assertTrue(actions.includes('data-cancel-mapping="1"') && actions.includes(">Cancel<"), "Cancel must be at the bottom in edit mode");
-  assertTrue(actions.includes('data-save-mapping="1"') && actions.includes(">Save<"), "Save must be at the bottom in edit mode");
-  assertTrue(actions.indexOf('data-cancel-mapping="1"') < actions.indexOf('data-save-mapping="1"'), "Cancel must sit next to Save");
+  assertTrue(tableStartEdit > 0 && tableEnd > tableStartEdit, "the editor table must be rendered");
+  const header = html.slice(0, tableStartEdit);
+  const footer = html.slice(tableEnd);
+  assertTrue(header.includes('data-cancel-mapping="1"') && header.includes(">Cancel<"), "Cancel must be in the header in edit mode");
+  assertTrue(!header.includes('data-refresh-mapping="1"'), "Refresh must not remain in edit mode");
+  assertTrue(footer.includes('class="foot-actions tou-save-actions"'), "Save must sit in the page footer");
+  assertTrue(footer.includes('data-save-mapping="1"') && footer.includes(">Save<"), "Save must be at the bottom in edit mode");
+  assertTrue(!footer.includes('data-cancel-mapping="1"'), "Cancel must not move to the footer");
 }
 
 function test_tou_table_explains_full_day_validation() {
@@ -283,6 +294,20 @@ function test_tou_pending_save_disables_both_bottom_actions() {
   assertTrue(html.includes('data-save-mapping="1" disabled'), "Save must be disabled while saving");
 }
 
+function test_tou_is_a_schedule_page_tab_not_a_settings_overlay() {
+  for (const forbidden of [
+    'tabButton("tou"',
+    'data-open-settings="tou"',
+    'tab === "tou"',
+    '_settingsTab === "tou"',
+    'data-settings-tab="tou"',
+  ]) {
+    assertTrue(!source.includes(forbidden), `TOU must not be wired into the settings overlay: ${forbidden}`);
+  }
+  assertTrue(source.includes('scheduleTabButton("tou", "Deye Time Of Use")'), "TOU must render as the second schedule tab");
+  assertTrue(source.includes('this.renderScheduleTabs(this.renderManualScheduleTab(), this.renderTouSettingsContent(slots))'), "TOU page must be passed into the schedule tabs");
+}
+
 function test_overlay_and_mapping_tab_code_is_removed() {
   for (const forbidden of [
     'tabButton("mapping"',
@@ -307,13 +332,14 @@ function test_both_card_copies_remain_identical() {
 
 const tests = [
   test_tou_table_is_inline_editable_without_overlay_controls,
-  test_tou_table_has_save_and_rollback_at_the_bottom,
+  test_tou_table_has_header_tools_and_bottom_save,
   test_tou_table_explains_full_day_validation,
   test_tou_table_shows_validation_errors_after_failed_save,
   test_tou_rollback_rebuilds_every_row_from_the_inverter,
   test_tou_read_only_provider_disables_save,
   test_tou_disabled_master_control_shows_hint_and_disables_save,
   test_tou_pending_save_disables_both_bottom_actions,
+  test_tou_is_a_schedule_page_tab_not_a_settings_overlay,
   test_overlay_and_mapping_tab_code_is_removed,
   test_both_card_copies_remain_identical,
 ];

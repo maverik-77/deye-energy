@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 import voluptuous as vol
 
@@ -52,8 +53,6 @@ MANUAL_SELL_SCHEMA = vol.Schema(
     }
 )
 CHARGE_SCHEMA = vol.Schema({})
-AI_DATA_SCHEMA = vol.Schema({vol.Required("data"): vol.All(cv.string, vol.Length(max=200000))})
-AI_RATING_SCHEMA = vol.Schema({vol.Required("timestamp"): vol.Coerce(float), vol.Required("rating"): vol.All(vol.Coerce(int), vol.Range(min=1, max=5))})
 DEFAULT_SETTINGS_SCHEMA = vol.Schema(
     {
         vol.Required("mode"): vol.In(WORK_MODE_SERVICE_VALUES),
@@ -78,11 +77,6 @@ NORMAL_PROFILE_SCHEMA = vol.Schema(
         vol.Required("physical_work_mode"): vol.In(list(PHYSICAL_NORMAL_MODES)),
         vol.Required("sell_power"): vol.All(vol.Coerce(float), vol.Range(min=0, max=ABSOLUTE_INVERTER_MAX_POWER_W)),
         vol.Required("tou_soc"): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
-    }
-)
-PLAN_EXECUTION_SCHEMA = vol.Schema(
-    {
-        vol.Optional("date"): vol.All(cv.string, vol.Length(max=10)),
     }
 )
 TOU_SLOT_SCHEMA = vol.Schema(
@@ -124,24 +118,12 @@ SERVICE_NAMES = (
     "restore_defaults",
     "resume_manager",
     "emergency_stop",
-    "save_ai_settings",
-    "save_ai_profiles",
-    "save_ai_api_settings",
-    "test_ai_api",
-    "analyze_ai_api",
-    "save_ai_analysis",
-    "clear_ai_history",
-    "rate_ai_analysis",
-    "clear_history",
     "apply_schedule_patch",
     "save_tariff_settings",
     "save_charge_profile",
     "save_normal_profile",
     "save_default_settings",
     "refresh_tariff_catalog",
-    "save_future_plan",
-    "cancel_future_plan",
-    "get_plan_execution",
     "set_tou_slot",
     "save_manual_schedule",
     "init_manual_schedule_from_tou",
@@ -450,61 +432,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_emergency_stop(call: ServiceCall) -> None:
         await runtime.async_emergency_stop()
 
-    async def handle_save_ai_settings(call: ServiceCall) -> None:
-        data = _parse_json_payload(call.data["data"], dict)
-        await runtime.async_set_ai_settings(data)
-
-    async def handle_save_ai_profiles(call: ServiceCall) -> None:
-        data = _parse_json_payload(call.data["data"], dict)
-        await runtime.async_set_user_profiles(data)
-
-    async def handle_save_ai_api_settings(call: ServiceCall) -> None:
-        data = _parse_json_payload(call.data["data"], dict)
-        normalized = runtime.update_ai_api_config(data)
-        hass.config_entries.async_update_entry(
-            entry,
-            options={**entry.options, "ai_api": normalized},
-        )
-
-    async def handle_test_ai_api(call: ServiceCall) -> None:
-        await runtime.async_run_ai_api(connection_test=True, force=True)
-
-    async def handle_analyze_ai_api(call: ServiceCall) -> None:
-        await runtime.async_run_ai_api(force=True)
-
-    async def handle_save_ai_analysis(call: ServiceCall) -> None:
-        data = _parse_json_payload(call.data["data"], dict)
-        await runtime.async_add_ai_analysis(data)
-
-    async def handle_clear_ai_history(call: ServiceCall) -> None:
-        await runtime.async_clear_ai_history()
-
-    async def handle_rate_ai_analysis(call: ServiceCall) -> None:
-        await runtime.async_rate_ai_analysis(call.data["timestamp"], call.data["rating"])
-
-    async def handle_clear_history(call: ServiceCall) -> None:
-        await runtime.async_clear_all_history()
-
     async def handle_apply_schedule_patch(call: ServiceCall) -> None:
-        payload = _parse_json_payload(call.data["data"], (list, dict))
-        if isinstance(payload, list):
-            await runtime.async_apply_schedule_patch(payload)
-            return
-        unknown = set(payload) - {"updates", "replace_day", "date"}
-        if unknown:
-            raise ValueError(
-                "Unsupported Apply Today fields: " + ", ".join(sorted(unknown))
-            )
-        if payload.get("replace_day") is not True:
-            raise ValueError("An object schedule payload requires replace_day=true")
-        updates = payload.get("updates")
-        if not isinstance(updates, list):
-            raise ValueError("Apply Today requires an updates list")
-        await runtime.async_apply_schedule_patch(
-            updates,
-            replace_day=True,
-            date=str(payload.get("date") or ""),
-        )
+        payload = _parse_json_payload(call.data["data"], list)
+        await runtime.async_apply_schedule_patch(payload)
 
     async def handle_save_tariff_settings(call: ServiceCall) -> None:
         settings = _parse_json_payload(call.data["data"], dict)
@@ -525,16 +455,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def handle_refresh_tariff_catalog(call: ServiceCall) -> None:
         await runtime.async_refresh_tariff_catalog()
-
-    async def handle_save_future_plan(call: ServiceCall) -> None:
-        plan = _parse_json_payload(call.data["data"], dict)
-        await runtime.async_save_future_plan(plan)
-
-    async def handle_cancel_future_plan(call: ServiceCall) -> None:
-        await runtime.async_cancel_future_plan()
-
-    async def handle_get_plan_execution(call: ServiceCall) -> dict[str, Any]:
-        return runtime.plan_execution_day(call.data.get("date"))
 
     async def handle_set_tou_slot(call: ServiceCall) -> None:
         await runtime.async_set_physical_tou_slot(
@@ -606,15 +526,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, "restore_defaults", handle_restore_defaults)
     hass.services.async_register(DOMAIN, "resume_manager", handle_resume_manager)
     hass.services.async_register(DOMAIN, "emergency_stop", handle_emergency_stop)
-    hass.services.async_register(DOMAIN, "save_ai_settings", handle_save_ai_settings, schema=AI_DATA_SCHEMA)
-    hass.services.async_register(DOMAIN, "save_ai_profiles", handle_save_ai_profiles, schema=AI_DATA_SCHEMA)
-    hass.services.async_register(DOMAIN, "save_ai_api_settings", handle_save_ai_api_settings, schema=AI_DATA_SCHEMA)
-    hass.services.async_register(DOMAIN, "test_ai_api", handle_test_ai_api)
-    hass.services.async_register(DOMAIN, "analyze_ai_api", handle_analyze_ai_api)
-    hass.services.async_register(DOMAIN, "save_ai_analysis", handle_save_ai_analysis, schema=AI_DATA_SCHEMA)
-    hass.services.async_register(DOMAIN, "clear_ai_history", handle_clear_ai_history)
-    hass.services.async_register(DOMAIN, "rate_ai_analysis", handle_rate_ai_analysis, schema=AI_RATING_SCHEMA)
-    hass.services.async_register(DOMAIN, "clear_history", handle_clear_history)
     hass.services.async_register(
         DOMAIN,
         "apply_schedule_patch",
@@ -649,15 +560,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         "refresh_tariff_catalog",
         handle_refresh_tariff_catalog,
-    )
-    hass.services.async_register(DOMAIN, "save_future_plan", handle_save_future_plan, schema=AI_DATA_SCHEMA)
-    hass.services.async_register(DOMAIN, "cancel_future_plan", handle_cancel_future_plan)
-    hass.services.async_register(
-        DOMAIN,
-        "get_plan_execution",
-        handle_get_plan_execution,
-        schema=PLAN_EXECUTION_SCHEMA,
-        supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(
         DOMAIN,

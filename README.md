@@ -2,29 +2,27 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.0.86-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.0.87-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
 
 Deye Energy is a custom Home Assistant integration for planning and safely
 controlling a Deye hybrid inverter. It combines a 24-hour schedule, the physical
-Deye Time Of Use (TOU) slots, energy prices, Solcast forecasts, statistics, a
-deterministic Optimizer Core and optional AI suggestions in a single Lovelace
-card. It is adapted to a Deye inverter exposed through MQTT (the Sunsynk / Deye
-add-on profile) and to a UK-style tariff.
+Deye Time Of Use (TOU) slots, energy prices, Solcast forecasts and statistics in
+a single Lovelace card. It is adapted to a Deye inverter exposed through MQTT
+(the Sunsynk / Deye add-on profile) and to a UK-style tariff.
 
 ## Key features
 
-- **Work schedule** of 48 half-hour slots with three logical modes:
+- **Schedule slots** of 48 half-hour slots with three logical modes:
   **Normal Operation**, **Charging** and **Selling**.
 - **Independent manual schedule** with variable-length rows covering the full
-  24 hours, stored separately from the work schedule. Enabling it snapshots the
-  work schedule and makes the scheduler, TOU mapping, diagnostics and sensor
-  snapshots follow the manual rows; AI, Optimizer and FuturePlan applies stay
-  blocked until it is disabled.
-- **Exact source switching**: the Work schedule and Manual schedule toggles are
-  a switch — disabling one selects the other. The master **Deye control** switch
+  24 hours, stored separately from the stored schedule slots. Enabling it makes
+  the scheduler, TOU mapping, diagnostics and sensor snapshots follow the manual
+  rows; disabling it returns them to the stored schedule slots.
+- **Exact source switching**: the Manual schedule toggle selects between the
+  manual rows and the stored schedule slots. The master **Deye control** switch
   remains a separate hardware gate.
 - **Six physical Deye TOU ranges** mapped from the full-day schedule, with
   boundaries on `:00` or `:30`, editable inline in the **Deye Time Of Use**
@@ -39,10 +37,7 @@ add-on profile) and to a UK-style tariff.
   tiles use two decimal places for kW; backend decision text uses one.
 - **Prices** from Octopus Energy or any mapped entity, an Octopus tariff
   catalogue and a fully manual tariff mode.
-- **Optimizer Core**, FuturePlan for today and tomorrow, and safe just-in-time
-  (JIT) execution.
-- **Solcast forecast analysis** with history, and optional **advisory-only** AI
-  suggestions.
+- **Solcast forecast analysis** with history.
 - **Transaction-safe physical writes**: diff-only writes, confirmation and
   rollback, with all writes blocked when Deye control is off.
 - **Automatically managed Lovelace resource** in the default UI/storage mode.
@@ -123,8 +118,8 @@ each value against the live entity's own range. Anything that does not match can
 be re-mapped in the configuration wizard.
 
 The wizard performs a **read-only capability test** before anything is saved
-and lists which features (selling, charging, full TOU, Core/AI) are available
-for the selected entities.
+and lists which features (selling, charging and full TOU) are available for the
+selected entities.
 
 ### Mirrored charge defaults
 
@@ -194,7 +189,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.86
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.87
       type: module
 ```
 
@@ -212,7 +207,7 @@ and displayed:
 - use **Enable PV generation** (`pv_enabled`, default on) to include or exclude
   PV from the system. When disabled, PV is removed from the Energy status
   desktop/mobile layout and treated as unavailable/zero in Energy status flows,
-  telemetry, forecasts, optimizer/planner inputs and AI/plan analysis/state.
+  telemetry, forecasts and energy state.
   When enabled, behavior and layout are unchanged.
 - enter a source entity for a role to override its automatic mapping; leave it
   blank to keep the current entity;
@@ -228,7 +223,7 @@ and displayed:
 Additional presentation details:
 
 - power values are shown in **W** below 10 kW and in **kW** at or above it;
-- the executed and manager status panels show `Source: Work schedule` or
+- the executed and manager status panels show `Source: Schedule slots` or
   `Source: Manual schedule`, so it is always clear which schedule produced the
   current decision;
 - the active slot indicator follows the same active source, including the
@@ -236,23 +231,22 @@ Additional presentation details:
 - the **Sold today** tile under **Deye inverter** uses a pound (£) icon, and its
   energy and value remain available as separate `kWh` and `GBP` readings.
 
-## Work and manual schedules
+## Stored slots and manual schedules
 
-The **Work schedule** uses 48 half-hour slots (keys such as `0530_0600`).
-Legacy hourly keys such as `05_06` still work and apply to both halves of the
-hour. All schedule times are half-hour aligned.
+The stored schedule uses 48 half-hour slots (keys such as `0530_0600`). Legacy
+hourly keys such as `05_06` still work and apply to both halves of the hour. All
+slot times are half-hour aligned.
 
 The **Manual schedule** tab is the first schedule tab and is the default when
 no active source has been chosen. Its rows can start and end at any whole
-minute, cover the complete 24 hours and are stored independently of the work
+minute, cover the complete 24 hours and are stored independently of the slot
 schedule. When activated:
 
-- the current work schedule is snapshotted and restored on deactivation;
+- manual values are applied as an overlay and the stored slots are not changed;
 - manual rows do not overwrite physical work-mode or minimum sell-price fields;
 - battery charge, discharge and grid-charge currents are not part of any
   schedule and are changed only through **Inverter configuration**;
-- AI, Optimizer and FuturePlan applies are blocked until manual mode is off;
-- the status banner offers **Disable here** to return to the work schedule.
+- disabling manual mode returns the scheduler to the stored schedule slots.
 
 The manual table columns are **From**, **To**, **Mode**, **Sell power**,
 **Grid charging**, **Stop selling at SOC**, **Active** and **Action**. Rows are
@@ -324,9 +318,8 @@ enter your own values in the card under **Settings → Tariff and distribution**
 
 ## Safety
 
-- All calculations are deterministic and run locally in the Optimizer Core.
-- The optional AI assistant is **advisory only**: it can explain or comment on
-  a plan but cannot write to the inverter or the schedule.
+- Schedule decisions are made locally from the active slot rows and live sensor
+  readings.
 - This software **does not replace hardware protection** of the inverter or
   the battery; keep the limits configured on the inverter itself.
 - Missing SOC, price or readback data always fails closed: no write happens.

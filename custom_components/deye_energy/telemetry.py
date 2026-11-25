@@ -99,7 +99,7 @@ def channel_summary(
         "coverage_percent": round(coverage, 1),
         "quality_score": round(average_quality, 1),
         "level": level,
-        "usable_for_learning": valid > 0 and average_quality >= 40,
+        "usable_for_scheduling": valid > 0 and average_quality >= 40,
         "last_status": item.get("last_status"),
         "last_source": item.get("last_source"),
     }

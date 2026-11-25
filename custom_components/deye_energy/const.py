@@ -327,8 +327,8 @@ SLOTS = [
     for start in range(0, MINUTES_PER_DAY, SLOT_MINUTES)
 ]
 
-# Plan-level (optimizer / FuturePlan) concepts stay hourly.  An hourly key such
-# as ``05_06`` fans out to the schedule slots it covers.
+# Legacy hourly keys stay supported.  An hourly key such as ``05_06`` fans out
+# to the schedule slots it covers.
 HOUR_SLOTS = [
     (f"{hour:02d}_{(hour + 1) % 24:02d}", f"{hour:02d}:00-{(hour + 1) % 24:02d}:00", hour, hour + 1)
     for hour in range(24)

@@ -166,16 +166,3 @@ def test_half_hour_patch_changes_one_slot_only():
     )
     assert runtime.slots["0930_1000"].tou_soc == 37
     assert runtime.slots["0900_0930"].tou_soc != 37
-
-
-def test_future_plan_hourly_selection_expands_and_fills_the_day():
-    updates = manager.DeyeEnergyRuntime._expand_slot_updates(
-        [{"slot_key": "18_19", "enabled": True, "mode": const.MODE_SELLING_FIRST, "sell_power": 3000}]
-    )
-    assert [item["slot_key"] for item in updates] == ["1800_1830", "1830_1900"]
-    runtime = make_runtime()
-    target, selected = runtime._build_authoritative_future_plan_updates(
-        [{"slot_key": "18_19", "enabled": True, "mode": const.MODE_SELLING_FIRST, "sell_power": 3000}]
-    )
-    assert len(target) == 48
-    assert selected == ["1800_1830", "1830_1900"]

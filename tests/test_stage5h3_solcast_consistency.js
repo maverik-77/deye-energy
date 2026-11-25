@@ -34,8 +34,6 @@ card.historyData = () => ({
     realization_today_pct: 94.0,
   }],
 });
-card.filteredAnalyses = () => [];
-
 const history = card.renderHistoryTab();
 check(history.includes("In progress (94.0% complete)"), "history must render canonical realization");
 check(!history.includes("78.8%"), "history must not retain the mismatched denominator result");
@@ -60,9 +58,10 @@ check(
   "main card must not consume the legacy progress alias",
 );
 check(
-  source.includes("aiState?.attributes?.solcast_current_day"),
-  "local suggestions must consume the canonical Solcast context",
+  !source.includes("aiState?.attributes?.solcast_current_day"),
+  "AI local suggestions must not consume a separate Solcast context",
 );
+check(!source.includes("filteredAnalyses("), "AI history suggestions filter must be removed");
 for (const field of [
   "forecastTodayKwh",
   "productionTodayKwh",
@@ -71,7 +70,7 @@ for (const field of [
   "historicalAccuracyPct",
   "forecastTomorrowKwh",
 ]) {
-  check(source.includes(field), `AI history must preserve explicit ${field}`);
+  check(!source.includes(field), `AI history field must be removed: ${field}`);
 }
 check(/^\/\/ Resource revision: v=\d+\.\d+\.\d+(\.\d+)?\n/.test(source), "resource revision header missing/invalid");
 

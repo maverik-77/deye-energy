@@ -129,44 +129,25 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertIn("data-resume-manager", self.sources[0])
         self.assertIn("SCHEDULE APPLY ERROR", self.sources[0])
 
-    def test_ai_dialog_contains_approved_navigation_and_controls(self):
+    def test_ai_overlay_is_removed_from_the_card(self):
         source = self.sources[0]
-        for required in (
-            "Overview",
-            "Proposed changes",
-            "Why this plan?",
-            "Plan and actual",
-            "Today",
-            "Tomorrow",
-            "48 h",
-            "History",
-            "Data quality",
-            "Select all",
-            "Deselect all",
-            "Full 24 h",
+        for marker in (
+            "renderAiDialog(",
+            "data-open-ai",
+            "ai-dialog-v2",
+            "aiSuggestions(",
+            "saveAiAnalysis(",
+            "aiSettings(",
+            "aiHistory(",
+            "aiUiText(",
             "save_future_plan",
             "cancel_future_plan",
-            "Actual production",
-            "Solcast forecast",
-            "Corrected forecast",
-            "Forecast range",
+            "Optimizer shadow",
+            "renderAiExplanation",
             "data-ai-chart-point",
             "data-ai-weather-mode",
-            "aiReadableEnergyChart",
-            "aiReadableDayChart",
-            "ai-crisp-weather-grid",
-            "data-ai-chart-series",
-            "ai-readable-weather",
-            "ai-status-sell",
-            "ai-status-charge",
-            "ai-status-tariff",
-            "renderAiExplanation",
-            "recommended_write_by_day",
-            "waiting for prices to be published after 13:00",
-            "Optimizer shadow",
         ):
-            self.assertIn(required, source)
-        self.assertNotIn(">P50<", source)
+            self.assertNotIn(marker, source)
 
     def test_energy_flow_panel_keeps_desktop_layout_without_media_queries(self):
         method = extract_method(self.sources[0], "energyFlowPanel()")
@@ -560,17 +541,17 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertNotIn("data-save-tou", source)
         self.assertNotIn("async savePhysicalTouSlot(slot)", source)
 
-    def test_tou_edit_and_rollback_controls_are_bound_inside_the_dialog(self):
+    def test_tou_edit_and_rollback_controls_are_bound_on_the_page(self):
         for source in self.sources:
             dialog = extract_method(source, "bindDialogControls(slots) {")
             dashboard = extract_method(source, "bindDashboardControls(slots) {")
-            self.assertIn('root.querySelectorAll("[data-mapping-field]")', dialog)
-            self.assertIn("this.collectMappingDraft()", dialog)
-            self.assertIn('root.querySelectorAll("[data-save-mapping]")', dialog)
-            self.assertIn("this.saveMappingToInverter()", dialog)
-            self.assertIn('root.querySelectorAll("[data-refresh-mapping]")', dialog)
-            self.assertIn("this.rollbackTouTable()", dialog)
-            self.assertNotIn("[data-save-mapping]", dashboard)
+            self.assertIn('root.querySelectorAll("[data-mapping-field]")', dashboard)
+            self.assertIn("this.collectMappingDraft()", dashboard)
+            self.assertIn('root.querySelectorAll("[data-save-mapping]")', dashboard)
+            self.assertIn("this.saveMappingToInverter()", dashboard)
+            self.assertIn('root.querySelectorAll("[data-refresh-mapping]")', dashboard)
+            self.assertIn("this.rollbackTouTable()", dashboard)
+            self.assertNotIn("[data-save-mapping]", dialog)
 
             rollback = extract_method(source, "async rollbackTouTable()")
             self.assertIn("this.refreshMappingFromInverter()", rollback)
@@ -949,7 +930,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertIn(r"grid-template-columns:${layout.prices_ratio}fr ${layout.buy_prices_ratio}fr ${layout.solcast_ratio}fr", render)
         self.assertIn('if (layout.layout_mode === "grid" && layout.grid_columns)', render)
         self.assertIn("const showStatus = isSingle ? layout.section === \"status_energy\" : layout.sections.status_energy;", render)
-        self.assertIn("if (isSingle && [\"ai\", \"settings\"].includes(layout.section) && !this._dialog)", render)
+        self.assertIn("if (isSingle && [\"settings\"].includes(layout.section) && !this._dialog)", render)
         self.assertIn('<div class="dem-v073" style="${demStyle}">', render)
         self.assertIn("${statusSection}", render)
         self.assertIn("${infoGridSection}", render)
@@ -1024,120 +1005,96 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertIn(".price-scroll{height:auto;flex:0 0 auto;min-height:0;overflow:visible", source)
         self.assertIn(".price-scroll{height:260px;overflow:auto", source)
 
-    def test_ai_mobile_dialog_is_width_contained_without_affecting_settings(self):
+    def test_ai_dialog_css_is_removed(self):
         source = self.sources[0]
-        self.assertIn(
-            ".ai-dialog-v2{width:100%!important;max-width:100%!important;min-width:0!important;"
-            "box-sizing:border-box;overflow:hidden}",
-            source,
-        )
-        self.assertIn(
-            ".ai-dialog-v2 .ai-shell,.ai-dialog-v2 .ai-sidebar,.ai-dialog-v2 .ai-main,"
-            ".ai-dialog-v2 .ai-overview-grid",
-            source,
-        )
-        self.assertIn(
-            ".ai-dialog-v2 .ai-metric-card,.ai-dialog-v2 .ai-chart-card"
-            "{width:100%;max-width:100%;min-width:0;box-sizing:border-box}",
-            source,
-        )
-        self.assertNotIn(".settings-dialog .ai-shell", source)
-        self.assertNotIn(".settings-dialog .ai-main", source)
-
-    def test_ai_mobile_tabs_scroll_locally_with_full_labels(self):
-        source = self.sources[0]
-        self.assertIn(
-            ".ai-dialog-v2 .ai-sidebar nav{display:flex;width:100%;max-width:100%;min-width:0;"
-            "overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;touch-action:pan-x}",
-            source,
-        )
-        self.assertIn(
-            ".ai-dialog-v2 .ai-sidebar nav button{flex:0 0 auto;min-width:max-content;"
-            "max-width:none;white-space:nowrap}",
-            source,
-        )
-        render_ai = extract_method(source, "renderAiDialog(slots)")
-        for label in (
-            "Overview",
-            "Proposed changes",
-            "Plan and actual",
-            "Data quality",
+        for marker in (
+            ".ai-dialog-v2",
+            ".ai-shell",
+            ".ai-sidebar",
+            ".ai-main",
+            ".ai-metric-card",
+            ".ai-chart-card",
+            ".settings-dialog .ai-shell",
+            ".settings-dialog .ai-main",
         ):
-            self.assertIn(label, render_ai)
+            self.assertNotIn(marker, source)
 
-    def test_plan_execution_view_is_read_only_and_has_all_ranges(self):
+    def test_ai_dialog_tabs_and_renderer_are_removed(self):
         source = self.sources[0]
-        method = extract_method(source, "renderAiPlanExecution(planner)")
-        for label in ("Today", "Tomorrow", "48 h", "History", "The plan is a frozen Optimizer Core proposal"):
-            self.assertIn(label, method)
-        self.assertIn("renderAiExecutionChart", method)
-        self.assertIn("renderAiExecutionTable", method)
-        loader = extract_method(source, "async loadAiExecutionDay(dateKey)")
-        self.assertIn('service: "get_plan_execution"', loader)
-        self.assertIn("return_response: true", loader)
-        self.assertNotIn("save_future_plan", loader)
-        self.assertNotIn("apply_schedule_patch", loader)
+        for marker in (
+            ".ai-dialog-v2 .ai-sidebar nav",
+            "renderAiDialog(slots)",
+            "data-ai-explanation-day",
+            "Proposed changes",
+            "Why this plan?",
+            "Plan and actual",
+        ):
+            self.assertNotIn(marker, source)
 
-    def test_plan_explanation_is_day_scoped_and_uses_full_slot_power(self):
+    def test_plan_execution_ui_is_removed(self):
         source = self.sources[0]
-        method = extract_method(source, "renderAiExplanation(planner)")
-        self.assertIn('data-ai-explanation-day="today"', method)
-        self.assertIn('data-ai-explanation-day="tomorrow"', method)
-        self.assertIn("profile.day_summaries?.[day]", method)
-        self.assertIn("this.aiPlannedSlotPower(source)", method)
-        self.assertIn("Additional optimizer suggestions", method)
-        self.assertIn("does not count towards fulfilment of the user profile target", method)
-        self.assertIn("Today's morning selling window has already ended", method)
-        self.assertNotIn('["today", "tomorrow"].flatMap', method)
+        for marker in (
+            "renderAiPlanExecution(",
+            "renderAiExecutionChart",
+            "renderAiExecutionTable",
+            "async loadAiExecutionDay(dateKey)",
+            'service: "get_plan_execution"',
+            "The plan is a frozen Optimizer Core proposal",
+        ):
+            self.assertNotIn(marker, source)
 
-    def test_execution_table_shows_only_planned_price_pair(self):
+    def test_plan_explanation_ui_is_removed(self):
         source = self.sources[0]
-        method = extract_method(source, "renderAiExecutionTable(data, planOnly = false)")
-        self.assertIn("Plan: buy / selling", method)
-        self.assertNotIn("Wykonanie: kupno / selling", method)
-        self.assertIn("row.effective_buy_price", method)
-        self.assertIn("row.sell_price", method)
-        self.assertNotIn("actual.buy_price_gbp_kwh", method)
-        self.assertNotIn("actual.sell_price_gbp_kwh", method)
-        self.assertIn('colspan="2" class="ai-exec-col-error"', method)
-        self.assertNotIn("callService", method)
+        for marker in (
+            "renderAiExplanation(planner)",
+            'data-ai-explanation-day="today"',
+            'data-ai-explanation-day="tomorrow"',
+            "profile.day_summaries?.[day]",
+            "this.aiPlannedSlotPower(source)",
+            "Additional optimizer suggestions",
+            "does not count towards fulfilment of the user profile target",
+            "Today's morning selling window has already ended",
+        ):
+            self.assertNotIn(marker, source)
 
-    def test_ai_mobile_charts_tables_and_weather_keep_only_local_overflow(self):
+    def test_ai_execution_table_is_removed(self):
         source = self.sources[0]
-        self.assertIn(
-            ".ai-dialog-v2 .ai-plan-table-wrap,.ai-dialog-v2 .ai-chart-scroll,"
-            ".ai-dialog-v2 .ai-weather-strip{width:100%;max-width:100%;min-width:0;"
-            "box-sizing:border-box;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain}",
-            source,
-        )
-        self.assertIn(
-            ".ai-dialog-v2 .ai-crisp-chart,.ai-dialog-v2 .ai-crisp-layout,"
-            ".ai-dialog-v2 .ai-crisp-main,.ai-dialog-v2 .ai-crisp-plot"
-            "{width:100%;max-width:100%;min-width:0;box-sizing:border-box}",
-            source,
-        )
-        self.assertIn(".ai-dialog-v2 .ai-crisp-chart{overflow:hidden}", source)
-        self.assertIn(
-            ".ai-dialog-v2 .ai-crisp-svg{width:100%!important;max-width:100%!important;"
-            "min-width:0!important}",
-            source,
-        )
-        self.assertIn(".ai-plan-table{width:100%;min-width:940px", source)
-        self.assertIn(".ai-chart-v2 svg{min-width:860px}", source)
-        self.assertIn(".ai-dialog-v2 .ai-weather-day,.ai-dialog-v2 .ai-weather-hour{flex:0 0 66px}", source)
-        self.assertIn(
-            ".ai-dialog-v2 .ai-weather-source{max-width:100%;white-space:normal;"
-            "overflow-wrap:anywhere}",
-            source,
-        )
+        for marker in (
+            "renderAiExecutionTable(data, planOnly = false)",
+            "Plan: buy / selling",
+            "Wykonanie: kupno / selling",
+            "row.effective_buy_price",
+            "row.sell_price",
+            "actual.buy_price_gbp_kwh",
+            "actual.sell_price_gbp_kwh",
+            'colspan="2" class="ai-exec-col-error"',
+        ):
+            self.assertNotIn(marker, source)
 
-    def test_ai_dialog_switching_and_dialog_only_render_remain_available(self):
+    def test_ai_charts_tables_and_weather_ui_is_removed(self):
         source = self.sources[0]
-        for view in ("overview", "proposals", "today", "tomorrow", "energy", "quality"):
-            self.assertIn(f'["{view}",', source)
+        for marker in (
+            ".ai-dialog-v2 .ai-plan-table-wrap",
+            ".ai-dialog-v2 .ai-crisp-chart",
+            ".ai-plan-table{",
+            ".ai-chart-v2 svg{",
+            ".ai-dialog-v2 .ai-weather-day",
+            ".ai-dialog-v2 .ai-weather-source",
+        ):
+            self.assertNotIn(marker, source)
+
+    def test_ai_dialog_switching_is_removed_but_dialog_only_render_remains(self):
+        source = self.sources[0]
+        for marker in (
+            '["overview",',
+            '["proposals",',
+            '["quality",',
+            "renderAiDialog(slots)",
+            '<section class="dialog ai-dialog ai-dialog-v2"',
+        ):
+            self.assertNotIn(marker, source)
         self.assertIn("renderDialogOnly()", source)
         self.assertIn("this.renderDialogOnly();", source)
-        self.assertIn('<section class="dialog ai-dialog ai-dialog-v2"', extract_method(source, "renderAiDialog(slots)"))
 
     def test_layout_mode_grid_columns_one_on_mobile(self):
         source = self.sources[0]
@@ -1153,11 +1110,11 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
 
     def test_control_master_is_shown_in_schedule_header_and_status_panel(self):
         source = self.sources[0]
-        render = extract_method(source, "renderV073()")
+        render = extract_method(source, "renderManualScheduleTab() {")
         flow = extract_method(source, "energyFlowPanel()")
         binding = extract_method(source, "bindDashboardControls(slots)")
         self.assertIn('data-control-toggle="1"', render)
-        self.assertIn("Deye control — ${this.escapeHtml(controlStatus)}", render)
+        self.assertIn("Deye control — ${this.escapeHtml(control.status)}", render)
         self.assertIn("const control = this.controlState()", flow)
         self.assertIn("const controlOn = control.enabled", flow)
         self.assertIn("const controlStatus = control.status", flow)
@@ -1219,7 +1176,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         helper = extract_method(source, "scheduleSourceLabel() {")
         self.assertIn("schedule_source", helper)
         self.assertIn('"Manual schedule"', helper)
-        self.assertIn('"Work schedule"', helper)
+        self.assertIn('"Schedule slots"', helper)
         flow = extract_method(source, "energyFlowPanel()")
         self.assertIn("const scheduleSourceLabel = this.scheduleSourceLabel();", flow)
         self.assertEqual(flow.count('data-live="executed-schedule-source"'), 2)

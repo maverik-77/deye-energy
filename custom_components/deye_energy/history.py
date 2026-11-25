@@ -14,7 +14,6 @@ import math
 from typing import Any
 
 HISTORY_SCHEMA_VERSION = 4
-PROFILE_SCHEMA_VERSION = 2
 ENERGY_COMPACT_FORMAT_VERSION = 2
 
 ENERGY_COMPACT_FIELDS = (
@@ -112,53 +111,6 @@ def update_energy_counter(
     return CounterUpdate(max(0.0, delta), reset, first, state)
 
 
-def migrate_ai_payload(raw: Any) -> tuple[dict[str, Any], bool]:
-    """Migrate the shared AI/settings payload while preserving 0.7.6 data."""
-    # Every normalized nested value below is replaced with a new container.
-    # A shallow root copy avoids duplicating a potentially large restored plan
-    # before it is compacted by the manager.
-    data = dict(raw) if isinstance(raw, dict) else {}
-    changed = int(finite_float(data.get("schema_version")) or 1) < HISTORY_SCHEMA_VERSION
-    data["schema_version"] = HISTORY_SCHEMA_VERSION
-    profiles = data.get("user_profiles")
-    if not isinstance(profiles, dict):
-        data["user_profiles"] = default_user_profiles()
-        changed = True
-    else:
-        normalized = default_user_profiles()
-        for key, defaults in normalized["profiles"].items():
-            stored = profiles.get("profiles", {}).get(key) if isinstance(profiles.get("profiles"), dict) else None
-            if isinstance(stored, dict):
-                defaults.update(stored)
-                if defaults.get("priority") not in ("low", "normal", "high"):
-                    legacy_priority = finite_float(defaults.get("priority"))
-                    defaults["priority"] = (
-                        "high" if legacy_priority is not None and legacy_priority >= 75
-                        else "low" if legacy_priority is not None and legacy_priority < 25
-                        else "normal"
-                    )
-        normalized["schema_version"] = PROFILE_SCHEMA_VERSION
-        if normalized != profiles:
-            changed = True
-        data["user_profiles"] = normalized
-    archive = data.get("plan_execution_archive")
-    if not isinstance(archive, list):
-        data["plan_execution_archive"] = []
-        changed = True
-    else:
-        normalized_archive = [
-            dict(row)
-            for row in archive
-            if isinstance(row, dict)
-            and isinstance(row.get("date"), str)
-            and finite_float(row.get("hour")) is not None
-        ][:2160]
-        if normalized_archive != archive:
-            changed = True
-        data["plan_execution_archive"] = normalized_archive
-    return data, changed
-
-
 def migrate_solcast_payload(raw: Any) -> tuple[dict[str, Any], bool]:
     """Add unambiguous forecast snapshot fields to old Solcast rows."""
     data = deepcopy(raw) if isinstance(raw, dict) else {}
@@ -195,95 +147,6 @@ def migrate_solcast_payload(raw: Any) -> tuple[dict[str, Any], bool]:
     return data, changed
 
 
-def migrate_learning_payload(raw: Any) -> tuple[dict[str, Any], bool]:
-    data = deepcopy(raw) if isinstance(raw, dict) else {}
-    changed = int(finite_float(data.get("schema_version")) or 1) < HISTORY_SCHEMA_VERSION
-    data["schema_version"] = HISTORY_SCHEMA_VERSION
-    source_history = data.get("history") if isinstance(data.get("history"), list) else []
-    history: list[dict[str, Any]] = []
-    field_map = {
-        "pv": ("pv_kwh",),
-        "load": ("load_kwh",),
-        "load_l1": ("load_l1_kwh",),
-        "load_l2": ("load_l2_kwh",),
-        "load_l3": ("load_l3_kwh",),
-        "grid": ("grid_import_kwh", "grid_export_kwh"),
-        "battery": ("battery_charge_kwh", "battery_discharge_kwh"),
-        "soc": ("soc_start", "soc_end", "soc_avg"),
-        "sell_price": ("sell_price_avg",),
-        "buy_price": ("buy_price_avg",),
-    }
-    for source in source_history:
-        row = dict(source) if isinstance(source, dict) else {}
-        row["schema_version"] = HISTORY_SCHEMA_VERSION
-        if not isinstance(row.get("channel_quality"), dict):
-            samples = max(0, int(finite_float(row.get("samples")) or 0))
-            coverage = finite_float(row.get("completeness_percent"))
-            if coverage is None:
-                coverage = min(100.0, samples / 60.0 * 100.0)
-            global_quality = (
-                finite_float((row.get("source_quality") or {}).get("score"))
-                if isinstance(row.get("source_quality"), dict)
-                else None
-            )
-            quality = 70.0 if global_quality is None else global_quality
-            channels: dict[str, dict[str, Any]] = {}
-            for name, fields in field_map.items():
-                available = any(finite_float(row.get(field)) is not None for field in fields)
-                effective_coverage = coverage if available else 0.0
-                level = (
-                    "full" if effective_coverage >= 90
-                    else "partial" if effective_coverage >= 60
-                    else "very_low" if effective_coverage > 0
-                    else "missing"
-                )
-                channels[name] = {
-                    "samples": samples,
-                    "valid_samples": samples if available else 0,
-                    "missing_samples": 0 if available else samples,
-                    "covered_seconds": round(effective_coverage / 100.0 * 3600.0, 1),
-                    "coverage_percent": round(effective_coverage, 1),
-                    "quality_score": round(quality, 1) if available else 0.0,
-                    "level": level,
-                    "usable_for_learning": available and quality >= 40,
-                    "last_status": "legacy_migrated" if available else "unavailable",
-                    "last_source": "legacy_hourly_history",
-                }
-            row["channel_quality"] = channels
-            changed = True
-        history.append(row)
-    data["history"] = history
-    data.setdefault("tracking", {})
-    data.setdefault("load_profile_7x24", {})
-    data.setdefault("pv_profile", {})
-    data.setdefault("profile_execution", [])
-    usable_hours = {
-        str(row.get("hour"))
-        for row in history
-        if row.get("hour")
-        and any(
-            item.get("usable_for_learning")
-            for item in (row.get("channel_quality") or {}).values()
-            if isinstance(item, dict)
-        )
-    }
-    if "learning_revision" not in data:
-        data["learning_revision"] = len(usable_hours)
-        changed = True
-    else:
-        revision = max(0, int(finite_float(data.get("learning_revision")) or 0))
-        if data.get("learning_revision") != revision:
-            data["learning_revision"] = revision
-            changed = True
-    if "history_watermark" not in data:
-        data["history_watermark"] = max(
-            (str(row.get("hour")) for row in history if row.get("hour")),
-            default="",
-        )
-        changed = True
-    return data, changed
-
-
 def compact_energy_sample(value: Any) -> dict[str, Any]:
     """Return the lossless algorithm/archive subset of a raw energy sample."""
     source = value if isinstance(value, dict) else {}
@@ -297,9 +160,9 @@ def compact_energy_sample(value: Any) -> dict[str, Any]:
 def migrate_energy_payload(raw: Any) -> tuple[dict[str, Any], bool]:
     """Migrate raw one-minute history to the compact, restart-safe format.
 
-    The last 288 detailed samples remain available separately for the public AI
-    sensor. Older details were never consumed by an algorithm; their compact
-    fields are exactly those used by the archive integrator.
+    The last 288 detailed samples remain available separately for the retained
+    ai_state sensor. Older details are stored only in the compact archive
+    format used by the energy history storage.
     """
     source = raw if isinstance(raw, dict) else {}
     samples = source.get("samples") if isinstance(source.get("samples"), list) else []
@@ -339,80 +202,4 @@ def migrate_energy_payload(raw: Any) -> tuple[dict[str, Any], bool]:
             else {}
         ),
         "last_sample": source.get("last_sample"),
-        "learning_checkpoint": (
-            dict(source.get("learning_checkpoint"))
-            if isinstance(source.get("learning_checkpoint"), dict)
-            else {}
-        ),
     }, changed
-
-
-def default_user_profiles() -> dict[str, Any]:
-    """Safe migration defaults: every new strategy is opt-in."""
-    sale = {
-        "enabled": False,
-        "type": "sale",
-        "active_days": [],
-        "start": "06:00",
-        "end": "09:00",
-        "priority": "normal",
-        "goal_character": "preferred",
-        "allow_partial": True,
-        "minimum_confidence": 50.0,
-        "note": "",
-        "target_energy_kwh": 0.0,
-        "target_basis": "battery_to_grid",
-        "min_price": 0.0,
-        "preferred_power_w": None,
-        "distribution_method": "best_hours",
-        "min_soc_after": 30.0,
-        "allow_earlier_grid_charge": False,
-        "min_net_result": 0.0,
-        # Legacy aliases remain readable by the 0.7.6 frontend.
-        "minimum_price": 0.0,
-        "minimum_soc": 30.0,
-        "target_soc": 30.0,
-        "power_limit_w": None,
-    }
-    charge = {
-        "enabled": False,
-        "type": "charging",
-        "active_days": [],
-        "start": "22:00",
-        "end": "06:00",
-        "priority": "normal",
-        "goal_character": "preferred",
-        "allow_partial": True,
-        "minimum_confidence": 50.0,
-        "note": "",
-        "source": "auto",
-        "target_type": "soc",
-        "target_value": 80.0,
-        "deadline": "06:00",
-        "max_effective_price": 0.0,
-        "max_grid_energy_kwh": None,
-        "preferred_power_w": None,
-        "purpose": "mixed",
-        "charge_missing_only": True,
-        "use_corrected_pv": True,
-        "preserve_pv_room": True,
-        "minimum_free_room_kwh": 0.0,
-        "profitable_only": True,
-        # Legacy aliases remain readable by the 0.7.6 frontend.
-        "maximum_total_price": 0.0,
-        "target_soc": 80.0,
-        "power_limit_w": None,
-    }
-    return {
-        "schema_version": PROFILE_SCHEMA_VERSION,
-        "profiles": {
-            "morning_sale": {**sale, "name": "Morning sale"},
-            "evening_sale": {
-                **sale,
-                "name": "Evening sale",
-                "start": "17:00",
-                "end": "22:00",
-            },
-            "charging": {**charge, "name": "Charging"},
-        },
-    }

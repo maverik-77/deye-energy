@@ -2313,17 +2313,6 @@ class TouSocMappingTests(unittest.TestCase):
             for segment in after
         ))
 
-    def test_migration_preserves_existing_tou_soc_beside_legacy_min_soc(self):
-        runtime = make_runtime()
-        normalized = runtime._validate_future_plan_updates([{
-            "slot_key": "0500_0530",
-            "mode": const.MODE_SELLING_FIRST,
-            "min_soc": 80,
-            "tou_soc": 37,
-        }])[0]
-
-        self.assertEqual(normalized["minimum_sell_soc"], 80)
-        self.assertNotIn("tou_soc", normalized)
 
 
 class SellingTouSocSeparationTests(unittest.TestCase):
@@ -2461,26 +2450,6 @@ class SellingTouSocSeparationTests(unittest.TestCase):
         self.assertEqual(slot.tou_soc, 20)
         self.assertTrue(runtime._tou_soc_migration_done)
 
-    def test_tou_soc_migration_runs_before_any_tou_mapping_or_write(self):
-        # Static proof: within async_tick(), _migrate_selling_tou_soc() is called
-        # before async_process_future_plan() and before the _async_tick_impl()
-        # lock, so it always runs before schedule_to_tou_mapping() or
-        # async_apply_time_of_use_map().
-        source = Path(__file__).resolve().parents[1].joinpath(
-            "custom_components", "deye_energy", "manager.py"
-        ).read_text(encoding="utf-8")
-        tick_start = source.index("async def async_tick(self, *_args: Any) -> None:")
-        tick_end = source.index("async def async_start(self) -> None:", tick_start)
-        tick_body = source[tick_start:tick_end]
-        migrate_pos = tick_body.index("self._migrate_selling_tou_soc()")
-        plan_pos = tick_body.index("await self.async_process_future_plan()")
-        lock_pos = tick_body.index("async with self._operation_lock:")
-        impl_pos = tick_body.index("await self._async_tick_impl(*_args)")
-        self.assertLess(migrate_pos, plan_pos)
-        self.assertLess(migrate_pos, lock_pos)
-        self.assertLess(migrate_pos, impl_pos)
-        self.assertLess(plan_pos, lock_pos)
-        self.assertLess(lock_pos, impl_pos)
 
     def test_tou_soc_migration_blocks_tou_write_until_ready(self):
         runtime = make_runtime()
@@ -3534,448 +3503,8 @@ class ChargeProfilePersistenceTests(unittest.TestCase):
         self.assertNotIn(', 240, 5, "A")', source)
 
 
-class PlanExecutionArchiveTests(unittest.TestCase):
-    @staticmethod
-    def plan(*, pv_future=2.0):
-        return {
-            "plan_id": "plan-a",
-            "generated_at": "2026-07-18T12:00:00+00:00",
-            "strategy": "balanced",
-            "rows": [
-                {
-                    "date": "2026-07-18", "hour": 11, "label": "11:00–12:00",
-                    "action": "none", "proposed": False, "dispatch_status": "skipped",
-                    "corrected_pv_kwh": 1.0, "load_kwh": 0.5,
-                    "expected_import_kwh": 0, "expected_export_kwh": 0.5,
-                    "soc_end_pct": 60, "confidence": 80,
-                },
-                {
-                    "date": "2026-07-18", "hour": 13, "label": "13:00–14:00",
-                    "action": "sell", "proposed": True, "dispatch_status": "planned",
-                    "profile_id": "morning_sale", "planned_power_w": 3000,
-                    "planned_energy_kwh": 1.2, "corrected_pv_kwh": pv_future,
-                    "load_kwh": 0.8, "expected_import_kwh": 0,
-                    "expected_export_kwh": 2.4, "soc_end_pct": 55,
-                    "sell_price": 0.8, "net_result": 1.92, "confidence": 75,
-                },
-            ],
-        }
-
-    def test_past_hour_is_frozen_but_future_proposal_can_refresh(self):
-        runtime = make_runtime()
-        now = datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
-        self.assertTrue(runtime._sync_plan_execution_archive(self.plan(), now))
-        changed = self.plan(pv_future=3.5)
-        changed["rows"][0]["corrected_pv_kwh"] = 9.0
-        runtime._sync_plan_execution_archive(changed, now)
-        day = runtime.plan_execution_day("2026-07-18")
-        self.assertEqual(1.0, day["rows"][0]["corrected_pv_kwh"])
-        self.assertEqual(3.5, day["rows"][1]["corrected_pv_kwh"])
-        self.assertIsNotNone(day["rows"][0]["frozen_at"])
-
-    def test_finalized_measurement_is_attached_with_transparent_errors(self):
-        runtime = make_runtime()
-        runtime._sync_plan_execution_archive(
-            self.plan(),
-            datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc),
-        )
-        runtime._attach_plan_execution_actual({
-            "local_date": "2026-07-18",
-            "local_hour": 13,
-            "pv_kwh": 1.5,
-            "load_kwh": 1.0,
-            "grid_import_kwh": 0.1,
-            "grid_export_kwh": 1.8,
-            "battery_charge_kwh": 0,
-            "battery_discharge_kwh": 1.0,
-            "soc_end": 53,
-            "sell_price_avg": 0.8,
-            "buy_price_avg": 1.2,
-            "complete": True,
-            "completeness_percent": 100,
-            "tariff": {"distribution_rate": 0.2},
-        })
-        day = runtime.plan_execution_day("2026-07-18")
-        row = next(item for item in day["rows"] if item["hour"] == 13)
-        self.assertEqual("completed", row["actual_status"])
-        self.assertEqual(1.5, row["actual"]["pv_kwh"])
-        self.assertEqual(-25.0, row["errors"]["pv_percent"])
-        self.assertEqual(2, day["summary"]["hours_planned"])
-        self.assertEqual(1, day["summary"]["hours_measured"])
-
-    def test_missing_measurements_are_not_recorded_as_zero_execution(self):
-        runtime = make_runtime()
-        runtime._sync_plan_execution_archive(
-            self.plan(),
-            datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc),
-        )
-        runtime._attach_plan_execution_actual({
-            "local_date": "2026-07-18",
-            "local_hour": 13,
-            "pv_kwh": None,
-            "load_kwh": None,
-            "grid_import_kwh": None,
-            "grid_export_kwh": None,
-            "battery_charge_kwh": None,
-            "battery_discharge_kwh": None,
-            "soc_end": None,
-            "sell_price_avg": None,
-            "buy_price_avg": None,
-            "complete": False,
-            "completeness_percent": 0,
-        })
-        day = runtime.plan_execution_day("2026-07-18")
-        row = next(item for item in day["rows"] if item["hour"] == 13)
-        self.assertEqual("partial", row["actual_status"])
-        self.assertIsNone(row["actual"]["pv_kwh"])
-        self.assertIsNone(row["actual"]["grid_import_kwh"])
-        self.assertIsNone(row["actual"]["net_result_gbp"])
-        self.assertIsNone(row["errors"]["pv_kwh"])
-
-    def test_invalid_history_date_is_rejected(self):
-        runtime = make_runtime()
-        with self.assertRaisesRegex(ValueError, "YYYY-MM-DD"):
-            runtime.plan_execution_day("18-07-2026")
 
 
-class FuturePlanTests(unittest.TestCase):
-    @staticmethod
-    def mark_soc_reported(runtime, moment):
-        """Represent the fresh source report required by future-sale revalidation."""
-        state = runtime.hass.states.get(runtime.battery_soc_sensor)
-        state.last_updated = moment
-        state.last_reported = moment
-
-    class MemoryStore:
-        def __init__(self):
-            self.value = None
-
-        async def async_save(self, value):
-            self.value = value
-
-        async def async_load(self):
-            return self.value
-
-    def test_future_plan_is_stored_exactly_and_not_applied_early(self):
-        runtime = make_runtime()
-        runtime.learning_summary = lambda: {"learning_stage": {"apply_allowed": True}}
-        runtime._ai_store = self.MemoryStore()
-        runtime.plan_execution_archive = [{
-            "date": "2026-07-19", "hour": 5,
-            "approval_status": "not_selected",
-            "deployment_status": "not_deployed",
-        }]
-        update = {
-            "slot_key": "0500_0530", "enabled": True,
-            "mode": const.MODE_SELLING_FIRST, "sell_power": 5000,
-        }
-        asyncio.run(runtime.async_save_future_plan({
-            "date": "2026-07-19", "strategy": "balanced",
-            "labels": ["05:00–06:00"], "updates": [update],
-        }))
-        self.assertEqual("scheduled", runtime.future_plan["status"])
-        self.assertEqual(const.SLOTS_PER_DAY, len(runtime.future_plan["updates"]))
-        self.assertEqual({key for key, _label, _start, _end in const.SLOTS}, {
-            item["slot_key"] for item in runtime.future_plan["updates"]
-        })
-        self.assertEqual([{
-            "slot_key": "0500_0530",
-            "enabled": True,
-            "mode": const.MODE_SELLING_FIRST,
-            "sell_power": 5000,
-        }], [
-            item for item in runtime.future_plan["updates"]
-            if item["slot_key"] == "0500_0530"
-        ])
-        self.assertTrue(runtime.future_plan["authoritative_day"])
-        self.assertEqual(["0500_0530"], runtime.future_plan["selected_slot_keys"])
-        self.assertEqual("approved", runtime.plan_execution_archive[0]["approval_status"])
-        before = list(runtime.hass.services.calls)
-        asyncio.run(runtime.async_process_future_plan())
-        self.assertEqual(before, runtime.hass.services.calls)
-        self.assertEqual("scheduled", runtime.future_plan["status"])
-
-    def test_future_plan_rejects_wrong_date(self):
-        runtime = make_runtime()
-        runtime.learning_summary = lambda: {"learning_stage": {"apply_allowed": True}}
-        runtime._ai_store = self.MemoryStore()
-        with self.assertRaisesRegex(ValueError, "can only be saved for tomorrow"):
-            asyncio.run(runtime.async_save_future_plan({
-                "date": "2026-07-18",
-                "updates": [{"slot_key": "0500_0530", "mode": const.MODE_SELLING_FIRST}],
-            }))
-
-    def test_future_plan_survives_runtime_reload_and_can_be_cancelled(self):
-        store = self.MemoryStore()
-        store.value = {
-            "settings": {}, "history": [], "last_saved_at": "",
-            "future_plan": {
-                "plan_id": "plan-cancel",
-                "date": "2026-07-19", "status": "scheduled",
-                "updates": [{
-                    "slot_key": "0500_0530",
-                    "mode": const.MODE_SELLING_FIRST,
-                    "sell_power": 3000,
-                }],
-                "slot_validations": {
-                    "0500_0530": {"profile_id": "morning_sale"},
-                },
-            },
-        }
-        runtime = make_runtime()
-        previous_store = manager.Store
-        manager.Store = lambda *_args, **_kwargs: store
-        try:
-            asyncio.run(runtime.async_load_ai_data())
-        finally:
-            manager.Store = previous_store
-        self.assertEqual("scheduled", runtime.future_plan["status"])
-        asyncio.run(runtime.async_cancel_future_plan())
-        self.assertEqual("cancelled", runtime.future_plan["status"])
-        self.assertEqual("cancelled", store.value["future_plan"]["status"])
-        self.assertEqual("cancelled", runtime.profile_execution[0]["status"])
-        self.assertEqual("morning_sale", runtime.profile_execution[0]["profile_id"])
-
-    def test_failed_slot_validation_blocks_only_current_slot_without_writes(self):
-        runtime = make_runtime(price=None, default_mode=const.MODE_NORMAL_OPERATION)
-        runtime.normal_profile_physical_work_mode = const.MODE_ZERO_EXPORT_CT
-        runtime._ai_store = self.MemoryStore()
-        runtime.future_plan = {
-            "date": "2026-07-19", "status": "scheduled",
-            "updates": [{
-                "slot_key": "0500_0530", "enabled": True,
-                "mode": const.MODE_SELLING_FIRST,
-                "min_sell_price": 0.9,
-            }],
-            "slot_validations": {
-                "0500_0530": {"profile_id": "morning_sale"},
-            },
-        }
-        previous_now = manager.ha_now
-        manager.ha_now = lambda: datetime(2026, 7, 19, 5, 1, tzinfo=timezone.utc)
-        try:
-            asyncio.run(runtime.async_process_future_plan())
-        finally:
-            manager.ha_now = previous_now
-        self.assertEqual("scheduled", runtime.future_plan["status"])
-        self.assertEqual(
-            "waiting_data",
-            runtime.future_plan["slot_results"]["0500_0530"]["status"],
-        )
-        self.assertIn("sell price", runtime.future_plan["slot_results"]["0500_0530"]["reason"])
-        self.assertEqual([], runtime.profile_execution)
-        self.assertEqual([], control_number_calls(runtime))
-
-    def test_failed_future_plan_write_records_failed_profile_execution(self):
-        runtime = make_runtime(price=1.2)
-        runtime._ai_store = self.MemoryStore()
-        current = datetime(2026, 7, 19, 5, 1, tzinfo=timezone.utc)
-        self.mark_soc_reported(runtime, current)
-
-        async def fail_write(_updates, **_kwargs):
-            raise RuntimeError("simulated write error")
-
-        runtime.async_apply_schedule_patch = fail_write
-        runtime.future_plan = {
-            "plan_id": "plan-write-failure",
-            "date": "2026-07-19",
-            "status": "scheduled",
-            "updates": [{
-                "slot_key": "0500_0530",
-                "enabled": True,
-                "mode": const.MODE_SELLING_FIRST,
-                "sell_power": 3000,
-            }],
-            "slot_validations": {
-                "0500_0530": {
-                    "profile_id": "morning_sale",
-                    "minimum_price": 0.4,
-                    "minimum_soc": 20,
-                    "allow_partial": True,
-                },
-            },
-            "slot_results": {},
-        }
-        previous_now = manager.ha_now
-        manager.ha_now = lambda: current
-        try:
-            asyncio.run(runtime.async_process_future_plan())
-        finally:
-            manager.ha_now = previous_now
-        self.assertEqual("failed", runtime.profile_execution[0]["status"])
-        self.assertEqual("morning_sale", runtime.profile_execution[0]["profile_id"])
-        self.assertIn("simulated write error", runtime.profile_execution[0]["failure_reason"])
-
-    def test_future_slot_uses_separate_profile_threshold_without_overwriting_schedule_fields(self):
-        runtime = make_runtime(price=0.3)
-        runtime._ai_store = self.MemoryStore()
-        current = datetime(2026, 7, 19, 5, 1, tzinfo=timezone.utc)
-        self.mark_soc_reported(runtime, current)
-        applied = []
-
-        async def apply_patch(updates, **_kwargs):
-            applied.append(updates)
-
-        runtime.async_apply_schedule_patch = apply_patch
-        runtime.future_plan = {
-            "date": "2026-07-19",
-            "status": "scheduled",
-            "updates": [{
-                "slot_key": "0500_0530",
-                "enabled": True,
-                "mode": const.MODE_SELLING_FIRST,
-                "sell_power": 3000,
-            }],
-            "slot_validations": {
-                "0500_0530": {
-                    "minimum_price": 0.4,
-                    "minimum_soc": 20,
-                    "allow_partial": True,
-                }
-            },
-            "slot_results": {},
-        }
-        previous_now = manager.ha_now
-        manager.ha_now = lambda: current
-        try:
-            asyncio.run(runtime.async_process_future_plan())
-        finally:
-            manager.ha_now = previous_now
-        self.assertEqual([], applied)
-        self.assertEqual("partial", runtime.future_plan["status"])
-        self.assertEqual("blocked", runtime.future_plan["slot_results"]["0500_0530"]["status"])
-
-    def test_future_charge_slot_revalidates_effective_buy_price(self):
-        runtime = make_runtime()
-        runtime._ai_store = self.MemoryStore()
-        runtime.hass.states.values["sensor.octopus_import_current_rate"] = FakeState("1.20")
-        runtime.data[const.CONF_PRICE_INCLUDES_DISTRIBUTION] = True
-        runtime.data[const.CONF_BUY_PRICE_TODAY_SENSOR] = "sensor.octopus_import_current_rate"
-        runtime.data[const.CONF_BUY_PRICE_CONTRACT] = {
-            "source_adapter": "generic",
-            "today_entity": "sensor.octopus_import_current_rate",
-            "economic_role": "retail_buy_all_in",
-            "semantic_scope": "all_in_variable",
-            "includes_distribution_variable": True,
-            "price_basis": "gross",
-            "unit": "GBP/kWh",
-            "current_price_only": True,
-            "allow_state_fallback": True,
-        }
-        runtime.future_plan = {
-            "date": "2026-07-19",
-            "status": "scheduled",
-            "updates": [{
-                "slot_key": "0500_0530",
-                "enabled": True,
-                "mode": "Charge",
-            }],
-            "slot_validations": {
-                "0500_0530": {
-                    "maximum_effective_price": 1.0,
-                    "allow_partial": True,
-                    "planned_energy_kwh": 1.0,
-                    "planned_price": 0.8,
-                }
-            },
-            "slot_results": {},
-        }
-        previous_now = manager.ha_now
-        manager.ha_now = lambda: datetime(2026, 7, 19, 5, 1, tzinfo=timezone.utc)
-        try:
-            asyncio.run(runtime.async_process_future_plan())
-        finally:
-            manager.ha_now = previous_now
-        self.assertEqual("blocked", runtime.future_plan["slot_results"]["0500_0530"]["status"])
-        self.assertIn("purchase cost", runtime.future_plan["slot_results"]["0500_0530"]["reason"])
-
-    def test_future_sale_slot_caps_power_to_remaining_profile_target(self):
-        runtime = make_runtime(price=1.2)
-        runtime._ai_store = self.MemoryStore()
-        current = datetime(2026, 7, 19, 5, 1, tzinfo=timezone.utc)
-        self.mark_soc_reported(runtime, current)
-        applied = []
-
-        async def apply_patch(updates, **_kwargs):
-            applied.append(updates)
-
-        runtime.async_apply_schedule_patch = apply_patch
-        runtime.profile_execution = [{
-            "profile_id": "morning_sale",
-            "date": "2026-07-19",
-            "executed_kwh": 0.5,
-            "remaining_kwh": 0.5,
-        }]
-        runtime.future_plan = {
-            "date": "2026-07-19",
-            "status": "scheduled",
-            "updates": [{
-                "slot_key": "0500_0530",
-                "enabled": True,
-                "mode": const.MODE_SELLING_FIRST,
-                "sell_power": 1000,
-            }],
-            "slot_validations": {
-                "0500_0530": {
-                    "profile_id": "morning_sale",
-                    "target_energy_kwh": 1.0,
-                    "remaining_target_kwh": 1.0,
-                    "possible_energy_kwh": 1.5,
-                    "planned_energy_kwh": 1.0,
-                    "duration_minutes": 60,
-                    "planned_price": 1.2,
-                    "minimum_price": 0.4,
-                    "minimum_soc": 20,
-                    "allow_partial": True,
-                }
-            },
-            "slot_results": {},
-        }
-        previous_now = manager.ha_now
-        manager.ha_now = lambda: current
-        try:
-            asyncio.run(runtime.async_process_future_plan())
-        finally:
-            manager.ha_now = previous_now
-        self.assertEqual(500, applied[0][0]["sell_power"])
-
-    def test_future_plan_revalidates_and_applies_only_current_slot(self):
-        runtime = make_runtime(price=1.2)
-        runtime._ai_store = self.MemoryStore()
-        current = datetime(2026, 7, 19, 5, 1, tzinfo=timezone.utc)
-        self.mark_soc_reported(runtime, current)
-        applied = []
-
-        async def apply_patch(updates, **_kwargs):
-            applied.append(updates)
-
-        runtime.async_apply_schedule_patch = apply_patch
-        runtime.future_plan = {
-            "date": "2026-07-19",
-            "status": "scheduled",
-            "updates": [
-                {"slot_key": "0500_0530", "enabled": True, "mode": const.MODE_SELLING_FIRST, "sell_power": 3000, "minimum_sell_soc": 20, "min_sell_price": 0.4},
-                {"slot_key": "0600_0630", "enabled": True, "mode": const.MODE_SELLING_FIRST, "sell_power": 2000, "minimum_sell_soc": 20, "min_sell_price": 0.4},
-            ],
-            "slot_validations": {"0500_0530": {"allow_partial": True}},
-            "slot_results": {},
-        }
-        previous_now = manager.ha_now
-        manager.ha_now = lambda: current
-        try:
-            asyncio.run(runtime.async_process_future_plan())
-        finally:
-            manager.ha_now = previous_now
-        self.assertEqual([[
-            {
-                "slot_key": "0500_0530",
-                "enabled": True,
-                "mode": const.MODE_SELLING_FIRST,
-                "sell_power": 3000,
-            }
-        ]], applied)
-        self.assertEqual("scheduled", runtime.future_plan["status"])
-        self.assertEqual("physical_pending", runtime.future_plan["slot_results"]["0500_0530"]["status"])
 
 
 class StatisticsTests(unittest.TestCase):
@@ -3988,19 +3517,6 @@ class StatisticsTests(unittest.TestCase):
         self.assertEqual(today["forecast_progress_percent"], 20.0)
         self.assertFalse(today["day_complete"])
 
-    def test_historical_accuracy_uses_only_completed_days(self):
-        runtime = make_runtime()
-        runtime.solcast_history = [
-            {"date": "2026-07-17", "forecast_kwh": 50, "actual_kwh": 40, "accuracy_percent": 80, "day_complete": True},
-            {"date": "2026-07-16", "forecast_kwh": 20, "actual_kwh": 40, "accuracy_percent": 0, "day_complete": True},
-            {"date": "2026-07-18", "forecast_kwh": 60, "actual_kwh": 6, "accuracy_percent": None, "day_complete": False},
-        ]
-        runtime.solcast_tracking = {"date": "2026-07-18", "forecast": 60, "actual": 6}
-        summary = runtime.learning_summary()
-        self.assertEqual(summary["solcast_accuracy_days"], 2)
-        self.assertEqual(summary["solcast_accuracy_avg"], 40.0)
-        self.assertEqual(summary["solcast_correction_factor"], 1.013)
-        self.assertEqual(summary["current_forecast_progress"], 10.0)
 
 
     def test_flow_signs_are_configurable(self):
@@ -4017,299 +3533,6 @@ class StatisticsTests(unittest.TestCase):
         self.assertEqual(runtime.normalized_battery_power(), 700)
 
 
-class AiProfileValidationTests(unittest.IsolatedAsyncioTestCase):
-    def valid_profiles(self):
-        return manager.default_user_profiles()
-
-    def test_safe_migration_profiles_are_disabled_and_versioned(self):
-        profiles = self.valid_profiles()
-        self.assertEqual(2, profiles["schema_version"])
-        self.assertTrue(all(not item["enabled"] for item in profiles["profiles"].values()))
-
-    def test_manager_rejects_cached_plan_from_previous_algorithm(self):
-        source = Path(manager.__file__).read_text(encoding="utf-8")
-        self.assertIn(
-            'self.optimizer_plan.get("algorithm_version") == ALGORITHM_VERSION',
-            source,
-        )
-        self.assertIn(
-            'self.optimizer_plan.get("plan_schema_version") == PLAN_SCHEMA_VERSION',
-            source,
-        )
-
-    def test_learning_profile_stats_read_top_level_counters_and_cell_coverage(self):
-        runtime = make_runtime()
-        profile = {
-            "accepted_samples": 437,
-            "rejected_samples": 2287,
-            "cells": {
-                "07-06": {"samples": 20},
-                "07-07": {"samples": 12},
-                "empty": {"samples": 0},
-            },
-        }
-        self.assertEqual(
-            {
-                "accepted_samples": 437,
-                "rejected_samples": 2287,
-                "covered_cells": 2,
-            },
-            runtime._learning_profile_stats(profile),
-        )
-
-    def test_learning_profile_stats_support_legacy_direct_cell_map(self):
-        runtime = make_runtime()
-        profile = {
-            "0-00": {"samples": 3},
-            "0-01": {"samples": 2},
-        }
-        self.assertEqual(
-            {
-                "accepted_samples": 5,
-                "rejected_samples": 0,
-                "covered_cells": 2,
-            },
-            runtime._learning_profile_stats(profile),
-        )
-
-    def test_validation_preserves_independent_sale_profiles_and_midnight_charge(self):
-        profiles = self.valid_profiles()
-        profiles["profiles"]["morning_sale"].update({"enabled": True, "target_energy_kwh": 3.5, "min_price": 0.7})
-        profiles["profiles"]["evening_sale"].update({"enabled": True, "target_energy_kwh": 5.0, "min_price": 1.1})
-        profiles["profiles"]["charging"].update({"enabled": True, "start": "22:00", "end": "06:00", "target_value": 85})
-        result = manager.DeyeEnergyRuntime.validate_user_profiles(profiles)
-        self.assertEqual(3.5, result["profiles"]["morning_sale"]["target_energy_kwh"])
-        self.assertEqual(5.0, result["profiles"]["evening_sale"]["target_energy_kwh"])
-        self.assertEqual(("22:00", "06:00"), (result["profiles"]["charging"]["start"], result["profiles"]["charging"]["end"]))
-
-    def test_validation_normalizes_legacy_charging_purpose_and_deadline(self):
-        profiles = self.valid_profiles()
-        profiles["profiles"]["charging"].update({
-            "purpose": "home_reserve",
-            "deadline": "6:05",
-            "preferred_power_w": 4200,
-        })
-        result = manager.DeyeEnergyRuntime.validate_user_profiles(profiles)
-        charging = result["profiles"]["charging"]
-        self.assertEqual("reserve", charging["purpose"])
-        self.assertEqual("06:05", charging["deadline"])
-        self.assertEqual(4200, charging["preferred_power_w"])
-
-    def test_invalid_empty_window_soc_power_and_negative_price_are_rejected(self):
-        cases = []
-        profile = self.valid_profiles()
-        profile["profiles"]["morning_sale"]["end"] = profile["profiles"]["morning_sale"]["start"]
-        cases.append(profile)
-        profile = self.valid_profiles()
-        profile["profiles"]["morning_sale"]["min_soc_after"] = 101
-        cases.append(profile)
-        profile = self.valid_profiles()
-        profile["profiles"]["morning_sale"]["preferred_power_w"] = 20000
-        cases.append(profile)
-        profile = self.valid_profiles()
-        profile["profiles"]["morning_sale"]["min_price"] = -0.1
-        cases.append(profile)
-        for payload in cases:
-            with self.assertRaises(ValueError):
-                manager.DeyeEnergyRuntime.validate_user_profiles(payload)
-
-    async def test_saving_profiles_requests_semantic_recalc_without_deye_calls(self):
-        runtime = make_runtime()
-        saved = []
-        async def save():
-            saved.append(True)
-        runtime.async_save_ai_data = save
-        profiles = self.valid_profiles()
-        profiles["profiles"]["morning_sale"]["enabled"] = True
-        runtime._optimizer_input_snapshot_id = "old"
-        await runtime.async_set_user_profiles(profiles)
-        self.assertEqual("old", runtime._optimizer_input_snapshot_id)
-        self.assertEqual("user_profiles_changed", runtime._optimizer_generation_reason)
-        self.assertEqual(1, runtime.runtime_metrics["optimizer_recalc_requested"])
-        self.assertEqual(1, runtime.runtime_metrics["optimizer_recalc_reasons"]["profile"])
-        self.assertEqual([], runtime.hass.services.calls)
-        self.assertEqual([True], saved)
-
-    def test_profile_execution_is_recorded_locally_without_changing_user_parameters(self):
-        runtime = make_runtime()
-        runtime.user_profiles = self.valid_profiles()
-        runtime.user_profiles["profiles"]["morning_sale"].update(
-            {
-                "enabled": True,
-                "start": "06:00",
-                "end": "09:00",
-                "target_energy_kwh": 6,
-                "min_price": 0.7,
-            }
-        )
-        original = repr(runtime.user_profiles)
-        runtime.optimizer_plan = {
-            "plan_id": "plan-078",
-            "rows": [
-                {
-                    "date": "2026-07-18",
-                    "hour": 7,
-                    "profile_id": "morning_sale",
-                    "action": "sell",
-                    "planned_energy_kwh": 2,
-                }
-            ],
-        }
-        runtime.profile_execution = []
-        runtime._record_profile_execution(
-            {
-                "hour": "2026-07-18T07:00:00+00:00",
-                "grid_export_kwh": 1.4,
-                "battery_discharge_kwh": 1.1,
-            }
-        )
-        self.assertEqual(1, len(runtime.profile_execution))
-        self.assertEqual("morning_sale", runtime.profile_execution[0]["profile_id"])
-        self.assertEqual(1.1, runtime.profile_execution[0]["actual_energy_kwh"])
-        self.assertEqual("local_measurement", runtime.profile_execution[0]["source"])
-        self.assertEqual("sale", runtime.profile_execution[0]["profile_type"])
-        self.assertEqual(6, runtime.profile_execution[0]["target_kwh"])
-        self.assertEqual(2, runtime.profile_execution[0]["planned_kwh"])
-        self.assertEqual(4.9, runtime.profile_execution[0]["remaining_kwh"])
-        self.assertIn(runtime.profile_execution[0]["status"], {"running", "partial", "completed"})
-        for field in (
-            "window_start", "window_end", "planned_soc_start", "planned_soc_end",
-            "actual_soc_start", "actual_soc_end", "planned_price", "actual_average_price",
-            "planned_import_kwh", "actual_import_kwh", "planned_export_kwh",
-            "actual_export_kwh", "planned_result_gbp", "actual_result_gbp",
-            "failure_reason", "data_quality", "created_at", "updated_at",
-        ):
-            self.assertIn(field, runtime.profile_execution[0])
-        self.assertEqual(original, repr(runtime.user_profiles))
-        self.assertEqual([], runtime.hass.services.calls)
-
-    def test_profile_execution_supports_complete_lifecycle_contract(self):
-        runtime = make_runtime()
-        runtime.user_profiles = self.valid_profiles()
-        runtime.user_profiles["profiles"]["morning_sale"].update(
-            {
-                "enabled": True,
-                "start": "06:00",
-                "end": "10:00",
-                "target_energy_kwh": 6,
-            }
-        )
-        runtime.optimizer_plan = {
-            "plan_id": "plan-lifecycle",
-            "rows": [
-                {
-                    "date": "2026-07-31",
-                    "hour": 6,
-                    "profile_id": "morning_sale",
-                    "action": "sell",
-                    "planned_energy_kwh": 2,
-                    "soc_start_pct": 80,
-                    "soc_end_pct": 70,
-                    "sell_price": 0.8,
-                    "expected_export_kwh": 2,
-                    "net_result": 1.6,
-                }
-            ],
-        }
-        required_fields = {
-            "plan_id", "profile_id", "profile_type", "date", "window_start",
-            "window_end", "target_kwh", "planned_kwh", "executed_kwh",
-            "remaining_kwh", "planned_soc_start", "planned_soc_end",
-            "actual_soc_start", "actual_soc_end", "planned_price",
-            "actual_average_price", "planned_import_kwh", "actual_import_kwh",
-            "planned_export_kwh", "actual_export_kwh", "planned_result_gbp",
-            "actual_result_gbp", "status", "failure_reason", "data_quality",
-            "created_at", "updated_at",
-        }
-        statuses = {
-            "waiting", "running", "completed", "partial", "blocked", "failed",
-            "skipped", "cancelled", "manual_override",
-        }
-        for status in statuses:
-            entry = runtime._set_profile_execution_status(
-                "morning_sale",
-                "2026-07-31",
-                status,
-                failure_reason=(
-                    "test"
-                    if status in {"blocked", "failed", "cancelled", "manual_override"}
-                    else None
-                ),
-            )
-            self.assertEqual(status, entry["status"])
-            self.assertTrue(required_fields.issubset(entry))
-        self.assertEqual(1, len(runtime.profile_execution))
-        self.assertEqual([], runtime.hass.services.calls)
-
-    def test_new_optimizer_plan_seeds_waiting_blocked_and_skipped_executions(self):
-        runtime = make_runtime()
-        runtime.user_profiles = self.valid_profiles()
-        for profile_id in ("morning_sale", "evening_sale", "charging"):
-            runtime.user_profiles["profiles"][profile_id]["enabled"] = True
-        plan = {
-            "plan_id": "plan-seed",
-            "rows": [
-                {
-                    "date": "2026-07-31",
-                    "day": "tomorrow",
-                    "hour": 6,
-                    "profile_id": "morning_sale",
-                    "action": "sell",
-                    "planned_energy_kwh": 1,
-                }
-            ],
-            "profile_impacts": [
-                {
-                    "profile_id": "morning_sale",
-                    "profile_type": "sale",
-                    "enabled": True,
-                    "status": "waiting",
-                },
-                {
-                    "profile_id": "evening_sale",
-                    "profile_type": "sale",
-                    "enabled": True,
-                    "status": "blocked_min_net_result",
-                    "block_reason": "min_net_result",
-                },
-                {
-                    "profile_id": "charging",
-                    "profile_type": "charging",
-                    "enabled": True,
-                    "status": "no_qualified_hours",
-                    "skip_reason": "no_qualified_hours",
-                },
-            ],
-        }
-        runtime._sync_profile_execution_from_plan(
-            plan,
-            datetime.fromisoformat("2026-07-30T12:00:00+00:00"),
-        )
-        by_profile = {row["profile_id"]: row for row in runtime.profile_execution}
-        self.assertEqual("waiting", by_profile["morning_sale"]["status"])
-        self.assertEqual("blocked", by_profile["evening_sale"]["status"])
-        self.assertEqual("skipped", by_profile["charging"]["status"])
-        self.assertEqual("min_net_result", by_profile["evening_sale"]["failure_reason"])
-
-    def test_manual_control_marks_only_active_profile_as_manual_override(self):
-        runtime = make_runtime()
-        runtime.control_mode = "Schedule"
-        runtime.user_profiles = self.valid_profiles()
-        runtime.optimizer_plan = {
-            "plan_id": "plan-manual",
-            "rows": [
-                {
-                    "date": manager.ha_now().date().isoformat(),
-                    "hour": manager.ha_now().hour,
-                    "profile_id": "evening_sale",
-                    "action": "sell",
-                    "planned_energy_kwh": 1,
-                }
-            ],
-        }
-        runtime.set_control_mode("Manual Sell")
-        self.assertEqual("manual_override", runtime.profile_execution[0]["status"])
-        self.assertEqual("evening_sale", runtime.profile_execution[0]["profile_id"])
 
 
 class InverterMaxPowerTests(unittest.IsolatedAsyncioTestCase):
@@ -4410,26 +3633,6 @@ class InverterMaxPowerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(written), 1)
         self.assertEqual(written[0][2]["value"], 8000)
 
-    def test_validate_user_profiles_uses_max_power_parameter(self):
-        profiles = {
-            "morning_sale": {
-                "enabled": True,
-                "start": "06:00",
-                "end": "10:00",
-                "active_days": ["monday"],
-                "priority": "normal",
-                "goal_character": "preferred",
-                "minimum_confidence": 50,
-                "target_energy_kwh": 5,
-                "preferred_power_w": 15000,
-                "target_basis": "battery_to_grid",
-                "distribution_method": "constant_power",
-            }
-        }
-        with self.assertRaisesRegex(ValueError, "10000"):
-            manager.DeyeEnergyRuntime.validate_user_profiles(profiles, max_power_w=10000)
-        result = manager.DeyeEnergyRuntime.validate_user_profiles(profiles, max_power_w=20000)
-        self.assertEqual(result["profiles"]["morning_sale"]["preferred_power_w"], 15000)
 
     def test_two_entries_have_independent_effective_limits(self):
         first = make_runtime()
@@ -4466,60 +3669,11 @@ class InverterMaxPowerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.applied_sell_power, 8000)
         self.assertEqual(active.sell_power, 13000)
 
-    def test_optimizer_grid_import_limit_is_not_capped_by_inverter_power(self):
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_MAX_POWER_W] = 8000
-        runtime.ai_settings["gridImportLimitW"] = 14000
-        inputs = runtime.optimizer_core_inputs()
-        self.assertEqual(inputs["grid_import_limit_w"], 14000)
 
-    def test_optimizer_grid_export_limit_remains_independent(self):
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_MAX_POWER_W] = 8000
-        runtime.ai_settings["exportLimitW"] = 6000
-        inputs = runtime.optimizer_core_inputs()
-        self.assertEqual(inputs["grid_export_limit_w"], 6000)
-        self.assertEqual(inputs["inverter_ac_limit_w"], 8000)
 
-    def test_optimizer_final_sell_power_respects_inverter_and_export_limits(self):
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_MAX_POWER_W] = 8000
-        runtime.ai_settings["exportLimitW"] = 6000
-        inputs = runtime.optimizer_core_inputs()
-        self.assertEqual(inputs["grid_export_limit_w"], 6000)
-        self.assertEqual(inputs["inverter_ac_limit_w"], 8000)
-        self.assertLessEqual(inputs["max_sell_power_w"], 8000)
 
-    def test_optimizer_best_hours_product_defaults_have_one_backend_contract(self):
-        runtime = make_runtime()
-        inputs = runtime.optimizer_core_inputs()
-        self.assertEqual(inputs["price_equivalence_band"], 0.05)
-        self.assertEqual(inputs["minimum_auto_sell_power_w"], 1000)
 
-    def test_optimizer_best_hours_product_settings_are_forwarded_to_core(self):
-        runtime = make_runtime()
-        runtime.ai_settings.update({
-            "priceEquivalenceBand": 0.10,
-            "minimumAutoSellPowerW": 1250,
-        })
-        inputs = runtime.optimizer_core_inputs()
-        self.assertEqual(inputs["price_equivalence_band"], 0.10)
-        self.assertEqual(inputs["minimum_auto_sell_power_w"], 1250)
 
-    def test_explicit_battery_discharge_limit_can_only_lower_model_limit(self):
-        runtime = make_runtime()
-        model = runtime.battery_model_context()
-        model_limit = model["power_limit"]["effective_limit_w"]
-        runtime.ai_settings["batteryDischargeLimitW"] = model_limit + 2500
-        higher = runtime.optimizer_core_inputs(battery_model=model)
-        self.assertEqual(higher["battery_discharge_limit_w"], model_limit)
-        runtime.ai_settings["batteryDischargeLimitW"] = model_limit / 2
-        lower = runtime.optimizer_core_inputs(battery_model=model)
-        self.assertEqual(lower["battery_discharge_limit_w"], model_limit / 2)
-        self.assertEqual(
-            lower["sell_power_limits_w"]["configured_battery_discharge"],
-            model_limit / 2,
-        )
 
     def test_physical_sell_power_range_converts_kw_to_w(self):
         runtime = make_runtime()
@@ -4644,32 +3798,7 @@ class InverterMaxPowerTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(len(written), 0)
 
-    def test_two_entries_build_independent_optimizer_inputs(self):
-        first = make_runtime()
-        first.data[const.CONF_INVERTER_MAX_POWER_W] = 8000
-        first.ai_settings["maxSellPower"] = 30000
-        second = make_runtime()
-        second.data[const.CONF_INVERTER_MAX_POWER_W] = 20000
-        second.ai_settings["maxSellPower"] = 30000
-        first_inputs = first.optimizer_core_inputs()
-        second_inputs = second.optimizer_core_inputs()
-        self.assertEqual(first_inputs["inverter_ac_limit_w"], 8000)
-        self.assertEqual(second_inputs["inverter_ac_limit_w"], 20000)
-        self.assertEqual(first_inputs["max_sell_power_w"], 8000)
-        self.assertEqual(second_inputs["max_sell_power_w"], 20000)
 
-    def test_two_entries_build_independent_ai_schemas(self):
-        first = make_runtime()
-        first.data[const.CONF_INVERTER_MAX_POWER_W] = 8000
-        second = make_runtime()
-        second.data[const.CONF_INVERTER_MAX_POWER_W] = 20000
-        from custom_components.deye_energy.ai_assistant import response_schema
-        first_schema = response_schema(first.effective_inverter_max_power_w)
-        second_schema = response_schema(second.effective_inverter_max_power_w)
-        power_key = first_schema["schema"]["properties"]["alternative"]["properties"]["hours"]["items"]["properties"]["power_w"]
-        self.assertEqual(power_key["maximum"], 8000)
-        power_key = second_schema["schema"]["properties"]["alternative"]["properties"]["hours"]["items"]["properties"]["power_w"]
-        self.assertEqual(power_key["maximum"], 20000)
 
 
 class SellPowerNumberEntityTests(unittest.IsolatedAsyncioTestCase):
@@ -5193,7 +4322,6 @@ class ControlMasterTests(unittest.IsolatedAsyncioTestCase):
         monitored = (
             "async_update_sold_energy_today",
             "async_update_solcast_history",
-            "async_update_learning_history",
             "async_update_energy_sample",
         )
         for name in monitored:
@@ -7688,24 +6816,22 @@ class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
             "source_adapter": sell_adapter, "source_semantic_scope": sell_semantic,
             "final_price_gbp_kwh": 0.8,
         }
-        runtime.optimizer_plan = {
-            "canonical_prices": {
-                "schema_version": 1,
-                "buy": {
-                    "contract": dict(runtime.data[const.CONF_BUY_PRICE_CONTRACT]),
-                    "rows": [stale_buy_row],
-                    "diagnostics": {"coverage_today": 0, "coverage_tomorrow": 1},
-                },
-                "sell": {
-                    "contract": sell_contract,
-                    "rows": [valid_sell_row],
-                    "diagnostics": {"coverage_today": 1, "coverage_tomorrow": 0},
-                },
-            }
+        runtime._canonical_price_snapshot = {
+            "schema_version": 1,
+            "buy": {
+                "contract": dict(runtime.data[const.CONF_BUY_PRICE_CONTRACT]),
+                "rows": [stale_buy_row],
+                "diagnostics": {"coverage_today": 0, "coverage_tomorrow": 1},
+            },
+            "sell": {
+                "contract": sell_contract,
+                "rows": [valid_sell_row],
+                "diagnostics": {"coverage_today": 1, "coverage_tomorrow": 0},
+            },
         }
 
         self.assertTrue(runtime._sanitize_cached_price_plans())
-        canonical = runtime.optimizer_plan["canonical_prices"]
+        canonical = runtime._canonical_price_snapshot
         self.assertEqual(canonical["buy"]["rows"], [])
         self.assertEqual(canonical["buy"]["diagnostics"]["coverage_tomorrow"], 0)
         self.assertEqual(canonical["buy"]["diagnostics"]["resolver"]["tomorrow"]["mapped_entity"], "")
@@ -8016,32 +7142,25 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(runtime.manual_schedule_active)
         self.assertTrue(runtime.scheduler_enabled)
 
-    async def test_active_manual_schedule_blocks_ai_optimizer_future_and_manual_applies(self):
+    async def test_active_manual_schedule_blocks_conflicting_writes_and_manual_edits_apply(self):
         runtime = make_runtime()
         await runtime.async_save_manual_schedule([manual_row(to="00:00")])
         await runtime.async_activate_manual_schedule()
 
-        for kwargs in (
-            {},
-            {"change_source": "manual"},
-            {"change_source": "apply_today"},
-            {"change_source": "future_plan"},
-            {"change_source": "optimizer_core"},
-            {"ai_source": True},
-            {"replace_day": True, "date": "2026-07-18"},
-        ):
-            with self.subTest(kwargs=kwargs):
-                with self.assertRaisesRegex(ValueError, "Manual schedule is active"):
-                    await runtime.async_apply_schedule_patch(
-                        [{"slot_key": "0000_0030", "sell_power": 1}], **kwargs
-                    )
+        with self.assertRaisesRegex(ValueError, "Manual schedule is active"):
+            await runtime.async_apply_schedule_patch(
+                [{"slot_key": "0000_0030", "sell_power": 1}]
+            )
+        self.assertEqual(runtime.effective_slot_for_key("0000_0030").sell_power, 0)
 
-        await runtime.async_apply_schedule_patch(
-            [{"slot_key": "0000_0030", "sell_power": 1234}],
-            change_source="manual_schedule_internal",
-            _allow_manual_schedule_internal=True,
-        )
-        self.assertEqual(runtime.slots["0000_0030"].sell_power, 1234)
+        # Manual rows remain editable while the manual source is active, and
+        # only the effective view changes: the work schedule stays untouched.
+        await runtime.async_save_manual_schedule([
+            manual_row(to="00:00", sell_power=1234)
+        ])
+        self.assertEqual(runtime.effective_slot_for_key("0000_0030").sell_power, 1234)
+        self.assertEqual(runtime.slots["0000_0030"].sell_power, 0)
+        self.assertTrue(runtime.manual_schedule_active)
 
     async def test_active_save_rolls_back_rows_when_validation_fails(self):
         runtime = make_runtime()

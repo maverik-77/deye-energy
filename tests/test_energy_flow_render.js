@@ -177,16 +177,16 @@ function test_energy_flow_panel_shows_manual_schedule_source_captions() {
   assert.match(html, /data-live="manager-schedule-source">Manual schedule</);
 }
 
-function test_energy_flow_panel_shows_work_schedule_source_captions() {
+function test_energy_flow_panel_shows_stored_schedule_slots_source_captions() {
   const html = makeCard("present", "work").energyFlowPanel();
-  assert.match(html, /data-live="executed-schedule-source">Work schedule</);
-  assert.match(html, /data-live="manager-schedule-source">Work schedule</);
+  assert.match(html, /data-live="executed-schedule-source">Schedule slots</);
+  assert.match(html, /data-live="manager-schedule-source">Schedule slots</);
 }
 
-function test_energy_flow_panel_defaults_missing_schedule_source_to_work() {
+function test_energy_flow_panel_defaults_missing_schedule_source_to_stored_slots() {
   const html = makeCard().energyFlowPanel();
-  assert.match(html, /data-live="executed-schedule-source">Work schedule</);
-  assert.match(html, /data-live="manager-schedule-source">Work schedule</);
+  assert.match(html, /data-live="executed-schedule-source">Schedule slots</);
+  assert.match(html, /data-live="manager-schedule-source">Schedule slots</);
 }
 
 function test_energy_flow_panel_sold_today_uses_pound_icon() {
@@ -283,8 +283,8 @@ test_card_full_render_with_manager_status_control_contract();
 test_card_render_survives_missing_manager_status_entity();
 test_card_render_survives_unavailable_manager_status_entity();
 test_energy_flow_panel_shows_manual_schedule_source_captions();
-test_energy_flow_panel_shows_work_schedule_source_captions();
-test_energy_flow_panel_defaults_missing_schedule_source_to_work();
+test_energy_flow_panel_shows_stored_schedule_slots_source_captions();
+test_energy_flow_panel_defaults_missing_schedule_source_to_stored_slots();
 test_energy_flow_panel_sold_today_uses_pound_icon();
 test_energy_flow_panel_sold_today_value_stays_on_one_line();
 test_active_slot_time_label_uses_manual_row_when_manual_active();

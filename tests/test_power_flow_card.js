@@ -164,7 +164,7 @@ check(html.includes('filter id="pf-line-glow" filterUnits="userSpaceOnUse" x="0"
 check(html.includes('.pf-flow-line{fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;filter:url(#pf-line-glow)}') && html.includes('.pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34;filter:url(#pf-line-glow)}'), "flow paths should use the user-space glow filter");
 check(!html.includes('stroke-dasharray:none;filter:url(#pf-glow)'), "straight links should not use the bounding-box glow filter");
 check(html.includes('@keyframes pfFlowDash{to{stroke-dashoffset:-220}}'), "dot stream should use the fixed Energy Status offset formula");
-check(html.includes('@media (max-width:640px){.pf-flow-active{stroke-dasharray:1 18;animation-name:pfFlowDashMobile}}'), "mobile dot variant should be present");
+check(html.includes('@media (max-width:640px){.pf-flow-active{stroke-dasharray:1 18;animation-name:pfFlowDashMobile}'), "mobile dot variant should be present");
 check(html.includes('class="pf-flow-line pf-flow-active"'), "active links should carry the scrolling-dot class");
 check((html.match(/class="pf-flow-line-bg"/g) || []).length === 4, "each link should have a persistent background path");
 check(flowPath(html, 'pf-grid-inv').includes('marker-end='), "active link should carry an arrowhead");
@@ -337,12 +337,17 @@ check(h2.includes("pf-period"), "missing period selector");
 check(h2.includes('data-period="today"'), "missing today period");
 check(h2.includes('data-period="24h"'), "missing 24h period");
 const periodAt = h2.indexOf('class="pf-period"');
-const frameAt = h2.indexOf('aspect-ratio:1200 / 1081');
+const frameAt = h2.indexOf('class="pf-diagram" style="width:100%;aspect-ratio:1200 / 1081');
 const frameEndAt = h2.indexOf('</div>', h2.indexOf('</svg>', frameAt));
 check(periodAt > h2.indexOf('min-width:220px'), "period selector should render below the summary chips");
 check(periodAt > frameAt && periodAt < frameEndAt, "period selector should render inside the power flow display outline");
 check(h2.includes('position:absolute;top:12px;right:12px;z-index:2;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100% - 24px);'), "period selector should be pinned to the top-right of the display");
 check(!h2.includes('gap:6px;flex-wrap:wrap;margin-top:10px'), "period selector should not be a separate row outside the display");
+// On narrow screens the pills flow above the SVG inside the same frame, so they cannot cover PV
+check(h2.includes('class="pf-diagram" style="width:100%;aspect-ratio:1200 / 1081'), "diagram frame should carry the mobile layout class");
+check(h2.includes('class="pf-periods" style="position:absolute;top:12px;right:12px'), "period selector should carry the mobile layout class");
+check(h2.indexOf('class="pf-periods"') < h2.indexOf('<svg viewBox="0 0 1200 1081"'), "period selector should precede the SVG so it can flow above it on mobile");
+check(h2.includes('.pf-periods{position:static!important;') && h2.includes('.pf-diagram{aspect-ratio:auto!important}') && h2.includes('.pf-diagram svg{height:auto!important;aspect-ratio:1200 / 1081}'), "mobile rules should flow the period selector above the SVG inside the frame");
 check(h2.includes("pf-consumer-click"), "missing consumer click class");
 check(card2._period === "power", "default period should be power");
 card2._period = "today"; card2._render();

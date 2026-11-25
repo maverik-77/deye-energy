@@ -22,6 +22,7 @@ class HistoryMigrationTests(unittest.TestCase):
             "daily": [{"date": "2026-07-27", "load_kwh": 8.2}],
             "monthly": [{"month": "2026-06", "load_kwh": 240}],
             "last_sample": "2026-07-28T12:00:00+02:00",
+            "learning_checkpoint": {"hour": "2026-07-28T11:00:00+02:00"},
         }
         migrated, changed = history.migrate_energy_payload(raw)
         self.assertTrue(changed)
@@ -30,18 +31,9 @@ class HistoryMigrationTests(unittest.TestCase):
         self.assertEqual(migrated["daily"], raw["daily"])
         self.assertEqual(migrated["monthly"], raw["monthly"])
         self.assertEqual(migrated["counter_state"], {})
+        self.assertNotIn("learning_checkpoint", migrated)
         self.assertNotIn("schema_version", raw)
 
-    def test_ai_migration_preserves_settings_and_disables_new_profiles(self):
-        raw = {"settings": {"strategy": "balanced"}, "history": [{"event": "suggestion"}]}
-        migrated, changed = history.migrate_ai_payload(raw)
-        self.assertTrue(changed)
-        self.assertEqual(migrated["settings"], raw["settings"])
-        self.assertEqual(migrated["history"], raw["history"])
-        self.assertEqual(migrated["plan_execution_archive"], [])
-        profiles = migrated["user_profiles"]["profiles"]
-        self.assertEqual(set(profiles), {"morning_sale", "evening_sale", "charging"})
-        self.assertTrue(all(profile["enabled"] is False for profile in profiles.values()))
 
     def test_solcast_migration_marks_legacy_forecast_as_initial_and_latest(self):
         raw = {"history": [{"date": "2026-07-27", "forecast_kwh": 22.5}]}
@@ -63,30 +55,6 @@ class HistoryMigrationTests(unittest.TestCase):
         self.assertFalse(changed)
         self.assertEqual(migrated["tracking"], {})
 
-    def test_learning_migration_adds_independent_channel_quality(self):
-        raw = {
-            "schema_version": 2,
-            "history": [{
-                "hour": "2026-07-29T12:00:00+02:00",
-                "samples": 30,
-                "completeness_percent": 50,
-                "pv_kwh": 2.4,
-                "load_kwh": 0.8,
-                "grid_import_kwh": None,
-                "grid_export_kwh": None,
-                "soc_start": 51,
-                "soc_end": 63,
-            }],
-        }
-        migrated, changed = history.migrate_learning_payload(raw)
-        self.assertTrue(changed)
-        row = migrated["history"][0]
-        self.assertEqual("very_low", row["channel_quality"]["pv"]["level"])
-        self.assertTrue(row["channel_quality"]["pv"]["usable_for_learning"])
-        self.assertEqual("missing", row["channel_quality"]["grid"]["level"])
-        self.assertFalse(row["channel_quality"]["grid"]["usable_for_learning"])
-        self.assertEqual(2.4, row["pv_kwh"])
-        self.assertEqual(0.8, row["load_kwh"])
 
 
 class CounterTests(unittest.TestCase):

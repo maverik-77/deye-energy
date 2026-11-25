@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
-from functools import partial
 import logging
 import math
 import time
@@ -14,8 +13,6 @@ from typing import Any, Callable
 import uuid
 
 _LOGGER = logging.getLogger(__name__)
-
-_HOMEASSISTANT_STARTED_EVENT = "homeassistant_started"
 
 # A daily forecast may legitimately be published only a few times per day.
 # Thirty hours also covers the longest local DST day without accepting an
@@ -255,63 +252,20 @@ from .inverter_provider import (
     state_matches_boolean,
 )
 from .tariff_catalog import TariffCatalogManager
-from .performance import RuntimePerformanceMonitor, run_core_with_timings
-from .ai_planner import (
-    ALGORITHM_VERSION,
-    DEFAULT_MINIMUM_AUTO_SELL_POWER_W,
-    DEFAULT_PRICE_EQUIVALENCE_BAND,
-    PLAN_SCHEMA_VERSION,
-    build_plan_bundle,
-    quantize_power_w,
-    simulate_alternative,
-    snapshot_id,
-)
-from .ai_assistant import (
-    build_private_payload,
-    material_review_fingerprint,
-    normalize_config as normalize_ai_api_config,
-    redact_config as redact_ai_api_config,
-    request_analysis as request_ai_analysis,
-)
-from .battery_model import (
-    build_soc_timeline,
-    effective_minimum,
-    effective_power_limit,
-    migrate_efficiencies,
-    remaining_minutes_in_hour,
-)
+from .performance import RuntimePerformanceMonitor
+from .schedule_helpers import quantize_power_w, snapshot_id
 from .history import (
     ENERGY_COMPACT_FORMAT_VERSION,
     HISTORY_SCHEMA_VERSION,
     compact_energy_sample,
-    default_user_profiles,
     energy_kwh,
     finite_float,
-    migrate_ai_payload,
     migrate_energy_payload,
-    migrate_learning_payload,
     migrate_solcast_payload,
     power_w,
     update_energy_counter,
 )
-from .learning import (
-    corrected_pv_forecast,
-    forecast_load,
-    learning_maturity,
-    learning_stage,
-    load_profile_diagnostics,
-    pv_profile_diagnostics,
-    pv_quality_flags,
-    update_load_profile,
-    update_pv_profile,
-)
-from .telemetry import (
-    channel_summary,
-    energy_balance,
-    new_channel,
-    record_channel,
-    split_directional_power,
-)
+from .telemetry import channel_summary, new_channel, record_channel, split_directional_power
 from .tariffs import (
     available_tariffs,
     catalog_hourly_profile,
@@ -332,12 +286,6 @@ _CONTROL_TRANSACTION_ID: contextvars.ContextVar[str | None] = contextvars.Contex
     "control_transaction_id", default=None
 )
 
-# Live PV/load noise is material to a rolling plan only after crossing a 25%
-# forecast-deviation band. The 250 W denominator floor prevents tiny night/base
-# forecasts from turning sensor jitter into repeated Core runs. Both constants
-# are covered by the 5G.4D rolling-recalc tests.
-LIVE_DEVIATION_BUCKET_RATIO = 0.25
-LIVE_DEVIATION_REFERENCE_FLOOR_W = 250.0
 FUTURE_PLAN_INTENT_SCHEMA_VERSION = 2
 FUTURE_PLAN_LIFECYCLE_SCHEMA_VERSION = 1
 
@@ -346,12 +294,8 @@ class ControlDisabledError(Exception):
     """Raised when a physical write is attempted while control is disabled."""
 
 
-class FuturePlanTransientError(RuntimeError):
-    """A future slot is safe to retry while its hour is still active."""
 
 
-class ExternalAIDailyLimitError(RuntimeError):
-    """Raised before a provider call that would exceed the persisted daily cap."""
 
 
 @dataclass
@@ -378,10 +322,6 @@ class SlotSettings:
     # and disabled) use this value as the physical SOC written to the inverter.
     tou_soc: float | None = None
     min_sell_price: float = 0
-    # True only for a Selling slot materialised by Optimizer Core Apply Today.
-    # Such a slot owns only the sell power.  RestoreEntity persists this marker through
-    # the slot-mode entity attributes.
-    ai_sell_power_only: bool = False
 
 
 @dataclass
@@ -494,16 +434,9 @@ class DeyeEnergyRuntime:
     _charge_profile_loaded_from_store: bool = False
     _default_profile_loaded_from_store: bool = False
     _solcast_store: Store | None = None
-    _learning_store: Store | None = None
     _ai_save_task: Any = None
     _ai_save_dirty: bool = False
     _ai_last_saved_fingerprint: str = ""
-    _learning_save_task: Any = None
-    _learning_save_dirty: bool = False
-    _learning_last_saved_fingerprint: str = ""
-    _learning_summary_generation: int = 0
-    _learning_summary_cache_key: str = ""
-    _learning_summary_cache: dict[str, Any] = field(default_factory=dict)
     _energy_save_task: Any = None
     _energy_save_dirty: bool = False
     _energy_revision: int = 0
@@ -513,10 +446,6 @@ class DeyeEnergyRuntime:
     _startup_in_progress: bool = False
     _platform_setup_in_progress: bool = False
     _platform_publish_pending: bool = False
-    _initial_optimizer_pending: bool = False
-    _initial_optimizer_started: bool = False
-    _initial_optimizer_completed: bool = False
-    _unsub_hass_started: Callable[[], None] | None = None
     _unloading: bool = False
     _samples_store: Store | None = None
     _tariff_catalog_manager: TariffCatalogManager | None = None
@@ -526,29 +455,6 @@ class DeyeEnergyRuntime:
     _canonical_price_snapshot: dict[str, Any] = field(default_factory=dict)
     _stats_dirty: bool = False
     sales_stats: dict[str, Any] = field(default_factory=dict)
-    ai_settings: dict[str, Any] = field(default_factory=dict)
-    ai_history: list[dict[str, Any]] = field(default_factory=list)
-    optimizer_plan: dict[str, Any] = field(default_factory=dict)
-    optimizer_plan_history: list[dict[str, Any]] = field(default_factory=list)
-    plan_execution_archive: list[dict[str, Any]] = field(default_factory=list)
-    _optimizer_input_snapshot_id: str = ""
-    _optimizer_generation_reason: str = "startup"
-    _optimizer_recalc_task: Any = None
-    _optimizer_recalc_pending: bool = False
-    _optimizer_pending_reasons: set[str] = field(default_factory=set)
-    _optimizer_debounce_reasons: set[str] = field(default_factory=set)
-    _optimizer_public_snapshot: dict[str, Any] = field(default_factory=dict)
-    _optimizer_output_snapshot_id: str = ""
-    _optimizer_last_plan_id: str = ""
-    _optimizer_last_profile_execution_revision: int = -1
-    _optimizer_active_recalc: int = 0
-    _optimizer_budget_blocked_snapshot_id: str = ""
-    _optimizer_budget_status: dict[str, Any] = field(default_factory=lambda: {
-        "status": "idle",
-        "reason": None,
-        "limits": {},
-        "usage": {},
-    })
     _sensor_snapshot_task: Any = None
     _sensor_snapshot_pending: bool = False
     _sensor_snapshot_requested_keys: set[str] = field(default_factory=set)
@@ -556,22 +462,7 @@ class DeyeEnergyRuntime:
     _diagnostics_snapshot: dict[str, Any] = field(default_factory=dict)
     _ai_state_snapshot_id: str = ""
     _diagnostics_snapshot_id: str = ""
-    _optimizer_listener_entity_ids: tuple[str, ...] = ()
-    _optimizer_input_reasons: dict[str, str] = field(default_factory=dict)
     runtime_metrics: dict[str, Any] = field(default_factory=lambda: {
-        "optimizer_recalc_requested": 0,
-        "optimizer_recalc_started": 0,
-        "optimizer_recalc_completed": 0,
-        "optimizer_recalc_followup": 0,
-        "optimizer_recalc_skipped_same_snapshot": 0,
-        "optimizer_recalc_reasons": {},
-        "optimizer_recalc_last_started": None,
-        "optimizer_recalc_last_finished": None,
-        "optimizer_recalc_last_duration_s": None,
-        "optimizer_recalc_max_active": 0,
-        "optimizer_initial_requested": 0,
-        "optimizer_initial_completed": 0,
-        "optimizer_budget_exceeded": 0,
         "snapshot_publish_count": 0,
         "notify_update_count": 0,
         "self_entity_event_ignored": 0,
@@ -579,30 +470,6 @@ class DeyeEnergyRuntime:
         "skipped_inverter_unavailable": 0,
         "inverter_unavailable_reason": "",
     })
-    ai_api_config: dict[str, Any] = field(default_factory=dict)
-    ai_api_status: dict[str, Any] = field(default_factory=lambda: {"status": "disabled"})
-    ai_api_cache: dict[str, Any] = field(default_factory=dict)
-    ai_api_limit_state: dict[str, Any] = field(default_factory=dict)
-    ai_api_metrics: dict[str, Any] = field(default_factory=lambda: {
-        "requested": 0,
-        "executed": 0,
-        "skipped_daily_limit": 0,
-        "skipped_cooldown": 0,
-        "skipped_same_input": 0,
-        "skipped_fail_closed": 0,
-        "completed": 0,
-        "failed": 0,
-        "retry": 0,
-        "active": 0,
-        "max_active": 0,
-        "last_duration_ms": None,
-    })
-    _ai_api_last_call: datetime | None = None
-    _ai_api_last_attempt: datetime | None = None
-    _ai_api_running: bool = False
-    _ai_api_task: Any = None
-    _optimizer_last_inputs: dict[str, Any] = field(default_factory=dict)
-    future_plan: dict[str, Any] = field(default_factory=dict)
     # Stage 5G.4J.8C: lightweight, persisted per-slot schedule generation and
     # ownership.  These fields deliberately do not duplicate the schedule.
     schedule_revision: int = 0
@@ -610,20 +477,12 @@ class DeyeEnergyRuntime:
     schedule_slot_ownership: dict[str, dict[str, Any]] = field(default_factory=dict)
     solcast_history: list[dict[str, Any]] = field(default_factory=list)
     solcast_tracking: dict[str, Any] = field(default_factory=dict)
-    learning_history: list[dict[str, Any]] = field(default_factory=list)
-    learning_tracking: dict[str, Any] = field(default_factory=dict)
-    learning_revision: int = 0
     history_watermark: str = ""
     energy_samples: list[dict[str, Any]] = field(default_factory=list)
     daily_archive: list[dict[str, Any]] = field(default_factory=list)
     monthly_archive: list[dict[str, Any]] = field(default_factory=list)
     energy_counter_state: dict[str, dict[str, Any]] = field(default_factory=dict)
-    user_profiles: dict[str, Any] = field(default_factory=default_user_profiles)
     data_quality: dict[str, Any] = field(default_factory=dict)
-    load_profile_7x24: dict[str, Any] = field(default_factory=dict)
-    pv_learning_profile: dict[str, Any] = field(default_factory=dict)
-    profile_execution: list[dict[str, Any]] = field(default_factory=list)
-    _profile_execution_revision: int = 0
     weather_forecast: list[dict[str, Any]] = field(default_factory=list)
     weather_daily_forecast: list[dict[str, Any]] = field(default_factory=list)
     weather_last_updated: str = ""
@@ -728,17 +587,6 @@ class DeyeEnergyRuntime:
     def __post_init__(self) -> None:
         self.slots = {key: SlotSettings(key=key, label=label) for key, label, *_ in SLOTS}
         self.manual_schedule = self._default_manual_schedule()
-        raw_ai_api = self.data.get("ai_api") if isinstance(self.data.get("ai_api"), dict) else {}
-        try:
-            self.ai_api_config = normalize_ai_api_config(raw_ai_api)
-        except ValueError:
-            self.ai_api_config = normalize_ai_api_config({"enabled": False, "provider": "openrouter"})
-        self.ai_api_status = {
-            "status": "ready" if self.ai_api_config.get("enabled") else "disabled",
-            "provider": self.ai_api_config.get("provider"),
-            "model": self.ai_api_config.get("model"),
-            "last_error": None,
-        }
 
     def _control_is_active(self) -> bool:
         """Return whether new physical inverter writes may start."""
@@ -1062,8 +910,6 @@ class DeyeEnergyRuntime:
         self,
         slot_key: str,
         restored_mode: str,
-        *,
-        ai_sell_power_only: bool = False,
     ) -> None:
         """Restore and idempotently migrate one legacy slot entity state."""
         slot = self.slots[slot_key]
@@ -1071,9 +917,6 @@ class DeyeEnergyRuntime:
         logical, physical, migrated = self.normalize_schedule_mode(restored_mode, stored_physical)
         slot.mode = logical
         slot.physical_work_mode = physical
-        slot.ai_sell_power_only = bool(
-            ai_sell_power_only and logical == MODE_SELLING_FIRST
-        )
         self._restored_slot_mode_keys.add(slot_key)
 
         # Persist the migration once all RestoreEntity slot states have been
@@ -1083,7 +926,7 @@ class DeyeEnergyRuntime:
         if migrated or (all_restored and self.schedule_schema_version < SCHEDULE_SCHEMA_VERSION):
             if all_restored:
                 self.schedule_schema_version = SCHEDULE_SCHEMA_VERSION
-            await self.async_save_ai_data()
+            self.mark_config_saved()
 
     @property
     def work_mode_select(self) -> str | None:
@@ -2076,18 +1919,9 @@ class DeyeEnergyRuntime:
 
     async def async_update_tariff_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
         normalized = self.validate_tariff_settings(settings)
-        previous = self.tariff_context()
         self.data.update(normalized)
         self._sanitize_cached_price_plans()
-        self.request_optimizer_recalc("tariff")
         self.request_sensor_snapshot_refresh({"ai_state", "diagnostics"})
-        self.learning_tracking["tariff_changed_at"] = ha_now().isoformat(timespec="seconds")
-        await self.async_add_ai_analysis({
-            "type": "tariff_configuration",
-            "status": "saved",
-            "previous": {"provider": previous.get("provider"), "plan": previous.get("plan"), "catalog_version": previous.get("catalog_version")},
-            "current": {"provider": self.dso_provider, "plan": self.tariff_plan, "catalog_version": self.tariff_context().get("catalog_version")},
-        })
         self.mark_config_saved()
         return normalized
 
@@ -2395,19 +2229,8 @@ class DeyeEnergyRuntime:
         return changed
 
     def _sanitize_cached_price_plans(self) -> bool:
-        """Sanitize every live/persisted canonical cache without touching history."""
-        changed = False
-        for plan in (self.optimizer_plan, self._optimizer_public_snapshot):
-            canonical = plan.get("canonical_prices") if isinstance(plan, dict) else None
-            changed = self._sanitize_canonical_price_snapshot(canonical) or changed
-        changed = self._sanitize_canonical_price_snapshot(self._canonical_price_snapshot) or changed
-        planner = self._ai_state_snapshot.get("planner_48h") if isinstance(self._ai_state_snapshot, dict) else None
-        canonical = planner.get("canonical_prices") if isinstance(planner, dict) else None
-        changed = self._sanitize_canonical_price_snapshot(canonical) or changed
-        if changed:
-            self._optimizer_input_snapshot_id = ""
-            self._optimizer_generation_reason = "price_mapping_cache_invalidated"
-        return changed
+        """Sanitize the live canonical price cache without touching history."""
+        return self._sanitize_canonical_price_snapshot(self._canonical_price_snapshot)
 
     def canonical_price_context(
         self,
@@ -2503,702 +2326,8 @@ class DeyeEnergyRuntime:
         self._canonical_price_snapshot = deepcopy(results)
         return results
 
-    def _weather_factors_48h(self) -> list[float | None]:
-        factors: list[float | None] = [None] * 48
-        current = ha_now()
-        for fallback_index, row in enumerate(self.weather_forecast[:48]):
-            if not isinstance(row, dict):
-                continue
-            index: int | None = None
-            raw_time = row.get("datetime", row.get("time"))
-            if raw_time:
-                try:
-                    stamp = datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
-                    if current.tzinfo is not None and stamp.tzinfo is not None:
-                        stamp = stamp.astimezone(current.tzinfo)
-                    day_offset = (stamp.date() - current.date()).days
-                    if 0 <= day_offset <= 1:
-                        index = day_offset * 24 + stamp.hour
-                except (TypeError, ValueError):
-                    index = None
-            if index is None:
-                stamp = current + timedelta(hours=fallback_index)
-                day_offset = (stamp.date() - current.date()).days
-                if 0 <= day_offset <= 1:
-                    index = day_offset * 24 + stamp.hour
-            if index is None or not 0 <= index < 48:
-                continue
-            cloud = self.safe_float(row.get("cloud_coverage"), 0)
-            precipitation = self.safe_float(row.get("precipitation_probability"), 0)
-            factors[index] = round(max(0.65, min(1.05, 1 - cloud * 0.002 - precipitation * 0.001)), 3)
-        return factors
 
-    def battery_model_context(self) -> dict[str, Any]:
-        """Return explicit SOC, efficiency and power-limit semantics."""
-        settings = self.ai_settings
-        capacity = max(0.1, self.safe_float(settings.get("batteryCapacityKwh"), 10))
-        legacy_efficiency = self.safe_float(settings.get("batteryEfficiency"), 90)
-        legacy_efficiency = legacy_efficiency / 100 if legacy_efficiency > 1 else legacy_efficiency
-        migrated = migrate_efficiencies(legacy_efficiency)
 
-        def directional(key: str, fallback: float) -> float:
-            value = self.safe_float(settings.get(key), fallback)
-            value = value / 100 if value > 1 else value
-            return max(0.5, min(1.0, value))
-
-        charge_efficiency = directional("chargeEfficiency", migrated["charge_efficiency"])
-        discharge_efficiency = directional("dischargeEfficiency", migrated["discharge_efficiency"])
-        minimum = effective_minimum(
-            hard_min_soc_pct=self.safe_float(settings.get("minSoc"), 20),
-            reserve_kwh=self.safe_float(settings.get("reserveKwh"), 0),
-            capacity_kwh=capacity,
-            reserve_mode=str(settings.get("reserveMode") or "additional"),
-        )
-        voltage = self.state_float_or_none(self.battery_bms_voltage_sensor)
-        if voltage is None:
-            voltage = finite_float(settings.get("nominalBatteryVoltage"))
-        plan_limit_w = min(
-            self.safe_float(settings.get("maxSellPower"), 5000),
-            self.effective_inverter_max_power_w,
-        )
-        inverter_limit_w = finite_float(settings.get("inverterPowerW"))
-        if inverter_limit_w is None:
-            inverter_limit_w = self.effective_inverter_max_power_w
-        else:
-            inverter_limit_w = min(inverter_limit_w, self.effective_inverter_max_power_w)
-        entity_limit_w = self.state_float_or_none(self.max_sell_power_number)
-        if entity_limit_w is None:
-            entity_limit_w = self.effective_inverter_max_power_w
-        else:
-            entity_limit_w = min(entity_limit_w, self.effective_inverter_max_power_w)
-        power = effective_power_limit(
-            plan_limit_w=plan_limit_w,
-            export_limit_w=finite_float(settings.get("exportLimitW")),
-            inverter_limit_w=inverter_limit_w,
-            current_limit_a=None,
-            battery_voltage_v=voltage,
-            entity_limit_w=entity_limit_w,
-        )
-        power.pop("current_limit_a", None)
-        charge_limit_w = power["effective_limit_w"]
-        return {
-            "capacity_kwh": capacity,
-            "battery_voltage_v": voltage,
-            "charge_efficiency": charge_efficiency,
-            "discharge_efficiency": discharge_efficiency,
-            "round_trip_efficiency": round(charge_efficiency * discharge_efficiency, 6),
-            "efficiency_migration": migrated["migration"],
-            "minimum": minimum,
-            "target_max_soc_pct": max(
-                minimum["effective_min_soc_pct"],
-                min(100.0, self.safe_float(settings.get("targetSoc"), 100)),
-            ),
-            "power_limit": power,
-            "directional_power_limits": {
-                "battery_charge_limit_w": round(max(0.0, charge_limit_w), 3),
-                "battery_discharge_limit_w": power["effective_limit_w"],
-            },
-            "current_hour_remaining_minutes": remaining_minutes_in_hour(ha_now()),
-        }
-
-    def optimizer_baseline_schedule(self) -> list[dict[str, Any]]:
-        """Snapshot the existing user schedule without changing a slot."""
-        result: list[dict[str, Any]] = []
-        for index in range(48):
-            hour = index % 24
-            # The optimizer plans in hours; the baseline of an hour is the
-            # schedule slot that covers its first half.
-            baseline_key = slots_for_key(hour_key(hour))[0]
-            slot = self.slots.get(baseline_key)
-            if slot is None:
-                result.append({
-                    "enabled": False,
-                    "mode": MODE_NORMAL_OPERATION,
-                    "sell_power_w": 0.0,
-                    "charge_enabled": False,
-                    "charge_power_w": 0.0,
-                })
-                continue
-            result.append({
-                "slot_key": slot.key,
-                "enabled": bool(slot.enabled),
-                "mode": slot.mode,
-                "physical_work_mode": slot.physical_work_mode,
-                "sell_power_w": max(0.0, slot.sell_power),
-                "charge_enabled": bool(slot.charge_enabled),
-                "charge_power_w": 0.0,
-                "tou_soc": slot.tou_soc,
-                "minimum_sell_soc": slot.minimum_sell_soc,
-                "min_sell_price": slot.min_sell_price,
-            })
-        return result
-
-    def _learning_profile_stats(self, profile: dict[str, Any]) -> dict[str, int]:
-        """Read counters from current and legacy learned-profile structures."""
-        if not isinstance(profile, dict):
-            return {
-                "accepted_samples": 0,
-                "rejected_samples": 0,
-                "covered_cells": 0,
-            }
-        nested_cells = profile.get("cells")
-        if isinstance(nested_cells, dict):
-            cells = nested_cells
-            accepted = int(max(0.0, self.safe_float(
-                profile.get("accepted_samples"),
-                sum(
-                    self.safe_float(cell.get("samples"), 0)
-                    for cell in cells.values()
-                    if isinstance(cell, dict)
-                ),
-            )))
-            rejected = int(max(0.0, self.safe_float(
-                profile.get("rejected_samples"),
-                0,
-            )))
-        else:
-            cells = {
-                key: cell
-                for key, cell in profile.items()
-                if isinstance(cell, dict) and "samples" in cell
-            }
-            accepted = int(sum(
-                max(0.0, self.safe_float(cell.get("samples"), 0))
-                for cell in cells.values()
-            ))
-            rejected = 0
-        covered = sum(
-            1
-            for cell in cells.values()
-            if isinstance(cell, dict)
-            and self.safe_float(cell.get("samples"), 0) > 0
-        )
-        return {
-            "accepted_samples": accepted,
-            "rejected_samples": rejected,
-            "covered_cells": covered,
-        }
-
-    def optimizer_core_inputs(
-        self,
-        settings: dict[str, Any] | None = None,
-        battery_model: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Return the subset of Optimizer Core inputs that limit power flows.
-
-        This helper is public so tests can verify the exact limits passed to the
-        planner without running the full 48-hour optimization.
-        """
-        if settings is None:
-            settings = self.ai_settings
-        if battery_model is None:
-            battery_model = self.battery_model_context()
-        model_discharge_limit = self.safe_float(
-            battery_model["power_limit"].get("effective_limit_w"),
-            0,
-        )
-        explicit_discharge_limit = finite_float(settings.get("batteryDischargeLimitW"))
-        discharge_candidates = [
-            value
-            for value in (model_discharge_limit, explicit_discharge_limit)
-            if value is not None and value > 0
-        ]
-        effective_discharge_limit = min(discharge_candidates) if discharge_candidates else 0.0
-        source_limits = dict(battery_model["power_limit"].get("limits_w") or {})
-        if explicit_discharge_limit is not None and explicit_discharge_limit > 0:
-            source_limits["configured_battery_discharge"] = explicit_discharge_limit
-        physical_sell_power = self.max_sell_power_range
-        return {
-            "max_sell_power_w": min(
-                self.safe_float(settings.get("maxSellPower"), 5000),
-                self.effective_inverter_max_power_w,
-            ),
-            "effective_power_limit_w": battery_model["power_limit"]["effective_limit_w"],
-            "battery_charge_limit_w": self.safe_float(
-                settings.get("batteryChargeLimitW"),
-                battery_model["directional_power_limits"]["battery_charge_limit_w"],
-            ),
-            # The explicit setting is an additional safety cap.  It may lower,
-            # but never raise, the physical/model limit.
-            "battery_discharge_limit_w": effective_discharge_limit,
-            "sell_power_limits_w": source_limits,
-            "sell_power_minimum_w": (
-                physical_sell_power.minimum_w
-                if physical_sell_power.minimum_w is not None
-                else 0.0
-            ),
-            "sell_power_maximum_w": physical_sell_power.maximum_w,
-            "sell_power_step_w": (
-                physical_sell_power.step_w
-                if physical_sell_power.step_w is not None
-                else 1.0
-            ),
-            "price_equivalence_band": max(
-                0.0,
-                self.safe_float(
-                    settings.get("priceEquivalenceBand"),
-                    DEFAULT_PRICE_EQUIVALENCE_BAND,
-                ),
-            ),
-            "minimum_auto_sell_power_w": max(
-                0.0,
-                self.safe_float(
-                    settings.get("minimumAutoSellPowerW"),
-                    DEFAULT_MINIMUM_AUTO_SELL_POWER_W,
-                ),
-            ),
-            "battery_discharge_limit_reason": battery_model["power_limit"].get("limit_reason"),
-            "grid_import_limit_w": self.safe_float(
-                settings.get("gridImportLimitW"),
-                settings.get("inverterPowerW") or 100000,
-            ),
-            "grid_export_limit_w": self.safe_float(settings.get("exportLimitW"), 100000),
-            "inverter_ac_limit_w": min(
-                self.safe_float(settings.get("inverterPowerW"), 100000),
-                self.effective_inverter_max_power_w,
-            ),
-        }
-
-    def _prepare_ai_plan_48h(self) -> dict[str, Any]:
-        """Capture every HA/runtime input before pure Core work leaves MainThread."""
-        settings = self.ai_settings
-        battery_model = self.battery_model_context()
-        learning = self.learning_summary()
-        profile = learning.get("hourly_profile") if isinstance(learning.get("hourly_profile"), list) else []
-        by_hour = {int(str(row.get("hour", "0"))[:2]): row for row in profile if isinstance(row, dict)}
-        tariff = self.tariff_context()
-        tariff_rows = [
-            row for row in tariff.get("hourly_profile", [])[:48]
-            if isinstance(row, dict)
-        ]
-        buy_contract = self.price_contract("buy")
-        sell_contract = self.price_contract("sell")
-        distribution = [
-            self.safe_float(row.get("total_distribution_rate", row.get("rate")), 0)
-            for row in tariff_rows
-        ]
-        distribution.extend([0.0] * (48 - len(distribution)))
-        dso_data_complete = bool(tariff.get("configured")) and len(tariff_rows) == 48 and all(
-            row.get("available", True) is not False
-            and row.get("total_distribution_rate", row.get("rate")) is not None
-            for row in tariff_rows
-        )
-        dso_available_hours = (
-            48
-            if buy_contract.get("includes_distribution_variable") is True
-            else 0
-            if not bool(tariff.get("configured"))
-            else sum(
-                1
-                for row in tariff_rows
-                if row.get("available", True) is not False
-                and row.get("total_distribution_rate", row.get("rate")) is not None
-            )
-        )
-        load_profile_stats = self._learning_profile_stats(self.load_profile_7x24)
-        pv_profile_stats = self._learning_profile_stats(self.pv_learning_profile)
-        today_forecast_reading = self.solcast_forecast_today_reading()
-        pv_enabled = self.pv_generation_enabled
-        if pv_enabled:
-            today_forecast = (
-                max(0, self.safe_float(today_forecast_reading.get("value"), 0))
-                if today_forecast_reading.get("status") in ("ok", "derived_actual_plus_remaining")
-                else 0
-            )
-            today_actual = max(0, self.state_float(self.daily_pv_production_sensor, 0))
-            remaining_reading = self._measurement(
-                self.solcast_remaining_today_sensor,
-                kind="energy",
-                stale_after_seconds=_SOLCAST_TRACKING_STALE_SECONDS,
-            )
-            remaining = max(0, self.safe_float(remaining_reading.get("value"), 0))
-            if remaining <= 0:
-                remaining = max(0, today_forecast - today_actual)
-            tomorrow_reading = self._measurement(
-                self.solcast_forecast_tomorrow_sensor,
-                kind="energy",
-                stale_after_seconds=_SOLCAST_DAILY_FORECAST_STALE_SECONDS,
-            )
-            tomorrow_forecast = max(
-                0,
-                self.safe_float(tomorrow_reading.get("value"), 0),
-            )
-        else:
-            today_forecast = 0.0
-            today_actual = 0.0
-            remaining = 0.0
-            tomorrow_reading = {"status": "disabled"}
-            tomorrow_forecast = 0.0
-        selected_strategy = str(settings.get("strategy") or "balanced")
-        if selected_strategy == "autoconsumption":
-            selected_strategy = "safe"
-        current = ha_now()
-        canonical_prices = self.canonical_price_context(current, tariff_rows)
-        sell_prices = canonical_maps(canonical_prices["sell"])
-        buy_prices = canonical_maps(canonical_prices["buy"])
-        load_forecasts = [
-            forecast_load(self.load_profile_7x24, current.replace(minute=0, second=0, microsecond=0) + timedelta(hours=index))
-            for index in range(48)
-        ]
-        live_state = self.live_state_context()
-        current_load_forecast, _load_source, _load_samples = forecast_load(
-            self.load_profile_7x24,
-            current.replace(minute=0, second=0, microsecond=0),
-        )
-        current_pv_forecast = (
-            finite_float(by_hour.get(current.hour, {}).get("pv_kwh")) if pv_enabled else 0.0
-        )
-        if not pv_enabled:
-            live_state["pv_power_w"] = 0.0
-        live_state["pv_forecast_deviation"] = self._material_deviation_bucket(
-            live_state.get("pv_power_w"),
-            current_pv_forecast,
-        )
-        live_state["load_forecast_deviation"] = self._material_deviation_bucket(
-            live_state.get("home_power_w"),
-            current_load_forecast,
-        )
-        current_hour_partial = self.current_hour_partial_context()
-        historical_hours = [
-            {
-                key: row.get(key)
-                for key in (
-                    "hour", "local_date", "local_hour", "pv_kwh", "load_kwh",
-                    "grid_import_kwh", "grid_export_kwh", "battery_charge_kwh",
-                    "battery_discharge_kwh", "soc_start", "soc_end", "soc_min",
-                    "soc_max", "soc_avg", "sell_price_avg", "buy_price_avg",
-                    "action", "control", "channel_quality", "energy_balance",
-                    "solcast_accuracy_percent", "weather_forecast", "weather_actual",
-                )
-            }
-            for row in self.learning_history[:168]
-            if isinstance(row, dict)
-        ]
-        source_quality = self.source_quality_context()
-        source_quality["channel_diagnostics"] = learning.get("channel_diagnostics", {})
-        source_quality["usable_history_hours"] = learning.get("usable_hours", 0)
-        source_quality["history_first_hour"] = learning.get("history_first_hour")
-        source_quality["history_last_hour"] = learning.get("history_last_hour")
-        payload = {
-            "date": current.date().isoformat(),
-            "generated_at": current.isoformat(timespec="seconds"),
-            "timezone": str(
-                getattr(getattr(self.hass, "config", None), "time_zone", None)
-                or current.tzinfo
-                or "UTC"
-            ),
-            "current_hour": current.hour,
-            "soc": (
-                round(value, 1)
-                if (value := self.current_soc_or_none()) is not None
-                else None
-            ),
-            "battery_capacity_kwh": self.safe_float(settings.get("batteryCapacityKwh"), 10),
-            "battery_efficiency": battery_model["round_trip_efficiency"],
-            "charge_efficiency": battery_model["charge_efficiency"],
-            "discharge_efficiency": battery_model["discharge_efficiency"],
-            "min_soc": self.safe_float(settings.get("minSoc"), 20),
-            "effective_min_soc": battery_model["minimum"]["effective_min_soc_pct"],
-            "target_soc": self.safe_float(settings.get("targetSoc"), 100),
-            "reserve_kwh": self.safe_float(settings.get("reserveKwh"), 0),
-            **self.optimizer_core_inputs(settings, battery_model),
-            "current_hour_remaining_minutes": battery_model["current_hour_remaining_minutes"],
-            "charge_kwh_per_hour": max(0.25, self.safe_float(settings.get("batteryCapacityKwh"), 10) * 0.25),
-            "min_sell_price": self.safe_float(settings.get("minSellPrice"), 0),
-            "max_buy_price": self.safe_float(settings.get("maxBuyPrice"), 999),
-            "allow_battery_sell": bool(settings.get("allowBatterySell", True)),
-            "allow_grid_charge": bool(settings.get("allowGridCharge", True)),
-            "sell_prices": sell_prices,
-            "buy_prices": buy_prices,
-            "distribution": distribution,
-            "price_includes_distribution": buy_contract.get("includes_distribution_variable") is True,
-            "price_contracts": {"buy": buy_contract, "sell": sell_contract},
-            "price_diagnostics": deepcopy(canonical_prices),
-            "canonical_prices": deepcopy(canonical_prices),
-            "dso_data_complete": dso_data_complete,
-            "dso_available_hours": dso_available_hours,
-            "tariff_context": {
-                key: tariff.get(key)
-                for key in (
-                    "provider", "provider_name", "plan", "plan_name", "mode",
-                    "configured", "tariff_error",
-                    "price_includes_distribution", "hourly_profile",
-                )
-            },
-            "buy_price_source": self.buy_price_today_sensor,
-            # Core consumes energy forecasts in kWh.  The first array contains
-            # energy still available from now, while ``pv_forecast_full`` keeps
-            # the full-day denominator.  Neither field is a realization rate.
-            "pv_forecast": [0.0, 0.0] if not pv_enabled else [remaining, tomorrow_forecast],
-            "pv_forecast_full": [0.0, 0.0] if not pv_enabled else [today_forecast, tomorrow_forecast],
-            "pv_forecast_available": [False, False] if not pv_enabled else [
-                today_forecast_reading.get("status") in ("ok", "derived_actual_plus_remaining"),
-                tomorrow_reading.get("status") == "ok",
-            ],
-            "forecast_correction": self.safe_float(learning.get("solcast_correction_factor"), 1),
-            # Historical completed-day accuracy is used only for uncertainty;
-            # current-day realization is intentionally absent from Core input.
-            "forecast_accuracy": learning.get("solcast_accuracy_avg"),
-            "pv_profile": [0.0 for _ in range(24)] if not pv_enabled else [self.safe_float(by_hour.get(hour, {}).get("pv_kwh"), 0) for hour in range(24)],
-            "load_profile": [self.safe_float(by_hour.get(hour, {}).get("load_kwh"), 0) for hour in range(24)],
-            # Preserve a missing forecast as None. Optimizer Core may use only
-            # evidence-based fallbacks and must never turn missing load into
-            # additional sellable energy by coercing it to zero.
-            "load_profile_48h": [value for value, _source, _samples in load_forecasts],
-            "load_profile_sources_48h": [
-                {"source": source, "samples": samples}
-                for _value, source, samples in load_forecasts
-            ],
-            "weather_factors": self._weather_factors_48h(),
-            "apply_weather_correction": bool(settings.get("applyWeatherCorrection", False)),
-            "recorded_days": learning.get("recorded_days", 0),
-            "load_profile_sample_count": load_profile_stats["accepted_samples"],
-            "load_profile_rejected_count": load_profile_stats["rejected_samples"],
-            "load_profile_covered_cells": load_profile_stats["covered_cells"],
-            "load_profile_total_cells": 168,
-            "pv_profile_sample_count": pv_profile_stats["accepted_samples"],
-            "pv_profile_rejected_count": pv_profile_stats["rejected_samples"],
-            "pv_profile_covered_cells": pv_profile_stats["covered_cells"],
-            "pv_profile_total_cells": 288,
-            "learning_stage": learning.get("learning_stage", {}),
-            "learning_maturity": learning.get("learning_maturity", {}),
-            "user_profiles": deepcopy(self.user_profiles),
-            "profile_execution": deepcopy(self.profile_execution),
-            "data_quality": source_quality,
-            "soc_diagnostics": self.soc_diagnostics(),
-            "live_state": live_state,
-            "current_hour_partial": current_hour_partial,
-            "historical_hours": historical_hours,
-            "history_revision": (
-                f"{learning.get('history_last_hour') or 'none'}:"
-                f"{learning.get('recorded_hours', 0)}:"
-                f"{learning.get('usable_hours', 0)}"
-            ),
-            "history_schema_version": HISTORY_SCHEMA_VERSION,
-            "generation_reason": self._optimizer_generation_reason,
-            "previous_plan_id": self.optimizer_plan.get("plan_id"),
-            "baseline_schedule": self.optimizer_baseline_schedule(),
-            "battery_cycle_cost_per_kwh": self.safe_float(settings.get("batteryCycleCostPerKwh"), 0),
-            "terminal_energy_value_per_kwh": self.safe_float(settings.get("terminalEnergyValuePerKwh"), 0),
-            "battery_voltage_v": battery_model.get("battery_voltage_v"),
-        }
-        current_snapshot_id = snapshot_id({
-            "semantic_inputs": self._semantic_optimizer_inputs(payload)
-        })
-        # Every mutable runtime collection included above is copied, so this
-        # owned payload can safely cross into the executor without HA access.
-        self._optimizer_last_inputs = payload
-        return {
-            "payload": payload,
-            "selected_strategy": selected_strategy,
-            "snapshot_id": current_snapshot_id,
-            "current": current,
-            "battery_model": battery_model,
-        }
-
-    @classmethod
-    def _semantic_optimizer_inputs(
-        cls,
-        value: Any,
-        _path: tuple[str, ...] = (),
-    ) -> Any:
-        """Drop reporting metadata while retaining freshness state transitions."""
-        if isinstance(value, dict):
-            status = str(value.get("status") or "")
-            result = {
-                str(key): cls._semantic_optimizer_inputs(
-                    item,
-                    (*_path, str(key)),
-                )
-                for key, item in value.items()
-                if key not in {
-                    "generated_at",
-                    "generation_reason",
-                    "previous_plan_id",
-                    "last_updated",
-                    "last_reported",
-                    "reported_at",
-                    "soc_reported_at",
-                    "soc_report_age_seconds",
-                    "observed_at",
-                    "value_changed_at",
-                    "freshness_source",
-                    "source_health_source",
-                    "source_health_at",
-                    "source_health_age_seconds",
-                    "effective_soc_freshness_at",
-                    "effective_soc_age_seconds",
-                    "freshness_reason",
-                    "effective_threshold_seconds",
-                    "age_seconds",
-                }
-                and not (
-                    _path == ("live_state",)
-                    and (
-                        key == "timestamp"
-                        or (
-                            key == "pv_power_w"
-                            and "pv_forecast_deviation" in value
-                        )
-                        or (
-                            key == "home_power_w"
-                            and "load_forecast_deviation" in value
-                        )
-                    )
-                )
-                and not (
-                    _path == ()
-                    and key in {"current_hour_partial", "current_hour_remaining_minutes"}
-                )
-            }
-            if status == "stale" and "reason" in result:
-                result["reason"] = "stale"
-            return result
-        if isinstance(value, (list, tuple)):
-            return [
-                cls._semantic_optimizer_inputs(item, (*_path, str(index)))
-                for index, item in enumerate(value)
-            ]
-        return value
-
-    def _optimizer_plan_is_current(self, prepared: dict[str, Any]) -> bool:
-        if prepared["snapshot_id"] == self._optimizer_budget_blocked_snapshot_id:
-            return True
-        return bool(
-            self.optimizer_plan
-            and prepared["snapshot_id"] == self._optimizer_input_snapshot_id
-            and self.optimizer_plan.get("algorithm_version") == ALGORITHM_VERSION
-            and self.optimizer_plan.get("plan_schema_version") == PLAN_SCHEMA_VERSION
-        )
-
-    @staticmethod
-    def _compact_optimizer_history_entry(plan: Any) -> dict[str, Any]:
-        """Keep one useful plan audit record without another complete 48 h plan."""
-        source = plan if isinstance(plan, dict) else {}
-        quality = source.get("data_quality") if isinstance(source.get("data_quality"), dict) else {}
-        return {
-            key: source.get(key)
-            for key in (
-                "plan_id",
-                "generated_at",
-                "horizon_start",
-                "horizon_end",
-                "generation_reason",
-                "algorithm_version",
-                "plan_schema_version",
-                "history_schema_version",
-                "input_snapshot_id",
-                "selected_variant",
-                "learning_status",
-                "plan_status",
-                "previous_plan_id",
-                "superseded_by_plan_id",
-                "baseline_result",
-                "optimized_result",
-                "benefit",
-                "neutrality_threshold",
-                "comparison",
-                "recommended_write",
-            )
-            if key in source
-        } | {
-            "data_quality": {
-                key: quality.get(key)
-                for key in (
-                    "fail_closed",
-                    "fail_closed_reason",
-                    "learning_apply_allowed",
-                    "recorded_days",
-                    "usable_history_hours",
-                )
-                if key in quality
-            }
-        }
-
-    def _apply_prepared_ai_plan(
-        self,
-        prepared: dict[str, Any],
-        core_result: dict[str, Any] | None,
-    ) -> tuple[dict[str, Any], bool]:
-        """Apply a pure Core result on MainThread and report semantic output change."""
-        current = prepared["current"]
-        battery_model = prepared["battery_model"]
-        current_snapshot_id = prepared["snapshot_id"]
-        if core_result is None:
-            result = dict(self.optimizer_plan)
-        else:
-            result = dict(core_result)
-            self._optimizer_budget_blocked_snapshot_id = ""
-            self._optimizer_budget_status = {
-                "status": "ok",
-                "reason": None,
-                "limits": deepcopy(core_result.get("core_budget", {}).get("limits", {})),
-                "usage": deepcopy(core_result.get("core_budget", {}).get("usage", {})),
-            }
-            previous = (
-                self._compact_optimizer_history_entry(self.optimizer_plan)
-                if self.optimizer_plan
-                else None
-            )
-            if previous:
-                previous["superseded_by_plan_id"] = result.get("plan_id")
-                self.optimizer_plan_history = [previous, *self.optimizer_plan_history][:30]
-            self.optimizer_plan = core_result
-            self._sync_profile_execution_from_plan(result, current)
-            self._optimizer_input_snapshot_id = current_snapshot_id
-            self._optimizer_generation_reason = "cached_until_input_change"
-            # Core refreshes are high-frequency derived state. Mark them for a
-            # controlled final flush instead of writing both Stores per cycle.
-            self._ai_save_dirty = True
-            self._learning_save_dirty = True
-        archive_changed = self._sync_plan_execution_archive(result, current)
-        if archive_changed:
-            self._ai_save_dirty = True
-        forecast_hours = [
-            {
-                "timestamp": f"{row.get('date')}T{int(row.get('hour', 0)):02d}:00:00{current.strftime('%z')[:3]}:{current.strftime('%z')[3:]}",
-                "soc_end_pct": row.get("soc_end_pct", row.get("soc_after")),
-            }
-            for row in result.get("rows", [])
-            if isinstance(row, dict)
-        ]
-        result["battery_model"] = battery_model
-        # A shallow list snapshot preserves every established public row while
-        # avoiding deep-copying up to two years of immutable-by-convention data.
-        result["profile_execution"] = list(self.profile_execution)
-        result["soc_timeline"] = build_soc_timeline(
-            now=current,
-            historical_hours=self.learning_history,
-            current_soc_pct=self.current_soc_or_none(),
-            forecast_hours=forecast_hours,
-        )
-        plan_id = str(result.get("plan_id") or "")
-        output_changed = bool(
-            plan_id != self._optimizer_last_plan_id
-            or self._profile_execution_revision
-            != self._optimizer_last_profile_execution_revision
-            or not self._optimizer_public_snapshot
-        )
-        if output_changed or not self._optimizer_public_snapshot:
-            self._optimizer_public_snapshot = result
-            self._optimizer_last_plan_id = plan_id
-            self._optimizer_last_profile_execution_revision = (
-                self._profile_execution_revision
-            )
-            self._optimizer_output_snapshot_id = plan_id
-        return result, output_changed
-
-    def ai_plan_48h(self) -> dict[str, Any]:
-        """Synchronous compatibility wrapper used outside the HA runtime worker."""
-        prepared = self._prepare_ai_plan_48h()
-        core_result = None
-        if not self._optimizer_plan_is_current(prepared):
-            core_result = build_plan_bundle(
-                prepared["payload"],
-                prepared["selected_strategy"],
-            )
-        result, _changed = self._apply_prepared_ai_plan(prepared, core_result)
-        return result
 
     def register_entity(self, entity: Any) -> None:
         if entity not in self.entities:
@@ -3330,7 +2459,6 @@ class DeyeEnergyRuntime:
         if (
             self._startup_in_progress
             or self._platform_setup_in_progress
-            or (self._initial_optimizer_pending and not self._initial_optimizer_started)
             or self._unloading
             or (task is not None and not task.done())
         ):
@@ -3340,64 +2468,33 @@ class DeyeEnergyRuntime:
         return task
 
     def build_ai_state_snapshot(self) -> dict[str, Any]:
-        """Build the expensive AI sensor payload outside entity getters."""
-        learning = self.learning_summary()
-        pv_enabled = self.pv_generation_enabled
+        """Build the retained ai_state publication payload outside entity getters."""
         return {
-            "settings": self.ai_settings,
-            "user_profiles": self.user_profiles,
-            "optimizer_plan_history": self.optimizer_plan_history[:30],
-            "optimizer_plan_history_format": "compact-v1",
-            "optimizer_plan_history_schema_version": HISTORY_SCHEMA_VERSION,
-            "api_assistant": self.ai_api_public_context(),
-            "history": self.ai_history,
-            "history_count": len(self.ai_history),
-            "learning_summary": learning,
-            "solcast_current_day": self.solcast_current_day_metrics(
-                historical_accuracy_pct=learning.get("solcast_accuracy_avg"),
-            ),
-            "learning_recent": self.learning_history[:24],
-            "learning_current_hour": self._finalize_learning_hour(
-                self.learning_tracking,
-                update_models=False,
-            ) if self.learning_tracking else {},
-            "current_hour_partial": self.current_hour_partial_context(),
-            "live_state": self.live_state_context(),
+            "manual_schedule": self.manual_schedule_state(),
+            "energy_status_display": self.energy_status_display_state(),
+            "power_flow_display": entity_map.power_flow_display(),
+            "weather": self.weather_context(),
+            "tariff": self.tariff_context(),
             "daily_summary": self.history_daily_summary(),
             "monthly_summary": self.history_monthly_summary(),
-            "solcast_history": self.solcast_history if pv_enabled else [],
-            # Preserve the established detailed UI contract for the latest
-            # 288 minutes while older persisted rows stay compact.
+            "solcast_history": (
+                self.solcast_history if self.pv_generation_enabled else []
+            ),
             "energy_samples": (
                 self._energy_recent_details[-288:]
                 if self._energy_recent_details
                 else self.energy_samples[-288:]
             ),
-            "weather": self.weather_context(),
-            "tariff": self.tariff_context(),
-            "planner_48h": self._optimizer_public_snapshot or self.optimizer_plan,
-            "future_plan": self.future_plan,
-            "manual_schedule": self.manual_schedule_state(),
-            "energy_status_display": self.energy_status_display_state(),
-            "power_flow_display": entity_map.power_flow_display(),
-            "plan_execution_index": self.plan_execution_index(),
-            "plan_execution_today": self.plan_execution_day(),
+            "current_hour_partial": self.current_hour_partial_context(),
+            "live_state": self.live_state_context(),
         }
 
     def diagnostics_public_snapshot(self) -> dict[str, Any]:
-        """Merge small live lifecycle counters into the cached heavy diagnostics."""
-        snapshot = dict(self._diagnostics_snapshot)
-        snapshot["optimizer_runtime"] = {
-            **deepcopy(self.runtime_metrics),
-            "pending": self._optimizer_recalc_pending,
-            "pending_reasons": sorted(self._optimizer_pending_reasons),
-            "active_recalc": self._optimizer_active_recalc,
-            "listener_entities": list(self._optimizer_listener_entity_ids),
-        }
-        return snapshot
+        """Return the cached heavy diagnostics snapshot."""
+        return dict(self._diagnostics_snapshot)
 
     async def async_refresh_sensor_snapshots(self) -> None:
-        """Build AI and diagnostics snapshots single-flight, never in a getter."""
+        """Build ai_state and diagnostics snapshots single-flight, never in a getter."""
         if self._unloading:
             return
         current = asyncio.current_task()
@@ -3435,12 +2532,7 @@ class DeyeEnergyRuntime:
                         "diagnostics_build",
                         (time.perf_counter() - diagnostics_started) * 1000.0,
                     )
-                    diagnostics_semantic = {
-                        key: value
-                        for key, value in diagnostics_snapshot.items()
-                        if key != "optimizer_runtime"
-                    }
-                    diagnostics_snapshot_id = snapshot_id(diagnostics_semantic)
+                    diagnostics_snapshot_id = snapshot_id(diagnostics_snapshot)
                     if diagnostics_snapshot_id != self._diagnostics_snapshot_id:
                         self._diagnostics_snapshot = diagnostics_snapshot
                         self._diagnostics_snapshot_id = diagnostics_snapshot_id
@@ -3461,180 +2553,7 @@ class DeyeEnergyRuntime:
         if self._sensor_snapshot_pending and not self._unloading:
             self.request_sensor_snapshot_refresh()
 
-    def request_optimizer_recalc(self, reason: str | set[str] | list[str] | tuple[str, ...] = "manual") -> Any:
-        """Coalesce material 5G input changes into one optimizer task."""
-        requested_reasons = (
-            {str(item or "manual") for item in reason}
-            if isinstance(reason, (set, list, tuple))
-            else {str(reason or "manual")}
-        )
-        self._performance.record_optimizer_request(requested_reasons)
-        self._performance.inc("optimizer_pending_set")
-        self.runtime_metrics["optimizer_recalc_requested"] += 1
-        reason_counts = self.runtime_metrics["optimizer_recalc_reasons"]
-        for normalized_reason in requested_reasons:
-            reason_counts[normalized_reason] = int(reason_counts.get(normalized_reason, 0)) + 1
-            metric_key = f"optimizer_recalc_reason_{normalized_reason}"
-            self.runtime_metrics[metric_key] = int(self.runtime_metrics.get(metric_key, 0)) + 1
-        self._optimizer_pending_reasons.update(requested_reasons)
-        self._optimizer_recalc_pending = True
-        task = self._optimizer_recalc_task
-        if task is not None and not task.done():
-            self._performance.inc("optimizer_skipped_busy")
-        if (
-            self._startup_in_progress
-            or self._platform_setup_in_progress
-            or (self._initial_optimizer_pending and not self._initial_optimizer_started)
-            or self._unloading
-            or (task is not None and not task.done())
-        ):
-            return task
-        task = self.hass.async_create_task(self.async_refresh_optimizer_plan())
-        self._optimizer_recalc_task = task
-        return task
 
-    async def async_refresh_optimizer_plan(self) -> None:
-        """Run pure Core off-loop, with semantic dedup and one follow-up."""
-        if self._unloading:
-            return
-        current = asyncio.current_task()
-        active = self._optimizer_recalc_task
-        if active is not None and active is not current and not active.done():
-            self._optimizer_recalc_pending = True
-            await asyncio.shield(active)
-            return
-        if active is None or active.done():
-            self._optimizer_recalc_task = current
-        self._optimizer_active_recalc += 1
-        self.runtime_metrics["optimizer_recalc_max_active"] = max(
-            int(self.runtime_metrics["optimizer_recalc_max_active"]),
-            self._optimizer_active_recalc,
-        )
-        follow_up_used = False
-        output_changed = False
-        try:
-            while True:
-                self._optimizer_recalc_pending = False
-                reasons = sorted(self._optimizer_pending_reasons)
-                self._optimizer_pending_reasons.clear()
-                await asyncio.sleep(0)
-                prepare_started = time.perf_counter()
-                try:
-                    prepared = self._prepare_ai_plan_48h()
-                except Exception:
-                    self._performance.inc("optimizer_failed")
-                    raise
-                self._performance.observe_ms(
-                    "optimizer_prepare",
-                    (time.perf_counter() - prepare_started) * 1000.0,
-                )
-                if self._optimizer_plan_is_current(prepared):
-                    self._performance.inc("optimizer_skipped_same_snapshot")
-                    self._performance.inc("optimizer_semantic_snapshot_same")
-                    self.runtime_metrics["optimizer_recalc_skipped_same_snapshot"] += 1
-                else:
-                    self._performance.inc("optimizer_semantic_snapshot_changed")
-                    loop = asyncio.get_running_loop()
-                    started_at = ha_now()
-                    started_clock = loop.time()
-                    self._performance.inc("optimizer_started")
-                    self.runtime_metrics["optimizer_recalc_started"] += 1
-                    self.runtime_metrics["optimizer_recalc_last_started"] = started_at.isoformat()
-                    self.runtime_metrics["optimizer_recalc_last_reasons"] = reasons
-                    executor = getattr(self.hass, "async_add_executor_job", None)
-                    queued_clock = time.perf_counter()
-                    if self._performance.active:
-                        core_callable = partial(
-                            run_core_with_timings,
-                            build_plan_bundle,
-                            queued_clock=queued_clock,
-                        )
-                    else:
-                        core_callable = build_plan_bundle
-                    args = (
-                        core_callable,
-                        prepared["payload"],
-                        prepared["selected_strategy"],
-                    )
-                    try:
-                        timed_result = (
-                            await executor(*args)
-                            if callable(executor)
-                            else await asyncio.to_thread(*args)
-                        )
-                    except Exception:
-                        self._performance.inc("optimizer_failed")
-                        raise
-                    if (
-                        isinstance(timed_result, tuple)
-                        and len(timed_result) == 2
-                        and isinstance(timed_result[1], dict)
-                    ):
-                        core_result, worker_timings = timed_result
-                        self._performance.observe_ms(
-                            "optimizer_executor_queue_wait",
-                            worker_timings["queue_wait_ms"],
-                        )
-                        self._performance.observe_ms(
-                            "optimizer_core_wall",
-                            worker_timings["wall_ms"],
-                        )
-                        self._performance.observe_ms(
-                            "optimizer_core_thread_cpu",
-                            worker_timings["thread_cpu_ms"],
-                        )
-                    else:
-                        # Compatibility with lightweight HA/test executor shims
-                        # that return the Core result without calling the worker.
-                        core_result = timed_result
-                    if self._unloading:
-                        return
-                    if isinstance(core_result, dict) and core_result.get("budget_exceeded"):
-                        self._optimizer_budget_blocked_snapshot_id = prepared["snapshot_id"]
-                        self._optimizer_budget_status = {
-                            "status": "budget_exceeded",
-                            "reason": str(core_result.get("failure_reason") or "operation_budget_exceeded"),
-                            "limits": deepcopy(core_result.get("core_budget", {}).get("limits", {})),
-                            "usage": deepcopy(core_result.get("core_budget", {}).get("usage", {})),
-                        }
-                        self._optimizer_generation_reason = "core_budget_exceeded"
-                        self.runtime_metrics["optimizer_budget_exceeded"] += 1
-                        self._performance.inc("optimizer_budget_exceeded")
-                    else:
-                        apply_started = time.perf_counter()
-                        try:
-                            _result, changed = self._apply_prepared_ai_plan(prepared, core_result)
-                        except Exception:
-                            self._performance.inc("optimizer_failed")
-                            raise
-                        self._performance.observe_ms(
-                            "optimizer_apply_result",
-                            (time.perf_counter() - apply_started) * 1000.0,
-                        )
-                        output_changed = output_changed or changed
-                    self._performance.inc("optimizer_completed")
-                    self.runtime_metrics["optimizer_recalc_completed"] += 1
-                    self.runtime_metrics["optimizer_recalc_last_finished"] = ha_now().isoformat()
-                    self.runtime_metrics["optimizer_recalc_last_duration_s"] = round(
-                        loop.time() - started_clock,
-                        4,
-                    )
-                if self._optimizer_recalc_pending and not follow_up_used:
-                    follow_up_used = True
-                    self._performance.inc("optimizer_followup_started")
-                    self.runtime_metrics["optimizer_recalc_followup"] += 1
-                    continue
-                break
-        finally:
-            self._optimizer_active_recalc = max(0, self._optimizer_active_recalc - 1)
-            if self._optimizer_recalc_task is current:
-                self._optimizer_recalc_task = None
-        if output_changed:
-            self.request_sensor_snapshot_refresh({"ai_state"})
-        self._notify_entities_from_cache(
-            {"diagnostics"},
-            reason="optimizer_diagnostics",
-        )
         # Do not create an automatic recovery chain after the single controlled
         # follow-up.  A later independent debounce/tick may consume the retained
         # dirty bit and reasons in a fresh bounded cycle.
@@ -4208,7 +3127,7 @@ class DeyeEnergyRuntime:
         return max(0.0, float(value)) if value is not None else 0.0
 
     def source_quality_context(self) -> dict[str, Any]:
-        """Return the exact source/fallback status consumed by learning."""
+        """Return the exact source/fallback status consumed by the scheduler."""
         load = self.load_power_reading()
         battery = self.battery_power_reading()
         sources = {
@@ -4313,43 +3232,76 @@ class DeyeEnergyRuntime:
             },
         }
 
-    @staticmethod
-    def _material_deviation_bucket(
-        actual_power_w: Any,
-        expected_kwh: Any,
-    ) -> float | None:
-        """Quantize live-vs-hourly forecast deviation for semantic recalc."""
-
-        actual = finite_float(actual_power_w)
-        expected = finite_float(expected_kwh)
-        if actual is None or expected is None:
-            return None
-        reference_w = max(LIVE_DEVIATION_REFERENCE_FLOOR_W, abs(expected) * 1000.0)
-        ratio = (actual - expected * 1000.0) / reference_w
-        if abs(ratio) < LIVE_DEVIATION_BUCKET_RATIO:
-            return 0.0
-        bucket = round(ratio / LIVE_DEVIATION_BUCKET_RATIO) * LIVE_DEVIATION_BUCKET_RATIO
-        return round(max(-4.0, min(4.0, bucket)), 2)
-
     def current_hour_partial_context(self) -> dict[str, Any]:
-        """Return energy already observed in the open hour plus its quality."""
-        tracking = self.learning_tracking if isinstance(self.learning_tracking, dict) else {}
+        """Return the current hour's observed energy from retained samples."""
         now = ha_now()
         elapsed_minutes = max(0, min(60, now.minute))
-        channels = tracking.get("channels") if isinstance(tracking.get("channels"), dict) else {}
+        samples: list[dict[str, Any]] = []
+        for source in self._energy_recent_details:
+            if not isinstance(source, dict):
+                continue
+            try:
+                stamp = datetime.fromisoformat(str(source.get("timestamp") or ""))
+            except ValueError:
+                continue
+            if stamp.date() == now.date() and stamp.hour == now.hour:
+                samples.append(source)
+
+        channel_names = (
+            "pv", "load", "grid", "battery", "soc", "sell_price", "buy_price",
+        )
+        channels = {name: new_channel() for name in channel_names}
+        for sample in samples:
+            seconds = self.safe_float(sample.get("interval_seconds"), 60.0)
+            readings = sample.get("readings")
+            if not isinstance(readings, dict):
+                continue
+            for name, item in readings.items():
+                if name not in channels or not isinstance(item, dict):
+                    continue
+                channels[name] = record_channel(
+                    channels[name],
+                    value=item.get("value"),
+                    elapsed_seconds=seconds,
+                    quality=str(item.get("quality") or "unavailable"),
+                    status=str(item.get("status") or "unavailable"),
+                    source=str(item.get("source") or "unavailable"),
+                )
+        expected_seconds = max(60.0, elapsed_minutes * 60.0)
         summaries = {
-            name: channel_summary(item, expected_seconds=max(60.0, elapsed_minutes * 60.0))
-            for name, item in channels.items()
-            if isinstance(item, dict)
+            name: channel_summary(value, expected_seconds=expected_seconds)
+            for name, value in channels.items()
+        }
+
+        field_map = {
+            "pv_kwh": ("pv_power", "pv"),
+            "load_kwh": ("load_power", "load"),
+            "grid_import_kwh": ("grid_import_power", "grid"),
+            "grid_export_kwh": ("grid_export_power", "grid"),
+            "battery_charge_kwh": ("battery_charge_power", "battery"),
+            "battery_discharge_kwh": ("battery_discharge_power", "battery"),
         }
 
         def observed(field: str, channel: str) -> float | None:
             if int(summaries.get(channel, {}).get("valid_samples", 0)) <= 0:
                 return None
-            return round(self.safe_float(tracking.get(field), 0), 5)
+            source_field, _channel = field_map[field]
+            total = 0.0
+            for sample in samples:
+                value = finite_float(sample.get(source_field))
+                if value is None:
+                    continue
+                seconds = self.safe_float(sample.get("interval_seconds"), 60.0)
+                total += value * seconds / 3_600_000.0
+            return round(total, 5)
 
+        soc_values = [
+            value
+            for value in (finite_float(sample.get("soc")) for sample in samples)
+            if value is not None
+        ]
         return {
-            "hour": tracking.get("hour"),
+            "hour": f"{now.hour:02d}",
             "elapsed_minutes": elapsed_minutes,
             "remaining_minutes": max(0, 60 - elapsed_minutes),
             "pv_kwh": observed("pv_kwh", "pv"),
@@ -4358,12 +3310,8 @@ class DeyeEnergyRuntime:
             "grid_export_kwh": observed("grid_export_kwh", "grid"),
             "battery_charge_kwh": observed("battery_charge_kwh", "battery"),
             "battery_discharge_kwh": observed("battery_discharge_kwh", "battery"),
-            "soc_start_pct": tracking.get("soc_start"),
-            "soc_current_pct": (
-                tracking.get("soc_last", tracking.get("soc_start"))
-                if int(summaries.get("soc", {}).get("valid_samples", 0)) > 0
-                else None
-            ),
+            "soc_start_pct": round(soc_values[0], 1) if soc_values else None,
+            "soc_current_pct": round(soc_values[-1], 1) if soc_values else None,
             "channels": summaries,
         }
 
@@ -4649,7 +3597,7 @@ class DeyeEnergyRuntime:
             "full_tou": tuple(
                 f"tou_{idx}_{kind}" for idx in range(1, 7) for kind in ("start", "soc", "grid")
             ),
-            "core_ai": ("soc", "grid_power", "pv_power", "load_power", "battery_power", "sell_price", "solcast_today"),
+            "schedule_data": ("soc", "grid_power", "pv_power", "load_power", "battery_power", "sell_price", "solcast_today"),
         }
         result: dict[str, Any] = {}
         for name, keys in groups.items():
@@ -4913,7 +3861,7 @@ class DeyeEnergyRuntime:
             if not tou["ok"]
             else "OK"
         )
-        return {"integration_version": "0.8.0.86", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
+        return {"integration_version": "0.8.0.87", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
                 "inverter_provider": self.inverter_provider,
                 "inverter_device_id": self.data.get(CONF_INVERTER_DEVICE_ID),
                 "inverter_provider_label": provider_profile(self.data).label,
@@ -4921,12 +3869,6 @@ class DeyeEnergyRuntime:
                 "last_saved_at": self.last_saved_at or "never", "last_applied_at": self.last_applied_at or "never",
                  "last_error": self.last_error or "none", "last_schedule_attempt": self.last_schedule_attempt,
                  "manager_status": self.manager_status, "mapping_status": mapping_status,
-                 "optimizer_core_budget": deepcopy(self._optimizer_budget_status),
-                 "optimizer_startup": {
-                     "pending": self._initial_optimizer_pending,
-                     "started": self._initial_optimizer_started,
-                     "completed": self._initial_optimizer_completed,
-                 },
                  "control": {
                      "entity_id": self.control_entity_id,
                      "enabled": self.control_enabled,
@@ -4994,15 +3936,7 @@ class DeyeEnergyRuntime:
                 "optional_entities": optional_entities,
                 "data_quality": quality_context,
                 "energy_counters": self.data_quality.get("energy_counters", {}),
-                "energy_samples": len(self.energy_samples), "weather": self.weather_context(), "tariff": self.tariff_context(),
-                "optimizer_runtime": {
-                    **deepcopy(self.runtime_metrics),
-                    "pending": self._optimizer_recalc_pending,
-                    "pending_reasons": sorted(self._optimizer_pending_reasons),
-                    "active_recalc": self._optimizer_active_recalc,
-                    "listener_entities": list(self._optimizer_listener_entity_ids),
-                },
-                "ai_api": self.ai_api_public_context()}
+                "energy_samples": len(self.energy_samples), "weather": self.weather_context(), "tariff": self.tariff_context()}
 
     def empty_hourly_stats(self) -> dict[str, dict[str, float]]:
         return {f"{hour:02d}": {"kwh": 0.0, "value": 0.0} for hour in range(24)}
@@ -5138,39 +4072,16 @@ class DeyeEnergyRuntime:
         self.notify_update("trigger_log")
 
     async def async_load_ai_data(self) -> None:
+        """Restore the shared persistence keys from the existing Store."""
         self._ai_store = Store(self.hass, 1, f"{DOMAIN}_{self.entry_id}_ai_data")
         raw = await self._ai_store.async_load()
-        data, migrated = migrate_ai_payload(raw)
-        settings = data.get("settings")
-        history = data.get("history")
-        self.ai_settings = settings if isinstance(settings, dict) else {}
-        self.ai_history = history[:365] if isinstance(history, list) else []
+        data = dict(raw) if isinstance(raw, dict) else {}
+        migrated = int(self.safe_float(data.get("schema_version"), 1)) < HISTORY_SCHEMA_VERSION
+        data["schema_version"] = HISTORY_SCHEMA_VERSION
         self.control_enabled = bool(data.get("control_enabled", True))
         self.control_status = "Active" if self.control_enabled else "Disabled"
         if not self.control_enabled:
             self.executed_manager_action = "Not performed — control disabled"
-        self.user_profiles = data.get("user_profiles") if isinstance(data.get("user_profiles"), dict) else default_user_profiles()
-        optimizer_plan = data.get("optimizer_plan")
-        optimizer_history = data.get("optimizer_plan_history")
-        self.optimizer_plan = optimizer_plan if isinstance(optimizer_plan, dict) else {}
-        source_optimizer_history = optimizer_history[:30] if isinstance(optimizer_history, list) else []
-        self.optimizer_plan_history = [
-            self._compact_optimizer_history_entry(row)
-            for row in source_optimizer_history
-            if isinstance(row, dict)
-        ]
-        if self.optimizer_plan_history != source_optimizer_history:
-            migrated = True
-        plan_execution_archive = data.get("plan_execution_archive")
-        self.plan_execution_archive = (
-            plan_execution_archive[:2160]
-            if isinstance(plan_execution_archive, list)
-            else []
-        )
-        self._optimizer_input_snapshot_id = str(data.get("optimizer_input_snapshot_id") or "")
-        if self._sanitize_cached_price_plans():
-            migrated = True
-        self._optimizer_generation_reason = "startup_or_restored_state"
         self.schedule_revision = max(
             0, int(self.safe_float(data.get("schedule_revision"), 0))
         )
@@ -5194,20 +4105,10 @@ class DeyeEnergyRuntime:
             )
             if str(key) in self.slots and isinstance(value, dict)
         }
-        future_plan = data.get("future_plan")
-        self.future_plan, future_plan_migrated = self._normalize_stored_future_plan(
-            future_plan
-        )
-        migrated = migrated or future_plan_migrated
         self.last_saved_at = str(data.get("last_saved_at") or "")
-        self.schedule_schema_version = max(0, int(self.safe_float(data.get("schedule_schema_version"), 0)))
-        raw_ai_limit = data.get("ai_api_limit")
-        self.ai_api_limit_state = (
-            dict(raw_ai_limit) if isinstance(raw_ai_limit, dict) else {}
+        self.schedule_schema_version = max(
+            0, int(self.safe_float(data.get("schedule_schema_version"), 0))
         )
-        self._normalize_ai_api_limit_state(ha_now())
-        raw_ai_cache = data.get("ai_api_cache")
-        self.ai_api_cache = dict(raw_ai_cache) if isinstance(raw_ai_cache, dict) else {}
         stored_default_physical_mode = data.get("default_physical_work_mode")
         if stored_default_physical_mode in PHYSICAL_NORMAL_MODES:
             self.default_physical_work_mode = str(stored_default_physical_mode)
@@ -5218,15 +4119,10 @@ class DeyeEnergyRuntime:
                 if slot_key in self.slots and physical_mode in PHYSICAL_NORMAL_MODES:
                     self.slots[slot_key].physical_work_mode = str(physical_mode)
 
-        # One-time marker for the pre-Solar-Assistant defaults.  Current limits
-        # are no longer part of the manager-owned profile state.
         if not data.get("sa_defaults_v1"):
             data["sa_defaults_v1"] = True
             migrated = True
 
-        # The Charge template is one atomic user-owned record.  Loading all
-        # fields together prevents individual RestoreEntity callbacks from
-        # rebuilding a mixed profile after a restart.
         raw_profile = data.get("charge_profile")
         if isinstance(raw_profile, dict):
             target_soc = self.safe_float(raw_profile.get("target_soc"), float("nan"))
@@ -5280,8 +4176,6 @@ class DeyeEnergyRuntime:
             try:
                 self._rebuild_manual_effective_rows()
             except Exception:
-                # An unreadable row set must not silently become an empty manual
-                # source: fall back to the work schedule until rows are fixed.
                 self.manual_schedule["active"] = False
                 self.manual_schedule["activation_snapshot"] = None
         if migrated:
@@ -5292,17 +4186,9 @@ class DeyeEnergyRuntime:
             )
 
     def _ai_store_payload(self) -> dict[str, Any]:
-        """Build the latest canonical AI Store payload only on a save path."""
+        """Build the shared Store payload only on a save path."""
         return {
             "schema_version": HISTORY_SCHEMA_VERSION,
-            "settings": self.ai_settings,
-            "history": self.ai_history[:365],
-            "user_profiles": self.user_profiles,
-            "optimizer_plan": self.optimizer_plan,
-            "optimizer_plan_history": self.optimizer_plan_history[:30],
-            "plan_execution_archive": self.plan_execution_archive[:2160],
-            "optimizer_input_snapshot_id": self._optimizer_input_snapshot_id,
-            "future_plan": self.future_plan,
             "schedule_revision": self.schedule_revision,
             "schedule_slot_revisions": self.schedule_slot_revisions,
             "schedule_slot_ownership": self.schedule_slot_ownership,
@@ -5334,30 +4220,11 @@ class DeyeEnergyRuntime:
                 "sell_power": self.normal_profile_sell_power,
                 "tou_soc": self.normal_profile_tou_soc,
             },
-            "ai_api_limit": self.ai_api_limit_state,
-            # Strict response validation bounds this cache to one small advisory
-            # result. Persisting it keeps a successful fingerprint meaningful
-            # after restart without restoring historical plan payloads.
-            "ai_api_cache": self.ai_api_cache,
         }
 
     def _ai_store_fingerprint_payload(self) -> dict[str, Any]:
-        """Return a bounded canonical identity for the complete AI Store state."""
-        plan = self.optimizer_plan if isinstance(self.optimizer_plan, dict) else {}
+        """Return a bounded canonical identity for the shared Store state."""
         return {
-            "settings": self.ai_settings,
-            "history": self.ai_history[:365],
-            "user_profiles": self.user_profiles,
-            "optimizer": {
-                "plan_id": plan.get("plan_id"),
-                "input_snapshot_id": plan.get("input_snapshot_id"),
-                "algorithm_version": plan.get("algorithm_version"),
-                "plan_schema_version": plan.get("plan_schema_version"),
-            },
-            "optimizer_plan_history": self.optimizer_plan_history[:30],
-            "plan_execution_archive": self.plan_execution_archive[:2160],
-            "optimizer_input_snapshot_id": self._optimizer_input_snapshot_id,
-            "future_plan": self.future_plan,
             "schedule_revision": self.schedule_revision,
             "schedule_slot_revisions": self.schedule_slot_revisions,
             "schedule_slot_ownership": self.schedule_slot_ownership,
@@ -5386,16 +4253,6 @@ class DeyeEnergyRuntime:
                 self.normal_profile_sell_power,
                 self.normal_profile_tou_soc,
             ],
-            "ai_api_limit": self.ai_api_limit_state,
-            "ai_api_cache": {
-                "at": self.ai_api_cache.get("at"),
-                "plan_id": self.ai_api_cache.get("plan_id"),
-                "input_snapshot_id": self.ai_api_cache.get("input_snapshot_id"),
-                "material_fingerprint": self.ai_api_cache.get("material_fingerprint"),
-                "analysis": self.ai_api_cache.get("analysis"),
-                "candidate": self.ai_api_cache.get("candidate"),
-                "usage": self.ai_api_cache.get("usage"),
-            },
         }
 
     def request_ai_save(self) -> Any:
@@ -5456,549 +4313,6 @@ class DeyeEnergyRuntime:
         if self._ai_save_dirty and not self._unloading:
             self.request_ai_save()
 
-    async def async_set_ai_settings(self, settings: dict[str, Any]) -> None:
-        self.ai_settings = dict(settings)
-        self._optimizer_generation_reason = "settings_changed"
-        await self.async_save_ai_data()
-        self.request_optimizer_recalc("profile")
-        self.notify_update()
-
-    @staticmethod
-    def validate_user_profiles(
-        payload: dict[str, Any],
-        *,
-        max_power_w: int = DEFAULT_INVERTER_MAX_POWER_W,
-    ) -> dict[str, Any]:
-        """Validate all optimizer profiles atomically without touching Deye."""
-        source = payload.get("profiles") if isinstance(payload.get("profiles"), dict) else payload
-        if not isinstance(source, dict):
-            raise ValueError("User profiles must be a JSON object")
-        normalized = default_user_profiles()
-        allowed_days = {
-            "0", "1", "2", "3", "4", "5", "6",
-            "mon", "tue", "wed", "thu", "fri", "sat", "sun",
-            "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-        }
-        for profile_id in ("morning_sale", "evening_sale", "charging"):
-            raw = source.get(profile_id)
-            if raw is None:
-                continue
-            if not isinstance(raw, dict):
-                raise ValueError(f"Profile {profile_id} must be an object")
-            target = normalized["profiles"][profile_id]
-            target.update(raw)
-            for key in ("start", "end"):
-                value = str(target.get(key) or "")
-                try:
-                    hour_text, minute_text = value.split(":", 1)
-                    hour, minute = int(hour_text), int(minute_text)
-                except (ValueError, TypeError) as err:
-                    raise ValueError(f"Invalid hour {key} in profile {profile_id}") from err
-                if not 0 <= hour <= 23 or not 0 <= minute <= 59:
-                    raise ValueError(f"Hour {key} out of range in profile {profile_id}")
-                target[key] = f"{hour:02d}:{minute:02d}"
-            if target["start"] == target["end"]:
-                raise ValueError(f"Profile {profile_id} has an empty time range")
-            target["enabled"] = bool(target.get("enabled"))
-            target["allow_partial"] = bool(target.get("allow_partial", True))
-            target["goal_character"] = str(target.get("goal_character") or "preferred")
-            days = target.get("active_days")
-            if not isinstance(days, list):
-                raise ValueError(f"Active days of profile {profile_id} must be a list")
-            normalized_days = [str(day).strip().lower() for day in days]
-            if any(day not in allowed_days for day in normalized_days):
-                raise ValueError(f"Profile {profile_id} contains an invalid weekday")
-            target["active_days"] = normalized_days
-            if str(target.get("priority")) not in ("low", "normal", "high"):
-                raise ValueError(f"Invalid priority for profile {profile_id}")
-            if str(target.get("goal_character")) not in ("preferred", "required"):
-                raise ValueError(f"Invalid target type for profile {profile_id}")
-            note = str(target.get("note") or "")
-            if len(note) > 500:
-                raise ValueError(f"The note for profile {profile_id} is too long")
-            target["note"] = note
-            confidence = finite_float(target.get("minimum_confidence"))
-            if confidence is None or not 0 <= confidence <= 100:
-                raise ValueError(f"Profile {profile_id} confidence must be between 0 and 100%")
-            target["minimum_confidence"] = confidence
-            if profile_id != "charging":
-                for key, maximum in (
-                    ("target_energy_kwh", 200.0),
-                    ("min_price", 20.0),
-                    ("min_soc_after", 100.0),
-                    ("min_net_result", 10000.0),
-                ):
-                    value = finite_float(target.get(key))
-                    if value is None or not 0 <= value <= maximum:
-                        raise ValueError(f"Invalid value {key} in profile {profile_id}")
-                    target[key] = value
-                power = finite_float(target.get("preferred_power_w"))
-                if power is not None and not 0 < power <= max_power_w:
-                    raise ValueError(
-                        f"Profile {profile_id} power must be between 1 and {max_power_w} W"
-                    )
-                target["preferred_power_w"] = power
-                target["allow_earlier_grid_charge"] = bool(
-                    target.get("allow_earlier_grid_charge", False)
-                )
-                if target.get("target_basis") not in ("battery_to_grid", "total_export"):
-                    raise ValueError(f"Invalid target calculation method for profile {profile_id}")
-                if target.get("distribution_method") not in ("best_hours", "even", "constant_power"):
-                    raise ValueError(f"Invalid distribution method for profile {profile_id}")
-            else:
-                if target.get("source") not in ("auto", "pv", "grid", "pv_and_grid"):
-                    raise ValueError("Invalid charging profile source")
-                if target.get("target_type") not in ("soc", "energy"):
-                    raise ValueError("Invalid charging profile target type")
-                deadline = str(target.get("deadline") or "")
-                try:
-                    deadline_hour_text, deadline_minute_text = deadline.split(":", 1)
-                    deadline_hour = int(deadline_hour_text)
-                    deadline_minute = int(deadline_minute_text)
-                except (ValueError, TypeError) as err:
-                    raise ValueError("Invalid charging profile deadline") from err
-                if not 0 <= deadline_hour <= 23 or not 0 <= deadline_minute <= 59:
-                    raise ValueError("The charging profile deadline is out of range")
-                target["deadline"] = f"{deadline_hour:02d}:{deadline_minute:02d}"
-                target_value = finite_float(target.get("target_value"))
-                maximum = 100.0 if target.get("target_type") == "soc" else 200.0
-                if target_value is None or not 0 < target_value <= maximum:
-                    raise ValueError("Invalid charging profile target")
-                target["target_value"] = target_value
-                max_price = finite_float(target.get("max_effective_price"))
-                if max_price is None or not 0 <= max_price <= 20:
-                    raise ValueError("Invalid maximum charging price")
-                target["max_effective_price"] = max_price
-                max_grid = finite_float(target.get("max_grid_energy_kwh"))
-                if max_grid is not None and not 0 <= max_grid <= 200:
-                    raise ValueError("Invalid grid energy limit")
-                target["max_grid_energy_kwh"] = max_grid
-                power = finite_float(target.get("preferred_power_w"))
-                if power is not None and not 0 < power <= max_power_w:
-                    raise ValueError(
-                        f"Charging profile power must be between 1 and {max_power_w} W"
-                    )
-                target["preferred_power_w"] = power
-                purpose_aliases = {
-                    "general": "mixed",
-                    "home_reserve": "reserve",
-                    "morning_sale": "sale",
-                    "evening_sale": "sale",
-                    "both_sales": "sale",
-                    "cheap_home": "home",
-                }
-                purpose = purpose_aliases.get(
-                    str(target.get("purpose") or "mixed"),
-                    str(target.get("purpose") or "mixed"),
-                )
-                if purpose not in ("sale", "home", "reserve", "mixed"):
-                    raise ValueError("Invalid charging profile purpose")
-                target["purpose"] = purpose
-                free_room = finite_float(target.get("minimum_free_room_kwh"))
-                if free_room is None or not 0 <= free_room <= 200:
-                    raise ValueError("Invalid PV room reserve")
-                target["minimum_free_room_kwh"] = free_room
-                for key, default in (
-                    ("charge_missing_only", True),
-                    ("use_corrected_pv", True),
-                    ("preserve_pv_room", True),
-                    ("profitable_only", True),
-                ):
-                    target[key] = bool(target.get(key, default))
-        return normalized
-
-    async def async_set_user_profiles(self, profiles: dict[str, Any]) -> None:
-        """Save a complete validated policy and only invalidate the local plan."""
-        normalized = self.validate_user_profiles(
-            profiles,
-            max_power_w=self.effective_inverter_max_power_w,
-        )
-        for profile_id in ("morning_sale", "evening_sale", "charging"):
-            profile = normalized.get("profiles", {}).get(profile_id)
-            if not isinstance(profile, dict):
-                continue
-            power = finite_float(profile.get("preferred_power_w"))
-            if power is not None:
-                self.validate_manual_sell_power_w(
-                    f"preferred_power_w of profile {profile_id}", power
-                )
-        self.user_profiles = normalized
-        self._optimizer_generation_reason = "user_profiles_changed"
-        await self.async_save_ai_data()
-        self.request_optimizer_recalc("profile")
-        self.notify_update()
-
-    def ai_api_public_context(self) -> dict[str, Any]:
-        """Expose status and masked configuration, never the API secret."""
-        self._normalize_ai_api_limit_state(ha_now())
-        daily_count = int(self.safe_float(self.ai_api_limit_state.get("count"), 0))
-        return {
-            "config": redact_ai_api_config(self.ai_api_config),
-            **{
-                key: value
-                for key, value in self.ai_api_status.items()
-                if key not in {"api_key", "authorization", "request_payload"}
-            },
-            "last_analysis": self.ai_api_cache.get("analysis"),
-            "last_analysis_at": self.ai_api_cache.get("at"),
-            "last_analysis_locale": self.ai_api_cache.get("locale"),
-            "last_plan_id": self.ai_api_cache.get("plan_id"),
-            "last_input_snapshot_id": self.ai_api_cache.get("input_snapshot_id"),
-            "candidate": self.ai_api_cache.get("candidate"),
-            "usage": self.ai_api_cache.get("usage"),
-            "daily_limit": {
-                "date": self.ai_api_limit_state.get("date"),
-                "count": daily_count,
-                "maximum": 8,
-                "remaining": max(0, 8 - daily_count),
-                "last_request_at": self.ai_api_limit_state.get("last_request_at"),
-                "last_success_at": self.ai_api_limit_state.get("last_success_at"),
-                "cooldown_seconds": 7200,
-            },
-        }
-
-    def _ai_api_material_context(
-        self,
-        local_plan: dict[str, Any],
-        now: datetime,
-    ) -> tuple[str, dict[str, Any], dict[str, Any]]:
-        """Return one bounded context shared by dedupe and the actual request."""
-        battery_model = self.battery_model_context()
-        battery = {
-            "current_soc_pct": self.current_soc_or_none(),
-            "soc_status": self.soc_diagnostics().get("status"),
-            "capacity_kwh": battery_model.get("capacity_kwh"),
-            "effective_min_soc_pct": battery_model.get("minimum", {}).get("effective_min_soc_pct"),
-            "power_limit_w": battery_model.get("power_limit", {}).get("effective_limit_w"),
-        }
-        tariff = self.tariff_context(now)
-        fingerprint = material_review_fingerprint(
-            local_plan,
-            battery,
-            config=self.ai_api_config,
-            user_profiles=self.user_profiles,
-            tariff=tariff,
-        )
-        return fingerprint, battery, tariff
-
-    def _normalize_ai_api_limit_state(self, now: datetime) -> None:
-        """Reset only the local-day counter while retaining useful audit fields."""
-        today = now.date().isoformat()
-        state = self.ai_api_limit_state if isinstance(self.ai_api_limit_state, dict) else {}
-        if str(state.get("date") or "") != today:
-            state = {
-                "date": today,
-                "count": 0,
-                "last_request_at": None,
-                "last_success_at": state.get("last_success_at"),
-                "last_input_fingerprint": state.get("last_input_fingerprint"),
-            }
-        else:
-            state = {
-                "date": today,
-                "count": max(0, int(self.safe_float(state.get("count"), 0))),
-                "last_request_at": state.get("last_request_at"),
-                "last_success_at": state.get("last_success_at"),
-                "last_input_fingerprint": state.get("last_input_fingerprint"),
-            }
-        self.ai_api_limit_state = state
-
-    def _ai_api_cooldown_active(self, now: datetime) -> bool:
-        last = self.ai_api_limit_state.get("last_request_at")
-        try:
-            return bool(last and (now - datetime.fromisoformat(str(last))).total_seconds() < 7200)
-        except (TypeError, ValueError):
-            return False
-
-    async def _record_ai_api_attempt(self, attempt: int) -> None:
-        """Count an actual outbound attempt immediately before session.post."""
-        now = ha_now()
-        self._normalize_ai_api_limit_state(now)
-        count = int(self.ai_api_limit_state.get("count", 0))
-        if count >= 8:
-            raise ExternalAIDailyLimitError("Daily limit of 8 AI requests reached")
-        self.ai_api_limit_state["count"] = count + 1
-        self.ai_api_limit_state["last_request_at"] = now.isoformat(timespec="seconds")
-        self.ai_api_metrics["executed"] += 1
-        if attempt:
-            self.ai_api_metrics["retry"] += 1
-        # Persist the reservation before the outbound POST. This makes the hard
-        # daily cap restart-safe even if HA stops while a request is in flight.
-        await self.async_save_ai_data()
-
-    def update_ai_api_config(self, raw: dict[str, Any]) -> dict[str, Any]:
-        """Validate API options synchronously; caller persists config-entry options."""
-        previous_secret = str(self.ai_api_config.get("api_key") or "")
-        normalized = normalize_ai_api_config(raw, previous_secret)
-        self.ai_api_config = normalized
-        self.ai_api_status = {
-            "status": "ready" if normalized.get("enabled") else "disabled",
-            "provider": normalized.get("provider"),
-            "model": normalized.get("model"),
-            "last_error": None,
-        }
-        self._ai_api_last_call = None
-        self._ai_api_last_attempt = None
-        self._ai_api_running = False
-        self.notify_update()
-        return deepcopy(normalized)
-
-    async def async_run_ai_api(
-        self,
-        *,
-        connection_test: bool = False,
-        force: bool = False,
-    ) -> dict[str, Any]:
-        """Run the optional reviewer; local plan and Deye remain untouched."""
-        self.ai_api_metrics["requested"] += 1
-        if not self.ai_api_config.get("enabled"):
-            self.ai_api_status = {"status": "disabled", "last_error": "The API assistant is disabled"}
-            self.notify_update()
-            return self.ai_api_status
-        now = ha_now()
-        self._normalize_ai_api_limit_state(now)
-        if int(self.ai_api_limit_state.get("count", 0)) >= 8:
-            self.ai_api_metrics["skipped_daily_limit"] += 1
-            self.ai_api_status = {
-                "status": "daily_limit",
-                "last_error": "Daily limit of 8 AI requests reached",
-            }
-            self.notify_update()
-            return self.ai_api_public_context()
-        if self._ai_api_running:
-            return {**self.ai_api_public_context(), "status": "busy"}
-        started_clock = time.perf_counter()
-        self._ai_api_running = True
-        self.ai_api_metrics["active"] += 1
-        self.ai_api_metrics["max_active"] = max(
-            self.ai_api_metrics["max_active"], self.ai_api_metrics["active"]
-        )
-        self.ai_api_status = {
-            "status": "testing" if connection_test else "analysing",
-            "provider": self.ai_api_config.get("provider"),
-            "model": self.ai_api_config.get("model"),
-            "last_error": None,
-        }
-        self.notify_update()
-        try:
-            return await self._async_run_ai_api_locked(
-                now=now,
-                connection_test=connection_test,
-                force=force,
-            )
-        finally:
-            self._ai_api_running = False
-            self.ai_api_metrics["active"] = max(0, self.ai_api_metrics["active"] - 1)
-            self.ai_api_metrics["last_duration_ms"] = round(
-                (time.perf_counter() - started_clock) * 1000.0,
-                1,
-            )
-
-    async def _async_run_ai_api_locked(
-        self,
-        *,
-        now: datetime,
-        connection_test: bool,
-        force: bool,
-    ) -> dict[str, Any]:
-        """Execute one single-flight AI decision and provider request."""
-        try:
-            if force:
-                optimizer_task = self.request_optimizer_recalc("manual")
-                if optimizer_task is not None:
-                    await asyncio.shield(optimizer_task)
-            elif self._optimizer_recalc_task is not None:
-                await asyncio.shield(self._optimizer_recalc_task)
-            local_plan = self._optimizer_public_snapshot or self.optimizer_plan
-            material_fingerprint, battery, tariff = self._ai_api_material_context(
-                local_plan,
-                now,
-            )
-            quality = local_plan.get("data_quality") if isinstance(local_plan, dict) else {}
-            if not connection_test and isinstance(quality, dict) and quality.get("fail_closed"):
-                self.ai_api_metrics["skipped_fail_closed"] += 1
-                self.ai_api_status = {
-                    "status": "blocked_fail_closed",
-                    "last_error": "The local plan is fail-closed — AI request skipped",
-                }
-                return self.ai_api_public_context()
-            if (
-                not connection_test
-                and self.ai_api_limit_state.get("last_input_fingerprint") == material_fingerprint
-                and self.ai_api_limit_state.get("last_success_at")
-                and self.ai_api_cache.get("material_fingerprint") == material_fingerprint
-                and isinstance(self.ai_api_cache.get("analysis"), dict)
-            ):
-                self.ai_api_metrics["skipped_same_input"] += 1
-                self.ai_api_status = {"status": "cached_same_input", "last_error": None}
-                return self.ai_api_public_context()
-            if not force and self._ai_api_cooldown_active(now):
-                self.ai_api_metrics["skipped_cooldown"] += 1
-                self.ai_api_status = {
-                    "status": "cooldown",
-                    "last_error": "Automatic AI analysis has a 2-hour cooldown",
-                }
-                return self.ai_api_public_context()
-            if not connection_test:
-                self._ai_api_last_attempt = now
-            payload = build_private_payload(
-                local_plan,
-                battery,
-                config=self.ai_api_config,
-                user_profiles=self.user_profiles,
-                tariff=tariff,
-            )
-            from homeassistant.helpers.aiohttp_client import async_get_clientsession
-
-            response = await request_ai_analysis(
-                async_get_clientsession(self.hass),
-                self.ai_api_config,
-                payload,
-                connection_test=connection_test,
-                timeout_seconds=30,
-                inverter_max_power_w=self.effective_inverter_max_power_w,
-                on_attempt=self._record_ai_api_attempt,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as err:
-            self.ai_api_status = {
-                "status": "error",
-                "provider": self.ai_api_config.get("provider"),
-                "model": self.ai_api_config.get("model"),
-                "last_error": str(err)[:500],
-                "at": now.isoformat(timespec="seconds"),
-            }
-            self.ai_api_metrics["failed"] += 1
-            self.notify_update()
-            await self.async_save_ai_data()
-            return self.ai_api_status
-
-        if not connection_test:
-            self._ai_api_last_call = now
-            self.ai_api_limit_state["last_success_at"] = now.isoformat(timespec="seconds")
-            self.ai_api_limit_state["last_input_fingerprint"] = material_fingerprint
-        self.ai_api_status = {
-            "status": "connected" if connection_test else "ok",
-            "provider": response.get("provider"),
-            "model": response.get("model"),
-            "response_ms": response.get("response_ms"),
-            "json_schema": response.get("json_schema"),
-            "last_error": None,
-            "at": now.isoformat(timespec="seconds"),
-        }
-        if not connection_test:
-            analysis = response.get("analysis") if isinstance(response.get("analysis"), dict) else {}
-            candidate = None
-            alternative = analysis.get("alternative") if isinstance(analysis.get("alternative"), dict) else {}
-            if alternative.get("enabled") and alternative.get("hours") and self._optimizer_last_inputs:
-                try:
-                    candidate_job = partial(
-                        simulate_alternative,
-                        self._optimizer_last_inputs,
-                        strategy=str(local_plan.get("selected_variant") or "balanced"),
-                        changes=alternative.get("hours"),
-                    )
-                    executor = getattr(self.hass, "async_add_executor_job", None)
-                    candidate_result = (
-                        await executor(candidate_job)
-                        if callable(executor)
-                        else await asyncio.to_thread(candidate_job)
-                    )
-                    candidate = {
-                        key: deepcopy(candidate_result.get(key))
-                        for key in (
-                            "source_plan_id", "source_input_snapshot_id",
-                            "candidate_plan_id", "candidate_changes", "comparison",
-                            "schema_valid", "locally_simulated", "accepted_by_core",
-                            "acceptance", "locally_validated", "manual_confirmation_required",
-                            "writes_performed",
-                        )
-                    }
-                except ValueError as err:
-                    candidate = {
-                        "schema_valid": False,
-                        "locally_simulated": False,
-                        "accepted_by_core": False,
-                        "locally_validated": False,
-                        "validation_error": str(err),
-                        "writes_performed": False,
-                    }
-            self.ai_api_cache = {
-                "at": now.isoformat(timespec="seconds"),
-                "plan_id": local_plan.get("plan_id"),
-                "input_snapshot_id": local_plan.get("input_snapshot_id"),
-                "material_fingerprint": material_fingerprint,
-                "locale": "en-GB",
-                "analysis": analysis,
-                "candidate": candidate,
-                "usage": response.get("usage"),
-            }
-        self.ai_api_metrics["completed"] += 1
-        self.notify_update()
-        await self.async_save_ai_data()
-        return self.ai_api_public_context()
-
-    def schedule_ai_api_analysis(self, *, force: bool = False) -> None:
-        """Start at most one asynchronous API review without blocking the tick."""
-        if not self.ai_api_config.get("enabled"):
-            return
-        if self._ai_api_task is not None and not self._ai_api_task.done():
-            return
-        if not force:
-            now = ha_now()
-            self._normalize_ai_api_limit_state(now)
-            if int(self.ai_api_limit_state.get("count", 0)) >= 8:
-                self.ai_api_metrics["skipped_daily_limit"] += 1
-                return
-            local_plan = self._optimizer_public_snapshot or self.optimizer_plan
-            quality = local_plan.get("data_quality") if isinstance(local_plan, dict) else {}
-            if isinstance(quality, dict) and quality.get("fail_closed"):
-                self.ai_api_metrics["skipped_fail_closed"] += 1
-                return
-            fingerprint, _battery, _tariff = self._ai_api_material_context(
-                local_plan,
-                now,
-            )
-            if (
-                self.ai_api_limit_state.get("last_input_fingerprint") == fingerprint
-                and self.ai_api_limit_state.get("last_success_at")
-                and self.ai_api_cache.get("material_fingerprint") == fingerprint
-                and isinstance(self.ai_api_cache.get("analysis"), dict)
-            ):
-                self.ai_api_metrics["skipped_same_input"] += 1
-                return
-            if self._ai_api_cooldown_active(now):
-                self.ai_api_metrics["skipped_cooldown"] += 1
-                return
-        self._ai_api_task = self.hass.async_create_task(
-            self.async_run_ai_api(force=force)
-        )
-
-    async def async_add_ai_analysis(self, analysis: dict[str, Any]) -> None:
-        analysis = dict(analysis)
-        analysis.setdefault("event", "suggestion")
-        if analysis.get("event") == "suggestion":
-            latest = next((item for item in self.ai_history if item.get("event", "suggestion") == "suggestion"), None)
-            if latest and analysis.get("fingerprint") and latest.get("fingerprint") == analysis.get("fingerprint"):
-                return
-        self.ai_history = [analysis, *self.ai_history][:365]
-        await self.async_save_ai_data()
-        self.notify_update()
-
-    async def async_rate_ai_analysis(self, timestamp: float, rating: int) -> None:
-        for item in self.ai_history:
-            if self.safe_float(item.get("timestamp"), -1) == timestamp:
-                item["rating"] = max(1, min(5, int(rating)))
-                item["rated_at"] = int(ha_now().timestamp() * 1000)
-                await self.async_save_ai_data()
-                self.notify_update()
-                return
-
-    async def async_clear_ai_history(self) -> None:
-        self.ai_history = []
-        await self.async_save_ai_data()
-        self.notify_update()
 
     @staticmethod
     def _expand_slot_updates(updates: Any) -> Any:
@@ -6024,116 +4338,9 @@ class DeyeEnergyRuntime:
                 expanded.append({**raw, "slot_key": slot_key})
         return expanded
 
-    def _validate_future_plan_updates(self, updates: Any) -> list[dict[str, Any]]:
-        """Validate a dated AI plan without touching the live schedule."""
-        updates = self._expand_slot_updates(updates)
-        if not isinstance(updates, list) or not updates:
-            raise ValueError("Tomorrow's plan does not contain the selected hours")
-        numeric_limits = {
-            "sell_power": (0.0, float(self.effective_inverter_max_power_w)),
-            "minimum_sell_soc": (0.0, 100.0),
-            "tou_soc": (0.0, 100.0),
-            "min_sell_price": (0.0, 5.0),
-        }
-        allowed = {"slot_key", "enabled", "mode", "charge_enabled", *numeric_limits}
-        normalized: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for raw in updates:
-            raw = dict(raw) if isinstance(raw, dict) else raw
-            if not isinstance(raw, dict):
-                raise ValueError("Every plan entry must be an object")
-            # ``min_soc`` remains an old spelling of the Selling First
-            # threshold.  ``tou_soc`` is deliberately independent.
-            if "min_soc" in raw:
-                raw.setdefault("minimum_sell_soc", raw.pop("min_soc"))
-            unknown = set(raw) - allowed
-            if unknown:
-                raise ValueError(f"Unsupported plan fields: {', '.join(sorted(unknown))}")
-            slot_key = str(raw.get("slot_key") or "")
-            if slot_key not in self.slots or slot_key in seen:
-                raise ValueError(f"Invalid or duplicated plan hour: {slot_key}")
-            seen.add(slot_key)
-            item: dict[str, Any] = {"slot_key": slot_key}
-            if "enabled" in raw:
-                item["enabled"] = bool(raw["enabled"])
-            if "charge_enabled" in raw:
-                item["charge_enabled"] = bool(raw["charge_enabled"])
-            if "mode" in raw:
-                mode = normalize_manager_mode(str(raw["mode"]))
-                if mode not in SLOT_MODES:
-                    raise ValueError(f"Unsupported plan mode: {mode}")
-                item["mode"] = mode
-            for name, (minimum, maximum) in numeric_limits.items():
-                if name not in raw:
-                    continue
-                value = float(raw[name])
-                if not math.isfinite(value) or not minimum <= value <= maximum:
-                    raise ValueError(f"{name} must be between {minimum:g} and {maximum:g}")
-                item[name] = value
-            if item.get("mode") == MODE_SELLING_FIRST:
-                # Keep price/SOC thresholds as revalidation metadata, but never
-                # persist TOU SOC or Grid Charge as part of the executable
-                # Tomorrow sell contract.
-                for field_name in (
-                    "tou_soc",
-                    "charge_enabled",
-                ):
-                    item.pop(field_name, None)
-            normalized.append(item)
-        return normalized
-
-    @staticmethod
-    def _future_plan_normal_intent(slot_key: str) -> dict[str, Any]:
-        """Return a storage-safe Normal Operation intent for one dated hour.
-
-        FuturePlan stores ownership of the logical action, not a snapshot of
-        unrelated inverter limits.  ``charge_enabled=False`` is the one
-        explicit cleanup flag needed to prevent an old Charge action from
-        surviving when the dated target is materialised JIT.
-        """
-        return {
-            "slot_key": slot_key,
-            "enabled": True,
-            "mode": MODE_NORMAL_OPERATION,
-            "charge_enabled": False,
-        }
-
-    def _build_authoritative_future_plan_updates(
-        self,
-        selected_updates: Any,
-    ) -> tuple[list[dict[str, Any]], list[str]]:
-        """Build a canonical dated 24-hour target from selected special actions."""
-        selected_list = self._validate_future_plan_updates(selected_updates)
-        selected: dict[str, dict[str, Any]] = {}
-        for update in selected_list:
-            slot_key = str(update.get("slot_key") or "")
-            mode = str(update.get("mode") or "")
-            if mode not in {MODE_SELLING_FIRST, MODE_CHARGE}:
-                raise ValueError(
-                    f"FuturePlan accepts only selected Selling/Charging actions: {slot_key}"
-                )
-            if update.get("enabled") is False:
-                raise ValueError(f"The selected FuturePlan action cannot be disabled: {slot_key}")
-            if mode == MODE_SELLING_FIRST:
-                if "sell_power" not in update:
-                    raise ValueError(
-                        f"The selected Selling action requires sell_power: {slot_key}"
-                    )
-                update = self._sanitize_ai_sell_execution_update(update)
-            selected[slot_key] = update
-
-        target = [
-            dict(selected[key])
-            if key in selected
-            else self._future_plan_normal_intent(key)
-            for key, _label, _start, _end in SLOTS
-        ]
-        if len(target) != SLOTS_PER_DAY or {str(item.get("slot_key")) for item in target} != set(self.slots):
-            raise ValueError("Could not build a complete full-day FuturePlan")
-        return target, [key for key, _label, _start, _end in SLOTS if key in selected]
 
     def _schedule_slot_fingerprint(self, slot_key: str) -> str:
-        """Return the lightweight logical identity used by FuturePlan ownership."""
+        """Return the lightweight logical identity of one stored slot."""
         slot = self.slots[slot_key]
         return snapshot_id({
             "enabled": bool(slot.enabled),
@@ -6173,1241 +4380,6 @@ class DeyeEnergyRuntime:
             }
         return revision
 
-    def _future_plan_acceptance_bases(self) -> dict[str, dict[str, Any]]:
-        """Capture only the revision/hash needed for the MANUAL WINS check."""
-        return {
-            key: {
-                "base_revision": int(self.schedule_slot_revisions.get(key, 0)),
-                "base_fingerprint": self._schedule_slot_fingerprint(key),
-            }
-            for key in self.slots
-        }
-
-    def _future_plan_manual_conflict(
-        self, plan: dict[str, Any], slot_key: str
-    ) -> bool:
-        bases = plan.get("slot_bases")
-        base = bases.get(slot_key) if isinstance(bases, dict) else None
-        if not isinstance(base, dict):
-            # Restored pre-8C pending plans use their stored/current schedule as
-            # a fail-safe baseline; completed legacy rows are migrated terminally.
-            return False
-        current_revision = int(self.schedule_slot_revisions.get(slot_key, 0))
-        current_fingerprint = self._schedule_slot_fingerprint(slot_key)
-        if (
-            current_revision == int(self.safe_float(base.get("base_revision"), 0))
-            and current_fingerprint == str(base.get("base_fingerprint") or "")
-        ):
-            return False
-        owner = self.schedule_slot_ownership.get(slot_key, {})
-        return not (
-            owner.get("source") == "future_plan"
-            and owner.get("plan_id") == str(plan.get("plan_id") or "")
-            and owner.get("target_date") == str(plan.get("date") or "")
-        )
-
-    @staticmethod
-    def _future_plan_overall_status(slot_results: dict[str, Any]) -> str:
-        statuses = {
-            str(value.get("status") or "")
-            for value in slot_results.values()
-            if isinstance(value, dict)
-        }
-        if statuses & {"blocked", "missed", "manual_override"}:
-            return "partial"
-        if statuses and statuses <= {"confirmed", "superseded", "cancelled"}:
-            return "confirmed"
-        return "scheduled"
-
-    async def _async_finish_future_plan_physical(
-        self, confirmed: bool, reason: str = "", expected: dict[str, Any] | None = None
-    ) -> None:
-        """Correlate the existing inverter confirmation with one active intent."""
-        plan = self.future_plan
-        if not isinstance(plan, dict) or plan.get("status") not in {
-            "scheduled", "partial", "confirmed"
-        }:
-            return
-        now = ha_now()
-        slot_key = slot_key_at_minute(now.hour * 60 + now.minute)
-        results = dict(plan.get("slot_results") or {})
-        result = results.get(slot_key)
-        if not isinstance(result, dict) or result.get("status") not in {
-            "logical_applied", "physical_pending"
-        }:
-            return
-        correlation = result.get("correlation")
-        owner = self.schedule_slot_ownership.get(slot_key, {})
-        exact = (
-            isinstance(correlation, dict)
-            and correlation.get("plan_id") == str(plan.get("plan_id") or "")
-            and correlation.get("target_date") == str(plan.get("date") or "")
-            and correlation.get("slot_key") == slot_key
-            and int(self.safe_float(correlation.get("intent_revision"), 0))
-            == int(self.safe_float(owner.get("intent_revision"), -1))
-            and owner.get("source") == "future_plan"
-            and owner.get("fingerprint") == self._schedule_slot_fingerprint(slot_key)
-        )
-        writes_before = int(self.safe_float(correlation.get("physical_write_count_before"), -1)) if isinstance(correlation, dict) else -1
-        physically_written = self._physical_write_count > writes_before >= 0
-        expected_matches = (
-            isinstance(expected, dict)
-            and str(correlation.get("expected_fingerprint") or "")
-            == snapshot_id(expected)
-        ) if isinstance(correlation, dict) else False
-        allowed = (
-            confirmed
-            and exact
-            and physically_written
-            and expected_matches
-            and self.control_mode == "Schedule"
-            and self._control_is_active()
-            and not self.emergency_stop
-            and str(plan.get("date") or "") == now.date().isoformat()
-        )
-        timestamp = now.isoformat(timespec="seconds")
-        if allowed:
-            results[slot_key] = {
-                **result,
-                "status": "confirmed",
-                "confirmed_at": timestamp,
-                "transaction_id": _CONTROL_TRANSACTION_ID.get(),
-                "confirmation": "write_readback_success",
-            }
-            self._set_plan_execution_lifecycle(
-                str(plan.get("date") or ""), slot_key,
-                deployment_status="confirmed", deployed_at=timestamp,
-                deployment_reason=None,
-            )
-        elif not confirmed:
-            results[slot_key] = {
-                **result,
-                "status": "blocked",
-                "reason": reason or "The physical transaction or readback failed",
-                "resolved_at": timestamp,
-            }
-        else:
-            return
-        self.future_plan = {
-            **plan,
-            "status": self._future_plan_overall_status(results),
-            "slot_results": results,
-            "updated_at": timestamp,
-        }
-        await self.async_save_ai_data()
-        await self.async_save_learning_history()
-        self._notify_update_for("future_plan")
-
-    async def _async_cleanup_future_plan_slots(self, current: datetime) -> None:
-        """Reset expired dated intents only while the old plan still owns them."""
-        if self.manual_schedule_active:
-            return
-        cleanup: list[dict[str, Any]] = []
-        cleaned_keys: list[str] = []
-        today = current.date().isoformat()
-        for key, owner in list(self.schedule_slot_ownership.items()):
-            if not isinstance(owner, dict) or owner.get("source") != "future_plan":
-                continue
-            target_date = str(owner.get("target_date") or "")
-            expired = target_date < today or (
-                target_date == today
-                and current.hour * 60 + current.minute >= slot_end_minute(key)
-            )
-            if not expired or owner.get("fingerprint") != self._schedule_slot_fingerprint(key):
-                continue
-            cleanup.append(self._future_plan_normal_intent(key))
-            cleaned_keys.append(key)
-        if not cleanup:
-            return
-        await self.async_apply_schedule_patch(
-            cleanup, change_source="future_cleanup",
-            source_context={"cleanup": True},
-        )
-        for key in cleaned_keys:
-            owner = self.schedule_slot_ownership.get(key, {})
-            if owner.get("source") == "future_cleanup":
-                self.schedule_slot_ownership.pop(key, None)
-        self.mark_config_saved()
-
-    def _normalize_stored_future_plan(
-        self,
-        raw_plan: Any,
-    ) -> tuple[dict[str, Any], bool]:
-        """Migrate selected-only FuturePlan safely to an authoritative day target."""
-        if not isinstance(raw_plan, dict) or not raw_plan:
-            return {}, bool(raw_plan)
-        plan = deepcopy(raw_plan)
-        updates = plan.get("updates")
-        if not isinstance(updates, list) or not updates:
-            if plan.get("status") in {"scheduled", "partial"}:
-                return ({
-                    **plan,
-                    "status": "cancelled",
-                    "reason": "Legacy FuturePlan contains no safe actions; re-approval required",
-                    "migration_requires_reapproval": True,
-                }, True)
-            return plan, False
-        try:
-            # Never infer a special action from the live schedule.  For both an
-            # old selected-only payload and a stored v2 target, only explicit
-            # Sell/Charge rows retain special ownership; every missing/Normal
-            # hour is rebuilt as canonical Normal Operation.
-            selected_raw = [
-                item
-                for item in updates
-                if isinstance(item, dict)
-                and normalize_manager_mode(str(item.get("mode") or ""))
-                in {MODE_SELLING_FIRST, MODE_CHARGE}
-            ]
-            target, selected_keys = self._build_authoritative_future_plan_updates(selected_raw)
-        except (TypeError, ValueError) as err:
-            if plan.get("status") in {"scheduled", "partial"}:
-                return ({
-                    **plan,
-                    "status": "cancelled",
-                    "reason": f"Legacy FuturePlan requires re-approval: {err}",
-                    "migration_requires_reapproval": True,
-                }, True)
-            return plan, False
-
-        validations = plan.get("slot_validations")
-        validations = validations if isinstance(validations, dict) else {}
-        slot_results = deepcopy(plan.get("slot_results")) if isinstance(plan.get("slot_results"), dict) else {}
-        legacy_lifecycle = int(self.safe_float(plan.get("lifecycle_schema_version"), 0)) < FUTURE_PLAN_LIFECYCLE_SCHEMA_VERSION
-        if legacy_lifecycle:
-            for key, result in list(slot_results.items()):
-                if not isinstance(result, dict):
-                    continue
-                if str(result.get("status") or "") in {"completed", "deployed"}:
-                    slot_results[key] = {
-                        **result,
-                        "status": "legacy_unconfirmed",
-                        "reason": "Legacy result without physical write/readback evidence; do not run again",
-                    }
-        for result in slot_results.values():
-            if isinstance(result, dict) and result.get("status") == "physical_pending":
-                correlation = result.get("correlation")
-                if isinstance(correlation, dict):
-                    correlation["physical_write_count_before"] = self._physical_write_count
-                    correlation["restored_pending"] = True
-        canonical = {
-            **plan,
-            "intent_schema_version": FUTURE_PLAN_INTENT_SCHEMA_VERSION,
-            "lifecycle_schema_version": FUTURE_PLAN_LIFECYCLE_SCHEMA_VERSION,
-            "intent_revision": max(1, int(self.safe_float(plan.get("intent_revision"), 1))),
-            "authoritative_day": True,
-            "replace_day": True,
-            "ownership": "optimizer_core_authoritative_day",
-            "updates": target,
-            "selected_slot_keys": selected_keys,
-            "slot_results": slot_results,
-            "slot_bases": (
-                deepcopy(plan.get("slot_bases"))
-                if isinstance(plan.get("slot_bases"), dict)
-                else self._future_plan_acceptance_bases()
-            ),
-            "slot_validations": {
-                key: deepcopy(validations[key])
-                for key in selected_keys
-                if isinstance(validations.get(key), dict)
-            },
-        }
-        if legacy_lifecycle and any(
-            isinstance(value, dict) and value.get("status") == "legacy_unconfirmed"
-            for value in slot_results.values()
-        ):
-            canonical["status"] = "legacy_unconfirmed"
-        return canonical, canonical != raw_plan
-
-    @staticmethod
-    def _plan_execution_key(date_key: str, hour: int) -> str:
-        return f"{date_key}:{hour:02d}"
-
-    def _compact_plan_execution_row(
-        self,
-        row: dict[str, Any],
-        plan: dict[str, Any],
-        current: datetime,
-    ) -> dict[str, Any]:
-        """Freeze one optimizer row without exposing the full optimizer payload."""
-        date_key = str(row.get("date") or "")
-        hour = max(0, min(23, int(self.safe_float(row.get("hour"), 0))))
-        current_key = self._plan_execution_key(current.date().isoformat(), current.hour)
-        row_key = self._plan_execution_key(date_key, hour)
-        dispatch_status = str(row.get("dispatch_status") or "")
-        proposal_status = (
-            "blocked"
-            if dispatch_status == "blocked"
-            else "proposed"
-            if bool(row.get("proposed"))
-            else "skipped"
-        )
-        return {
-            "schema_version": HISTORY_SCHEMA_VERSION,
-            "date": date_key,
-            "hour": hour,
-            "label": str(row.get("label") or f"{hour:02d}:00–{(hour + 1) % 24:02d}:00"),
-            "plan_id": str(plan.get("plan_id") or ""),
-            "generated_at": str(plan.get("generated_at") or ""),
-            "strategy": str(plan.get("strategy") or ""),
-            "proposal_status": proposal_status,
-            "action": str(row.get("action") or "none"),
-            "mode": str(row.get("mode") or ""),
-            "profile_id": str(row.get("profile_id") or ""),
-            "decision_source": str(row.get("decision_source") or ""),
-            "planned_power_w": round(self.safe_float(row.get("planned_power_w"), 0), 2),
-            "planned_energy_kwh": round(self.safe_float(row.get("planned_energy_kwh"), 0), 5),
-            "soc_start_pct": row.get("soc_start_pct"),
-            "soc_end_pct": row.get("soc_end_pct", row.get("soc_after")),
-            "hard_min_soc_pct": row.get("hard_min_soc_pct"),
-            "effective_min_soc_pct": row.get("effective_min_soc_pct"),
-            "solcast_kwh": row.get("solcast_kwh"),
-            "corrected_pv_kwh": row.get("corrected_pv_kwh"),
-            "forecast_low_kwh": row.get("forecast_low_kwh"),
-            "forecast_high_kwh": row.get("forecast_high_kwh"),
-            "load_kwh": row.get("load_kwh", row.get("home_load_kwh")),
-            "expected_import_kwh": row.get("expected_import_kwh"),
-            "expected_export_kwh": row.get("expected_export_kwh"),
-            "buy_price": row.get("buy_price"),
-            "effective_buy_price": row.get("effective_buy_price"),
-            "sell_price": row.get("sell_price"),
-            "distribution": row.get("distribution"),
-            "net_result_gbp": row.get("net_result", row.get("balance_gbp")),
-            "confidence": row.get("confidence"),
-            "confidence_components": deepcopy(row.get("confidence_components") or {}),
-            "reason_codes": [str(value) for value in row.get("reason_codes", [])][:12],
-            "limit_reason": row.get("limit_reason"),
-            "data_quality": deepcopy(row.get("data_quality") or {}),
-            "approval_status": "not_selected",
-            "deployment_status": "not_deployed",
-            "actual_status": "waiting",
-            "frozen_at": (
-                current.isoformat(timespec="seconds")
-                if row_key <= current_key
-                else None
-            ),
-        }
-
-    def _sync_plan_execution_archive(
-        self,
-        plan: dict[str, Any],
-        current: datetime | None = None,
-    ) -> bool:
-        """Keep the latest future proposal, while never rewriting frozen hours."""
-        if not isinstance(plan, dict):
-            return False
-        current = current or ha_now()
-        rows = [row for row in plan.get("rows", []) if isinstance(row, dict)]
-        if not rows:
-            return False
-        existing = {
-            self._plan_execution_key(
-                str(row.get("date") or ""),
-                max(0, min(23, int(self.safe_float(row.get("hour"), 0)))),
-            ): dict(row)
-            for row in self.plan_execution_archive
-            if isinstance(row, dict) and row.get("date")
-        }
-        current_key = self._plan_execution_key(current.date().isoformat(), current.hour)
-        changed = False
-        for source in rows:
-            compact = self._compact_plan_execution_row(source, plan, current)
-            key = self._plan_execution_key(compact["date"], compact["hour"])
-            previous = existing.get(key)
-            preserve = bool(
-                previous
-                and (
-                    previous.get("frozen_at")
-                    or previous.get("approval_status") in {"approved", "cancelled"}
-                    or previous.get("deployment_status") in {"deployed", "blocked"}
-                    or previous.get("actual")
-                    or key < current_key
-                )
-            )
-            if preserve:
-                continue
-            if previous:
-                for lifecycle_key in (
-                    "approval_status",
-                    "approved_at",
-                    "deployment_status",
-                    "deployed_at",
-                    "deployment_reason",
-                    "actual_status",
-                    "actual",
-                ):
-                    if lifecycle_key in previous:
-                        compact[lifecycle_key] = deepcopy(previous[lifecycle_key])
-            if previous != compact:
-                existing[key] = compact
-                changed = True
-        normalized = sorted(
-            existing.values(),
-            key=lambda item: (
-                str(item.get("date") or ""),
-                int(self.safe_float(item.get("hour"), 0)),
-            ),
-            reverse=True,
-        )[:2160]
-        if normalized != self.plan_execution_archive:
-            self.plan_execution_archive = normalized
-            changed = True
-        return changed
-
-    def _set_plan_execution_lifecycle(
-        self,
-        date_key: str,
-        slot_key: str,
-        **changes: Any,
-    ) -> None:
-        hour = hour_of_slot(str(slot_key))
-        key = self._plan_execution_key(date_key, hour)
-        for row in self.plan_execution_archive:
-            if not isinstance(row, dict):
-                continue
-            if self._plan_execution_key(
-                str(row.get("date") or ""),
-                int(self.safe_float(row.get("hour"), 0)),
-            ) != key:
-                continue
-            row.update({name: deepcopy(value) for name, value in changes.items()})
-            row.setdefault("frozen_at", ha_now().isoformat(timespec="seconds"))
-            return
-        source = next(
-            (
-                row for row in self.optimizer_plan.get("rows", [])
-                if isinstance(row, dict)
-                and str(row.get("date") or "") == date_key
-                and int(self.safe_float(row.get("hour"), 0)) == hour
-            ),
-            None,
-        )
-        if source is not None:
-            row = self._compact_plan_execution_row(
-                source,
-                self.optimizer_plan,
-                ha_now(),
-            )
-        else:
-            row = {
-                "schema_version": HISTORY_SCHEMA_VERSION,
-                "date": date_key,
-                "hour": hour,
-                "label": f"{hour:02d}:00–{(hour + 1) % 24:02d}:00",
-                "proposal_status": "missing",
-                "approval_status": "not_selected",
-                "deployment_status": "not_deployed",
-                "actual_status": "waiting",
-                "frozen_at": ha_now().isoformat(timespec="seconds"),
-            }
-        row.update({name: deepcopy(value) for name, value in changes.items()})
-        self.plan_execution_archive = sorted(
-            [row, *self.plan_execution_archive],
-            key=lambda item: (
-                str(item.get("date") or ""),
-                int(self.safe_float(item.get("hour"), 0)),
-            ),
-            reverse=True,
-        )[:2160]
-
-    def _attach_plan_execution_actual(self, completed: dict[str, Any]) -> None:
-        """Attach finalized measurements and transparent forecast errors."""
-        date_key = str(completed.get("local_date") or "")
-        hour = int(self.safe_float(completed.get("local_hour"), 0))
-        key = self._plan_execution_key(date_key, hour)
-        target = next(
-            (
-                row for row in self.plan_execution_archive
-                if isinstance(row, dict)
-                and self._plan_execution_key(
-                    str(row.get("date") or ""),
-                    int(self.safe_float(row.get("hour"), 0)),
-                ) == key
-            ),
-            None,
-        )
-        if target is None:
-            target = {
-                "schema_version": HISTORY_SCHEMA_VERSION,
-                "date": date_key,
-                "hour": hour,
-                "label": f"{hour:02d}:00–{(hour + 1) % 24:02d}:00",
-                "proposal_status": "missing",
-                "approval_status": "not_selected",
-                "deployment_status": "not_deployed",
-            }
-            self.plan_execution_archive.append(target)
-        actual_pv = finite_float(completed.get("pv_kwh"))
-        actual_load = finite_float(completed.get("load_kwh"))
-        actual_import = finite_float(completed.get("grid_import_kwh"))
-        actual_export = finite_float(completed.get("grid_export_kwh"))
-        actual_soc = finite_float(completed.get("soc_end"))
-        planned_pv = finite_float(target.get("corrected_pv_kwh"))
-        planned_load = finite_float(target.get("load_kwh"))
-        planned_soc = finite_float(target.get("soc_end_pct"))
-        sell_price = finite_float(completed.get("sell_price_avg"))
-        buy_price = finite_float(completed.get("buy_price_avg"))
-        tariff = completed.get("tariff") if isinstance(completed.get("tariff"), dict) else {}
-        distribution = (
-            0.0
-            if self.price_contract("buy").get("includes_distribution_variable") is True
-            else self.safe_float(tariff.get("distribution_rate"), 0)
-        )
-        net_result = (
-            actual_export * sell_price
-            - actual_import * (buy_price + distribution)
-            if actual_export is not None
-            and actual_import is not None
-            and sell_price is not None
-            and buy_price is not None
-            else None
-        )
-        target["actual"] = {
-            "pv_kwh": round(actual_pv, 5) if actual_pv is not None else None,
-            "load_kwh": round(actual_load, 5) if actual_load is not None else None,
-            "grid_import_kwh": round(actual_import, 5) if actual_import is not None else None,
-            "grid_export_kwh": round(actual_export, 5) if actual_export is not None else None,
-            "battery_charge_kwh": (
-                round(value, 5)
-                if (value := finite_float(completed.get("battery_charge_kwh"))) is not None
-                else None
-            ),
-            "battery_discharge_kwh": (
-                round(value, 5)
-                if (value := finite_float(completed.get("battery_discharge_kwh"))) is not None
-                else None
-            ),
-            "soc_end_pct": actual_soc,
-            "sell_price_gbp_kwh": round(sell_price, 5) if sell_price is not None else None,
-            "buy_price_gbp_kwh": round(buy_price, 5) if buy_price is not None else None,
-            "net_result_gbp": round(net_result, 5) if net_result is not None else None,
-            "complete": bool(completed.get("complete")),
-            "completeness_percent": completed.get("completeness_percent"),
-            "source_quality": deepcopy(completed.get("source_quality") or {}),
-        }
-        target["errors"] = {
-            "pv_kwh": (
-                None
-                if planned_pv is None or actual_pv is None
-                else round(actual_pv - planned_pv, 5)
-            ),
-            "load_kwh": (
-                None
-                if planned_load is None or actual_load is None
-                else round(actual_load - planned_load, 5)
-            ),
-            "soc_pct": (
-                None
-                if planned_soc is None or actual_soc is None
-                else round(actual_soc - planned_soc, 3)
-            ),
-            "pv_percent": (
-                None
-                if planned_pv is None or actual_pv is None or abs(planned_pv) < 0.05
-                else round((actual_pv - planned_pv) / abs(planned_pv) * 100, 1)
-            ),
-            "load_percent": (
-                None
-                if planned_load is None or actual_load is None or abs(planned_load) < 0.05
-                else round((actual_load - planned_load) / abs(planned_load) * 100, 1)
-            ),
-        }
-        target["actual_status"] = (
-            "completed" if completed.get("complete") else "partial"
-        )
-        target["frozen_at"] = target.get("frozen_at") or ha_now().isoformat(timespec="seconds")
-        self.plan_execution_archive = sorted(
-            self.plan_execution_archive,
-            key=lambda item: (
-                str(item.get("date") or ""),
-                int(self.safe_float(item.get("hour"), 0)),
-            ),
-            reverse=True,
-        )[:2160]
-
-    def plan_execution_day(self, date_key: str | None = None) -> dict[str, Any]:
-        """Return a read-only, compact plan-versus-execution view for one day."""
-        selected_date = str(date_key or ha_now().date().isoformat())
-        try:
-            selected_date = datetime.fromisoformat(selected_date).date().isoformat()
-        except (TypeError, ValueError) as err:
-            raise ValueError("The date must use the YYYY-MM-DD format") from err
-        rows = sorted(
-            [
-                deepcopy(row)
-                for row in self.plan_execution_archive
-                if isinstance(row, dict) and row.get("date") == selected_date
-            ],
-            key=lambda row: int(self.safe_float(row.get("hour"), 0)),
-        )
-        actual_rows = [row for row in rows if isinstance(row.get("actual"), dict)]
-        sum_field = lambda source, name: round(
-            sum(self.safe_float(item.get(name), 0) for item in source),
-            4,
-        )
-        actual_values = [row["actual"] for row in actual_rows]
-        error_values = [
-            abs(value)
-            for row in rows
-            if isinstance(row.get("errors"), dict)
-            and (value := finite_float(row["errors"].get("pv_percent"))) is not None
-        ]
-        return {
-            "schema_version": HISTORY_SCHEMA_VERSION,
-            "date": selected_date,
-            "rows": rows,
-            "summary": {
-                "hours_planned": len(rows),
-                "hours_measured": len(actual_rows),
-                "planned_pv_kwh": sum_field(rows, "corrected_pv_kwh") if rows else None,
-                "actual_pv_kwh": sum_field(actual_values, "pv_kwh") if actual_rows else None,
-                "planned_load_kwh": sum_field(rows, "load_kwh") if rows else None,
-                "actual_load_kwh": sum_field(actual_values, "load_kwh") if actual_rows else None,
-                "planned_import_kwh": sum_field(rows, "expected_import_kwh") if rows else None,
-                "actual_import_kwh": sum_field(actual_values, "grid_import_kwh") if actual_rows else None,
-                "planned_export_kwh": sum_field(rows, "expected_export_kwh") if rows else None,
-                "actual_export_kwh": sum_field(actual_values, "grid_export_kwh") if actual_rows else None,
-                "planned_result_gbp": sum_field(rows, "net_result_gbp") if rows else None,
-                "actual_result_gbp": sum_field(actual_values, "net_result_gbp") if actual_rows else None,
-                "pv_mean_absolute_percent_error": (
-                    round(sum(error_values) / len(error_values), 1)
-                    if error_values
-                    else None
-                ),
-            },
-        }
-
-    def plan_execution_index(self) -> dict[str, Any]:
-        dates = sorted(
-            {
-                str(row.get("date"))
-                for row in self.plan_execution_archive
-                if isinstance(row, dict) and row.get("date")
-            },
-            reverse=True,
-        )
-        return {
-            "schema_version": HISTORY_SCHEMA_VERSION,
-            "available_dates": dates[:90],
-            "retention_days": 90,
-            "stored_hours": len(self.plan_execution_archive),
-        }
-
-    async def async_save_future_plan(self, payload: dict[str, Any]) -> None:
-        """Persist an accepted authoritative target for the next calendar day."""
-        if not isinstance(payload, dict):
-            raise ValueError("The plan for tomorrow must be an object")
-        optimizer_quality = (
-            self.optimizer_plan.get("data_quality", {})
-            if isinstance(self.optimizer_plan, dict)
-            else {}
-        )
-        learning_summary = self.learning_summary()
-        maturity_contract = learning_summary.get("learning_maturity", {})
-        readiness = (
-            self.optimizer_plan.get("execution_readiness", {})
-            if isinstance(self.optimizer_plan, dict)
-            else {}
-        )
-        tomorrow_readiness = (
-            (readiness.get("by_day") or {}).get("tomorrow", {})
-            if isinstance(readiness, dict) and isinstance(readiness.get("by_day"), dict)
-            else {}
-        )
-        if (
-            maturity_contract.get("application_ready") is False
-            or optimizer_quality.get("learning_apply_allowed") is False
-            or (
-                isinstance(tomorrow_readiness, dict)
-                and tomorrow_readiness
-                and tomorrow_readiness.get("status") != "confirmable"
-            )
-        ):
-            raise ValueError(
-                "The plan for tomorrow is not 'Ready to confirm' (dry-run/preview); "
-                "it can be analysed but not deployed"
-            )
-        expected_date = (ha_now().date() + timedelta(days=1)).isoformat()
-        plan_date = str(payload.get("date") or "")
-        if plan_date != expected_date:
-            raise ValueError(f"A plan can only be saved for tomorrow ({expected_date})")
-        if payload.get("replace_day") is False:
-            raise ValueError("FuturePlan for tomorrow requires an authoritative replace_day=true")
-        updates, selected_keys = self._build_authoritative_future_plan_updates(
-            payload.get("updates")
-        )
-        supplied_validations: dict[str, Any] = {}
-        raw_validations = payload.get("slot_validations")
-        if isinstance(raw_validations, dict):
-            # Hourly plan keys apply to every half-hour slot of that hour.
-            for raw_key, validation in raw_validations.items():
-                for slot_key in slots_for_key(str(raw_key)) or [str(raw_key)]:
-                    supplied_validations[slot_key] = validation
-        previous_plan = self.future_plan if isinstance(self.future_plan, dict) else {}
-        superseded_plans = list(previous_plan.get("superseded_plans") or [])[-4:]
-        intent_revision = 1
-        if previous_plan and str(previous_plan.get("date") or "") == plan_date:
-            intent_revision = max(
-                1, int(self.safe_float(previous_plan.get("intent_revision"), 1)) + 1
-            )
-            superseded_plans.append({
-                "plan_id": str(previous_plan.get("plan_id") or ""),
-                "date": plan_date,
-                "status": "superseded",
-                "superseded_at": ha_now().isoformat(timespec="seconds"),
-            })
-            for old_key in previous_plan.get("selected_slot_keys") or []:
-                self._set_plan_execution_lifecycle(
-                    plan_date, str(old_key), approval_status="superseded",
-                    deployment_status="superseded",
-                    deployment_reason="Superseded by a newer FuturePlan acceptance",
-                )
-        created_at = ha_now().isoformat(timespec="seconds")
-        self.future_plan = {
-            "plan_id": str(payload.get("plan_id") or ""),
-            "date": plan_date,
-            "status": "scheduled",
-            "created_at": created_at,
-            "updated_at": created_at,
-            "strategy": str(payload.get("strategy") or "balanced"),
-            "intent_schema_version": FUTURE_PLAN_INTENT_SCHEMA_VERSION,
-            "lifecycle_schema_version": FUTURE_PLAN_LIFECYCLE_SCHEMA_VERSION,
-            "intent_revision": intent_revision,
-            "authoritative_day": True,
-            "replace_day": True,
-            "ownership": "optimizer_core_authoritative_day",
-            "updates": updates,
-            "selected_slot_keys": selected_keys,
-            "slot_validations": {
-                key: deepcopy(supplied_validations[key])
-                for key in selected_keys
-                if isinstance(supplied_validations.get(key), dict)
-            },
-            "slot_results": {
-                str(update["slot_key"]): {
-                    "status": "approved",
-                    "approved_at": created_at,
-                    "intent_revision": intent_revision,
-                }
-                for update in updates
-            },
-            "slot_bases": self._future_plan_acceptance_bases(),
-            "superseded_plans": superseded_plans[-5:],
-            "labels": [str(value) for value in payload.get("labels", []) if value is not None][:24],
-        }
-        approved_at = self.future_plan["created_at"]
-        for slot_key in selected_keys:
-            self._set_plan_execution_lifecycle(
-                plan_date,
-                slot_key,
-                approval_status="approved",
-                approved_at=approved_at,
-                approved_plan_id=self.future_plan["plan_id"],
-            )
-        for validation in self.future_plan["slot_validations"].values():
-            if not isinstance(validation, dict):
-                continue
-            profile_id = str(validation.get("profile_id") or "")
-            if profile_id:
-                self._set_profile_execution_status(
-                    profile_id,
-                    plan_date,
-                    "waiting",
-                    plan_id=self.future_plan["plan_id"],
-                )
-        await self.async_add_ai_analysis({
-            "timestamp": int(ha_now().timestamp() * 1000),
-            "event": "future_plan_scheduled",
-            "date": plan_date,
-            "selected_hours": self.future_plan["labels"],
-        })
-        await self.async_save_ai_data()
-        await self.async_save_learning_history()
-        self.request_optimizer_recalc("future_plan")
-        self._notify_update_for("future_plan")
-
-    async def async_cancel_future_plan(self, reason: str = "Cancelled by the user") -> None:
-        if not self.future_plan:
-            return
-        plan_date = str(self.future_plan.get("date") or ha_now().date().isoformat())
-        selected_keys = self.future_plan.get("selected_slot_keys")
-        if not isinstance(selected_keys, list):
-            selected_keys = [
-                str(update.get("slot_key") or "")
-                for update in self.future_plan.get("updates", [])
-                if isinstance(update, dict)
-                and normalize_manager_mode(str(update.get("mode") or ""))
-                in {MODE_SELLING_FIRST, MODE_CHARGE}
-            ]
-        for slot_key in selected_keys:
-            self._set_plan_execution_lifecycle(
-                plan_date,
-                str(slot_key or ""),
-                approval_status="cancelled",
-                deployment_status="cancelled",
-                deployment_reason=reason,
-            )
-        validations = self.future_plan.get("slot_validations")
-        if isinstance(validations, dict):
-            for validation in validations.values():
-                if not isinstance(validation, dict):
-                    continue
-                profile_id = str(validation.get("profile_id") or "")
-                if profile_id:
-                    self._set_profile_execution_status(
-                        profile_id,
-                        plan_date,
-                        "cancelled",
-                        failure_reason=reason,
-                        plan_id=str(self.future_plan.get("plan_id") or ""),
-                    )
-        self.future_plan = {
-            **self.future_plan,
-            "status": "cancelled",
-            "cancelled_at": ha_now().isoformat(timespec="seconds"),
-            "reason": reason,
-        }
-        await self.async_save_ai_data()
-        await self.async_save_learning_history()
-        self.request_optimizer_recalc("future_plan")
-        self._notify_update_for("future_plan")
-
-    async def async_process_future_plan(self) -> None:
-        """Revalidate and apply only the accepted slot that is starting now."""
-        current_time = ha_now()
-        await self._async_cleanup_future_plan_slots(current_time)
-        if self.manual_schedule_active:
-            return
-        plan = self.future_plan
-        if not plan or plan.get("status") not in {"scheduled", "partial"}:
-            return
-        today = current_time.date().isoformat()
-        plan_date = str(plan.get("date") or "")
-        if plan_date > today:
-            return
-        if plan_date < today:
-            results = dict(plan.get("slot_results") or {})
-            terminal = {"confirmed", "blocked", "missed", "manual_override", "superseded", "cancelled", "legacy_unconfirmed"}
-            for update in plan.get("updates") or []:
-                if not isinstance(update, dict):
-                    continue
-                key = str(update.get("slot_key") or "")
-                if str((results.get(key) or {}).get("status") or "") not in terminal:
-                    results[key] = {
-                        "status": "missed",
-                        "reason": "The dated slot expired; no catch-up",
-                        "resolved_at": current_time.isoformat(timespec="seconds"),
-                    }
-            self.future_plan = {
-                **plan, "status": self._future_plan_overall_status(results),
-                "slot_results": results,
-                "updated_at": current_time.isoformat(timespec="seconds"),
-            }
-            await self.async_save_ai_data()
-            return
-        current_slot_key = slot_key_at_minute(current_time.hour * 60 + current_time.minute)
-        current_minute = current_time.hour * 60 + current_time.minute
-        profile_id = ""
-        execution_stage = "validation"
-        slot_results = dict(plan.get("slot_results") or {})
-        try:
-            updates = self._validate_future_plan_updates(plan.get("updates"))
-            results_changed = False
-            terminal_statuses = {
-                "confirmed", "blocked", "missed", "manual_override",
-                "superseded", "cancelled", "legacy_unconfirmed",
-            }
-            for update in updates:
-                slot_key = str(update.get("slot_key") or "")
-                previous_result = slot_results.get(slot_key, {})
-                if (
-                    slot_end_minute(slot_key) <= current_minute
-                    and str(previous_result.get("status") or "") not in terminal_statuses
-                ):
-                    reason = "The slot passed while Home Assistant did not execute the accepted plan"
-                    slot_results[slot_key] = {
-                        "status": "missed",
-                        "reason": reason,
-                        "resolved_at": current_time.isoformat(timespec="seconds"),
-                    }
-                    self._set_plan_execution_lifecycle(
-                        plan_date,
-                        slot_key,
-                        deployment_status="missed",
-                        deployed_at=None,
-                        deployment_reason=reason,
-                    )
-                    results_changed = True
-            current_update = next(
-                (item for item in updates if item.get("slot_key") == current_slot_key),
-                None,
-            )
-            current_result = slot_results.get(current_slot_key, {})
-            if current_update is None or str(current_result.get("status") or "") in terminal_statuses:
-                if results_changed:
-                    has_problem = any(
-                        str(item.get("status") or "") in {"missed", "blocked"}
-                        for item in slot_results.values()
-                        if isinstance(item, dict)
-                    )
-                    pending = any(
-                        slot_start_minute(str(item.get("slot_key"))) > current_minute
-                        and str(slot_results.get(str(item.get("slot_key")), {}).get("status") or "")
-                        not in terminal_statuses
-                        for item in updates
-                    )
-                    self.future_plan = {
-                        **plan,
-                        "status": "partial" if has_problem else "scheduled" if pending else "completed",
-                        "slot_results": slot_results,
-                        "updated_at": current_time.isoformat(timespec="seconds"),
-                    }
-                    await self.async_save_ai_data()
-                    await self.async_save_learning_history()
-                    self.notify_update()
-                return
-            if str(current_result.get("status") or "") in {"logical_applied", "physical_pending"}:
-                # The existing manager tick/reconcile path owns the physical
-                # transaction. Do not rewrite or create a second transaction.
-                return
-            if self._future_plan_manual_conflict(plan, current_slot_key):
-                reason = "Overridden manually after FuturePlan acceptance — MANUAL WINS"
-                slot_results[current_slot_key] = {
-                    "status": "manual_override",
-                    "reason": reason,
-                    "resolved_at": current_time.isoformat(timespec="seconds"),
-                }
-                self._set_plan_execution_lifecycle(
-                    plan_date, current_slot_key,
-                    deployment_status="manual_override", deployed_at=None,
-                    deployment_reason=reason,
-                )
-                self.future_plan = {
-                    **plan, "status": "partial", "slot_results": slot_results,
-                    "updated_at": current_time.isoformat(timespec="seconds"),
-                }
-                await self.async_save_ai_data()
-                await self.async_save_learning_history()
-                self._notify_update_for("future_plan")
-                return
-            validation = (
-                plan.get("slot_validations", {}).get(current_slot_key, {})
-                if isinstance(plan.get("slot_validations"), dict)
-                else {}
-            )
-            validation = validation if isinstance(validation, dict) else {}
-            profile_id = str(validation.get("profile_id") or "")
-            selling = current_update.get("mode") == MODE_SELLING_FIRST
-            charging = current_update.get("mode") == MODE_CHARGE
-            minimum_soc = self.safe_float(
-                validation.get("minimum_soc", current_update.get("minimum_sell_soc")),
-                0,
-            )
-            minimum_price = self.safe_float(
-                validation.get("minimum_price", current_update.get("min_sell_price")),
-                0,
-            )
-            selling_needing_soc = selling and minimum_soc > 0
-            selling_needing_price = selling and (
-                "minimum_price" in validation or "min_sell_price" in current_update
-            )
-            if selling_needing_soc and self.current_soc_or_none() is None:
-                raise FuturePlanTransientError("waiting for a current, reliable SOC")
-            if selling_needing_price and self.state_float_or_none(self.price_sensor) is None:
-                raise FuturePlanTransientError("waiting for the current sell price")
-            current_soc = self.current_soc_or_none()
-            current_price = self.state_float_or_none(self.price_sensor)
-            if (
-                selling_needing_soc
-                and current_soc is not None
-                and current_soc <= minimum_soc
-            ):
-                raise RuntimeError("the current SOC does not allow a safe slot start")
-            if (
-                selling_needing_price
-                and current_price is not None
-                and current_price + 1e-9 < minimum_price
-            ):
-                raise RuntimeError("the current price is below the profile minimum price")
-            if not self.data_available:
-                raise FuturePlanTransientError("the inverter or a required control entity is temporarily unavailable")
-            if (
-                charging
-                and validation.get("charge_source") in ("grid", "pv_and_grid")
-                and not self.entity_available(self.grid_power_sensor)
-            ):
-                raise FuturePlanTransientError("waiting for a reliable grid state reading")
-            planned_power = self.safe_float(
-                current_update.get("sell_power", validation.get("power_limit_w")),
-                0,
-            )
-            allowed_power = self.safe_float(validation.get("power_limit_w"), 0)
-            if allowed_power > 0 and planned_power > allowed_power + 1e-6:
-                raise RuntimeError("slot power exceeds the current profile or inverter limit")
-            effective_buy_price = None
-            if charging:
-                tariff = self.tariff_context(current_time)
-                canonical = self.canonical_price_context(
-                    current_time,
-                    [row for row in tariff.get("hourly_profile", [])[:48] if isinstance(row, dict)],
-                )
-                price_row = next((
-                    row
-                    for row in canonical.get("buy", {}).get("rows", [])
-                    if row.get("date") == current_time.date().isoformat()
-                    and row.get("hour") == current_time.hour
-                    and row.get("quality") == "ready"
-                ), None)
-                effective_buy_price = finite_float(
-                    price_row.get("final_price_gbp_kwh") if price_row else None
-                )
-                maximum_effective_price = self.safe_float(
-                    validation.get("maximum_effective_price"),
-                    0,
-                )
-                if maximum_effective_price > 0:
-                    if effective_buy_price is None:
-                        raise FuturePlanTransientError("waiting for the current buy price")
-                    if effective_buy_price > maximum_effective_price + 1e-9:
-                        raise RuntimeError(
-                            "effective purchase cost including DSO exceeds the profile limit"
-                        )
-            if validation.get("deadline"):
-                deadline_hour = int(str(validation["deadline"]).split(":", 1)[0])
-                if current_time.hour >= deadline_hour and not bool(validation.get("deadline_next_day")):
-                    raise RuntimeError("the profile deadline has passed")
-            execution = next(
-                (
-                    item
-                    for item in reversed(self.profile_execution)
-                    if isinstance(item, dict)
-                    and str(item.get("profile_id") or "") == profile_id
-                    and str(item.get("date") or "") == plan_date
-                ),
-                None,
-            )
-            executed_energy = self.safe_float(
-                execution.get("executed_kwh", execution.get("actual_energy_kwh"))
-                if execution else 0,
-                0,
-            )
-            remaining_target = self.safe_float(
-                execution.get("remaining_kwh")
-                if execution else validation.get("remaining_target_kwh"),
-                0,
-            )
-            target_energy = self.safe_float(validation.get("target_energy_kwh"), 0)
-            if profile_id and target_energy > 0 and remaining_target <= 1e-6:
-                raise RuntimeError("the profile target has already been met")
-            possible_remaining = max(
-                0.0,
-                self.safe_float(validation.get("possible_energy_kwh"), 0)
-                - executed_energy,
-            )
-            if (
-                not bool(validation.get("allow_partial", True))
-                and possible_remaining + 1e-6 < remaining_target
-            ):
-                raise RuntimeError("the full remaining profile target is no longer achievable")
-            planned_energy = max(
-                0.0,
-                self.safe_float(validation.get("planned_energy_kwh"), 0),
-            )
-            planned_price = self.safe_float(validation.get("planned_price"), 0)
-            revalidated_result = self.safe_float(
-                validation.get("profile_net_result_gbp"),
-                0,
-            )
-            if selling and current_price is not None:
-                revalidated_result += (current_price - planned_price) * planned_energy
-            elif charging and effective_buy_price is not None:
-                revalidated_result -= (effective_buy_price - planned_price) * planned_energy
-            if revalidated_result + 1e-6 < self.safe_float(validation.get("min_net_result"), 0):
-                raise RuntimeError("the profile net result fell below the required minimum")
-            if (
-                selling
-                and bool(validation.get("allow_partial", True))
-                and remaining_target > 1e-6
-                and planned_energy > remaining_target
-            ):
-                duration = max(
-                    1.0,
-                    self.safe_float(validation.get("duration_minutes"), 60),
-                )
-                current_update = {
-                    **current_update,
-                    "sell_power": min(
-                        self.safe_float(current_update.get("sell_power"), 0),
-                        round(remaining_target * 1000 * 60 / duration),
-                    ),
-                }
-            if (
-                current_update.get("mode") == MODE_CHARGE
-                and current_soc is not None
-                and validation.get("max_soc_before_pv_pct") is not None
-                and current_soc >= self.safe_float(validation.get("max_soc_before_pv_pct"), 100)
-            ):
-                raise RuntimeError("no room reserved for forecast PV production")
-            if profile_id:
-                self._set_profile_execution_status(
-                    profile_id,
-                    plan_date,
-                    "running",
-                    plan_id=str(plan.get("plan_id") or ""),
-                )
-            execution_stage = "write"
-            execution_update = (
-                self._sanitize_ai_sell_execution_update(current_update)
-                if selling
-                else current_update
-            )
-            intent_revision = int(self.safe_float(plan.get("intent_revision"), 1))
-            writes_before = self._physical_write_count
-            await self.async_apply_schedule_patch(
-                [execution_update], ai_source=True,
-                change_source="future_plan",
-                source_context={
-                    "plan_id": str(plan.get("plan_id") or ""),
-                    "target_date": plan_date,
-                    "intent_revision": intent_revision,
-                },
-            )
-            expected_physical = {
-                "System Work Mode": self.target_mode,
-                "Max Sell Power": self.applied_sell_power,
-            }
-            next_lifecycle = (
-                "physical_pending"
-                if self._control_is_active() and not self.emergency_stop
-                else "logical_applied"
-            )
-            self._set_plan_execution_lifecycle(
-                plan_date,
-                current_slot_key,
-                deployment_status=next_lifecycle,
-                deployed_at=None,
-                deployment_reason="Logical target saved; waiting for physical write/readback",
-            )
-            slot_results[current_slot_key] = {
-                "status": next_lifecycle,
-                "validated_at": current_time.isoformat(timespec="seconds"),
-                "logical_applied_at": current_time.isoformat(timespec="seconds"),
-                "correlation": {
-                    "plan_id": str(plan.get("plan_id") or ""),
-                    "target_date": plan_date,
-                    "slot_key": current_slot_key,
-                    "intent_revision": intent_revision,
-                    "schedule_revision": int(self.schedule_slot_revisions.get(current_slot_key, 0)),
-                    "physical_write_count_before": writes_before,
-                    "expected_fingerprint": snapshot_id(expected_physical),
-                },
-            }
-            pending = [
-                item
-                for item in updates
-                if item.get("slot_key") not in slot_results
-                and slot_start_minute(str(item.get("slot_key"))) > current_minute
-            ]
-            self.future_plan = {
-                **plan,
-                "status": self._future_plan_overall_status(slot_results),
-                "slot_results": slot_results,
-                "updated_at": current_time.isoformat(timespec="seconds"),
-            }
-            await self.async_add_ai_analysis({
-                "timestamp": int(ha_now().timestamp() * 1000),
-                "event": "future_plan_slot_logical_applied",
-                "date": plan_date,
-                "slot_key": current_slot_key,
-            })
-            await self.async_save_ai_data()
-            await self.async_save_learning_history()
-        except FuturePlanTransientError as err:
-            self._set_plan_execution_lifecycle(
-                plan_date,
-                current_slot_key,
-                deployment_status="waiting_data",
-                deployed_at=None,
-                deployment_reason=str(err),
-            )
-            slot_results[current_slot_key] = {
-                "status": "waiting_data",
-                "reason": str(err),
-                "last_attempt_at": ha_now().isoformat(timespec="seconds"),
-            }
-            has_problem = any(
-                item.get("status") in {"blocked", "missed"}
-                for item in slot_results.values()
-                if isinstance(item, dict)
-            )
-            self.future_plan = {
-                **plan,
-                "status": "partial" if has_problem else "scheduled",
-                "slot_results": slot_results,
-                "updated_at": ha_now().isoformat(timespec="seconds"),
-                "reason": str(err),
-            }
-            await self.async_save_ai_data()
-            await self.async_save_learning_history()
-        except Exception as err:
-            self._set_plan_execution_lifecycle(
-                plan_date,
-                current_slot_key,
-                deployment_status="blocked",
-                deployed_at=None,
-                deployment_reason=str(err),
-            )
-            if profile_id:
-                self._set_profile_execution_status(
-                    profile_id,
-                    plan_date,
-                    "failed" if execution_stage == "write" else "blocked",
-                    failure_reason=str(err),
-                    plan_id=str(plan.get("plan_id") or ""),
-                )
-            self.future_plan = {
-                **plan,
-                "status": "partial",
-                "slot_results": {
-                    **slot_results,
-                    current_slot_key: {
-                        "status": "blocked",
-                        "reason": str(err),
-                        "validated_at": ha_now().isoformat(timespec="seconds"),
-                    },
-                },
-                "failed_at": ha_now().isoformat(timespec="seconds"),
-                "reason": str(err),
-            }
-            await self.async_save_ai_data()
-            await self.async_save_learning_history()
-        self.request_optimizer_recalc("future_plan")
-        self.notify_update()
-
-    async def async_clear_all_history(self) -> None:
-        self.ai_history = []
-        self.solcast_history = []
-        self.solcast_tracking = {}
-        self.learning_history = []
-        self.learning_tracking = {}
-        self.energy_samples = []
-        self._energy_recent_details = []
-        self._energy_revision += 1
-        self.daily_archive = []
-        self.monthly_archive = []
-        self.energy_counter_state = {}
-        self.load_profile_7x24 = {}
-        self.pv_learning_profile = {}
-        self.profile_execution = []
-        self._profile_execution_revision += 1
-        self.plan_execution_archive = []
-        self._invalidate_learning_summary_cache()
-        await self.async_save_ai_data()
-        await self.async_save_solcast_history()
-        await self.async_save_learning_history()
-        await self.async_save_energy_history()
-        self.request_optimizer_recalc("learning")
-        self._notify_update_for("learning")
 
     async def async_load_solcast_history(self) -> None:
         self._solcast_store = Store(self.hass, 1, f"{DOMAIN}_{self.entry_id}_solcast_history")
@@ -7417,7 +4389,6 @@ class DeyeEnergyRuntime:
         tracking = data.get("tracking")
         self.solcast_history = history[:1825] if isinstance(history, list) else []
         self.solcast_tracking = tracking if isinstance(tracking, dict) else {}
-        self._invalidate_learning_summary_cache()
         if migrated:
             await self.async_save_solcast_history()
 
@@ -7441,12 +4412,6 @@ class DeyeEnergyRuntime:
             forecast_reading = {"status": "disabled", "value": 0}
             forecast = 0.0
             actual = 0.0
-        summary_tracking_before = (
-            self.solcast_tracking.get("forecast"),
-            self.solcast_tracking.get("initial_forecast_kwh"),
-            self.solcast_tracking.get("latest_forecast_kwh"),
-            self.solcast_tracking.get("actual"),
-        )
         tracked_day = str(self.solcast_tracking.get("date") or "")
         try:
             valid_tracked_day = (
@@ -7471,23 +4436,10 @@ class DeyeEnergyRuntime:
                 previous_forecast,
             )
             previous_actual = self.safe_float(self.solcast_tracking.get("actual"), 0)
-            # Do not turn a missing/invalid forecast into a completed accuracy
-            # day. The tracker still rolls forward and existing history stays.
             if previous_forecast > 0:
                 error = previous_actual - previous_forecast
                 error_percent = error / previous_forecast * 100
                 accuracy = max(0, 100 - abs(error_percent))
-                sales = self.sales_stats.get("daily", {}).get(tracked_day, {})
-                for item in self.ai_history:
-                    timestamp = self.safe_float(item.get("timestamp"), 0)
-                    item_day = datetime.fromtimestamp(timestamp / 1000, tz=now.tzinfo).date().isoformat() if timestamp > 0 else ""
-                    if item.get("event") == "accepted" and item_day == tracked_day and not item.get("outcome"):
-                        item["outcome"] = {
-                            "sold_kwh": round(self.safe_float(sales.get("kwh"), 0), 3),
-                            "sold_value": round(self.safe_float(sales.get("value"), 0), 2),
-                            "pv_accuracy_percent": round(accuracy, 1),
-                        }
-                        item["evaluated_at"] = int(now.timestamp() * 1000)
                 self.solcast_history = [{
                     "date": tracked_day,
                     "forecast_kwh": round(previous_forecast, 3),
@@ -7500,15 +4452,6 @@ class DeyeEnergyRuntime:
                     "accuracy_percent": round(accuracy, 1),
                     "day_complete": True,
                 }, *[row for row in self.solcast_history if row.get("date") != tracked_day]][:1825]
-                self._invalidate_learning_summary_cache()
-                await self.async_add_ai_analysis({
-                    "timestamp": int(now.timestamp() * 1000),
-                    "event": "daily_summary",
-                    "date": tracked_day,
-                    "forecast_kwh": round(previous_forecast, 3),
-                    "actual_kwh": round(previous_actual, 3),
-                    "accuracy_percent": round(accuracy, 1),
-                })
             self.solcast_tracking = {}
         if missing_day or not self.solcast_tracking:
             preserved_snapshots = [
@@ -7544,165 +4487,9 @@ class DeyeEnergyRuntime:
         if forecast > 0 and not any(str(row.get("timestamp")) == snapshot_hour for row in snapshots if isinstance(row, dict)):
             snapshots.append({"timestamp": snapshot_hour, "forecast_kwh": round(forecast, 3)})
             self.solcast_tracking["forecast_snapshots"] = snapshots[-72:]
-        summary_tracking_after = (
-            self.solcast_tracking.get("forecast"),
-            self.solcast_tracking.get("initial_forecast_kwh"),
-            self.solcast_tracking.get("latest_forecast_kwh"),
-            self.solcast_tracking.get("actual"),
-        )
-        if summary_tracking_after != summary_tracking_before:
-            self._invalidate_learning_summary_cache()
         if changed_day or missing_day or now.minute % 15 == 0:
             await self.async_save_solcast_history()
 
-    async def async_load_learning_history(self) -> None:
-        self._learning_store = Store(self.hass, 1, f"{DOMAIN}_{self.entry_id}_learning_history")
-        raw = await self._learning_store.async_load()
-        data, migrated = migrate_learning_payload(raw)
-        history = data.get("history")
-        tracking = data.get("tracking")
-        self.learning_history = history[:17520] if isinstance(history, list) else []
-        self.learning_tracking = tracking if isinstance(tracking, dict) else {}
-        self.learning_revision = max(0, int(finite_float(data.get("learning_revision")) or 0))
-        self.history_watermark = str(data.get("history_watermark") or "")
-        self.load_profile_7x24 = data.get("load_profile_7x24") if isinstance(data.get("load_profile_7x24"), dict) else {}
-        self.pv_learning_profile = data.get("pv_profile") if isinstance(data.get("pv_profile"), dict) else {}
-        self.profile_execution = data.get("profile_execution")[:17520] if isinstance(data.get("profile_execution"), list) else []
-        self._profile_execution_revision += 1
-        if migrated:
-            self._rebuild_learning_profiles_from_history()
-            await self.async_save_learning_history()
-        else:
-            self._learning_last_saved_fingerprint = snapshot_id(
-                self._learning_store_fingerprint_payload()
-            )
-        self._invalidate_learning_summary_cache()
-
-    def _rebuild_learning_profiles_from_history(self) -> None:
-        """Relearn canonical profiles once after migration to per-channel quality."""
-        load_profile: dict[str, Any] = {}
-        pv_profile: dict[str, Any] = {}
-        for row in reversed(self.learning_history):
-            if not isinstance(row, dict):
-                continue
-            try:
-                moment = datetime.fromisoformat(str(row.get("hour")))
-            except (TypeError, ValueError):
-                continue
-            channels = row.get("channel_quality") if isinstance(row.get("channel_quality"), dict) else {}
-            load_quality = channels.get("load") if isinstance(channels.get("load"), dict) else {}
-            pv_quality = channels.get("pv") if isinstance(channels.get("pv"), dict) else {}
-            load_profile = update_load_profile(
-                load_profile,
-                moment=moment,
-                load_kwh=finite_float(row.get("load_kwh")),
-                complete=load_quality.get("level") == "full",
-                quality_score=self.safe_float(load_quality.get("quality_score"), 0),
-                completeness_percent=self.safe_float(load_quality.get("coverage_percent"), 0),
-            )
-            pv_profile = update_pv_profile(
-                pv_profile,
-                moment=moment,
-                forecast_kwh=finite_float(row.get("forecast_hourly_snapshot_kwh")),
-                actual_kwh=finite_float(row.get("pv_kwh")),
-                flags=dict(row.get("quality_flags") or {}),
-                complete=pv_quality.get("level") == "full",
-                quality_score=self.safe_float(pv_quality.get("quality_score"), 0),
-                completeness_percent=self.safe_float(pv_quality.get("coverage_percent"), 0),
-            )
-        self.load_profile_7x24 = load_profile
-        self.pv_learning_profile = pv_profile
-
-    def _learning_store_payload(self) -> dict[str, Any]:
-        """Build the latest learning payload only when persistence is requested."""
-        return {
-            "schema_version": HISTORY_SCHEMA_VERSION,
-            "history": self.learning_history[:17520],
-            "tracking": self.learning_tracking,
-            "load_profile_7x24": self.load_profile_7x24,
-            "pv_profile": self.pv_learning_profile,
-            "profile_execution": self.profile_execution[:17520],
-            "learning_revision": self.learning_revision,
-            "history_watermark": self.history_watermark,
-        }
-
-    def _learning_store_fingerprint_payload(self) -> dict[str, Any]:
-        """Bound change detection to revision markers, not multi-year payloads."""
-        latest_history = self.learning_history[0] if self.learning_history else {}
-        return {
-            "history": [len(self.learning_history), latest_history.get("hour")],
-            # The active hour is small but may gain provider-specific fields;
-            # include it completely so concurrent latest-wins writes stay exact.
-            "tracking": self.learning_tracking,
-            "load_profile": [id(self.load_profile_7x24), len(self.load_profile_7x24)],
-            "pv_profile": [id(self.pv_learning_profile), len(self.pv_learning_profile)],
-            "profile_execution": [
-                self._profile_execution_revision,
-                len(self.profile_execution),
-            ],
-            "learning_revision": self.learning_revision,
-            "history_watermark": self.history_watermark,
-        }
-
-    def request_learning_save(self) -> Any:
-        """Coalesce background learning Store requests into one tracked task."""
-        self._learning_save_dirty = True
-        task = self._learning_save_task
-        if (
-            self._learning_store is None
-            or self._startup_in_progress
-            or self._unloading
-            or (task is not None and not task.done())
-        ):
-            return task
-        task = self.hass.async_create_task(self.async_save_learning_history())
-        self._learning_save_task = task
-        return task
-
-    async def async_save_learning_history(self, *, force: bool = False) -> None:
-        """Persist learning state single-flight with one latest follow-up."""
-        if self._learning_store is None or (self._unloading and not force):
-            return
-        self._learning_save_dirty = True
-        if self._startup_in_progress:
-            return
-        current = asyncio.current_task()
-        active = self._learning_save_task
-        if active is not None and active is not current and not active.done():
-            await asyncio.shield(active)
-            return
-        if active is None or active.done():
-            self._learning_save_task = current
-        follow_up_used = False
-        try:
-            while True:
-                self._learning_save_dirty = False
-                prepare_started = time.perf_counter()
-                payload = self._learning_store_payload()
-                fingerprint = snapshot_id(
-                    self._learning_store_fingerprint_payload()
-                )
-                self._performance.observe_ms(
-                    "learning_store_prepare",
-                    (time.perf_counter() - prepare_started) * 1000.0,
-                )
-                if fingerprint != self._learning_last_saved_fingerprint:
-                    store_started = time.perf_counter()
-                    await self._learning_store.async_save(payload)
-                    self._performance.observe_ms(
-                        "learning_store_save",
-                        (time.perf_counter() - store_started) * 1000.0,
-                    )
-                    self._learning_last_saved_fingerprint = fingerprint
-                if self._learning_save_dirty and not follow_up_used:
-                    follow_up_used = True
-                    continue
-                break
-        finally:
-            if self._learning_save_task is current:
-                self._learning_save_task = None
-        if self._learning_save_dirty and not self._unloading:
-            self.request_learning_save()
 
     async def async_load_energy_history(self) -> None:
         self._samples_store = Store(self.hass, 1, f"{DOMAIN}_{self.entry_id}_energy_samples")
@@ -7717,15 +4504,6 @@ class DeyeEnergyRuntime:
         self.daily_archive = data.get("daily", []) if isinstance(data.get("daily"), list) else []
         self.monthly_archive = data.get("monthly", []) if isinstance(data.get("monthly"), list) else []
         self.energy_counter_state = data.get("counter_state") if isinstance(data.get("counter_state"), dict) else {}
-        checkpoint = data.get("learning_checkpoint")
-        if isinstance(checkpoint, dict) and checkpoint:
-            current_stamp = str(self.learning_tracking.get("last_sample") or "")
-            checkpoint_stamp = str(checkpoint.get("last_sample") or "")
-            if checkpoint_stamp > current_stamp:
-                # Energy Store is already written once per minute. Reusing that
-                # atomic write recovers the active learning hour without a new
-                # Store, timer or save task.
-                self.learning_tracking = deepcopy(checkpoint)
         last = data.get("last_sample")
         try:
             self._last_energy_sample_at = datetime.fromisoformat(str(last)) if last else None
@@ -7733,8 +4511,6 @@ class DeyeEnergyRuntime:
             self._last_energy_sample_at = None
         self._energy_revision = 1 if migrated else 0
         self._energy_saved_revision = -1 if migrated else 0
-        # Keep an in-memory reference to the untouched legacy payload until the
-        # compact Store write succeeds. Store itself remains atomic on disk.
         self._energy_legacy_payload_backup = raw if migrated and isinstance(raw, dict) else None
         if migrated:
             await self.async_save_energy_history()
@@ -7754,7 +4530,6 @@ class DeyeEnergyRuntime:
                 if self._last_energy_sample_at
                 else None
             ),
-            "learning_checkpoint": deepcopy(self.learning_tracking),
         }
 
     def request_energy_save(self) -> Any:
@@ -8002,7 +4777,7 @@ class DeyeEnergyRuntime:
                     "quality": item.get("quality"),
                     "source": item.get("source"),
                     "last_updated": item.get("last_updated"),
-                    "usable_for_learning": item.get("value") is not None
+                    "usable_for_scheduling": item.get("value") is not None
                     and item.get("quality") != "unavailable",
                 }
                 for name, item in readings.items()
@@ -8149,1220 +4924,9 @@ class DeyeEnergyRuntime:
         if hourly or daily:
             self.weather_last_updated = ha_now().isoformat(timespec="seconds")
 
-    def _new_learning_hour(self, hour_key: str, now: datetime) -> dict[str, Any]:
-        tariff = self.tariff_context(now)
-        weather = self.weather_context()
-        solcast_power = self._measurement(self.solcast_current_power_sensor)
-        hourly_snapshot = (
-            max(0.0, float(solcast_power["value"])) / 1000
-            if solcast_power.get("value") is not None else None
-        )
-        corrected, correction_factor, correction_samples = corrected_pv_forecast(
-            self.pv_learning_profile,
-            moment=now,
-            forecast_kwh=hourly_snapshot,
-        )
-        pv_measurement = self._measurement(self.pv_power_sensor)
-        soc = self.current_soc_or_none()
-        flags = pv_quality_flags(
-            battery_soc=soc,
-            work_mode=self.state_text(self.work_mode_select),
-            grid_available=self.entity_available(self.grid_power_sensor),
-            actual_power_w=pv_measurement.get("value"),
-            inverter_limit_w=min(
-                finite_float(self.ai_settings.get("inverterPowerW")) or float("inf"),
-                self.effective_inverter_max_power_w,
-            ),
-            sensor_stale=pv_measurement.get("status") == "stale",
-            manual_override=self.control_mode != "Schedule",
-        )
-        return {
-            "schema_version": HISTORY_SCHEMA_VERSION,
-            "hour": hour_key,
-            "local_date": now.date().isoformat(),
-            "local_hour": now.hour,
-            "last_sample": now.isoformat(),
-            "samples": 0,
-            "channels": {
-                name: new_channel()
-                for name in (
-                    "pv", "load", "load_l1", "load_l2", "load_l3",
-                    "grid", "battery", "soc", "sell_price", "buy_price",
-                )
-            },
-            "pv_kwh": 0.0,
-            "load_kwh": 0.0,
-            "load_l1_kwh": 0.0,
-            "load_l2_kwh": 0.0,
-            "load_l3_kwh": 0.0,
-            "grid_import_kwh": 0.0,
-            "grid_export_kwh": 0.0,
-            "battery_charge_kwh": 0.0,
-            "battery_discharge_kwh": 0.0,
-            "soc_sum": 0.0,
-            "soc_samples": 0,
-            "soc_min": None,
-            "soc_max": None,
-            "soc_start": soc,
-            "soc_end": None,
-            "sell_price_sum": 0.0,
-            "buy_price_sum": 0.0,
-            "solcast_forecast_kwh": 0.0 if not self.pv_generation_enabled else self.solcast_forecast_today_value(),
-            "forecast_initial_kwh": 0.0 if not self.pv_generation_enabled else self.safe_float(
-                self.solcast_tracking.get("initial_forecast_kwh", self.solcast_tracking.get("forecast")),
-                0,
-            ),
-            "forecast_latest_kwh": 0.0 if not self.pv_generation_enabled else self.safe_float(
-                self.solcast_tracking.get("latest_forecast_kwh", self.solcast_tracking.get("forecast")),
-                0,
-            ),
-            "forecast_hourly_snapshot_kwh": [] if not self.pv_generation_enabled else hourly_snapshot,
-            "forecast_corrected_kwh": 0.0 if not self.pv_generation_enabled else corrected,
-            "forecast_snapshot_at": now.isoformat(timespec="seconds"),
-            "forecast_correction_factor": correction_factor,
-            "forecast_correction_samples": correction_samples,
-            "daily_pv_kwh": 0.0 if not self.pv_generation_enabled else max(0, self.state_float(self.daily_pv_production_sensor, 0)),
-            "source_quality": self.source_quality_context(),
-            "quality_flags": flags,
-            "action": self.active_slot.mode if self.active_slot.enabled else MODE_NORMAL_OPERATION,
-            "control": {
-                "slot_key": self.active_slot.key,
-                "mode": self.active_slot.mode if self.active_slot.enabled else MODE_NORMAL_OPERATION,
-                "sell_power_w": max(0.0, float(self.active_slot.sell_power or 0.0)),
-            },
-            "weather_forecast": {
-                key: weather.get(key)
-                for key in (
-                    "available", "condition", "temperature", "humidity",
-                    "cloud_coverage", "precipitation_probability",
-                    "risk_factor", "last_updated",
-                )
-            },
-            "plan_id": self.future_plan.get("plan_id") if isinstance(self.future_plan, dict) else None,
-            "tariff": {
-                key: tariff.get(key)
-                for key in ("provider", "plan", "zone", "season", "day_type", "distribution_rate", "catalog_version")
-            },
-        }
-
-    def _finalize_learning_hour(
-        self,
-        tracking: dict[str, Any],
-        *,
-        update_models: bool = True,
-    ) -> dict[str, Any]:
-        samples = max(1, int(tracking.get("samples", 0)))
-        soc_samples = int(tracking.get("soc_samples", 0))
-        source_quality = tracking.get("source_quality", {})
-        quality_score = self.safe_float(source_quality.get("score"), 0) if isinstance(source_quality, dict) else 0
-        channels = tracking.get("channels") if isinstance(tracking.get("channels"), dict) else {}
-        channel_quality = {
-            name: channel_summary(item)
-            for name, item in channels.items()
-            if isinstance(item, dict)
-        }
-
-        def available(name: str) -> bool:
-            return int(channel_quality.get(name, {}).get("valid_samples", 0)) > 0
-
-        def energy_value(field: str, channel: str) -> float | None:
-            return (
-                round(self.safe_float(tracking.get(field), 0), 4)
-                if available(channel)
-                else None
-            )
-
-        essential = ("pv", "load", "grid", "battery", "soc")
-        complete = all(
-            channel_quality.get(name, {}).get("level") == "full"
-            for name in essential
-        )
-        load_kwh = energy_value("load_kwh", "load")
-        pv_kwh = energy_value("pv_kwh", "pv")
-        grid_import_kwh = energy_value("grid_import_kwh", "grid")
-        grid_export_kwh = energy_value("grid_export_kwh", "grid")
-        battery_charge_kwh = energy_value("battery_charge_kwh", "battery")
-        battery_discharge_kwh = energy_value("battery_discharge_kwh", "battery")
-        hourly_balance = energy_balance(
-            pv_kwh=pv_kwh,
-            load_kwh=load_kwh,
-            grid_import_kwh=grid_import_kwh,
-            grid_export_kwh=grid_export_kwh,
-            battery_charge_kwh=battery_charge_kwh,
-            battery_discharge_kwh=battery_discharge_kwh,
-        )
-        solcast_hourly = finite_float(tracking.get("forecast_hourly_snapshot_kwh"))
-        solcast_error = (
-            pv_kwh - solcast_hourly
-            if pv_kwh is not None and solcast_hourly is not None
-            else None
-        )
-        solcast_accuracy = (
-            max(0.0, 100.0 - abs(solcast_error) / solcast_hourly * 100.0)
-            if solcast_error is not None and solcast_hourly and solcast_hourly > 0
-            else None
-        )
-        weather_actual = self.weather_context()
-        result = {
-            "schema_version": HISTORY_SCHEMA_VERSION,
-            "hour": tracking.get("hour"),
-            "local_date": tracking.get("local_date"),
-            "local_hour": tracking.get("local_hour"),
-            "samples": int(tracking.get("samples", 0)),
-            "pv_kwh": pv_kwh,
-            "load_kwh": load_kwh,
-            "load_l1_kwh": energy_value("load_l1_kwh", "load_l1"),
-            "load_l2_kwh": energy_value("load_l2_kwh", "load_l2"),
-            "load_l3_kwh": energy_value("load_l3_kwh", "load_l3"),
-            "grid_import_kwh": grid_import_kwh,
-            "grid_export_kwh": grid_export_kwh,
-            "battery_charge_kwh": battery_charge_kwh,
-            "battery_discharge_kwh": battery_discharge_kwh,
-            "soc_avg": round(self.safe_float(tracking.get("soc_sum"), 0) / soc_samples, 1) if soc_samples else None,
-            "soc_min": round(self.safe_float(tracking.get("soc_min"), 0), 1) if tracking.get("soc_min") is not None else None,
-            "soc_max": round(self.safe_float(tracking.get("soc_max"), 0), 1) if tracking.get("soc_max") is not None else None,
-            "soc_start": tracking.get("soc_start"),
-            "soc_end": tracking.get("soc_last"),
-            "sell_price_avg": (
-                round(
-                    self.safe_float(tracking.get("sell_price_sum"), 0)
-                    / max(1, int(channel_quality.get("sell_price", {}).get("valid_samples", 0))),
-                    3,
-                )
-                if available("sell_price")
-                else None
-            ),
-            "buy_price_avg": (
-                round(
-                    self.safe_float(tracking.get("buy_price_sum"), 0)
-                    / max(1, int(channel_quality.get("buy_price", {}).get("valid_samples", 0))),
-                    3,
-                )
-                if available("buy_price")
-                else None
-            ),
-            "solcast_forecast_kwh": round(self.safe_float(tracking.get("solcast_forecast_kwh"), 0), 3),
-            "forecast_initial_kwh": tracking.get("forecast_initial_kwh"),
-            "forecast_latest_kwh": tracking.get("forecast_latest_kwh"),
-            "forecast_hourly_snapshot_kwh": tracking.get("forecast_hourly_snapshot_kwh"),
-            "forecast_corrected_kwh": tracking.get("forecast_corrected_kwh"),
-            "forecast_snapshot_at": tracking.get("forecast_snapshot_at"),
-            "forecast_correction_factor": tracking.get("forecast_correction_factor"),
-            "daily_pv_kwh": round(self.safe_float(tracking.get("daily_pv_kwh"), 0), 3),
-            "complete": complete,
-            "completeness_percent": round(
-                sum(item.get("coverage_percent", 0) for item in channel_quality.values())
-                / max(1, len(channel_quality)),
-                1,
-            ),
-            "channel_quality": channel_quality,
-            "energy_balance": hourly_balance,
-            "source_quality": source_quality,
-            "quality_flags": tracking.get("quality_flags", {}),
-            "energy_counters": tracking.get("energy_counters", {}),
-            "action": tracking.get("action"),
-            "control": tracking.get("control", {}),
-            "plan_id": tracking.get("plan_id"),
-            "tariff": tracking.get("tariff", {}),
-            "weather_forecast": tracking.get("weather_forecast", {}),
-            "weather_actual": {
-                key: weather_actual.get(key)
-                for key in (
-                    "available", "condition", "temperature", "humidity",
-                    "cloud_coverage", "precipitation_probability",
-                    "risk_factor", "last_updated",
-                )
-            },
-            "solcast_error_kwh": round(solcast_error, 4) if solcast_error is not None else None,
-            "solcast_accuracy_percent": round(solcast_accuracy, 1) if solcast_accuracy is not None else None,
-        }
-        try:
-            moment = datetime.fromisoformat(str(tracking.get("hour")))
-        except (TypeError, ValueError):
-            moment = ha_now().replace(minute=0, second=0, microsecond=0)
-        if update_models:
-            self.load_profile_7x24 = update_load_profile(
-                self.load_profile_7x24,
-                moment=moment,
-                load_kwh=result["load_kwh"],
-                complete=channel_quality.get("load", {}).get("level") == "full",
-                quality_score=self.safe_float(channel_quality.get("load", {}).get("quality_score"), 0),
-                completeness_percent=self.safe_float(channel_quality.get("load", {}).get("coverage_percent"), 0),
-            )
-            flags = dict(result.get("quality_flags") or {})
-            flags["fallback_used"] = bool(source_quality.get("fallback_in_use")) if isinstance(source_quality, dict) else False
-            self.pv_learning_profile = update_pv_profile(
-                self.pv_learning_profile,
-                moment=moment,
-                forecast_kwh=finite_float(result.get("forecast_hourly_snapshot_kwh")),
-                actual_kwh=result["pv_kwh"],
-                flags=flags,
-                complete=channel_quality.get("pv", {}).get("level") == "full",
-                quality_score=self.safe_float(channel_quality.get("pv", {}).get("quality_score"), 0),
-                completeness_percent=self.safe_float(channel_quality.get("pv", {}).get("coverage_percent"), 0),
-            )
-            self._invalidate_learning_summary_cache()
-        return result
-
-    def _set_profile_execution_status(
-        self,
-        profile_id: str,
-        date_key: str,
-        status: str,
-        *,
-        failure_reason: str | None = None,
-        plan_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Create or transition one complete, local profile execution record."""
-        allowed_statuses = {
-            "waiting",
-            "running",
-            "completed",
-            "partial",
-            "blocked",
-            "failed",
-            "skipped",
-            "cancelled",
-            "manual_override",
-        }
-        if status not in allowed_statuses:
-            raise ValueError(f"Unsupported profile execution status: {status}")
-        profiles = (
-            self.user_profiles.get("profiles", {})
-            if isinstance(self.user_profiles, dict)
-            else {}
-        )
-        profile = profiles.get(profile_id, {}) if isinstance(profiles, dict) else {}
-        if not isinstance(profile, dict):
-            profile = {}
-        plan = self.optimizer_plan if isinstance(self.optimizer_plan, dict) else {}
-        planned_rows = sorted(
-            (
-                row
-                for row in plan.get("rows", [])
-                if isinstance(row, dict)
-                and str(row.get("profile_id") or "") == profile_id
-                and str(row.get("date") or "") == date_key
-            ),
-            key=lambda row: int(self.safe_float(row.get("hour"), 0)),
-        )
-        previous = next(
-            (
-                row
-                for row in self.profile_execution
-                if isinstance(row, dict)
-                and str(row.get("profile_id") or "") == profile_id
-                and str(row.get("date") or "") == date_key
-            ),
-            {},
-        )
-        action = str(
-            next(
-                (
-                    row.get("action")
-                    for row in planned_rows
-                    if row.get("action") in {"sell", "charge"}
-                ),
-                "charge" if profile_id == "charging" or profile.get("type") == "charging" else "sell",
-            )
-        )
-        profile_type = "charging" if action == "charge" else "sale"
-        target = max(
-            0.0,
-            self.safe_float(
-                profile.get("target_value")
-                if profile_type == "charging" and profile.get("target_type") == "energy"
-                else profile.get("target_energy_kwh"),
-                previous.get("target_kwh", 0),
-            ),
-        )
-        planned = sum(
-            max(0.0, self.safe_float(row.get("planned_energy_kwh"), 0))
-            for row in planned_rows
-        )
-        if planned <= 0:
-            planned = max(0.0, self.safe_float(previous.get("planned_kwh"), 0))
-        executed = max(
-            0.0,
-            self.safe_float(
-                previous.get("executed_kwh", previous.get("actual_energy_kwh")),
-                0,
-            ),
-        )
-        price_values = [
-            self.safe_float(
-                row.get("effective_buy_price") if profile_type == "charging" else row.get("sell_price"),
-                0,
-            )
-            for row in planned_rows
-            if (
-                row.get("effective_buy_price")
-                if profile_type == "charging"
-                else row.get("sell_price")
-            )
-            is not None
-        ]
-        planned_import = sum(
-            max(
-                0.0,
-                self.safe_float(
-                    row.get("expected_import_kwh", row.get("grid_to_battery_kwh")),
-                    0,
-                ),
-            )
-            for row in planned_rows
-        )
-        planned_export = sum(
-            max(
-                0.0,
-                self.safe_float(
-                    row.get("expected_export_kwh", row.get("battery_to_grid_kwh")),
-                    0,
-                ),
-            )
-            for row in planned_rows
-        )
-        now_text = ha_now().isoformat(timespec="seconds")
-        entry = {
-            "plan_id": plan_id or plan.get("plan_id") or previous.get("plan_id"),
-            "profile_id": profile_id,
-            "profile_type": profile_type,
-            "date": date_key,
-            "window_start": profile.get("start", previous.get("window_start")),
-            "window_end": profile.get("end", previous.get("window_end")),
-            "target_kwh": round(target, 5),
-            "planned_kwh": round(planned, 5),
-            "executed_kwh": round(executed, 5),
-            "remaining_kwh": round(max(0.0, target - executed), 5),
-            "planned_soc_start": (
-                planned_rows[0].get("soc_start_pct")
-                if planned_rows
-                else previous.get("planned_soc_start")
-            ),
-            "planned_soc_end": (
-                planned_rows[-1].get("soc_end_pct")
-                if planned_rows
-                else previous.get("planned_soc_end")
-            ),
-            "actual_soc_start": previous.get("actual_soc_start"),
-            "actual_soc_end": previous.get("actual_soc_end"),
-            "planned_price": (
-                round(sum(price_values) / len(price_values), 5)
-                if price_values
-                else previous.get("planned_price")
-            ),
-            "actual_average_price": self.safe_float(
-                previous.get("actual_average_price"),
-                0,
-            ),
-            "planned_import_kwh": round(
-                planned_import
-                if planned_rows
-                else self.safe_float(previous.get("planned_import_kwh"), 0),
-                5,
-            ),
-            "actual_import_kwh": round(
-                max(0.0, self.safe_float(previous.get("actual_import_kwh"), 0)),
-                5,
-            ),
-            "planned_export_kwh": round(
-                planned_export
-                if planned_rows
-                else self.safe_float(previous.get("planned_export_kwh"), 0),
-                5,
-            ),
-            "actual_export_kwh": round(
-                max(0.0, self.safe_float(previous.get("actual_export_kwh"), 0)),
-                5,
-            ),
-            "planned_result_gbp": round(
-                sum(self.safe_float(row.get("net_result"), 0) for row in planned_rows)
-                if planned_rows
-                else self.safe_float(previous.get("planned_result_gbp"), 0),
-                5,
-            ),
-            "actual_result_gbp": round(
-                self.safe_float(previous.get("actual_result_gbp"), 0),
-                5,
-            ),
-            "status": status,
-            "failure_reason": failure_reason,
-            "data_quality": previous.get("data_quality", {}),
-            "created_at": previous.get("created_at") or now_text,
-            "updated_at": now_text,
-            # Backward-compatible aliases consumed by existing history/UI.
-            "planned_energy_kwh": round(planned, 5),
-            "actual_energy_kwh": round(executed, 5),
-            "source": previous.get("source", "local_profile_lifecycle"),
-        }
-        self.profile_execution = [
-            entry,
-            *[
-                row
-                for row in self.profile_execution
-                if not (
-                    isinstance(row, dict)
-                    and str(row.get("profile_id") or "") == profile_id
-                    and str(row.get("date") or "") == date_key
-                )
-            ],
-        ][:17520]
-        self._profile_execution_revision += 1
-        return entry
-
-    def _sync_profile_execution_from_plan(
-        self,
-        plan: dict[str, Any],
-        current: datetime,
-    ) -> None:
-        """Seed lifecycle records from the authoritative backend plan."""
-        impacts = plan.get("profile_impacts")
-        rows = plan.get("rows")
-        if not isinstance(impacts, list) or not isinstance(rows, list):
-            return
-        current_date = current.date().isoformat()
-        for impact in impacts:
-            if not isinstance(impact, dict) or not bool(impact.get("enabled")):
-                continue
-            profile_id = str(impact.get("profile_id") or "")
-            if not profile_id:
-                continue
-            profile_rows = [
-                row
-                for row in rows
-                if isinstance(row, dict)
-                and str(row.get("profile_id") or "") == profile_id
-            ]
-            dates = sorted(
-                {
-                    str(row.get("date") or "")
-                    for row in profile_rows
-                    if row.get("date")
-                }
-            ) or [current_date]
-            impact_status = str(impact.get("status") or "")
-            for date_key in dates:
-                existing = next(
-                    (
-                        row
-                        for row in self.profile_execution
-                        if isinstance(row, dict)
-                        and str(row.get("profile_id") or "") == profile_id
-                        and str(row.get("date") or "") == date_key
-                    ),
-                    {},
-                )
-                if (
-                    existing.get("plan_id") == plan.get("plan_id")
-                    and existing.get("status")
-                    in {"completed", "cancelled", "failed", "manual_override"}
-                ):
-                    continue
-                failure_reason = None
-                if impact_status.startswith("blocked_"):
-                    status = "blocked"
-                    failure_reason = str(
-                        impact.get("block_reason")
-                        or impact_status.removeprefix("blocked_")
-                    )
-                elif impact_status == "no_qualified_hours":
-                    status = "skipped"
-                    failure_reason = str(
-                        impact.get("skip_reason") or "no_qualified_hours"
-                    )
-                elif impact_status == "completed":
-                    status = "completed"
-                elif impact_status == "partially_executed":
-                    status = "partial"
-                else:
-                    dated_rows = [
-                        row
-                        for row in profile_rows
-                        if str(row.get("date") or "") == date_key
-                    ]
-                    hours = [
-                        int(self.safe_float(row.get("hour"), 0))
-                        for row in dated_rows
-                    ]
-                    if date_key > current_date or (
-                        date_key == current_date
-                        and hours
-                        and current.hour < min(hours)
-                    ):
-                        status = "waiting"
-                    elif date_key < current_date or (
-                        date_key == current_date
-                        and hours
-                        and current.hour > max(hours)
-                    ):
-                        status = (
-                            "partial"
-                            if self.safe_float(
-                                existing.get(
-                                    "executed_kwh",
-                                    existing.get("actual_energy_kwh"),
-                                ),
-                                0,
-                            )
-                            > 0
-                            else "skipped"
-                        )
-                    else:
-                        status = "running"
-                self._set_profile_execution_status(
-                    profile_id,
-                    date_key,
-                    status,
-                    failure_reason=failure_reason,
-                    plan_id=str(plan.get("plan_id") or ""),
-                )
-
-    def _record_profile_execution(self, completed: dict[str, Any]) -> None:
-        """Record measured profile progress locally; never write a Deye setting."""
-        try:
-            moment = datetime.fromisoformat(str(completed.get("hour")))
-        except (TypeError, ValueError):
-            return
-        planned_row = next(
-            (
-                row for row in self.optimizer_plan.get("rows", [])
-                if isinstance(row, dict)
-                and str(row.get("date") or "") == moment.date().isoformat()
-                and str(row.get("hour", "")) == str(moment.hour)
-                and row.get("profile_id")
-            ),
-            None,
-        )
-        if not planned_row:
-            return
-        profile_id = str(planned_row.get("profile_id"))
-        action = str(planned_row.get("action") or "none")
-        if action == "sell":
-            actual = min(
-                max(0.0, self.safe_float(completed.get("grid_export_kwh"), 0)),
-                max(0.0, self.safe_float(completed.get("battery_discharge_kwh"), 0)),
-            )
-        elif action == "charge":
-            actual = min(
-                max(0.0, self.safe_float(completed.get("grid_import_kwh"), 0)),
-                max(0.0, self.safe_float(completed.get("battery_charge_kwh"), 0)),
-            )
-        else:
-            return
-        profile = (
-            self.user_profiles.get("profiles", {}).get(profile_id, {})
-            if isinstance(self.user_profiles, dict)
-            else {}
-        )
-        if not isinstance(profile, dict):
-            profile = {}
-        date_key = moment.date().isoformat()
-        planned_rows = [
-            row
-            for row in self.optimizer_plan.get("rows", [])
-            if isinstance(row, dict)
-            and str(row.get("profile_id") or "") == profile_id
-            and str(row.get("date") or "") == date_key
-        ]
-        previous = next(
-            (
-                row for row in self.profile_execution
-                if isinstance(row, dict)
-                and row.get("profile_id") == profile_id
-                and row.get("date") == date_key
-            ),
-            {},
-        )
-        previous_actual = max(
-            0.0,
-            self.safe_float(
-                previous.get("executed_kwh", previous.get("actual_energy_kwh")),
-                0,
-            ),
-        )
-        executed = previous_actual + actual
-        target = max(
-            0.0,
-            self.safe_float(
-                profile.get("target_value")
-                if profile.get("type") == "charging" and profile.get("target_type") == "energy"
-                else profile.get("target_energy_kwh"),
-                0,
-            ),
-        )
-        planned = sum(
-            max(0.0, self.safe_float(row.get("planned_energy_kwh"), 0))
-            for row in planned_rows
-        )
-        actual_import = max(0.0, self.safe_float(previous.get("actual_import_kwh"), 0)) + max(
-            0.0, self.safe_float(completed.get("grid_import_kwh"), 0)
-        )
-        actual_export = max(0.0, self.safe_float(previous.get("actual_export_kwh"), 0)) + max(
-            0.0, self.safe_float(completed.get("grid_export_kwh"), 0)
-        )
-        actual_price = self.safe_float(
-            completed.get("sell_price_avg") if action == "sell" else completed.get("buy_price_avg"),
-            0,
-        )
-        previous_price = self.safe_float(previous.get("actual_average_price"), 0)
-        actual_average_price = (
-            (previous_price * previous_actual + actual_price * actual) / executed
-            if executed > 1e-9
-            else 0.0
-        )
-        end_hour = int(str(profile.get("end") or "00:00").split(":", 1)[0])
-        window_finished = moment.hour == (end_hour - 1) % 24
-        quality_flags = completed.get("quality_flags")
-        manual_override = (
-            self.control_mode != "Schedule"
-            or (
-                isinstance(quality_flags, dict)
-                and bool(quality_flags.get("manual_override"))
-            )
-        )
-        previous_status = str(previous.get("status") or "")
-        if manual_override:
-            status = "manual_override"
-        elif previous_status in {"blocked", "failed", "cancelled", "manual_override"}:
-            status = previous_status
-        else:
-            status = (
-                "completed"
-                if target > 0 and executed + 1e-6 >= target
-                else "partial"
-                if window_finished and executed > 0
-                else "skipped"
-                if window_finished
-                else "running"
-            )
-        created_at = previous.get("created_at") or moment.isoformat(timespec="seconds")
-        entry = {
-            "profile_id": profile_id,
-            "profile_type": "charging" if action == "charge" else "sale",
-            "plan_id": self.optimizer_plan.get("plan_id"),
-            "date": date_key,
-            "hour": moment.hour,
-            "action": action,
-            "window_start": profile.get("start"),
-            "window_end": profile.get("end"),
-            "target_kwh": round(target, 5),
-            "planned_kwh": round(planned, 5),
-            "executed_kwh": round(executed, 5),
-            "remaining_kwh": round(max(0.0, target - executed), 5),
-            "planned_soc_start": planned_rows[0].get("soc_start_pct") if planned_rows else None,
-            "planned_soc_end": planned_rows[-1].get("soc_end_pct") if planned_rows else None,
-            "actual_soc_start": previous.get("actual_soc_start", completed.get("soc_start")),
-            "actual_soc_end": completed.get("soc_end"),
-            "planned_price": round(
-                sum(
-                    self.safe_float(
-                        row.get("sell_price") if action == "sell" else row.get("effective_buy_price"),
-                        0,
-                    )
-                    for row in planned_rows
-                ) / len(planned_rows),
-                5,
-            ) if planned_rows else None,
-            "actual_average_price": round(actual_average_price, 5),
-            "planned_import_kwh": round(sum(self.safe_float(row.get("expected_import_kwh"), 0) for row in planned_rows), 5),
-            "actual_import_kwh": round(actual_import, 5),
-            "planned_export_kwh": round(sum(self.safe_float(row.get("expected_export_kwh"), 0) for row in planned_rows), 5),
-            "actual_export_kwh": round(actual_export, 5),
-            "planned_result_gbp": round(sum(self.safe_float(row.get("net_result"), 0) for row in planned_rows), 5),
-            "actual_result_gbp": round(actual_export * actual_average_price - actual_import * actual_average_price, 5),
-            "status": status,
-            "failure_reason": (
-                "Manual mode change during profile execution"
-                if manual_override
-                else previous.get("failure_reason")
-                if status in {"blocked", "failed", "cancelled"}
-                else None
-            ),
-            "data_quality": completed.get("source_quality", {}),
-            "created_at": created_at,
-            "updated_at": moment.isoformat(timespec="seconds"),
-            # Backward-compatible aliases consumed by existing history/UI.
-            "planned_energy_kwh": round(planned, 5),
-            "actual_energy_kwh": round(executed, 5),
-            "source": "local_measurement",
-        }
-        self.profile_execution = [
-            entry,
-            *[
-                row for row in self.profile_execution
-                if not (
-                    isinstance(row, dict)
-                    and row.get("profile_id") == profile_id
-                    and row.get("date") == entry["date"]
-                )
-            ],
-        ][:17520]
-        self._profile_execution_revision += 1
-
-    async def async_update_learning_history(self) -> None:
-        now = ha_now()
-        hour_key = now.strftime("%Y-%m-%dT%H:00:00%z")
-        archive_changed = False
-        completed_learning_hour = False
-        if self.learning_tracking.get("hour") != hour_key:
-            if self.learning_tracking.get("hour"):
-                completed = self._finalize_learning_hour(self.learning_tracking)
-                self._attach_plan_execution_actual(completed)
-                archive_changed = True
-                self.learning_history = [
-                    completed,
-                    *[row for row in self.learning_history if row.get("hour") != completed["hour"]],
-                ][:17520]
-                completed_hour = str(completed.get("hour") or "")
-                if completed_hour and completed_hour != self.history_watermark:
-                    self.history_watermark = completed_hour
-                    if any(
-                        item.get("usable_for_learning")
-                        for item in (completed.get("channel_quality") or {}).values()
-                        if isinstance(item, dict)
-                    ):
-                        self.learning_revision += 1
-                self._invalidate_learning_summary_cache()
-                self._record_profile_execution(completed)
-                completed_learning_hour = True
-            self.learning_tracking = self._new_learning_hour(hour_key, now)
-            if self.optimizer_plan:
-                archive_changed = (
-                    self._sync_plan_execution_archive(self.optimizer_plan, now)
-                    or archive_changed
-                )
-        if archive_changed:
-            await self.async_save_ai_data()
-
-        tracking = self.learning_tracking
-        try:
-            previous = datetime.fromisoformat(str(tracking.get("last_sample")))
-            elapsed_seconds = max(0.0, min(120.0, (now - previous).total_seconds()))
-        except (TypeError, ValueError):
-            elapsed_seconds = 0.0
-        hours = elapsed_seconds / 3600.0
-
-        readings = self._telemetry_readings()
-        pv_power = readings["pv"].get("value")
-        load_power = readings["load"].get("value")
-        phase_values = [
-            readings["load_l1"].get("value"),
-            readings["load_l2"].get("value"),
-            readings["load_l3"].get("value"),
-        ]
-        grid_power = readings["grid"].get("value")
-        battery_power = readings["battery"].get("value")
-        soc = readings["soc"].get("value")
-        sell_price = readings["sell_price"].get("value")
-        buy_price = readings["buy_price"].get("value")
-
-        channel_state = tracking.setdefault("channels", {})
-        for name, reading in readings.items():
-            channel_state[name] = record_channel(
-                channel_state.get(name),
-                value=reading.get("value"),
-                elapsed_seconds=elapsed_seconds,
-                quality=str(reading.get("quality") or "unavailable"),
-                status=str(reading.get("status") or "unavailable"),
-                source=str(reading.get("source") or "unavailable"),
-            )
-
-        if pv_power is not None:
-            tracking["pv_kwh"] = self.safe_float(tracking.get("pv_kwh"), 0) + max(0, float(pv_power)) / 1000 * hours
-        if load_power is not None:
-            tracking["load_kwh"] = self.safe_float(tracking.get("load_kwh"), 0) + max(0, float(load_power)) / 1000 * hours
-        for index, value in enumerate(phase_values, start=1):
-            if value is not None:
-                key = f"load_l{index}_kwh"
-                tracking[key] = self.safe_float(tracking.get(key), 0) + max(0, float(value)) / 1000 * hours
-        if grid_power is not None:
-            tracking["grid_import_kwh"] = self.safe_float(tracking.get("grid_import_kwh"), 0) + max(0, float(grid_power)) / 1000 * hours
-            tracking["grid_export_kwh"] = self.safe_float(tracking.get("grid_export_kwh"), 0) + max(0, -float(grid_power)) / 1000 * hours
-        if battery_power is not None:
-            tracking["battery_charge_kwh"] = self.safe_float(tracking.get("battery_charge_kwh"), 0) + max(0, -float(battery_power)) / 1000 * hours
-            tracking["battery_discharge_kwh"] = self.safe_float(tracking.get("battery_discharge_kwh"), 0) + max(0, float(battery_power)) / 1000 * hours
-        tracking["samples"] = int(tracking.get("samples", 0)) + 1
-        if soc is not None:
-            tracking["soc_sum"] = self.safe_float(tracking.get("soc_sum"), 0) + soc
-            tracking["soc_samples"] = int(tracking.get("soc_samples", 0)) + 1
-            tracking["soc_last"] = soc
-        if sell_price is not None:
-            tracking["sell_price_sum"] = self.safe_float(tracking.get("sell_price_sum"), 0) + float(sell_price)
-        if buy_price is not None:
-            tracking["buy_price_sum"] = self.safe_float(tracking.get("buy_price_sum"), 0) + float(buy_price)
-        if soc is not None:
-            tracking["soc_min"] = soc if tracking.get("soc_min") is None else min(self.safe_float(tracking.get("soc_min"), soc), soc)
-            tracking["soc_max"] = soc if tracking.get("soc_max") is None else max(self.safe_float(tracking.get("soc_max"), soc), soc)
-        pv_enabled = self.pv_generation_enabled
-        tracking["daily_pv_kwh"] = (
-            0.0 if not pv_enabled else max(0, self.state_float(self.daily_pv_production_sensor, 0))
-        )
-        tracking["source_quality"] = self.source_quality_context()
-        tracking["live_state"] = self.live_state_context(readings, now)
-        pv_flag_measurement = self._pv_generation_reading()
-        latest_flags = pv_quality_flags(
-            battery_soc=soc,
-            work_mode=self.state_text(self.work_mode_select),
-            grid_available=self.entity_available(self.grid_power_sensor),
-            actual_power_w=pv_flag_measurement.get("value"),
-            inverter_limit_w=min(
-                finite_float(self.ai_settings.get("inverterPowerW")) or float("inf"),
-                self.effective_inverter_max_power_w,
-            ),
-            sensor_stale=pv_flag_measurement.get("status") == "stale",
-            manual_override=self.control_mode != "Schedule",
-        )
-        existing_flags = tracking.setdefault("quality_flags", {})
-        for key, value in latest_flags.items():
-            existing_flags[key] = bool(existing_flags.get(key)) or bool(value)
-        tracking["energy_counters"] = dict(self.data_quality.get("energy_counters") or {})
-        tracking["last_sample"] = now.isoformat()
-
-        if now.minute % 15 == 0:
-            await self.async_save_learning_history()
-        if completed_learning_hour:
-            self.request_optimizer_recalc("learning")
-            self._notify_update_for("learning")
-
-    def _invalidate_learning_summary_cache(self) -> None:
-        """Invalidate the heavy learning snapshot after a semantic data change."""
-        self._learning_summary_generation += 1
-        self._learning_summary_cache_key = ""
-        self._learning_summary_cache = {}
-
-    def learning_summary(self) -> dict[str, Any]:
-        """Return one immutable-by-convention snapshot for unchanged inputs."""
-        self._performance.inc("learning_summary_wrapper_calls")
-        current_weather = self.weather_context()
-        current_tariff = self.tariff_context()
-        price_coverage_today = len(self.price_map(self.price_sensor))
-        price_coverage_tomorrow = len(
-            self.price_map(self.sell_price_tomorrow_sensor, False)
-        )
-        cache_key = snapshot_id({
-            "generation": self._learning_summary_generation,
-            "learning_revision": self.learning_revision,
-            "history_watermark": self.history_watermark,
-            # Runtime history/profile mutations replace these containers.  The
-            # identity/length guards also keep direct fixture replacement safe.
-            "learning_history": [id(self.learning_history), len(self.learning_history)],
-            "solcast_history": [id(self.solcast_history), len(self.solcast_history)],
-            "load_profile": id(self.load_profile_7x24),
-            "pv_profile": id(self.pv_learning_profile),
-            # The current-day Solcast progress changes in-place between ticks.
-            "solcast_tracking": {
-                "date": self.solcast_tracking.get("date"),
-                "forecast": self.solcast_tracking.get("forecast"),
-                "latest_forecast_kwh": self.solcast_tracking.get("latest_forecast_kwh"),
-                "actual": self.solcast_tracking.get("actual"),
-                "updated_at": self.solcast_tracking.get("updated_at"),
-                "forecast_status": self.solcast_tracking.get("forecast_status"),
-            },
-            # learning_summary exposes counts, not the archive contents.
-            "energy_counts": [
-                len(self.energy_samples),
-                len(self.daily_archive),
-                len(self.monthly_archive),
-            ],
-            "price_coverage": [price_coverage_today, price_coverage_tomorrow],
-            # These are public parts of the summary and therefore semantic cache
-            # inputs even though they are much cheaper than the history scans.
-            "weather": current_weather,
-            "tariff": current_tariff,
-            "sources": {
-                "pv_power": self.pv_power_sensor,
-                "load_power": self.load_power_sensor,
-                "grid_power": self.grid_power_sensor,
-                "battery_power": self.battery_power_sensor,
-                "battery_soc": self.battery_soc_sensor,
-                "daily_pv": self.daily_pv_production_sensor,
-                "solcast": self.solcast_forecast_today_sensor,
-                "sell_price": self.price_sensor,
-                "buy_price": self.buy_price_today_sensor,
-                "weather": self.weather_entity,
-            },
-        })
-        if cache_key == self._learning_summary_cache_key:
-            self._performance.inc("learning_summary_cache_hits")
-            return self._learning_summary_cache
-        build_started = time.perf_counter()
-        summary = self._build_learning_summary(
-            current_weather=current_weather,
-            current_tariff=current_tariff,
-            price_coverage_today=price_coverage_today,
-            price_coverage_tomorrow=price_coverage_tomorrow,
-        )
-        self._performance.observe_ms(
-            "learning_summary_build",
-            (time.perf_counter() - build_started) * 1000.0,
-        )
-        self._learning_summary_cache = summary
-        self._learning_summary_cache_key = cache_key
-        return summary
-
-    def _build_learning_summary(
-        self,
-        *,
-        current_weather: dict[str, Any],
-        current_tariff: dict[str, Any],
-        price_coverage_today: int,
-        price_coverage_tomorrow: int,
-    ) -> dict[str, Any]:
-        """Build the uncached learning result without changing its contract."""
-        rows = self.learning_history
-        dates = {str(row.get("hour", ""))[:10] for row in rows if row.get("hour")}
-        channel_names = (
-            "pv", "load", "load_l1", "load_l2", "load_l3",
-            "grid", "battery", "soc", "sell_price", "buy_price",
-        )
-        channel_diagnostics: dict[str, dict[str, Any]] = {}
-        for name in channel_names:
-            summaries = [
-                row.get("channel_quality", {}).get(name)
-                for row in rows
-                if isinstance(row.get("channel_quality"), dict)
-                and isinstance(row.get("channel_quality", {}).get(name), dict)
-            ]
-            channel_diagnostics[name] = {
-                "hours": len(summaries),
-                "usable_hours": sum(1 for item in summaries if item.get("usable_for_learning")),
-                "full_hours": sum(1 for item in summaries if item.get("level") == "full"),
-                "partial_hours": sum(1 for item in summaries if item.get("level") == "partial"),
-                "very_low_hours": sum(1 for item in summaries if item.get("level") == "very_low"),
-                "missing_hours": sum(1 for item in summaries if item.get("level") == "missing"),
-                "average_coverage_percent": round(
-                    sum(self.safe_float(item.get("coverage_percent"), 0) for item in summaries)
-                    / max(1, len(summaries)),
-                    1,
-                ) if summaries else None,
-                "average_quality_score": round(
-                    sum(self.safe_float(item.get("quality_score"), 0) for item in summaries)
-                    / max(1, len(summaries)),
-                    1,
-                ) if summaries else None,
-            }
-        complete_by_day: dict[str, set[int]] = {}
-        for row in rows:
-            if not row.get("complete"):
-                continue
-            day = str(row.get("hour", ""))[:10]
-            hour_text = str(row.get("hour", ""))[11:13]
-            if day and hour_text.isdigit():
-                complete_by_day.setdefault(day, set()).add(int(hour_text))
-        completed_days = sum(1 for hours in complete_by_day.values() if len(hours) == 24)
-        legacy_stage = learning_stage(completed_days)
-
-        def valid_average(matches: list[dict[str, Any]], key: str, digits: int) -> float | None:
-            values = [
-                value
-                for row in matches
-                if (value := finite_float(row.get(key))) is not None
-            ]
-            return round(sum(values) / len(values), digits) if values else None
-
-        per_hour: list[dict[str, Any]] = []
-        for hour in range(24):
-            matches = [row for row in rows if str(row.get("hour", ""))[11:13] == f"{hour:02d}"]
-            if not matches:
-                continue
-            per_hour.append({
-                "hour": f"{hour:02d}:00",
-                "samples": len(matches),
-                "pv_kwh": valid_average(matches, "pv_kwh", 3),
-                "load_kwh": valid_average(matches, "load_kwh", 3),
-                "grid_export_kwh": valid_average(matches, "grid_export_kwh", 3),
-                "battery_charge_kwh": valid_average(matches, "battery_charge_kwh", 3),
-                "battery_discharge_kwh": valid_average(matches, "battery_discharge_kwh", 3),
-                "soc_avg": valid_average(matches, "soc_avg", 1),
-                "sell_price_avg": valid_average(matches, "sell_price_avg", 3),
-                "buy_price_avg": valid_average(matches, "buy_price_avg", 3),
-            })
-        completed_rows = [
-            row for row in self.solcast_history
-            if row.get("accuracy_percent") is not None
-            and self.safe_float(row.get("forecast_kwh"), 0) > 0
-            and row.get("day_complete", True)
-        ]
-        accuracy_rows = [self.safe_float(row.get("accuracy_percent"), 0) for row in completed_rows]
-        correction_rows = [
-            max(0.5, min(1.5, self.safe_float(row.get("actual_kwh"), 0) / self.safe_float(row.get("forecast_kwh"), 1)))
-            for row in completed_rows
-        ]
-        # The global Solcast correction starts conservatively and converges only
-        # after a representative history.  Newest completed days have the
-        # strongest influence, while a short history remains close to 1.0.
-        weighted_correction = None
-        if correction_rows:
-            recency_weights = [0.90 ** index for index in range(len(correction_rows))]
-            raw_correction = sum(
-                value * weight
-                for value, weight in zip(correction_rows, recency_weights)
-            ) / sum(recency_weights)
-            history_weight = min(1.0, len(correction_rows) / 21.0)
-            weighted_correction = 1.0 + (raw_correction - 1.0) * history_weight
-        historical_accuracy = (
-            round(sum(accuracy_rows) / len(accuracy_rows), 1)
-            if accuracy_rows
-            else None
-        )
-        current_metrics = self.solcast_current_day_metrics(
-            historical_accuracy_pct=historical_accuracy,
-        )
-        latest = completed_rows[0] if completed_rows else {}
-        usable_hours = sum(
-            1
-            for row in rows
-            if any(
-                item.get("usable_for_learning")
-                for item in (row.get("channel_quality") or {}).values()
-                if isinstance(item, dict)
-            )
-        )
-        load_cells = self._learning_profile_stats(self.load_profile_7x24)["covered_cells"]
-        pv_stats = self._learning_profile_stats(self.pv_learning_profile)
-        last_hour = max(
-            (str(row.get("hour")) for row in rows if row.get("hour")),
-            default=None,
-        )
-        maturity = learning_maturity(
-            valid_hours=usable_hours,
-            complete_days=completed_days,
-            load_covered_cells=load_cells,
-            pv_covered_cells=pv_stats["covered_cells"],
-            pv_accepted_samples=pv_stats["accepted_samples"],
-            pv_rejected_samples=pv_stats["rejected_samples"],
-            forecast_accuracy_days=len(accuracy_rows),
-            history_last_hour=last_hour,
-            now=ha_now(),
-        )
-        # Compatibility alias: callers may still inspect the old stage shape,
-        # but readiness comes from evidence and Core ignores the legacy cap when
-        # ``learning_maturity`` is present.
-        stage = {
-            **legacy_stage,
-            "legacy_status": legacy_stage["status"],
-            "status": maturity["label"],
-            "dry_run": not maturity["application_ready"],
-            "apply_allowed": maturity["application_ready"],
-            "suggestion_ready": maturity["score"] > 0,
-            "legacy": True,
-        }
-        tariff_groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
-        for row in rows:
-            tariff = row.get("tariff") if isinstance(row.get("tariff"), dict) else {}
-            if not tariff:
-                continue
-            key = (
-                str(tariff.get("provider") or ""),
-                str(tariff.get("plan") or ""),
-                str(tariff.get("zone") or ""),
-                str(tariff.get("day_type") or ""),
-                str(tariff.get("season") or ""),
-                str(row.get("hour") or "")[11:13],
-            )
-            tariff_groups.setdefault(key, []).append(row)
-        tariff_learning = []
-        for key, matches in tariff_groups.items():
-            count = len(matches)
-            tariff_learning.append({
-                "provider": key[0], "plan": key[1], "zone": key[2],
-                "day_type": key[3], "season": key[4], "hour": key[5],
-                "samples": count,
-                "load_kwh": round(sum(self.safe_float(row.get("load_kwh"), 0) for row in matches) / count, 3),
-                "grid_import_kwh": round(sum(self.safe_float(row.get("grid_import_kwh"), 0) for row in matches) / count, 3),
-                "battery_charge_kwh": round(sum(self.safe_float(row.get("battery_charge_kwh"), 0) for row in matches) / count, 3),
-            })
-        return {
-            "schema_version": HISTORY_SCHEMA_VERSION,
-            "retention_days": 730,
-            "retention": {"raw_1_min_days": 90, "hourly_months": 24, "daily_years": 5, "monthly_limit": None},
-            "raw_samples": len(self.energy_samples),
-            "daily_archive_rows": len(self.daily_archive),
-            "monthly_archive_rows": len(self.monthly_archive),
-            "observed_days": len(dates),
-            "recorded_days": completed_days,
-            "completed_full_days": completed_days,
-            "recorded_hours": len(rows),
-            "usable_hours": usable_hours,
-            "history_first_hour": min(
-                (str(row.get("hour")) for row in rows if row.get("hour")),
-                default=None,
-            ),
-            "history_last_hour": max(
-                (str(row.get("hour")) for row in rows if row.get("hour")),
-                default=None,
-            ),
-            "channel_diagnostics": channel_diagnostics,
-            "learning_stage": stage,
-            "learning_maturity": maturity,
-            "learning_revision": self.learning_revision,
-            "history_watermark": self.history_watermark or last_hour or "",
-            "readiness": stage["readiness"],
-            "load_profile_7x24": self.load_profile_7x24,
-            "load_profile_diagnostics": load_profile_diagnostics(
-                self.load_profile_7x24,
-                completed_days=completed_days,
-            ),
-            "pv_profile": self.pv_learning_profile,
-            "pv_profile_diagnostics": pv_profile_diagnostics(
-                self.pv_learning_profile,
-                completed_days=completed_days,
-            ),
-            "data_coverage": {
-                "prices_today": price_coverage_today,
-                "prices_tomorrow": price_coverage_tomorrow,
-                "weather": min(48, len(self.weather_forecast)),
-            },
-            "solcast_accuracy_avg": None if not self.pv_generation_enabled else historical_accuracy,
-            "solcast_correction_factor": None if not self.pv_generation_enabled else (
-                round(weighted_correction, 3) if weighted_correction is not None else None
-            ),
-            "solcast_accuracy_days": 0 if not self.pv_generation_enabled else len(accuracy_rows),
-            "solcast_last_accuracy": None if not self.pv_generation_enabled else latest.get("accuracy_percent"),
-            "solcast_last_date": None if not self.pv_generation_enabled else latest.get("date"),
-            "current_forecast_progress": current_metrics.get("realization_today_pct"),
-            "typical_daily_pv_kwh": 0.0 if not self.pv_generation_enabled else round(
-                sum(row["pv_kwh"] or 0 for row in per_hour), 2
-            ),
-            "typical_daily_load_kwh": round(sum(row["load_kwh"] or 0 for row in per_hour), 2),
-            "typical_daily_grid_export_kwh": round(sum(row["grid_export_kwh"] or 0 for row in per_hour), 2),
-            "typical_daily_battery_charge_kwh": round(sum(row["battery_charge_kwh"] or 0 for row in per_hour), 2),
-            "typical_daily_battery_discharge_kwh": round(sum(row["battery_discharge_kwh"] or 0 for row in per_hour), 2),
-            "sources": {
-                "pv_power": self.pv_power_sensor,
-                "load_power": self.load_power_sensor,
-                "grid_power": self.grid_power_sensor,
-                "battery_power": self.battery_power_sensor,
-                "battery_soc": self.battery_soc_sensor,
-                "daily_pv": self.daily_pv_production_sensor,
-                "solcast": self.solcast_forecast_today_sensor,
-                "sell_price": self.price_sensor,
-                "buy_price": self.buy_price_today_sensor,
-                "weather": self.weather_entity,
-            },
-            "weather": current_weather,
-            "tariff": current_tariff,
-            "tariff_learning": tariff_learning[:500],
-            "hourly_profile": per_hour,
-        }
 
     def history_daily_summary(self) -> list[dict[str, Any]]:
         grouped: dict[str, dict[str, Any]] = {}
-        for row in self.learning_history:
-            day = str(row.get("hour") or "")[:10]
-            if not day:
-                continue
-            item = grouped.setdefault(day, {"date": day})
-            for key in ("pv_kwh", "load_kwh", "grid_import_kwh", "grid_export_kwh", "battery_charge_kwh", "battery_discharge_kwh"):
-                value = finite_float(row.get(key))
-                if value is not None:
-                    item[key] = self.safe_float(item.get(key), 0) + value
-            soc_min = finite_float(row.get("soc_min"))
-            soc_max = finite_float(row.get("soc_max"))
-            if soc_min is not None:
-                item["soc_min"] = min(self.safe_float(item.get("soc_min"), soc_min), soc_min)
-            if soc_max is not None:
-                item["soc_max"] = max(self.safe_float(item.get("soc_max"), soc_max), soc_max)
         for day, values in self.sales_stats.get("daily", {}).items():
             item = grouped.setdefault(day, {"date": day})
             item["sold_kwh"] = self.safe_float(values.get("kwh"), 0)
@@ -9386,8 +4950,6 @@ class DeyeEnergyRuntime:
                     "actual_kwh": actual,
                     "accuracy_percent": None,
                     "realization_today_pct": metrics.get("realization_today_pct"),
-                    # Compatibility alias; it is sourced from the same canonical
-                    # value and is no longer calculated independently.
                     "forecast_progress_percent": metrics.get("realization_today_pct"),
                     "forecast_difference_today_kwh": metrics.get("forecast_difference_today_kwh"),
                     "solcast_data_status": metrics.get("data_status"),
@@ -10434,7 +5996,7 @@ class DeyeEnergyRuntime:
         return self._inverter_link_gated
 
     def _start_schedule_input_listener(self) -> None:
-        """Coalesce material planning inputs and refresh the remaining horizon."""
+        """Keep sensor snapshots fresh when material live inputs change."""
         if self.unsub_input_listener:
             return
         if self._soc_quality_signature is None:
@@ -10471,8 +6033,6 @@ class DeyeEnergyRuntime:
         entities = list(reason_by_entity)
         if not entities:
             return
-        self._optimizer_input_reasons = reason_by_entity
-        self._optimizer_listener_entity_ids = tuple(entities)
 
         @callback
         def _on_input_change(event: Any) -> None:
@@ -10488,49 +6048,20 @@ class DeyeEnergyRuntime:
             soc_semantics_changed = False
             if reason == "soc":
                 soc_semantics_changed = self._observe_soc_source_event(event)
-                # A complete HA state event proves both the report and its
-                # unchanged value. Compatibility test doubles that expose only
-                # entity_id retain the historical material-event behavior.
                 if "new_state" in event_data and not soc_semantics_changed:
-                    # An identical report only renews freshness. It must not
-                    # create a Core, publish, Store, schedule or TOU storm.
                     self._performance.inc("soc_report_timestamp_only")
                     return
             elif reason in {"pv", "load", "grid", "battery_power", "soc_health"}:
                 soc_semantics_changed = self._observe_soc_sibling_event(event)
                 if soc_semantics_changed:
-                    # One granular proxy publication makes stale→valid recovery
-                    # visible without waiting for a source SOC event or reload.
                     self._notify_entities_from_cache(
                         {"battery_soc"}, reason="soc_quality_transition"
                     )
-                    self.request_sensor_snapshot_refresh({"ai_state", "diagnostics"})
                     reason = "soc"
                 elif reason == "soc_health" or self._state_event_is_report_only(event_data):
                     self._performance.inc("soc_health_timestamp_only")
                     return
-            self._optimizer_debounce_reasons.add(reason)
-            self._optimizer_generation_reason = f"material_live_input_changed:{reason}"
-            coalesced = bool(self.unsub_input_debounce)
-            self._performance.record_input_event(
-                entity_id,
-                accepted=not coalesced,
-                coalesced=coalesced,
-            )
-            if self.unsub_input_debounce:
-                return
-
-            @callback
-            def _on_debounce(_now: datetime) -> None:
-                self.unsub_input_debounce = None
-                reasons = set(self._optimizer_debounce_reasons)
-                self._optimizer_debounce_reasons.clear()
-                self.request_optimizer_recalc(reasons or {"manual"})
-                self.schedule_ai_api_analysis()
-
-            self.unsub_input_debounce = async_track_point_in_time(
-                self.hass, _on_debounce, ha_now() + timedelta(seconds=2)
-            )
+            self.request_sensor_snapshot_refresh({"ai_state", "diagnostics"})
 
         self.unsub_input_listener = async_track_state_change_event(
             self.hass, entities, _on_input_change
@@ -10617,21 +6148,10 @@ class DeyeEnergyRuntime:
     async def _async_confirm_or_wait_for_control(
         self, expected: dict[str, Any], stage: str, *, started: bool = False, success_message: str = ""
     ) -> bool | None:
-        """Confirm an in-flight write, or leave it pending without re-writing.
-
-        ``True`` is returned both when the write is fully confirmed and when it
-        is still being awaited within ``control_confirmation_timeout``. In the
-        latter case the pending transaction stays active and will be rechecked
-        by state listeners or the next poll. ``False`` means the confirmation
-        window expired and defaults were restored. ``None`` means that the
-        caller must perform the first write.
-        """
+        """Confirm an in-flight write, or leave it pending without re-writing."""
         if not self._control_is_active():
             self._clear_pending_control_transaction()
             self.executed_manager_action = "Not performed — control disabled"
-            await self._async_finish_future_plan_physical(
-                False, "Control disabled before physical confirmation"
-            )
             return False
         if started:
             self._performance.inc("inverter_confirmation_started")
@@ -10658,7 +6178,6 @@ class DeyeEnergyRuntime:
                 self.last_action = f"{self.last_action}. {success_message}"
             self.last_error = ""
             self.mark_settings_applied()
-            await self._async_finish_future_plan_physical(True, expected=expected)
             self._notify_update_for("confirmation")
             return True
 
@@ -10688,9 +6207,7 @@ class DeyeEnergyRuntime:
         self._clear_pending_control_transaction()
         self._performance.inc("inverter_confirmation_timeout")
         reason = f"Unconfirmed settings after {int(self.control_confirmation_timeout)} s: {'; '.join(unconfirmed)}"
-        failed = await self._async_handle_slot_failure(reason, "inverter confirmation", expected)
-        await self._async_finish_future_plan_physical(False, reason)
-        return failed
+        return await self._async_handle_slot_failure(reason, "inverter confirmation", expected)
 
     async def async_apply_safe_defaults(self, reason: str) -> bool:
         async with self._control_operation("safe_defaults") as transaction_id:
@@ -13585,157 +9102,18 @@ class DeyeEnergyRuntime:
         self.notify_update()
         return self.manual_schedule_state()
 
-    def _ensure_manual_schedule_allows_apply(
-        self,
-        *,
-        replace_day: bool = False,
-        ai_source: bool = False,
-        change_source: str | None = None,
-        _allow_manual_schedule_internal: bool = False,
-    ) -> None:
-        if _allow_manual_schedule_internal or not self.manual_schedule_active:
-            return
-        source = str(change_source or "")
-        if replace_day or ai_source or source in {
-            "apply_today", "future_plan", "optimizer_core", "future_cleanup",
-        }:
+    def _ensure_manual_schedule_allows_apply(self) -> None:
+        if self.manual_schedule_active:
             raise ValueError(
-                "Manual schedule is active. Deactivate it before applying AI, optimizer, or future-plan changes."
-            )
-        if source in {"manual", "", "unknown"}:
-            raise ValueError(
-                "Manual schedule is active and its values are final. Deactivate it before editing the work schedule."
-            )
-        raise ValueError(
-            "Manual schedule is active. Deactivate it before changing the work schedule."
-        )
-
-    def _normal_day_replace_update(self, slot: SlotSettings) -> dict[str, Any]:
-        """Return the canonical Normal Operation target for one unselected hour.
-
-        The full-day AI contract removes old execution intent without touching
-        the independent logical selling guard or physical TOU SOC.  When an old
-        special action is cleared, execution numbers are reset to the user's
-        Normal Operation template and Grid Charge permission is always removed.
-        """
-        update: dict[str, Any] = {"slot_key": slot.key}
-        normal_physical_mode = (
-            self.normal_profile_physical_work_mode
-            if self.normal_profile_physical_work_mode in PHYSICAL_NORMAL_MODES
-            else self.default_normal_physical_work_mode()
-        )
-        if slot.mode != MODE_NORMAL_OPERATION:
-            update.update({
-                "enabled": True,
-                "mode": MODE_NORMAL_OPERATION,
-                "charge_enabled": False,
-                "physical_work_mode": normal_physical_mode,
-                "sell_power": self.normal_profile_sell_power,
-            })
-        else:
-            if not slot.enabled:
-                update["enabled"] = True
-            if slot.charge_enabled:
-                update["charge_enabled"] = False
-            if slot.physical_work_mode not in PHYSICAL_NORMAL_MODES:
-                update["physical_work_mode"] = normal_physical_mode
-        return update
-
-    def _build_target_schedule_today(
-        self,
-        selected_updates: list[dict[str, Any]],
-        date: str | None,
-    ) -> tuple[list[dict[str, Any]], set[str], set[str]]:
-        """Build one authoritative 24-hour target from selected AI actions."""
-        today = ha_now().date().isoformat()
-        if str(date or "") != today:
-            raise ValueError(
-                f"A full-day Apply Today requires today's date {today}"
-            )
-        if not isinstance(selected_updates, list) or not selected_updates:
-            raise ValueError(
-                "A full-day Apply Today requires at least one selected special action"
+                "Manual schedule is active. Deactivate it before editing the work schedule."
             )
 
-        selected: dict[str, dict[str, Any]] = {}
-        current_now = ha_now()
-        current_minute = current_now.hour * 60 + current_now.minute
-        selected_updates = self._expand_slot_updates(selected_updates)
-        for raw in selected_updates:
-            if not isinstance(raw, dict):
-                raise ValueError("Every selected Apply Today action must be an object")
-            update = dict(raw)
-            slot_key = str(update.get("slot_key") or "")
-            if slot_key not in self.slots:
-                raise ValueError(f"Unknown schedule slot: {slot_key}")
-            if slot_key in selected:
-                raise ValueError(f"Duplicated selected Apply Today hour: {slot_key}")
-            if slot_end_minute(slot_key) <= current_minute:
-                raise ValueError(
-                    f"The selected hour {slot_key} has already passed; refresh the plan without catch-up"
-                )
-            mode = str(update.get("mode") or "")
-            if mode not in {MODE_SELLING_FIRST, MODE_CHARGE}:
-                raise ValueError(
-                    f"Apply Today accepts only selected Selling/Charging actions: {slot_key}"
-                )
-            if update.get("enabled") is False:
-                raise ValueError(f"The selected Apply Today action cannot be disabled: {slot_key}")
-            if mode == MODE_SELLING_FIRST:
-                if "sell_power" not in update:
-                    raise ValueError(
-                        f"The selected Selling action requires sell_power: {slot_key}"
-                    )
-                # Canonical AI/Core Sell contract: the selected slot owns only
-                # its logical action and exact sell power.  Ignore every legacy
-                # current/SOC/Grid Charge field instead of letting it become a
-                # global inverter write.
-                update = self._sanitize_ai_sell_execution_update(update)
-            selected[slot_key] = update
-
-        normal_keys = set(self.slots) - set(selected)
-        ai_sell_keys = {
-            key
-            for key, update in selected.items()
-            if update.get("mode") == MODE_SELLING_FIRST
-        }
-        target = [
-            dict(selected[key])
-            if key in selected
-            else self._normal_day_replace_update(self.slots[key])
-            for key, _label, _start, _end in SLOTS
-        ]
-        if len(target) != SLOTS_PER_DAY or {str(item.get("slot_key")) for item in target} != set(self.slots):
-            raise ValueError("Could not build a complete 24 h target_schedule_today")
-        return target, normal_keys, ai_sell_keys
-
-    @staticmethod
-    def _sanitize_ai_sell_execution_update(update: dict[str, Any]) -> dict[str, Any]:
-        """Return the complete executable AI Sell allowlist."""
-        return {
-            key: update[key]
-            for key in ("slot_key", "enabled", "mode", "sell_power")
-            if key in update
-        }
 
     async def async_apply_schedule_patch(
         self,
         updates: list[dict[str, Any]],
-        *,
-        replace_day: bool = False,
-        date: str | None = None,
-        ai_source: bool = False,
-        change_source: str | None = None,
-        source_context: dict[str, Any] | None = None,
-        _allow_manual_schedule_internal: bool = False,
     ) -> None:
-        """Validate and save logical slot changes, then reconcile Deye in background.
-
-        The legacy/default contract remains a partial patch. ``replace_day`` is
-        reserved for AI Apply Today and treats selected special actions as the
-        authoritative allowlist for today's complete logical schedule.
-        ``ai_source`` protects execution of a previously accepted Tomorrow plan.
-        """
+        """Validate and save a list-based logical slot patch, then reconcile."""
         if not isinstance(updates, list) or not updates:
             raise ValueError("Schedule patch must contain at least one slot")
         updates = self._expand_slot_updates(updates)
@@ -13757,47 +9135,15 @@ class DeyeEnergyRuntime:
         }
 
         async with self._operation_lock:
-            self._ensure_manual_schedule_allows_apply(
-                replace_day=replace_day,
-                ai_source=ai_source,
-                change_source=change_source,
-                _allow_manual_schedule_internal=_allow_manual_schedule_internal,
-            )
+            self._ensure_manual_schedule_allows_apply()
             previous_schedule_revision = self.schedule_revision
             previous_slot_revisions = deepcopy(self.schedule_slot_revisions)
             previous_slot_ownership = deepcopy(self.schedule_slot_ownership)
-            normal_replace_keys: set[str] = set()
-            ai_sell_power_only_keys: set[str] = set()
-            if replace_day:
-                (
-                    updates,
-                    normal_replace_keys,
-                    ai_sell_power_only_keys,
-                ) = self._build_target_schedule_today(updates, date)
-            elif ai_source:
-                updates = self._validate_future_plan_updates(updates)
-                updates = [
-                    self._sanitize_ai_sell_execution_update(update)
-                    if update.get("mode") == MODE_SELLING_FIRST
-                    else update
-                    for update in updates
-                ]
-                ai_sell_power_only_keys = {
-                    str(update.get("slot_key") or "")
-                    for update in updates
-                    if update.get("mode") == MODE_SELLING_FIRST
-                }
             changed_keys = [
                 str(update.get("slot_key") or "")
                 for update in updates
                 if isinstance(update, dict)
             ]
-            effective_source = change_source or (
-                "apply_today" if replace_day else
-                "future_plan" if ai_source and isinstance(source_context, dict) and source_context.get("plan_id") else
-                "optimizer_core" if ai_source else
-                "manual"
-            )
             previous_slots = {key: replace(slot) for key, slot in self.slots.items()}
             previous_scheduler = self.scheduler_enabled
             try:
@@ -13814,15 +9160,9 @@ class DeyeEnergyRuntime:
                     if unknown:
                         raise ValueError(f"Unsupported schedule fields: {', '.join(sorted(unknown))}")
                     slot = self.slots[slot_key]
-                    if replace_day or ai_source:
-                        slot.ai_sell_power_only = slot_key in ai_sell_power_only_keys
-                    elif "mode" in update:
-                        # A regular partial patch is an explicit manual edit.
-                        slot.ai_sell_power_only = False
                     if "enabled" in update:
                         slot.enabled = bool(update["enabled"])
                     previous_mode = slot.mode
-                    previous_tou_soc = slot.tou_soc
                     force_copy = bool(update.get("force_copy_normal_profile"))
                     force_copy_charge = bool(update.get("force_copy_charge_profile"))
                     if "mode" in update:
@@ -13832,19 +9172,12 @@ class DeyeEnergyRuntime:
                         slot.mode = mode
                         if mode == MODE_NORMAL_OPERATION and (previous_mode != MODE_NORMAL_OPERATION or force_copy):
                             slot.enabled = True
-                            # Copy the normal profile template once, or again when
-                            # the user explicitly asks for a reload.
                             if self.normal_profile_physical_work_mode in PHYSICAL_NORMAL_MODES:
                                 slot.physical_work_mode = self.normal_profile_physical_work_mode
                             if self.normal_profile_sell_power >= 0:
                                 slot.sell_power = self.normal_profile_sell_power
                             if self.normal_profile_tou_soc is not None and self.normal_profile_tou_soc >= 0:
                                 slot.tou_soc = self.normal_profile_tou_soc
-                            if replace_day and slot_key in normal_replace_keys:
-                                # TOU SOC is a separate physical contract. Full-day
-                                # replacement clears the logical action, not this
-                                # independently confirmed inverter value.
-                                slot.tou_soc = previous_tou_soc
                         elif mode == MODE_CHARGE:
                             slot.enabled = True
                             if previous_mode != MODE_CHARGE or force_copy_charge:
@@ -13864,8 +9197,6 @@ class DeyeEnergyRuntime:
                             )
                         slot.physical_work_mode = physical_mode
                     if "charge_enabled" in update:
-                        # ``charge_enabled`` is the physical hourly Grid Charge flag
-                        # and is independent of the logical manager mode.
                         slot.charge_enabled = bool(update["charge_enabled"])
                     for field_name, (minimum, maximum) in numeric_limits.items():
                         if field_name not in update:
@@ -13883,31 +9214,17 @@ class DeyeEnergyRuntime:
 
                 if any(slot.enabled for slot in self.slots.values()):
                     self.scheduler_enabled = True
-                metadata_changed = any(
-                    self.slots[key].ai_sell_power_only
-                    != previous_slots[key].ai_sell_power_only
-                    for key in self.slots
+                logical_changed = (
+                    self.scheduler_enabled != previous_scheduler
+                    or any(
+                        self.slots[key] != previous_slots[key] for key in self.slots
+                    )
                 )
-                logical_changed = self.scheduler_enabled != previous_scheduler or any(
-                    replace(
-                        self.slots[key],
-                        ai_sell_power_only=previous_slots[key].ai_sell_power_only,
-                    )
-                    != previous_slots[key]
-                    for key in self.slots
-                )
-                if replace_day and not logical_changed:
-                    self._claim_schedule_slots(
-                        changed_keys, effective_source, source_context
-                    )
-                    self.last_action = (
-                        "The full plan for today already matches — nothing to save"
-                    )
-                    if metadata_changed or changed_keys:
-                        # Persist RestoreEntity attributes without scheduling a
-                        # physical reconciliation for metadata-only ownership.
-                        self.mark_config_saved()
-                        self.notify_update()
+                if not logical_changed:
+                    self._claim_schedule_slots(changed_keys, "manual")
+                    self.last_action = "The schedule already matches — nothing to save"
+                    self.mark_config_saved()
+                    self.notify_update()
                     return
                 self._clear_pending_control_transaction()
                 self._last_slot_failure_signature = ""
@@ -13916,9 +9233,7 @@ class DeyeEnergyRuntime:
                         f"Mapping requires {len(self._tou_mapping)} ranges; "
                         "Deye supports at most 6"
                     )
-                self._claim_schedule_slots(
-                    changed_keys, effective_source, source_context
-                )
+                self._claim_schedule_slots(changed_keys, "manual")
                 self.mark_config_saved()
                 if self._control_is_active() and not self.emergency_stop:
                     self._schedule_schedule_reconciliation()
@@ -13935,7 +9250,7 @@ class DeyeEnergyRuntime:
                     )
                     self.executed_manager_action = f"Not performed — {blocked_reason.lower()}"
                     self.notify_update()
-            except Exception as err:
+            except Exception:
                 self.slots = previous_slots
                 self.scheduler_enabled = previous_scheduler
                 self.schedule_revision = previous_schedule_revision
@@ -13960,19 +9275,12 @@ class DeyeEnergyRuntime:
     async def _async_reconcile_schedule_changes(self) -> None:
         """Apply the newest saved schedule without blocking the UI service call."""
         try:
-            # A short debounce combines changes made in quick succession into
-            # one physical TOU transaction.  The operation lock preserves the
-            # existing serialization with timer ticks and direct controls.
             await asyncio.sleep(0.25)
             while self._schedule_reconcile_requested:
                 self._schedule_reconcile_requested = False
                 async with self._operation_lock:
                     try:
-                        reconciled = await self._async_tick_impl()
-                        if not reconciled:
-                            await self._async_finish_future_plan_physical(
-                                False, self.last_error or "Physical synchronisation failed"
-                            )
+                        await self._async_tick_impl()
                     except asyncio.CancelledError:
                         raise
                     except ControlDisabledError as err:
@@ -13984,9 +9292,6 @@ class DeyeEnergyRuntime:
                         await self.async_apply_safe_defaults(
                             "Failed to synchronise the saved schedule: "
                             f"{type(err).__name__}: {err}"
-                        )
-                        await self._async_finish_future_plan_physical(
-                            False, f"{type(err).__name__}: {err}"
                         )
                 if self._schedule_reconcile_requested:
                     await asyncio.sleep(0.25)
@@ -14774,19 +10079,12 @@ class DeyeEnergyRuntime:
 
     async def _async_tick_impl(self, *_args: Any) -> bool:
         inverter_unavailable = self._update_inverter_link_gate()
-        if self._refresh_soc_quality_signature():
-            self._optimizer_generation_reason = "material_live_input_changed:soc_freshness"
-            self.request_optimizer_recalc("soc")
         await self.async_update_sold_energy_today()
         await self.async_update_solcast_history()
-        await self.async_update_learning_history()
         await self.async_update_energy_sample()
         if not self.weather_last_updated or ha_now().minute == 0:
             await self.async_update_weather_forecast()
 
-        # Polling is sufficient for Stage 5D: every normal Manager cycle reads
-        # the complete physical 6/6 state before any cache-based skip or write.
-        # No service call is made by this diagnostic comparison.
         self._refresh_tou_reconciliation_state()
         self.planned_manager_action = self._planned_manager_action_text()
         if self.manual_schedule_active and not self.emergency_stop:
@@ -14810,9 +10108,6 @@ class DeyeEnergyRuntime:
             self.notify_update()
             return True
 
-        # With the inverter link down, rule evaluation can only issue writes
-        # that never confirm, then churn through timeout/failure/default chains.
-        # Skip the whole control block until the link is stable again.
         if inverter_unavailable:
             self.executed_manager_action = "Not performed — inverter unavailable"
             self.notify_update()
@@ -14846,8 +10141,6 @@ class DeyeEnergyRuntime:
                     physical_writes=self._physical_write_count - writes_before,
                 )
 
-        # Action sensors must publish the completed cycle even when energy
-        # totals did not change and every target was already in sync.
         self._notify_update_for("tick_final")
         return result
 
@@ -14859,12 +10152,7 @@ class DeyeEnergyRuntime:
             await self.async_check_inverter_datetime_sync()
         except Exception as err:  # noqa: BLE001 - datetime sync must not break tick
             self._inverter_datetime_last_error = str(err)
-        # Resolve any missing selling slot tou_soc values before any plan or
-        # control action can trigger a physical TOU mapping/write.  The migration
-        # is idempotent and retries every tick until every selling slot can be
-        # safely resolved.
         self._migrate_selling_tou_soc()
-        await self.async_process_future_plan()
         async with self._operation_lock:
             try:
                 await self._async_tick_impl(*_args)
@@ -14876,8 +10164,6 @@ class DeyeEnergyRuntime:
             except Exception as err:
                 await self.async_apply_safe_defaults(f"Control transaction failed: {type(err).__name__}: {err}")
                 raise
-        if self.ai_api_config.get("enabled"):
-            self.schedule_ai_api_analysis()
 
     @callback
     def _performance_lag_tick(self, *_args: Any) -> None:
@@ -14906,71 +10192,8 @@ class DeyeEnergyRuntime:
             self.unsub_performance_report = None
         self._performance.stop()
 
-    def _hass_is_running(self) -> bool:
-        """Return a version-tolerant view of the HA Core running state."""
-        state = getattr(self.hass, "state", None)
-        value = getattr(state, "value", state)
-        return str(value or "").strip().lower() == "running"
 
-    def _cancel_hass_started_listener(self) -> None:
-        unsubscribe = self._unsub_hass_started
-        self._unsub_hass_started = None
-        if unsubscribe is not None:
-            unsubscribe()
 
-    @callback
-    def _mark_initial_optimizer_done(self, task: Any) -> None:
-        if self._unloading:
-            return
-        cancelled = bool(getattr(task, "cancelled", lambda: False)())
-        exception = None
-        if not cancelled:
-            try:
-                exception = task.exception()
-            except (asyncio.CancelledError, AttributeError):
-                cancelled = True
-        self._initial_optimizer_completed = not cancelled and exception is None
-        if self._initial_optimizer_completed:
-            self.runtime_metrics["optimizer_initial_completed"] += 1
-
-    @callback
-    def _start_initial_optimizer(self) -> Any:
-        """Launch the one initial Core only after HA is fully running."""
-        if self._unloading or self._initial_optimizer_started:
-            return self._optimizer_recalc_task
-        self._cancel_hass_started_listener()
-        self._initial_optimizer_pending = False
-        self._initial_optimizer_started = True
-        self.runtime_metrics["optimizer_initial_requested"] += 1
-        reasons = set(self._optimizer_pending_reasons) or {"startup"}
-        task = self.request_optimizer_recalc(reasons)
-        # The restored cache may be published now; before STARTED no expensive
-        # AI/diagnostics snapshot task is created.
-        self.request_sensor_snapshot_refresh(
-            set(self._sensor_snapshot_requested_keys) or {"ai_state", "diagnostics"}
-        )
-        if task is not None and hasattr(task, "add_done_callback"):
-            task.add_done_callback(self._mark_initial_optimizer_done)
-        return task
-
-    def _register_hass_started_listener(self) -> None:
-        """Register, but never await, one HOMEASSISTANT_STARTED callback."""
-        if self._unloading or self._initial_optimizer_started or self._unsub_hass_started:
-            return
-        bus = getattr(self.hass, "bus", None)
-        listen_once = getattr(bus, "async_listen_once", None)
-        if not callable(listen_once):
-            return
-
-        @callback
-        def _on_hass_started(_event: Any) -> None:
-            self._unsub_hass_started = None
-            self._start_initial_optimizer()
-
-        self._unsub_hass_started = listen_once(
-            _HOMEASSISTANT_STARTED_EVENT,
-            _on_hass_started,
-        )
 
     async def _async_ensure_install_battery_restart_capacity_default(self) -> None:
         """One-time install setup: set Start battery discharge capacity to 10%."""
@@ -15011,10 +10234,6 @@ class DeyeEnergyRuntime:
     async def async_start(self) -> None:
         self._startup_in_progress = True
         self._unloading = False
-        self._initial_optimizer_pending = True
-        self._initial_optimizer_started = False
-        self._initial_optimizer_completed = False
-        self._cancel_hass_started_listener()
         started = False
         try:
             self._tariff_catalog_manager = TariffCatalogManager(
@@ -15028,11 +10247,7 @@ class DeyeEnergyRuntime:
             await self.async_load_ai_data()
             await self.async_load_solcast_history()
             await self.async_update_solcast_history()
-            await self.async_load_learning_history()
             await self.async_load_energy_history()
-            # Restore the minute-level learning checkpoint from the already
-            # existing compact Energy Store before finalising/updating an hour.
-            await self.async_update_learning_history()
             await self.async_update_energy_sample()
             await self.async_update_weather_forecast()
             self._soc_quality_signature = self._soc_semantic_signature(
@@ -15052,12 +10267,9 @@ class DeyeEnergyRuntime:
         if started:
             if self._ai_save_dirty:
                 self.request_ai_save()
-            if self._learning_save_dirty:
-                self.request_learning_save()
             if self._energy_save_dirty:
                 self.request_energy_save()
             await self._async_ensure_install_battery_restart_capacity_default()
-            self.request_optimizer_recalc("startup")
             self.request_sensor_snapshot_refresh()
 
     @callback
@@ -15066,16 +10278,9 @@ class DeyeEnergyRuntime:
         if not self._platform_setup_in_progress:
             return
         self._platform_setup_in_progress = False
-        pending_reasons = set(self._optimizer_pending_reasons) or {"startup"}
-        self._optimizer_recalc_pending = True
-        self._optimizer_pending_reasons.update(pending_reasons)
         requested_keys = set(self._sensor_snapshot_requested_keys) or {"ai_state", "diagnostics"}
         self._sensor_snapshot_pending = True
         self._sensor_snapshot_requested_keys.update(requested_keys)
-        if self._hass_is_running():
-            self._start_initial_optimizer()
-        else:
-            self._register_hass_started_listener()
         if self._platform_publish_pending:
             self._platform_publish_pending = False
             self._notify_entities_from_cache(reason="startup")
@@ -15084,10 +10289,6 @@ class DeyeEnergyRuntime:
     async def async_unload(self) -> None:
         self._unloading = True
         self._stop_performance_instrumentation()
-        self._cancel_hass_started_listener()
-        self._initial_optimizer_pending = False
-        self._platform_setup_in_progress = False
-        self._platform_publish_pending = False
         if self._active_tou_cancel_event is not None:
             self._active_tou_cancel_event.set()
         for meta in self._active_control_transactions.values():
@@ -15099,16 +10300,11 @@ class DeyeEnergyRuntime:
             self._schedule_reconcile_task.cancel()
         self._schedule_reconcile_task = None
         self._schedule_reconcile_requested = False
-        if self._ai_api_task is not None and not self._ai_api_task.done():
-            self._ai_api_task.cancel()
-        self._ai_api_task = None
         background_tasks = [
             task
             for task in (
-                self._optimizer_recalc_task,
                 self._sensor_snapshot_task,
                 self._ai_save_task,
-                self._learning_save_task,
                 self._energy_save_task,
                 self._tariff_refresh_task,
             )
@@ -15127,52 +10323,21 @@ class DeyeEnergyRuntime:
             self.unsub_timer = None
         if background_tasks:
             await asyncio.gather(*background_tasks, return_exceptions=True)
-        self._optimizer_recalc_task = None
-        self._optimizer_recalc_pending = False
-        self._optimizer_pending_reasons.clear()
-        self._optimizer_debounce_reasons.clear()
-        self._optimizer_listener_entity_ids = ()
-        self._optimizer_input_reasons.clear()
         self._sensor_snapshot_task = None
         self._sensor_snapshot_pending = False
         self._sensor_snapshot_requested_keys.clear()
         self._ai_save_task = None
-        self._learning_save_task = None
         self._energy_save_task = None
         self._tariff_refresh_task = None
-        # A cancelled Store task may have cleared its dirty flag immediately
-        # before awaiting I/O. Forced final calls are fingerprint/revision gated,
-        # so they are cheap when nothing changed and lossless when it did.
         await self.async_save_ai_data(force=True)
-        await self.async_save_learning_history(force=True)
         if self._energy_revision != self._energy_saved_revision:
             await self.async_save_energy_history(force=True)
         await self.async_save_sales_stats()
         await self.async_save_solcast_history()
 
     def set_control_mode(self, mode: str) -> None:
-        if mode in CONTROL_MODES:
-            previous_mode = self.control_mode
+        if mode in CONTROL_MODES and mode != self.control_mode:
             self.control_mode = mode
-            if previous_mode == "Schedule" and mode != "Schedule":
-                current = ha_now()
-                active_profile_ids = {
-                    str(row.get("profile_id"))
-                    for row in self.optimizer_plan.get("rows", [])
-                    if isinstance(row, dict)
-                    and row.get("profile_id")
-                    and str(row.get("date") or "") == current.date().isoformat()
-                    and int(self.safe_float(row.get("hour"), -1)) == current.hour
-                }
-                for profile_id in active_profile_ids:
-                    self._set_profile_execution_status(
-                        profile_id,
-                        current.date().isoformat(),
-                        "manual_override",
-                        failure_reason=f"Manual mode change: {mode}",
-                    )
-            if previous_mode != mode:
-                self.request_optimizer_recalc("manual")
             self.notify_update()
 
     def set_work_mode_for_slot(self, slot_key: str, mode: str) -> None:
@@ -15183,8 +10348,6 @@ class DeyeEnergyRuntime:
             if mode == MODE_NORMAL_OPERATION and previous_mode != MODE_NORMAL_OPERATION:
                 slot.enabled = True
                 self.scheduler_enabled = True
-                # Copy the normal profile template once into this slot.
-                # Later changes to the template do not affect existing slots.
                 if self.normal_profile_physical_work_mode in PHYSICAL_NORMAL_MODES:
                     slot.physical_work_mode = self.normal_profile_physical_work_mode
                 if math.isfinite(self.normal_profile_sell_power) and 0 <= self.normal_profile_sell_power <= self.effective_inverter_max_power_w:
@@ -15200,15 +10363,10 @@ class DeyeEnergyRuntime:
             elif previous_mode == MODE_NORMAL_OPERATION:
                 slot.physical_work_mode = None
             self._clear_slot_failure_latch()
-            if previous_mode != mode:
-                self.request_optimizer_recalc("schedule")
             self.notify_update()
 
     def set_default_work_mode(self, mode: str) -> None:
         normalized = normalize_manager_mode(mode)
-        if normalized in WORK_MODES:
-            previous_mode = self.default_work_mode
+        if normalized in WORK_MODES and normalized != self.default_work_mode:
             self.default_work_mode = normalized
-            if previous_mode != normalized:
-                self.request_optimizer_recalc("schedule")
             self.notify_update()

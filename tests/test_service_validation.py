@@ -406,13 +406,36 @@ class ServiceJsonValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             init._parse_json_payload("", dict)
 
-    def test_ai_data_schema_enforces_string(self):
-        with self.assertRaises(Exception):
-            init.AI_DATA_SCHEMA({"data": 123})
+    def test_shared_persistence_schemas_are_length_limited(self):
+        for schema, limit in (
+            (init.MANUAL_SCHEDULE_DATA_SCHEMA, 100000),
+            (init.ENERGY_STATUS_DISPLAY_DATA_SCHEMA, 50000),
+            (init.POWER_FLOW_DISPLAY_DATA_SCHEMA, 50000),
+        ):
+            self.assertEqual(schema({"data": "{}"})["data"], "{}")
+            with self.assertRaises(Exception):
+                schema({"data": "x" * (limit + 1)})
 
-    def test_ai_data_schema_rejects_oversized_payload(self):
-        with self.assertRaises(Exception):
-            init.AI_DATA_SCHEMA({"data": "x" * 200001})
+    def test_removed_ai_and_plan_services_are_not_registered(self):
+        removed = (
+            "save_ai_settings",
+            "save_ai_profiles",
+            "save_ai_api_settings",
+            "test_ai_api",
+            "analyze_ai_api",
+            "save_ai_analysis",
+            "clear_ai_history",
+            "rate_ai_analysis",
+            "clear_history",
+            "save_future_plan",
+            "cancel_future_plan",
+            "get_plan_execution",
+        )
+        for name in removed:
+            self.assertNotIn(name, init.SERVICE_NAMES)
+        services = yaml.safe_load((PACKAGE / "services.yaml").read_text(encoding="utf-8"))
+        for name in removed:
+            self.assertNotIn(name, services)
 
     def test_schedule_patch_schema_accepts_valid_json_string(self):
         result = init.SCHEDULE_PATCH_SCHEMA({"data": '[{"slot": "0000_0030"}]'})
@@ -422,20 +445,7 @@ class ServiceJsonValidationTests(unittest.TestCase):
         with self.assertRaises(Exception):
             init.TARIFF_SETTINGS_SCHEMA({"data": {"provider": "octopus"}})
 
-    def test_plan_execution_schema_is_optional_and_length_limited(self):
-        self.assertEqual({}, init.PLAN_EXECUTION_SCHEMA({}))
-        self.assertEqual(
-            "2026-07-30",
-            init.PLAN_EXECUTION_SCHEMA({"date": "2026-07-30"})["date"],
-        )
-        with self.assertRaises(Exception):
-            init.PLAN_EXECUTION_SCHEMA({"date": "2026-07-300"})
 
-    def test_plan_execution_service_is_registered_as_response_only(self):
-        source = (PACKAGE / "__init__.py").read_text(encoding="utf-8")
-        self.assertIn('"get_plan_execution"', source)
-        self.assertIn("supports_response=SupportsResponse.ONLY", source)
-        self.assertIn("return runtime.plan_execution_day", source)
 
     @staticmethod
     def _schema_keys(schema):

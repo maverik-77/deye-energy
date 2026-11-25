@@ -6,34 +6,22 @@ const source = fs.readFileSync(
   "utf8",
 );
 
-function assert(condition, message) {
+function check(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-function testPendingIsNotCompleted() {
-  assert(source.includes('physical_pending: "Waiting for the inverter"'), "missing physical pending label");
-  assert(!source.includes('results[key]?.status === "completed") row.deployment_status = "deployed"'), "legacy false-complete mapping remains");
+for (const marker of [
+  'physical_pending: "Waiting for the inverter"',
+  'entry.status === "confirmed"',
+  'row.deployment_status === "confirmed"',
+  'manual_override: "Changed manually"',
+  'missed: "Skipped"',
+]) {
+  check(!source.includes(marker), `AI deployment lifecycle label must be removed: ${marker}`);
 }
+check(
+  /^\/\/ Resource revision: v=\d+\.\d+\.\d+(\.\d+)?\n/.test(source),
+  "resource revision header missing/invalid",
+);
 
-function testConfirmedRequiresBackendConfirmedState() {
-  assert(source.includes('entry.status === "confirmed"'), "confirmed backend state is not mapped");
-  assert(source.includes('row.deployment_status === "confirmed"'), "confirmed execution label is missing");
-}
-
-function testManualOverrideAndMissedAreReadable() {
-  assert(source.includes('manual_override: "Changed manually"'), "manual override label missing");
-  assert(source.includes('missed: "Skipped"'), "missed label missing");
-}
-
-function testResourceRevision() {
-  assert(/^\/\/ Resource revision: v=\d+\.\d+\.\d+(\.\d+)?\n/.test(source), "resource revision header missing/invalid");
-}
-
-[
-  testPendingIsNotCompleted,
-  testConfirmedRequiresBackendConfirmedState,
-  testManualOverrideAndMissedAreReadable,
-  testResourceRevision,
-].forEach((test) => test());
-
-console.log("5G.4J.8C frontend lifecycle tests passed");
+console.log("Stage 5G.4J.8C AI deployment lifecycle UI removal checks passed");

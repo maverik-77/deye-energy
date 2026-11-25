@@ -58,107 +58,14 @@ def task_runtime():
     return runtime
 
 
-def test_stage5g_startup_event_storm_coalesces_ai_and_learning_saves():
-    async def scenario():
-        runtime = task_runtime()
-        ai_store = DelayedStore()
-        learning_store = DelayedStore()
-        runtime._ai_store = ai_store
-        runtime._learning_store = learning_store
-        runtime._startup_in_progress = True
-        for seq in range(40):
-            runtime.ai_settings["seq"] = seq
-            runtime.learning_tracking["seq"] = seq
-            runtime.request_ai_save()
-            runtime.request_learning_save()
-        assert runtime.hass.created_tasks == []
-        runtime._startup_in_progress = False
-        ai_task = runtime.request_ai_save()
-        learning_task = runtime.request_learning_save()
-        await asyncio.gather(ai_store.started.wait(), learning_store.started.wait())
-        for seq in range(40, 80):
-            runtime.ai_settings["seq"] = seq
-            runtime.learning_tracking["seq"] = seq
-            runtime.request_ai_save()
-            runtime.request_learning_save()
-        ai_store.release.set()
-        learning_store.release.set()
-        await asyncio.gather(ai_task, learning_task)
-        assert ai_store.max_active == learning_store.max_active == 1
-        assert len(ai_store.calls) <= 2
-        assert len(learning_store.calls) <= 2
-        assert ai_store.calls[-1]["settings"]["seq"] == 79
-        assert learning_store.calls[-1]["tracking"]["seq"] == 79
-
-    asyncio.run(scenario())
 
 
-def test_ai_store_save_is_single_flight():
-    async def scenario():
-        runtime = task_runtime()
-        store = DelayedStore()
-        runtime._ai_store = store
-        first = asyncio.create_task(runtime.async_save_ai_data())
-        await store.started.wait()
-        second = asyncio.create_task(runtime.async_save_ai_data())
-        await asyncio.sleep(0)
-        assert store.max_active == 1
-        store.release.set()
-        await asyncio.gather(first, second)
-        assert store.max_active == 1
-
-    asyncio.run(scenario())
 
 
-def test_ai_store_save_coalesces_dirty_requests():
-    async def scenario():
-        runtime = task_runtime()
-        store = DelayedStore()
-        runtime._ai_store = store
-        task = runtime.request_ai_save()
-        await store.started.wait()
-        for seq in range(20):
-            runtime.ai_settings["latest"] = seq
-            runtime.request_ai_save()
-        store.release.set()
-        await task
-        assert len(store.calls) == 2
-        assert store.calls[-1]["settings"]["latest"] == 19
-
-    asyncio.run(scenario())
 
 
-def test_learning_store_save_is_single_flight():
-    async def scenario():
-        runtime = task_runtime()
-        store = DelayedStore()
-        runtime._learning_store = store
-        first = asyncio.create_task(runtime.async_save_learning_history())
-        await store.started.wait()
-        second = asyncio.create_task(runtime.async_save_learning_history())
-        store.release.set()
-        await asyncio.gather(first, second)
-        assert store.max_active == 1
-
-    asyncio.run(scenario())
 
 
-def test_learning_store_save_coalesces_dirty_requests():
-    async def scenario():
-        runtime = task_runtime()
-        store = DelayedStore()
-        runtime._learning_store = store
-        task = runtime.request_learning_save()
-        await store.started.wait()
-        for seq in range(20):
-            runtime.learning_tracking["latest"] = seq
-            runtime.request_learning_save()
-        store.release.set()
-        await task
-        assert len(store.calls) == 2
-        assert store.calls[-1]["tracking"]["latest"] == 19
-
-    asyncio.run(scenario())
 
 
 def test_identical_state_does_not_trigger_duplicate_store_save():
@@ -174,85 +81,10 @@ def test_identical_state_does_not_trigger_duplicate_store_save():
     asyncio.run(scenario())
 
 
-def test_optimizer_recalc_is_single_flight():
-    async def scenario():
-        runtime = task_runtime()
-        runtime.request_sensor_snapshot_refresh = lambda *_args, **_kwargs: None
-        calls = []
-        runtime._prepare_ai_plan_48h = lambda: {
-            "payload": {}, "selected_strategy": "balanced", "snapshot_id": "one",
-            "current": None, "battery_model": {},
-        }
-        runtime._optimizer_plan_is_current = lambda _prepared: False
-        runtime._apply_prepared_ai_plan = lambda _prepared, _result: ({}, True)
-
-        async def execute(_function, *_args):
-            calls.append("run")
-            return {}
-
-        runtime.hass.async_add_executor_job = execute
-        tasks = [runtime.request_optimizer_recalc() for _ in range(30)]
-        assert len({id(task) for task in tasks}) == 1
-        await tasks[0]
-        assert calls == ["run"]
-
-    asyncio.run(scenario())
 
 
-def test_optimizer_recalc_coalesces_multiple_state_changes():
-    async def scenario():
-        runtime = task_runtime()
-        runtime.request_sensor_snapshot_refresh = lambda *_args, **_kwargs: None
-        calls = []
-        runtime._prepare_ai_plan_48h = lambda: {
-            "payload": {}, "selected_strategy": "balanced", "snapshot_id": str(len(calls)),
-            "current": None, "battery_model": {},
-        }
-        runtime._optimizer_plan_is_current = lambda _prepared: False
-        runtime._apply_prepared_ai_plan = lambda _prepared, _result: ({}, True)
-
-        async def execute(_function, *_args):
-            calls.append(len(calls))
-            if len(calls) == 1:
-                for _ in range(25):
-                    runtime.request_optimizer_recalc()
-            return {}
-
-        runtime.hass.async_add_executor_job = execute
-        await runtime.request_optimizer_recalc()
-        assert calls == [0, 1]
-
-    asyncio.run(scenario())
 
 
-def test_optimizer_recalc_uses_latest_snapshot_after_coalescing():
-    async def scenario():
-        runtime = task_runtime()
-        runtime.request_sensor_snapshot_refresh = lambda *_args, **_kwargs: None
-        runtime._test_input = 1
-        seen = []
-        runtime._prepare_ai_plan_48h = lambda: {
-            "payload": {"value": runtime._test_input},
-            "selected_strategy": "balanced",
-            "snapshot_id": str(runtime._test_input),
-            "current": None,
-            "battery_model": {},
-        }
-        runtime._optimizer_plan_is_current = lambda _prepared: False
-        runtime._apply_prepared_ai_plan = lambda _prepared, _result: ({}, True)
-
-        async def execute(_function, payload, _strategy):
-            seen.append(payload["value"])
-            if len(seen) == 1:
-                runtime._test_input = 99
-                runtime.request_optimizer_recalc()
-            return {}
-
-        runtime.hass.async_add_executor_job = execute
-        await runtime.request_optimizer_recalc()
-        assert seen == [1, 99]
-
-    asyncio.run(scenario())
 
 
 def test_async_setup_entry_does_not_wait_for_background_store_saves():
@@ -261,33 +93,32 @@ def test_async_setup_entry_does_not_wait_for_background_store_saves():
     end = MANAGER_SOURCE.index("    async def async_unload(", start)
     method = MANAGER_SOURCE[start:end]
     assert "self.request_ai_save()" in method
-    assert "self.request_learning_save()" in method
+    assert "self.request_energy_save()" in method
     assert "await self.async_save_ai_data()" not in method
-    assert "await self.async_save_learning_history()" not in method
+    assert "await self.async_save_energy_history()" not in method
 
 
 def test_runtime_start_does_not_spawn_unbounded_save_tasks():
     async def scenario():
         runtime = task_runtime()
         runtime._ai_store = DelayedStore()
-        runtime._learning_store = DelayedStore()
+        runtime._samples_store = DelayedStore()
         runtime._startup_in_progress = True
         for _ in range(50):
             runtime.request_ai_save()
-            runtime.request_learning_save()
+            runtime.request_energy_save()
         assert runtime.hass.created_tasks == []
 
     asyncio.run(scenario())
 
 
-def test_startup_finishes_with_ai_and_learning_enabled():
+def test_startup_finishes_with_ai_and_energy_enabled():
     async def scenario():
         runtime = task_runtime()
         runtime._ai_store = DelayedStore()
-        runtime._learning_store = DelayedStore()
+        runtime._samples_store = DelayedStore()
         runtime._ai_save_dirty = True
-        runtime._learning_save_dirty = True
-        runtime.request_optimizer_recalc = lambda *_args, **_kwargs: None
+        runtime._energy_save_dirty = True
         runtime.request_sensor_snapshot_refresh = lambda: None
 
         async def no_op():
@@ -295,9 +126,9 @@ def test_startup_finishes_with_ai_and_learning_enabled():
 
         for name in (
             "async_load_sales_stats", "async_load_trigger_log", "async_load_ai_data", "async_load_solcast_history",
-            "async_update_solcast_history", "async_load_learning_history",
-            "async_update_learning_history", "async_load_energy_history",
+            "async_update_solcast_history", "async_load_energy_history",
             "async_update_energy_sample", "async_update_weather_forecast",
+            "_async_ensure_install_battery_restart_capacity_default",
         ):
             setattr(runtime, name, no_op)
 
@@ -328,7 +159,7 @@ def test_startup_finishes_with_ai_and_learning_enabled():
 
 def test_sensor_getter_does_not_run_optimizer():
     start = SENSOR_SOURCE.index("def ai_state_attrs(")
-    end = SENSOR_SOURCE.index("def solcast_accuracy_attrs", start)
+    end = SENSOR_SOURCE.index("def diagnostics_attrs", start)
     getter = SENSOR_SOURCE[start:end]
     assert "_ai_state_snapshot" in getter
     assert "ai_plan_48h" not in getter
@@ -386,9 +217,6 @@ def test_unload_cleans_ai_save_task():
     assert runtime._ai_save_task is None
 
 
-def test_unload_cleans_learning_save_task():
-    runtime = asyncio.run(_unloaded_runtime("_learning_save_task"))
-    assert runtime._learning_save_task is None
 
 
 def test_unload_leaves_no_runtime_background_tasks():
@@ -396,8 +224,8 @@ def test_unload_leaves_no_runtime_background_tasks():
         runtime = task_runtime()
         tasks = []
         for field in (
-            "_optimizer_recalc_task", "_sensor_snapshot_task", "_ai_save_task",
-            "_learning_save_task", "_tariff_refresh_task",
+            "_sensor_snapshot_task", "_ai_save_task",
+            "_energy_save_task", "_tariff_refresh_task",
         ):
             task = asyncio.create_task(asyncio.sleep(60))
             tasks.append(task)
@@ -405,8 +233,8 @@ def test_unload_leaves_no_runtime_background_tasks():
         await runtime.async_unload()
         assert all(task.cancelled() for task in tasks)
         assert all(getattr(runtime, field) is None for field in (
-            "_optimizer_recalc_task", "_sensor_snapshot_task", "_ai_save_task",
-            "_learning_save_task", "_tariff_refresh_task",
+            "_sensor_snapshot_task", "_ai_save_task",
+            "_energy_save_task", "_tariff_refresh_task",
         ))
 
     asyncio.run(scenario())

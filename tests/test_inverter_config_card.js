@@ -172,15 +172,14 @@ function testStandaloneCardRegistered() {
   assert.ok(types.includes("deye-energy-inverter-config-card"), "customCards should include deye-energy-inverter-config-card");
 }
 
-function testWorkScheduleHeaderHasNoRemovedCurrentColumns() {
+function testSchedulePageHasNoWorkScheduleTable() {
   const card = makeMainCard();
   card.renderV073();
   const html = card.innerHTML || "";
-  assert.match(
-    html,
-    /<thead><tr><th class="check-col"><\/th><th class="time-col">Hour<\/th><th>Mode<\/th><th>Power<\/th><th>Grid charging<\/th><th>SOC<\/th><th>Price min\.<\/th><th>Active<\/th><th>Action<\/th><\/tr><\/thead>/,
-    "unexpected work-schedule header (current columns may have returned)"
-  );
+  assert.match(html, /data-schedule-tab="manual"/, "Manual schedule tab must be rendered");
+  assert.match(html, /data-schedule-tab="tou"/, "Deye Time Of Use tab must be rendered");
+  assert.doesNotMatch(html, /data-schedule-tab="work"/, "Work schedule tab must be removed");
+  assert.ok(!html.includes('<th class="check-col">'), "work schedule table header must be removed");
   assert.ok(!html.includes("Grid charge current"), "work schedule must not show Grid charge current");
   assert.ok(!html.includes("<th>Disch.</th>"), "work schedule must not show a Disch. column");
   assert.ok(!html.includes("<th>Chg.</th>"), "work schedule must not show a Chg. column");
@@ -468,7 +467,7 @@ function testPowerFlowDetailReorderAndRemove() {
 
 module.exports = async function run() {
   testStandaloneCardRegistered();
-  testWorkScheduleHeaderHasNoRemovedCurrentColumns();
+  testSchedulePageHasNoWorkScheduleTable();
   await testLoadInverterConfigurationStoresAllGroupsWithReturnResponse();
   testUnmappedAndUnavailableFieldsAreReadOnlyAndLabelled();
   testWritableFieldsUseLiveLimitsAndOptions();

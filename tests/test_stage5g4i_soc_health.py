@@ -61,8 +61,6 @@ def test_silent_soc_remains_valid_for_three_hours_with_verified_sibling_health()
     runtime = make_runtime(soc="80")
     started = datetime(2026, 8, 14, 5, 0, tzinfo=timezone.utc)
     soc_state, sibling_id, sibling = _install_same_device_health(runtime, started)
-    requests = []
-    runtime.request_optimizer_recalc = lambda reason: requests.append(reason)
 
     for minutes in range(5, 181, 5):
         moment = started + timedelta(minutes=minutes)
@@ -74,7 +72,6 @@ def test_silent_soc_remains_valid_for_three_hours_with_verified_sibling_health()
             assert runtime.current_soc_or_none() == 80
 
     assert soc_state.last_reported == started
-    assert requests == []
     assert control_number_calls(runtime) == []
 
 
@@ -214,95 +211,8 @@ def test_restart_uses_real_state_health_but_never_artificial_now():
     assert healthy_runtime._soc_source_observed_at == {}
 
 
-def test_one_hundred_health_reports_do_not_create_runtime_storm():
-    runtime = make_runtime(soc="80")
-    started = datetime(2026, 8, 14, 5, 0, tzinfo=timezone.utc)
-    _soc, sibling_id, sibling = _install_same_device_health(runtime, started)
-    runtime._soc_quality_signature = runtime._soc_semantic_signature(runtime.soc_diagnostics())
-    before_requests = runtime.runtime_metrics["optimizer_recalc_requested"]
-    before_notifies = runtime.runtime_metrics["notify_update_count"]
-    before_calls = list(runtime.hass.services.calls)
-    before_dirty = (
-        runtime._ai_save_dirty,
-        runtime._learning_save_dirty,
-        runtime._energy_save_dirty,
-    )
-
-    for second in range(1, 101):
-        moment = started + timedelta(seconds=second)
-        sibling.last_reported = moment
-        with at(moment):
-            assert runtime._observe_soc_sibling_event(
-                _health_event(sibling_id, sibling, moment)
-            ) is False
-
-    assert runtime.runtime_metrics["optimizer_recalc_requested"] == before_requests
-    assert runtime.runtime_metrics["notify_update_count"] == before_notifies
-    assert runtime.hass.services.calls == before_calls
-    assert (
-        runtime._ai_save_dirty,
-        runtime._learning_save_dirty,
-        runtime._energy_save_dirty,
-    ) == before_dirty
-    assert runtime._optimizer_recalc_task is None
 
 
-def test_one_hundred_health_reports_follow_real_listener_without_storm():
-    runtime = make_runtime(soc="80")
-    started = datetime(2026, 8, 14, 5, 0, tzinfo=timezone.utc)
-    _soc, sibling_id, sibling = _install_same_device_health(runtime, started)
-    old_state = FakeState("0", {"unit_of_measurement": "W"})
-    old_state.last_reported = started
-    captured = {"timers": 0}
-    original_state = manager.async_track_state_change_event
-    original_point = manager.async_track_point_in_time
-
-    def track_state(_hass, _entities, callback):
-        captured["callback"] = callback
-        return lambda: None
-
-    def track_point(_hass, _callback, _when):
-        captured["timers"] += 1
-        return lambda: None
-
-    manager.async_track_state_change_event = track_state
-    manager.async_track_point_in_time = track_point
-    runtime.schedule_ai_api_analysis = lambda: None
-    before_requests = runtime.runtime_metrics["optimizer_recalc_requested"]
-    before_notifies = runtime.runtime_metrics["notify_update_count"]
-    before_calls = list(runtime.hass.services.calls)
-    before_dirty = (
-        runtime._ai_save_dirty,
-        runtime._learning_save_dirty,
-        runtime._energy_save_dirty,
-    )
-    try:
-        with at(started):
-            runtime._start_schedule_input_listener()
-        for second in range(1, 101):
-            moment = started + timedelta(seconds=second)
-            sibling.last_reported = moment
-            with at(moment):
-                captured["callback"](_health_event(
-                    sibling_id,
-                    sibling,
-                    moment,
-                    old_state=old_state,
-                ))
-    finally:
-        manager.async_track_state_change_event = original_state
-        manager.async_track_point_in_time = original_point
-
-    assert captured["timers"] == 0
-    assert runtime.runtime_metrics["optimizer_recalc_requested"] == before_requests
-    assert runtime.runtime_metrics["notify_update_count"] == before_notifies
-    assert runtime.hass.services.calls == before_calls
-    assert (
-        runtime._ai_save_dirty,
-        runtime._learning_save_dirty,
-        runtime._energy_save_dirty,
-    ) == before_dirty
-    assert runtime._optimizer_recalc_task is None
 
 
 def test_provider_without_health_uses_bounded_compatibility_then_fails_closed():

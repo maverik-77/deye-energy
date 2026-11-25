@@ -787,7 +787,7 @@ class MappingWizardMixin:
             "selling": (CONF_WORK_MODE_SELECT, CONF_MAX_SELL_POWER_NUMBER, CONF_DISCHARGE_CURRENT_NUMBER, CONF_BATTERY_SOC_SENSOR),
             "charging": (CONF_WORK_MODE_SELECT, CONF_CHARGE_CURRENT_NUMBER, CONF_GRID_CHARGE_CURRENT_NUMBER, CONF_BATTERY_SOC_SENSOR),
             "full_tou": TOU_FIELDS,
-            "core_ai": (CONF_BATTERY_SOC_SENSOR, CONF_GRID_POWER_SENSOR, CONF_PV_POWER_SENSOR, CONF_LOAD_POWER_SENSOR, CONF_BATTERY_POWER_SENSOR, CONF_PRICE_SENSOR, CONF_SOLCAST_FORECAST_TODAY_SENSOR),
+            "schedule_data": (CONF_BATTERY_SOC_SENSOR, CONF_GRID_POWER_SENSOR, CONF_PV_POWER_SENSOR, CONF_LOAD_POWER_SENSOR, CONF_BATTERY_POWER_SENSOR, CONF_PRICE_SENSOR, CONF_SOLCAST_FORECAST_TODAY_SENSOR),
         }
         provider = provider_profile(str(self._values.get(CONF_INVERTER_PROVIDER, DEFAULT_INVERTER_PROVIDER)))
         report: dict[str, dict[str, Any]] = {}
@@ -941,7 +941,7 @@ class MappingWizardMixin:
         report = self._capability_report()
         if user_input is not None and bool(user_input.get("continue")):
             return await self.async_step_inverter_power()
-        labels = ("device", "readings", "basic_control", "selling", "charging", "full_tou", "core_ai")
+        labels = ("device", "readings", "basic_control", "selling", "charging", "full_tou", "schedule_data")
         return self.async_show_form(
             step_id="capabilities",
             data_schema=vol.Schema({vol.Required("continue", default=False): selector.BooleanSelector()}),

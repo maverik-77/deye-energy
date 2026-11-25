@@ -4,6 +4,24 @@ All notable changes to Deye Energy. Versions before 0.8.0 are the history of the
 upstream Deye Energy Manager project and are not repeated here. Attribution is
 recorded at the bottom of README.md.
 
+## [0.8.0.87] - 2026-11-25
+
+### Removed
+
+- **Work schedule and AI suggestions overlay**: the Work schedule tab/toggle and
+  the AI suggestions/settings/history UI were removed from both card copies. The
+  underlying 48-slot schedule data model is retained for Manual schedule and TOU.
+- **AI/Optimizer backend**: deleted the AI assistant/planner, Optimizer Core,
+  FuturePlan/JIT and learning modules, their services and AI-only entities, plus
+  the obsolete tests. `sensor.ai_state` remains available with a neutral payload.
+
+### Changed
+
+- **Schedule terminology**: remaining 48-slot controls are labelled "Schedule slots";
+  Manual schedule, TOU and all enable/disable controls continue to work unchanged.
+- **Maintenance**: bumped the integration version and card resource revision to
+  0.8.0.87, with matching README and CHANGELOG updates.
+
 ## [0.8.0.86] - 2026-11-23
 
 ### Changed

@@ -26,6 +26,6 @@ check(buy[1].get(4) === -0.10, "negative tomorrow BUY must be retained");
 check(card.canonicalPriceMaps("sell")[0].get(5) === 1.25, "SELL must use its independent contract rows");
 check(source.includes('this.canonicalPriceMaps(scrollKey.startsWith("buy") ? "buy" : "sell")'), "price tables must use backend canonical rows");
 check(!source.includes("price + distributionCost(todayKey, hour)"), "browser must not add DSO to a canonical BUY price");
-check(source.includes("Full source"), "all-in Octopus Energy breakdown must be labelled as a full source price");
+check(!source.includes("Full source"), "AI all-in source breakdown must be removed");
 check(/\/\/ Resource revision: v=\d+\.\d+\.\d+(\.\d+)?/.test(source), "resource revision header missing/invalid");
 console.log("stage5g4k3 card contract OK");

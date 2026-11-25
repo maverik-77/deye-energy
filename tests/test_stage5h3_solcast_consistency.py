@@ -12,7 +12,6 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from test_manager_logic import FakeState, make_runtime, manager
-from test_stage5g3b1_performance import sensor_module
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,7 +37,6 @@ def _set_tracking(
         "forecast_status": status,
         "forecast_source": runtime.solcast_forecast_today_sensor,
     }
-    runtime._invalidate_learning_summary_cache()
 
 
 def _set_solcast_states(
@@ -135,15 +133,17 @@ def test_t5_live_realization_and_historical_accuracy_stay_separate_everywhere(mo
     }]
     _set_tracking(runtime, now, initial=39.47, latest=33.10, actual=31.10)
 
-    attrs = sensor_module.solcast_accuracy_attrs(runtime)
-    snapshot = runtime.build_ai_state_snapshot()
+    metrics = runtime.solcast_current_day_metrics(historical_accuracy_pct=77.1)
+    rows = {row["date"]: row for row in runtime.history_daily_summary()}
 
-    assert attrs["realization_today_pct"] == 94.0
-    assert attrs["historical_accuracy_pct"] == 77.1
-    assert attrs["forecast_progress_percent"] == attrs["realization_today_pct"]
-    assert attrs["historical_accuracy_percent"] == attrs["historical_accuracy_pct"]
-    assert snapshot["solcast_current_day"]["realization_today_pct"] == 94.0
-    assert snapshot["solcast_current_day"]["historical_accuracy_pct"] == 77.1
+    assert metrics["realization_today_pct"] == 94.0
+    assert metrics["historical_accuracy_pct"] == 77.1
+    assert metrics["initial_forecast_kwh"] == 39.47
+    assert rows["2026-08-28"]["accuracy_percent"] == 77.1
+    today = rows["2026-08-29"]
+    assert today["realization_today_pct"] == 94.0
+    assert today["forecast_progress_percent"] == today["realization_today_pct"]
+    assert today["accuracy_percent"] is None
 
 
 def test_t6_history_uses_the_same_canonical_current_day_value(monkeypatch):
@@ -162,63 +162,8 @@ def test_t6_history_uses_the_same_canonical_current_day_value(monkeypatch):
     assert "item.realization_today_pct ?? item.forecast_progress_percent" in card_source
 
 
-def test_t7_core_input_contains_kwh_forecasts_and_historical_accuracy_only(monkeypatch):
-    now = datetime(2026, 8, 29, 12, 0, tzinfo=UTC)
-    monkeypatch.setattr(manager, "ha_now", lambda: now)
-    runtime = make_runtime()
-    runtime.hass.config = SimpleNamespace(time_zone="Europe/London")
-    _set_solcast_states(runtime, today=33.10, actual=31.10, remaining=0.13, tomorrow=50.08)
-    base_learning = runtime.learning_summary()
-    runtime.learning_summary = lambda: {
-        **base_learning,
-        "solcast_accuracy_avg": 77.1,
-        "solcast_correction_factor": 0.97,
-    }
-
-    payload = runtime._prepare_ai_plan_48h()["payload"]
-
-    assert payload["pv_forecast"] == [0.13, 50.08]
-    assert payload["pv_forecast_full"] == [33.10, 50.08]
-    assert payload["pv_forecast_available"] == [True, True]
-    assert payload["forecast_accuracy"] == 77.1
-    assert payload["forecast_correction"] == 0.97
-    assert len(payload["pv_profile"]) == 24
-    assert "realization_today_pct" not in payload
 
 
-def test_t8_external_ai_receives_hourly_forecast_not_ambiguous_accuracy():
-    plan = {
-        "plan_id": "plan-1",
-        "input_snapshot_id": "snapshot-1",
-        "algorithm_version": "test",
-        "plan_schema_version": 1,
-        "rows": [{
-            "hour_start": "2026-08-29T12:00:00+02:00",
-            "duration_minutes": 60,
-            "action": "normal",
-            "pv_corrected_kwh": 1.25,
-            "forecast_low_kwh": 1.0,
-            "forecast_high_kwh": 1.5,
-            "confidence": 77.1,
-        }],
-    }
-
-    payload = manager.build_private_payload(plan, {"current_soc_pct": 50})
-    encoded = json.dumps(payload, sort_keys=True)
-
-    assert payload["role"] == "advisory_only"
-    assert payload["local_plan"]["hours"][0]["pv_kwh"] == 1.25
-    assert payload["local_plan"]["hours"][0]["forecast_low_kwh"] == 1.0
-    assert payload["local_plan"]["hours"][0]["forecast_high_kwh"] == 1.5
-    for aggregate in (
-        "forecast_today_kwh",
-        "production_today_kwh",
-        "remaining_forecast_kwh",
-        "realization_today_pct",
-        "historical_accuracy_pct",
-        '"accuracy"',
-    ):
-        assert aggregate not in encoded
 
 
 def test_t9_no_independent_legacy_formula_remains_in_sensor_or_card():

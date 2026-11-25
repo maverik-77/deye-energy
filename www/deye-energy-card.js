@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.86
+// Resource revision: v=0.8.0.87
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -67,14 +67,6 @@ class DeyeEnergyCard extends HTMLElement {
     this._energyStatusDisplayCache = {};
     this._scheduleTab = "manual";
     this._historyFilters = { from: "", to: "", type: "all" };
-    this._lastAiAnalysisCheck = 0;
-    this._aiSettingsSaveTimer = null;
-    this._aiSettingsSection = "general";
-    this._aiProfileDraft = null;
-    this._aiProfileStatus = "";
-    this._aiDetailKey = null;
-    this._aiApiDraft = null;
-    this._aiApiMessage = "";
     this._updateFrame = null;
     this._lastSlowSignature = "";
     this._tariffDraft = null;
@@ -87,19 +79,6 @@ class DeyeEnergyCard extends HTMLElement {
     this._manualScheduleActive = false;
     this._manualScheduleAutoLoadAttempted = false;
     this._manualScheduleEditing = new Set();
-    this._aiView = "overview";
-    this._aiDay = "today";
-    this._aiExplanationDay = "today";
-    this._aiShow24 = false;
-    this._aiWeatherMode = "daily";
-    this._aiChartPinned = null;
-    this._aiChartHiddenSeries = new Set();
-    this._aiSelections = { today: new Set(), tomorrow: new Set() };
-    this._aiExecutionRange = "today";
-    this._aiExecutionDate = "";
-    this._aiExecutionData = null;
-    this._aiExecutionLoading = false;
-    this._aiExecutionError = "";
   }
 
   layoutConfig() {
@@ -170,7 +149,7 @@ class DeyeEnergyCard extends HTMLElement {
       allow_horizontal_scroll: asBool(cfg.allow_horizontal_scroll, defaults.allow_horizontal_scroll),
       grid_columns: cfg.grid_columns === null || cfg.grid_columns === undefined ? defaults.grid_columns : asNumber(cfg.grid_columns, defaults.grid_columns, 1, 6),
       grid_gap: asNumber(cfg.grid_gap, defaults.grid_gap, 0, 64),
-      section: asString(cfg.section, defaults.section, ["status_energy", "prices", "solcast", "schedule", "sales_stats", "ai", "settings"]),
+      section: asString(cfg.section, defaults.section, ["status_energy", "prices", "solcast", "schedule", "sales_stats", "settings"]),
       sections: {
         status_energy: asBool(cfg.sections?.status_energy, defaults.sections.status_energy),
         prices: asBool(cfg.sections?.prices, defaults.sections.prices),
@@ -321,7 +300,6 @@ class DeyeEnergyCard extends HTMLElement {
     }
     window.clearTimeout(this._interactionRelease);
     window.clearTimeout(this._saveStatusTimer);
-    window.clearTimeout(this._aiSettingsSaveTimer);
   }
 
   closeDialog() {
@@ -335,7 +313,6 @@ class DeyeEnergyCard extends HTMLElement {
       }
       this.resetSlotEditor();
     }
-    if (this._dialog.type === "settings") this.resetMappingEditor();
     this._dialog = null;
     this._interacting = false;
     this.render();
@@ -350,9 +327,7 @@ class DeyeEnergyCard extends HTMLElement {
       const touSignature = this.touDiagnosticsSignature();
       if (touSignature !== this._lastTouDiagnosticsSignature) {
         this._lastTouDiagnosticsSignature = touSignature;
-        if (this._dialog?.type === "settings" && this._settingsTab === "tou") {
-          this.renderDialogOnly();
-        }
+        if (this._scheduleTab === "tou" && !this._dialog) this.requestScheduleRender();
       }
       const energyStatusSignature = JSON.stringify(this.energyStatusDisplay() || {});
       if (this._lastEnergyStatusSignature === undefined) {
@@ -562,12 +537,6 @@ class DeyeEnergyCard extends HTMLElement {
     const sellActive = schedulerOn && statusUpper.includes("SCHEDULE") && !defaultsActive;
     const stopActive = statusUpper.includes("STOP") || this.state(controlMode) === "Stop Sell" || (!schedulerOn && (statusUpper.includes("IDLE") || lastActionUpper.includes("RESTORED") || lastActionUpper.includes("STOP")));
     const defaultButtonActive = defaultsActive && !stopActive;
-    const analysisNow = Date.now();
-    if (this.aiSettings().enabled && analysisNow - this._lastAiAnalysisCheck >= 900000) {
-      this._lastAiAnalysisCheck = analysisNow;
-      this.saveAiAnalysis(this.aiSuggestions(slots));
-    }
-
     const pvEnabled = this.pvGenerationEnabled();
     const pvValue = pvEnabled ? (this.asNumber(this.state(this.energyStatusEntity("pv_power")), 0) || 0) : 0;
     const gridValue = this.asNumber(this.state(this.energyStatusEntity("grid_power")), 0) || 0;
@@ -1537,7 +1506,7 @@ class DeyeEnergyCard extends HTMLElement {
   scheduleSourceLabel() {
     return String(this.managerStatusAttributes().schedule_source || "") === "manual"
       ? "Manual schedule"
-      : "Work schedule";
+      : "Schedule slots";
   }
 
   activeSlotTimeLabel(now = new Date()) {
@@ -2100,10 +2069,7 @@ class DeyeEnergyCard extends HTMLElement {
     }
     this.beginSave();
     try {
-      const payload = options.replaceDay === true
-        ? { date: options.date, replace_day: true, updates }
-        : updates;
-      await this.callService("deye_energy", "apply_schedule_patch", { data: JSON.stringify(payload) });
+      await this.callService("deye_energy", "apply_schedule_patch", { data: JSON.stringify(updates) });
       if (!this.slotControlEnabled()) {
         this._saveMessage = "Changes were saved in the schedule. Deye control is disabled — they were not sent to the inverter.";
       }
@@ -2620,151 +2586,10 @@ class DeyeEnergyCard extends HTMLElement {
     return this.querySelector(`[data-raw="${name}"]`)?.value ?? fallback;
   }
 
-  aiDefaults() {
-    return {
-      enabled: true,
-      mode: "proposal",
-      strategy: "balanced",
-      forecastEnabled: true,
-      forecastMargin: 10,
-      realPv: true,
-      history: true,
-      prices: true,
-      minSellPrice: 0.2,
-      maxBuyPrice: 0.7,
-      minSoc: 20,
-      targetSoc: 80,
-      batteryCapacityKwh: 10,
-      batteryEfficiency: 90,
-      reserveKwh: 2,
-      maxSellPower: 5000,
-      minimumAutoSellPowerW: 1000,
-      priceEquivalenceBand: 0.05,
-      gridExportLimit: 5000,
-      allowGridCharge: true,
-      allowBatterySell: true,
-      allowDeyeMode: true,
-    };
-  }
-
-  aiSettings() {
-    const defaults = this.aiDefaults();
-    if (this._aiSettingsCache) return { ...defaults, ...this._aiSettingsCache };
-    const entity = this._hass?.states?.[this.entity("sensor", "ai_state")];
-    const backend = entity?.attributes?.settings;
-    if (backend && typeof backend === "object" && !Array.isArray(backend) && Object.keys(backend).length) {
-      return { ...defaults, ...backend };
-    }
-    try {
-      const saved = JSON.parse(localStorage.getItem("deye_energy_ai_settings_v073") || "{}");
-      return { ...defaults, ...saved };
-    } catch (_err) {
-      return defaults;
-    }
-  }
-
-  saveAiSettings(settings) {
-    this._aiSettingsCache = { ...settings };
-    try {
-      localStorage.setItem("deye_energy_ai_settings_v073", JSON.stringify(settings));
-    } catch (_err) {
-      // LocalStorage can be blocked in some HA webviews. In that case the UI still works for this render.
-    }
-    window.clearTimeout(this._aiSettingsSaveTimer);
-    this._aiSettingsSaveTimer = window.setTimeout(() => {
-      this.callService("deye_energy", "save_ai_settings", { data: JSON.stringify(this._aiSettingsCache) });
-    }, 400);
-  }
-
-  aiHistory() {
-    if (this._aiHistoryCache) return this._aiHistoryCache;
-    const entity = this._hass?.states?.[this.entity("sensor", "ai_state")];
-    const backend = entity?.attributes?.history;
-    if (Array.isArray(backend)) return backend;
-    try {
-      const history = JSON.parse(localStorage.getItem("deye_energy_ai_history_v073") || "[]");
-      return Array.isArray(history) ? history : [];
-    } catch (_err) {
-      return [];
-    }
-  }
-
-  saveAiAnalysis(ai, event = "suggestion", extra = {}) {
-    try {
-      const now = Date.now();
-      const entry = {
-        timestamp: now,
-        event,
-        bestSell: ai.bestSell.slice(0, 3),
-        cheapBuy: ai.cheapBuy.slice(0, 3),
-        cheapBuy48: (ai.cheapBuy48 || []).slice(0, 6),
-        tariff: {
-          provider: ai.tariff?.provider,
-          plan: ai.tariff?.plan,
-          catalog_version: ai.tariff?.catalog_version,
-        },
-        solcastToday: ai.solcastToday,
-        solcastRemaining: ai.solcastRemaining,
-        dailyPv: ai.dailyPv,
-        forecastTodayKwh: ai.solcastMetrics?.forecast_today_kwh ?? ai.solcastToday,
-        productionTodayKwh: ai.solcastMetrics?.production_today_kwh ?? ai.dailyPv,
-        remainingForecastKwh: ai.solcastMetrics?.remaining_forecast_kwh ?? ai.solcastRemaining,
-        realizationTodayPct: ai.solcastMetrics?.realization_today_pct ?? null,
-        historicalAccuracyPct: ai.solcastMetrics?.historical_accuracy_pct ?? ai.learning?.solcast_accuracy_avg ?? null,
-        forecastTomorrowKwh: ai.solcastMetrics?.forecast_tomorrow_kwh ?? null,
-        forecastCorrection: ai.forecastCorrection,
-        weatherRiskFactor: ai.weatherRiskFactor,
-        learningDays: ai.learning?.recorded_days || 0,
-        learningHours: ai.learning?.recorded_hours || 0,
-        solcastAccuracy: ai.solcastMetrics?.historical_accuracy_pct ?? ai.learning?.solcast_accuracy_avg ?? null,
-        expectedRemainingLoad: ai.expectedRemainingLoad,
-        estimatedSurplus: ai.estimatedSurplus,
-        predictedSoc: ai.predictedSoc,
-        predictedSocTrend: ai.predictedSocTrend,
-        activeConfigured: ai.activeConfigured,
-        strategy: ai.settings.strategy,
-        maxSellPower: ai.settings.maxSellPower,
-        minSoc: ai.settings.minSoc,
-        forecastMargin: ai.settings.forecastMargin,
-        ...extra,
-      };
-      entry.fingerprint = JSON.stringify({
-        event,
-        bestSell: entry.bestSell,
-        cheapBuy: entry.cheapBuy,
-        strategy: entry.strategy,
-        activeConfigured: entry.activeConfigured,
-        predictedSocTrend: entry.predictedSocTrend,
-        forecastCorrection: Math.round((entry.forecastCorrection || 0) * 20) / 20,
-        estimatedSurplus: Math.round((entry.estimatedSurplus || 0) * 2) / 2,
-      });
-      const history = this.aiHistory();
-      const latest = history.find((item) => (item.event || "suggestion") === "suggestion");
-      if (event === "suggestion" && latest?.fingerprint === entry.fingerprint) return;
-      const updated = [entry, ...history].slice(0, 365);
-      this._aiHistoryCache = updated;
-      this.callService("deye_energy", "save_ai_analysis", { data: JSON.stringify(entry) });
-      localStorage.setItem("deye_energy_ai_history_v073", JSON.stringify(updated));
-    } catch (_err) {
-      // History is auxiliary and may be unavailable in some Home Assistant webviews.
-    }
-  }
-
-  clearAiHistory() {
-    this._aiHistoryCache = [];
-    this.callService("deye_energy", "clear_ai_history", {});
-    try {
-      localStorage.removeItem("deye_energy_ai_history_v073");
-    } catch (_err) {
-      // No localStorage access must not block the card.
-    }
-  }
-
   historyData() {
     const entity = this._hass?.states?.[this.entity("sensor", "ai_state")];
     const attrs = entity?.attributes || {};
     return {
-      analyses: this.aiHistory(),
       daily: Array.isArray(attrs.daily_summary) ? attrs.daily_summary : [],
       monthly: Array.isArray(attrs.monthly_summary) ? attrs.monthly_summary : [],
       solcast: Array.isArray(attrs.solcast_history) ? attrs.solcast_history : [],
@@ -2773,18 +2598,6 @@ class DeyeEnergyCard extends HTMLElement {
 
   escapeHtml(value) {
     return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
-  }
-
-  filteredAnalyses() {
-    const { analyses } = this.historyData();
-    const filters = this._historyFilters || {};
-    return analyses.filter((item) => {
-      const date = new Date(Number(item.timestamp) || item.date || 0);
-      const day = Number.isNaN(date.getTime()) ? String(item.date || "") : date.toISOString().slice(0, 10);
-      if (filters.from && day < filters.from) return false;
-      if (filters.to && day > filters.to) return false;
-      return !filters.type || filters.type === "all" || (item.event || "suggestion") === filters.type;
-    });
   }
 
   downloadHistory(filename, content, type) {
@@ -2806,7 +2619,6 @@ class DeyeEnergyCard extends HTMLElement {
     }
     const rows = [["type", "date", "pv_kwh", "load_kwh", "import_kwh", "export_kwh", "sold_kwh", "value_gbp", "forecast_kwh", "accuracy_pct"]];
     data.daily.forEach((item) => rows.push(["day", item.date, item.pv_kwh, item.load_kwh, item.grid_import_kwh, item.grid_export_kwh, item.sold_kwh, item.sold_value, item.forecast_kwh, item.accuracy_percent]));
-    data.analyses.forEach((item) => rows.push([item.event || "suggestion", new Date(item.timestamp).toISOString(), item.dailyPv, item.expectedRemainingLoad, "", "", "", "", item.solcastToday, item.solcastAccuracy]));
     const csv = rows.map((row) => row.map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`).join(";")).join("\n");
     this.downloadHistory(`deye-history-${stamp}.csv`, csv, "text/csv;charset=utf-8");
   }
@@ -2842,7 +2654,6 @@ class DeyeEnergyCard extends HTMLElement {
         soc: this.asNumber(row.actual_soc),
         grid_charge: row.actual_grid_charge === true,
       })),
-      ai_settings: this.aiSettings(),
       tariff_settings: {
         tariff_mode: tariff.mode || "automatic",
         dso_provider: tariff.provider || "other",
@@ -2879,7 +2690,6 @@ class DeyeEnergyCard extends HTMLElement {
       else if (domain === "time") await this.callService(domain, "set_value", { entity_id: entityId, time: String(value).slice(0, 8) });
       else if (domain === "input_datetime") await this.callService(domain, "set_datetime", { entity_id: entityId, time: String(value).slice(0, 8) });
     }
-    if (snapshot.ai_settings && typeof snapshot.ai_settings === "object") this.saveAiSettings(snapshot.ai_settings);
     if (snapshot.tariff_settings && typeof snapshot.tariff_settings === "object") {
       await this.callService("deye_energy", "save_tariff_settings", { data: JSON.stringify(snapshot.tariff_settings) });
     }
@@ -2971,7 +2781,7 @@ class DeyeEnergyCard extends HTMLElement {
       selling: "Selling",
       charging: "Charging",
       full_tou: "Full Deye Time Of Use",
-      core_ai: "Complete Core / AI data",
+      schedule_data: "Complete schedule data",
     };
     const capabilityRows = Object.entries(capabilityLabels).map(([key, label]) => {
       const item = capabilities[key] || {};
@@ -2988,7 +2798,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.86 (resource revision v=0.8.0.86)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.87 (resource revision v=0.8.0.87)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -3001,14 +2811,10 @@ class DeyeEnergyCard extends HTMLElement {
     <section class="diagnostic-section"><h3>Configuration and backup</h3><div class="diagnostic-actions"><button data-export-config="1">Export configuration</button><button data-import-config-open="1">Import configuration</button><input type="file" accept="application/json,.json" data-import-config hidden><button data-create-backup="1">Create a backup</button><button data-restore-backup="1">Restore a backup</button><button class="danger" data-restore-defaults="1" data-default-action="1" data-default-label="Restore default settings" ${this._defaultsApplying ? "disabled" : ""}>${this._defaultsApplying ? "Applying default settings\u2026" : "Restore default settings"}</button></div><div class="hint defaults-status ${this._defaultsStatus}" data-defaults-status ${this._defaultsMessage ? "" : "hidden"}>${this.escapeHtml(this._defaultsMessage)}</div></section>`;
   }
 
-  aiCheck(name, label, value) {
-    return `<div class="settings-row"><span>${label}</span><input data-ai-setting="${name}" type="checkbox" ${value ? "checked" : ""}></div>`;
-  }
-
   tariffData() {
     const tariffState = this._hass?.states?.[this.entity("sensor", "tariff_status")];
     const aiState = this._hass?.states?.[this.entity("sensor", "ai_state")];
-    return tariffState?.attributes || aiState?.attributes?.learning_summary?.tariff || aiState?.attributes?.tariff || {};
+    return tariffState?.attributes || aiState?.attributes?.tariff || {};
   }
 
   canonicalPriceData(planner = null) {
@@ -3212,7 +3018,7 @@ class DeyeEnergyCard extends HTMLElement {
       const data = this.collectTariffDraft();
       await this.callService("deye_energy", "save_tariff_settings", { data: JSON.stringify(data) });
       this._tariffDraft = null;
-      this._tariffSaveStatus = "Saved. The profile and AI suggestions use the new settings.";
+      this._tariffSaveStatus = "Saved. The schedule uses the new settings.";
     } catch (error) {
       this._tariffSaveStatus = `Save error: ${error?.message || error}`;
     }
@@ -3441,7 +3247,7 @@ class DeyeEnergyCard extends HTMLElement {
         <p class="hint">Local catalog: <b>${this.escapeHtml(tariff.catalog_local_version || tariff.catalog_version || "missing")}</b> · remote: <b>${this.escapeHtml(tariff.catalog_remote_version || "not checked")}</b> · checked: <b>${this.escapeHtml(tariff.catalog_last_checked || "never")}</b> · result: <b>${this.escapeHtml(tariff.catalog_update_result || "not checked")}</b> · validity: <b>${this.escapeHtml(catalogValidity)} (${this.escapeHtml(tariff.catalog_effective_from || "?")}–${this.escapeHtml(tariff.catalog_valid_to || "?")})</b></p>
         ${this._tariffSaveStatus ? `<div class="hint">${this.escapeHtml(this._tariffSaveStatus)}</div>` : ""}
         ${tariff.catalog_error ? `<div class="hint bad">${this.escapeHtml(tariff.catalog_error)}. The last valid catalog is used.</div>` : ""}
-        ${tariff.tariff_error ? `<div class="hint bad">The selected profile is unavailable: ${this.escapeHtml(tariff.tariff_error)}. The AI will not use it for charge planning.</div>` : ""}
+        ${tariff.tariff_error ? `<div class="hint bad">The selected profile is unavailable: ${this.escapeHtml(tariff.tariff_error)}. The scheduler will not use it for charge planning.</div>` : ""}
       </section>
       ${this.renderPriceMappingSummary(tariff)}
       ${isCustom(draft.buy_price_contract) ? this.renderPriceContract("buy", draft.buy_price_contract) : ""}
@@ -3449,308 +3255,6 @@ class DeyeEnergyCard extends HTMLElement {
       <details class="diagnostic-section tariff-advanced"><summary><b>Advanced</b> · flow polarity</summary><div class="settings-row"><span>Positive grid power means import</span><input data-tariff-field="grid_positive_is_import" type="checkbox" ${draft.grid_positive_is_import ? "checked" : ""}></div><div class="settings-row"><span>Positive battery power means discharge</span><input data-tariff-field="battery_positive_is_discharge" type="checkbox" ${draft.battery_positive_is_discharge ? "checked" : ""}></div></details>
       ${this.renderPriceDiagnostics(tariff)}
       <section class="diagnostic-section"><h3>Distribution cost profile — today and tomorrow</h3><div class="diagnostic-entities"><table class="settings-table"><thead><tr><th>Date</th><th>Hour</th><th>Zone</th><th>Grid</th><th>Variable charges</th><th>Total</th><th>Day type</th></tr></thead><tbody>${profileRows || '<tr><td colspan="7">No profile. Select an operator and tariff, then save.</td></tr>'}</tbody></table></div></section>`;
-  }
-
-  aiNumber(name, label, value, unit = "") {
-    return `<div class="settings-row"><span>${label}</span><label class="field compact-field"><input data-ai-setting="${this.escapeHtml(name)}" type="text" inputmode="decimal" value="${this.escapeHtml(value)}"><span>${this.escapeHtml(unit)}</span></label></div>`;
-  }
-
-  aiSelect(name, label, options, value) {
-    return `<div class="settings-row"><span>${label}</span><select data-ai-setting="${name}">
-      ${options.map((option) => {
-        const optionValue = Array.isArray(option) ? option[0] : option;
-        const optionLabel = Array.isArray(option) ? option[1] : option;
-        return `<option value="${this.escapeHtml(optionValue)}" ${optionValue === value ? "selected" : ""}>${this.escapeHtml(optionLabel)}</option>`;
-      }).join("")}
-    </select></div>`;
-  }
-
-  aiProfiles() {
-    if (this._aiProfileDraft) return this._aiProfileDraft;
-    const aiState = this._hass?.states?.[this.entity("sensor", "ai_state")];
-    const source = aiState?.attributes?.user_profiles;
-    const defaults = {
-      schema_version: 2,
-      profiles: {
-        morning_sale: { enabled: false, type: "sale", name: "Morning sale", active_days: [], start: "06:00", end: "09:00", priority: "normal", goal_character: "preferred", allow_partial: true, minimum_confidence: 50, note: "", target_energy_kwh: 0, target_basis: "battery_to_grid", min_price: 0, preferred_power_w: "", distribution_method: "best_hours", min_soc_after: 30, allow_earlier_grid_charge: false, min_net_result: 0 },
-        evening_sale: { enabled: false, type: "sale", name: "Evening sale", active_days: [], start: "17:00", end: "22:00", priority: "normal", goal_character: "preferred", allow_partial: true, minimum_confidence: 50, note: "", target_energy_kwh: 0, target_basis: "battery_to_grid", min_price: 0, preferred_power_w: "", distribution_method: "best_hours", min_soc_after: 30, allow_earlier_grid_charge: false, min_net_result: 0 },
-        charging: { enabled: false, type: "charging", name: "Charging", active_days: [], start: "22:00", end: "06:00", priority: "normal", goal_character: "preferred", allow_partial: true, minimum_confidence: 50, note: "", source: "auto", target_type: "soc", target_value: 80, deadline: "06:00", max_effective_price: 0, max_grid_energy_kwh: "", preferred_power_w: "", purpose: "mixed", charge_missing_only: true, use_corrected_pv: true, preserve_pv_room: true, minimum_free_room_kwh: 0, profitable_only: true },
-      },
-    };
-    const profiles = {};
-    Object.entries(defaults.profiles).forEach(([key, value]) => {
-      profiles[key] = { ...value, ...(source?.profiles?.[key] || {}) };
-      if (!["low", "normal", "high"].includes(String(profiles[key].priority))) profiles[key].priority = "normal";
-      if (key === "charging") {
-        profiles[key].purpose = ({
-          general: "mixed",
-          home_reserve: "reserve",
-          morning_sale: "sale",
-          evening_sale: "sale",
-          both_sales: "sale",
-          cheap_home: "home",
-        })[profiles[key].purpose] || profiles[key].purpose || "mixed";
-      }
-    });
-    this._aiProfileDraft = { schema_version: 2, profiles };
-    return this._aiProfileDraft;
-  }
-
-  aiProfileInput(profileId, field, label, value, type = "text", unit = "") {
-    const inputType = type === "number" ? 'type="text" inputmode="decimal"' : `type="${type}"`;
-    return `<div class="settings-row"><span>${this.escapeHtml(label)}</span><label class="field compact-field"><input data-ai-profile="${profileId}" data-ai-profile-field="${field}" ${inputType} value="${this.escapeHtml(value ?? "")}"><span>${this.escapeHtml(unit)}</span></label></div>`;
-  }
-
-  aiProfileCheck(profileId, field, label, value) {
-    return `<div class="settings-row"><span>${this.escapeHtml(label)}</span><input data-ai-profile="${profileId}" data-ai-profile-field="${field}" type="checkbox" ${value ? "checked" : ""}></div>`;
-  }
-
-  aiProfileSelect(profileId, field, label, options, value) {
-    return `<div class="settings-row"><span>${this.escapeHtml(label)}</span><select data-ai-profile="${profileId}" data-ai-profile-field="${field}">${options.map(([key, text]) => `<option value="${this.escapeHtml(key)}" ${key === value ? "selected" : ""}>${this.escapeHtml(text)}</option>`).join("")}</select></div>`;
-  }
-
-  aiProfileCommon(profileId, profile) {
-    const dayNames = [["0", "Mon"], ["1", "Tue"], ["2", "Wed"], ["3", "Thu"], ["4", "Fri"], ["5", "Sat"], ["6", "Sun"]];
-    const selected = new Set(Array.isArray(profile.active_days) ? profile.active_days.map(String) : []);
-    return `${this.aiProfileCheck(profileId, "enabled", "Enable profile", profile.enabled)}
-      <div class="settings-row ai-days-row"><span>Active days</span><div class="ai-day-presets"><button type="button" data-ai-profile-days="${profileId}" data-days="">Every day</button><button type="button" data-ai-profile-days="${profileId}" data-days="0,1,2,3,4">Weekdays</button><button type="button" data-ai-profile-days="${profileId}" data-days="5,6">Weekend</button></div></div>
-      <div class="ai-weekdays">${dayNames.map(([key, label]) => `<label><input type="checkbox" data-ai-profile-day="${profileId}" value="${key}" ${selected.has(key) ? "checked" : ""}>${label}</label>`).join("")}</div>
-      ${this.aiProfileInput(profileId, "start", "Hour from", profile.start, "time")}
-      ${this.aiProfileInput(profileId, "end", "Hour to", profile.end, "time")}
-      ${this.aiProfileSelect(profileId, "priority", "Priority", [["low", "Low"], ["normal", "Normal"], ["high", "High"]], profile.priority)}
-      ${this.aiProfileSelect(profileId, "goal_character", "Goal character", [["preferred", "Preferred"], ["required", "Required within safety limits"]], profile.goal_character)}
-      ${this.aiProfileCheck(profileId, "allow_partial", "Allow partial fulfilment", profile.allow_partial)}
-      ${this.aiProfileInput(profileId, "minimum_confidence", "Minimum recommendation confidence", profile.minimum_confidence, "number", "%")}
-      <div class="settings-row ai-note-row"><span>Local note</span><textarea data-ai-profile="${profileId}" data-ai-profile-field="note" maxlength="500">${this.escapeHtml(profile.note || "")}</textarea></div>`;
-  }
-
-  renderAiSaleProfile(profileId) {
-    const profile = this.aiProfiles().profiles[profileId];
-    const planner = this.aiPlannerData(this._lastSlots || []);
-    const impact = (planner.profile_impacts || []).find((item) => item.profile_id === profileId);
-    const validation = profile.start === profile.end ? "Error: the window cannot be empty." : "The local configuration is complete.";
-    return `<div class="ai-settings-pane"><div class="hint">The profile is an Optimizer Core policy. Saving it does not change Deye or the TOU schedule.</div>
-      <div class="ai-profile-summary"><div><span>State</span><strong>${profile.enabled ? "Enabled" : "Disabled"}</strong></div><div><span>Window</span><strong>${this.escapeHtml(profile.start)}–${this.escapeHtml(profile.end)}</strong></div><div><span>Planned fulfilment</span><strong>${impact ? `${this.formatNumber(impact.planned_energy_kwh, 2)} kWh` : "no plan"}</strong></div><div><span>Validation</span><strong class="${validation.startsWith("Error") ? "bad" : "good"}">${validation}</strong></div></div>
-      ${this.aiProfileCommon(profileId, profile)}
-      ${this.aiProfileInput(profileId, "target_energy_kwh", "Target selling energy", profile.target_energy_kwh, "number", "kWh")}
-      ${this.aiProfileSelect(profileId, "target_basis", "Target calculation method", [["battery_to_grid", "Battery energy to grid"], ["total_export", "Total export to grid"]], profile.target_basis)}
-      ${this.aiProfileInput(profileId, "min_price", "Minimum selling price", profile.min_price, "number", "£/kWh")}
-      ${this.aiProfileInput(profileId, "preferred_power_w", "Profile maximum power", profile.preferred_power_w ?? "", "number", "W")}
-      ${this.aiProfileSelect(profileId, "distribution_method", "Energy distribution method", [["best_hours", "Highest prices first"], ["even", "Evenly within the window"], ["constant_power", "Constant power if possible"]], profile.distribution_method)}
-      ${this.aiProfileInput(profileId, "min_soc_after", "Minimum SOC after the window", profile.min_soc_after, "number", "%")}
-      ${this.aiProfileCheck(profileId, "allow_earlier_grid_charge", "Allow earlier grid charging", profile.allow_earlier_grid_charge)}
-      ${this.aiProfileInput(profileId, "min_net_result", "Minimum net cycle result", profile.min_net_result, "number", "£")}
-      <button class="wide-action" data-save-ai-profiles="1">Save all profiles</button>${this._aiProfileStatus ? `<div class="hint">${this.escapeHtml(this._aiProfileStatus)}</div>` : ""}</div>`;
-  }
-
-  renderAiChargeProfile() {
-    const profileId = "charging";
-    const profile = this.aiProfiles().profiles[profileId];
-    const energyTarget = profile.target_type === "energy";
-    return `<div class="ai-settings-pane"><div class="hint">The optimizer will use the profile with the PV and house forecast and the effective tariff cost. Saving it does not start charging.</div>
-      ${this.aiProfileCommon(profileId, profile)}
-      ${this.aiProfileSelect(profileId, "source", "Charging source", [["auto", "Automatic"], ["pv", "PV only"], ["grid", "Grid only"], ["pv_and_grid", "PV and grid"]], profile.source)}
-      ${this.aiProfileSelect(profileId, "target_type", "Charging target", [["soc", "Target SOC"], ["energy", "Target top-up energy"]], profile.target_type)}
-      ${this.aiProfileInput(profileId, "target_value", energyTarget ? "Target top-up energy" : "Target SOC", profile.target_value, "number", energyTarget ? "kWh" : "%")}
-      ${this.aiProfileInput(profileId, "deadline", "Target by", profile.deadline, "time")}
-      ${this.aiProfileInput(profileId, "max_effective_price", "Maximum effective purchase price", profile.max_effective_price, "number", "£/kWh")}
-      ${this.aiProfileInput(profileId, "max_grid_energy_kwh", "Maximum grid energy", profile.max_grid_energy_kwh ?? "", "number", "kWh")}
-      ${this.aiProfileInput(profileId, "preferred_power_w", "Optional profile power limit", profile.preferred_power_w ?? "", "number", "W")}
-      ${this.aiProfileSelect(profileId, "purpose", "Charging purpose", [["mixed", "Automatic / mixed target"], ["sale", "Later selling"], ["home", "House consumption"], ["reserve", "Safety reserve"]], profile.purpose)}
-      ${this.aiProfileCheck(profileId, "charge_missing_only", "Top up only missing energy", profile.charge_missing_only)}
-      ${this.aiProfileCheck(profileId, "use_corrected_pv", "Include corrected PV forecast", profile.use_corrected_pv)}
-      ${this.aiProfileCheck(profileId, "preserve_pv_room", "Preserve room for forecast PV production", profile.preserve_pv_room)}
-      ${this.aiProfileInput(profileId, "minimum_free_room_kwh", "Minimum free room for PV", profile.minimum_free_room_kwh, "number", "kWh")}
-      ${this.aiProfileCheck(profileId, "profitable_only", "Charge from grid only with a positive cycle result", profile.profitable_only)}
-      <button class="wide-action" data-save-ai-profiles="1">Save all profiles</button>${this._aiProfileStatus ? `<div class="hint">${this.escapeHtml(this._aiProfileStatus)}</div>` : ""}</div>`;
-  }
-
-  renderAiGeneralSettings() {
-    const settings = this.aiSettings();
-    return `<div class="ai-settings-pane"><div class="hint">The local Optimizer Core only creates proposals. Saving to Deye requires hour selection, local validation and manual confirmation.</div>
-      ${this.aiCheck("enabled", "Enable smart planning", settings.enabled)}
-      ${this.row("Operation mode", "Suggestions with manual approval")}
-      ${this.aiSelect("strategy", "Priority", [["balanced", "Balanced"], ["profit", "Maximum profit"], ["autoconsumption", "Maximum self-consumption"]], settings.strategy)}
-      ${this.aiCheck("forecastEnabled", "Include the Solcast forecast", settings.forecastEnabled)}
-      ${this.aiNumber("forecastMargin", "Forecast safety margin", settings.forecastMargin, "%")}
-      ${this.aiCheck("realPv", "Compare with actual PV production", settings.realPv)}
-      ${this.aiCheck("history", "Include production and selling history", settings.history)}
-      ${this.aiCheck("prices", "Include energy prices", settings.prices)}
-      ${this.aiNumber("minSellPrice", "Minimum selling price", settings.minSellPrice, "£/kWh")}
-      ${this.aiNumber("maxBuyPrice", "Maximum purchase price", settings.maxBuyPrice, "£/kWh")}
-      ${this.aiNumber("minSoc", "Minimum SOC", settings.minSoc, "%")}
-      ${this.aiNumber("targetSoc", "Target battery SOC", settings.targetSoc, "%")}
-      ${this.aiNumber("batteryCapacityKwh", "Usable battery capacity", settings.batteryCapacityKwh, "kWh")}
-      ${this.aiNumber("batteryEfficiency", "Full-cycle efficiency", settings.batteryEfficiency, "%")}
-      ${this.aiNumber("reserveKwh", "Extra reserve above minimum SOC", settings.reserveKwh, "kWh")}
-      ${this.aiNumber("maxSellPower", "AI plan maximum power", settings.maxSellPower, "W")}
-      ${this.aiNumber("minimumAutoSellPowerW", "Minimum automatic sell power", settings.minimumAutoSellPowerW ?? 1000, "W")}
-      <div class="hint">The minimum applies only to automatic Core proposals and does not restrict manual control.</div>
-      ${this.aiNumber("priceEquivalenceBand", "Price difference considered close", settings.priceEquivalenceBand ?? 0.05, "£/kWh")}
-      <div class="hint">When the price difference is within this band, Core can spread selling more evenly to lower the peak battery power.</div>
-      ${this.aiNumber("batteryCycleCostPerKwh", "Battery wear cost", settings.batteryCycleCostPerKwh ?? 0, "£/kWh")}
-      ${this.aiNumber("terminalEnergyValuePerKwh", "Conservative terminal energy value", settings.terminalEnergyValuePerKwh ?? 0, "£/kWh")}
-      ${this.aiCheck("allowGridCharge", "AI may suggest grid charging", settings.allowGridCharge)}
-      ${this.aiCheck("allowBatterySell", "AI may suggest battery selling", settings.allowBatterySell)}
-      ${this.aiCheck("allowDeyeMode", "AI may suggest changing the Deye mode", settings.allowDeyeMode)}</div>`;
-  }
-
-  renderAiSettingsPanel() {
-    const section = this._aiSettingsSection || "general";
-    const tabs = [
-      ["general", "General"], ["morning_sale", "Morning sale"],
-      ["evening_sale", "Evening sale"], ["charging", "Charging"],
-      ["api", "AI assistant via API"],
-    ].map(([key, label]) => `<button class="${section === key ? "active" : ""}" data-ai-settings-section="${key}">${label}</button>`).join("");
-    let body = this.renderAiGeneralSettings();
-    if (section === "morning_sale" || section === "evening_sale") body = this.renderAiSaleProfile(section);
-    if (section === "charging") body = this.renderAiChargeProfile();
-    if (section === "api") body = this.renderAiApiSettings ? this.renderAiApiSettings() : '<div class="hint">The API assistant is optional. The local Optimizer Core works without it.</div>';
-    return `<div class="settings-tabs ai-settings-tabs">${tabs}</div>${body}`;
-  }
-
-  aiApiContext() {
-    const aiState = this._hass?.states?.[this.entity("sensor", "ai_state")];
-    return aiState?.attributes?.api_assistant || {};
-  }
-
-  aiApiDraft() {
-    if (this._aiApiDraft) return this._aiApiDraft;
-    const config = this.aiApiContext().config || {};
-    this._aiApiDraft = {
-      enabled: Boolean(config.enabled),
-      provider: config.provider || "openrouter",
-      model: config.model || "",
-      endpoint: config.provider === "custom" ? (config.endpoint || "") : "",
-      role: config.role || "review",
-      hourly_only: config.hourly_only !== false,
-      remove_entity_names: config.remove_entity_names !== false,
-      remove_exact_location: config.remove_exact_location !== false,
-      max_history_hours: config.max_history_hours ?? 0,
-    };
-    return this._aiApiDraft;
-  }
-
-  renderAiApiSettings() {
-    const context = this.aiApiContext();
-    const draft = this.aiApiDraft();
-    const custom = draft.provider === "custom";
-    const analysis = context.last_analysis;
-    const providerNote = draft.provider === "opencode"
-      ? "The preset uses the official OpenCode Console Inference API. Paste a separate service key; the integration does not read auth.json, sessions or the local OpenCode configuration."
-      : "Installation data is sent only when the assistant is enabled. The local plan stays authoritative.";
-    return `<div class="ai-settings-pane ai-api-settings"><div class="hint">${this.escapeHtml(providerNote)}</div>
-      <div class="ai-profile-summary"><div><span>Connection status</span><strong>${this.escapeHtml(this.aiUiText(context.status || "disabled"))}</strong></div><div><span>Model used</span><strong>${this.escapeHtml(context.model || draft.model || "missing")}</strong></div><div><span>Response time</span><strong>${context.response_ms === undefined ? "missing" : `${this.formatNumber(context.response_ms, 0)} ms`}</strong></div><div><span>Response validation</span><strong>${this.escapeHtml(context.json_schema ? this.aiUiText(context.json_schema) : "no test")}</strong></div></div>
-      <div class="settings-row"><span>Enable the AI assistant</span><input data-ai-api-field="enabled" type="checkbox" ${draft.enabled ? "checked" : ""}></div>
-      <div class="settings-row"><span>Provider</span><select data-ai-api-field="provider"><option value="gemini" ${draft.provider === "gemini" ? "selected" : ""}>Google Gemini</option><option value="openrouter" ${draft.provider === "openrouter" ? "selected" : ""}>OpenRouter</option><option value="openai" ${draft.provider === "openai" ? "selected" : ""}>OpenAI</option><option value="opencode" ${draft.provider === "opencode" ? "selected" : ""}>OpenCode / OpenCode Go</option><option value="custom" ${custom ? "selected" : ""}>Custom OpenAI-compatible endpoint</option></select></div>
-      <div class="settings-row"><span>API key</span><label class="field compact-field"><input data-ai-api-field="api_key" type="password" autocomplete="new-password" value="" placeholder="${context.config?.api_key_configured ? "Key saved — leave empty to keep it" : "Paste a separate API key"}"><span>🔒</span></label></div>
-      <div class="settings-row"><span>Model</span><input data-ai-api-field="model" type="text" value="${this.escapeHtml(draft.model)}" placeholder="Model ID from the provider documentation"></div>
-      ${custom ? `<div class="settings-row"><span>Custom HTTPS endpoint</span><input data-ai-api-field="endpoint" type="url" value="${this.escapeHtml(draft.endpoint)}" placeholder="https://…/v1/chat/completions"></div>` : ""}
-      <div class="settings-row"><span>Model role</span><select data-ai-api-field="role"><option value="explain" ${draft.role === "explain" ? "selected" : ""}>Explains the plan only</option><option value="review" ${draft.role === "review" ? "selected" : ""}>Reviews the plan and proposes an alternative</option><option value="experimental" ${draft.role === "experimental" ? "selected" : ""}>Advanced experimental analysis</option></select></div>
-      <h3>Privacy</h3>
-      <div class="settings-row"><span>Send hourly data only</span><input data-ai-api-field="hourly_only" type="checkbox" ${draft.hourly_only ? "checked" : ""}></div>
-      <div class="settings-row"><span>Remove entity and device names</span><input data-ai-api-field="remove_entity_names" type="checkbox" ${draft.remove_entity_names ? "checked" : ""}></div>
-      <div class="settings-row"><span>Do not send the exact location</span><input data-ai-api-field="remove_exact_location" type="checkbox" ${draft.remove_exact_location ? "checked" : ""}></div>
-      <div class="settings-row"><span>Maximum history range</span><label class="field compact-field"><input data-ai-api-field="max_history_hours" type="text" inputmode="numeric" value="${this.escapeHtml(draft.max_history_hours)}"><span>h</span></label></div>
-      <div class="diagnostic-actions"><button data-save-ai-api="1">Save configuration</button><button data-test-ai-api="1">Test connection</button><button data-analyze-ai-api="1">Analyse again</button></div>
-      ${context.last_error ? `<div class="hint bad">${this.escapeHtml(context.last_error)}</div>` : ""}
-      ${this._aiApiMessage ? `<div class="hint">${this.escapeHtml(this._aiApiMessage)}</div>` : ""}
-      ${analysis ? `<section class="diagnostic-section"><h3>Last AI opinion — not applied</h3><p>${this.escapeHtml(analysis.summary || "No summary.")}</p><p><b>Assessment:</b> ${this.escapeHtml(this.aiUiText(analysis.plan_assessment || "missing"))} · <b>Variant:</b> ${this.escapeHtml(this.aiUiText(analysis.best_option || "missing"))}</p><p><b>Reasons:</b> ${this.escapeHtml((analysis.reasons || []).join(" · ") || "missing")}</p><p><b>Risks:</b> ${this.escapeHtml((analysis.risks || []).join(" · ") || "missing")}</p><div class="hint">Requires local validation. External AI is instructed to answer in English and cannot write anything directly to Deye or the schedule.</div></section>` : ""}</div>`;
-  }
-
-  collectAiApiDraft() {
-    const draft = { ...this.aiApiDraft() };
-    this.querySelectorAll("[data-ai-api-field]").forEach((el) => {
-      const field = el.dataset.aiApiField;
-      if (field === "api_key") return;
-      if (el.type === "checkbox") draft[field] = el.checked;
-      else if (field === "max_history_hours") draft[field] = this.asNumber(el.value) ?? el.value;
-      else draft[field] = el.value;
-    });
-    this._aiApiDraft = draft;
-    return draft;
-  }
-
-  async saveAiApiSettings() {
-    const draft = this.collectAiApiDraft();
-    const secret = this.querySelector('[data-ai-api-field="api_key"]')?.value || "";
-    try {
-      await this.callService("deye_energy", "save_ai_api_settings", {
-        data: JSON.stringify({ ...draft, api_key: secret }),
-      });
-      this._aiApiMessage = "Configuration saved without starting Deye. An empty key field keeps the previous secret.";
-    } catch (error) {
-      this._aiApiMessage = `Configuration error: ${error?.message || error}`;
-    }
-    const input = this.querySelector('[data-ai-api-field="api_key"]');
-    if (input) input.value = "";
-    this.renderDialogOnly();
-  }
-
-  async runAiApiService(service) {
-    this._aiApiMessage = service === "test_ai_api" ? "Running a safe test without installation data…" : "Analysing the latest local plan…";
-    this.renderDialogOnly();
-    try {
-      await this.callService("deye_energy", service, {});
-      this._aiApiMessage = "Request completed. The status will be refreshed from the backend.";
-    } catch (error) {
-      this._aiApiMessage = `API error: ${error?.message || error}`;
-    }
-    this.render();
-  }
-
-  collectAiProfiles() {
-    const draft = this.aiProfiles();
-    this.querySelectorAll("[data-ai-profile][data-ai-profile-field]").forEach((el) => {
-      const profile = draft.profiles[el.dataset.aiProfile];
-      if (!profile) return;
-      const field = el.dataset.aiProfileField;
-      if (el.type === "checkbox") profile[field] = el.checked;
-      else if (el.inputMode === "decimal") profile[field] = el.value === "" ? null : (this.asNumber(el.value) ?? el.value);
-      else profile[field] = el.value;
-    });
-    Object.keys(draft.profiles).forEach((profileId) => {
-      const boxes = [...this.querySelectorAll(`[data-ai-profile-day="${profileId}"]`)];
-      if (boxes.length) draft.profiles[profileId].active_days = boxes.filter((box) => box.checked).map((box) => box.value);
-    });
-    return draft;
-  }
-
-  validateAiProfiles(profiles) {
-    for (const [key, profile] of Object.entries(profiles.profiles || {})) {
-      if (!profile.start || !profile.end || profile.start === profile.end) return `Profile ${key}: the time window cannot be empty.`;
-      const confidence = this.asNumber(profile.minimum_confidence);
-      if (confidence === null || confidence < 0 || confidence > 100) return `Profile ${key}: confidence must be between 0 and 100%.`;
-      if (key !== "charging") {
-        const target = this.asNumber(profile.target_energy_kwh);
-        const price = this.asNumber(profile.min_price);
-        const soc = this.asNumber(profile.min_soc_after);
-        if (target === null || target < 0) return `Profile ${key}: target kWh cannot be negative.`;
-        if (price === null || price < 0) return `Profile ${key}: price cannot be negative.`;
-        if (soc === null || soc < 0 || soc > 100) return `Profile ${key}: SOC must be between 0 and 100%.`;
-      } else {
-        const target = this.asNumber(profile.target_value);
-        if (target === null || target <= 0 || (profile.target_type === "soc" && target > 100)) return "Charging profile: invalid target.";
-      }
-    }
-    return "";
-  }
-
-  async saveAiProfiles() {
-    const profiles = this.collectAiProfiles();
-    const error = this.validateAiProfiles(profiles);
-    if (error) {
-      this._aiProfileStatus = error;
-      this.renderDialogOnly();
-      return;
-    }
-    try {
-      await this.callService("deye_energy", "save_ai_profiles", { data: JSON.stringify(profiles) });
-      this._aiProfileStatus = "Saved. The change affects the next local analysis; Deye was not changed.";
-    } catch (errorValue) {
-      this._aiProfileStatus = `Save error: ${errorValue?.message || errorValue}`;
-    }
-    this.renderDialogOnly();
   }
 
   collectBulkEditState() {
@@ -4034,7 +3538,7 @@ class DeyeEnergyCard extends HTMLElement {
     this._mappingEditing = true;
     this._mappingSaveError = "";
     this._mappingStatus = "";
-    this.renderDialogOnly();
+    this.render();
   }
 
   async cancelMappingEdit() {
@@ -4073,7 +3577,7 @@ class DeyeEnergyCard extends HTMLElement {
     }
     if (refreshError) this._mappingSaveError = refreshError;
     else if (keepStatus) this._mappingStatus = previousStatus;
-    this.renderDialogOnly();
+    this.render();
   }
 
   // Rollback discards every local edit and repopulates all six rows from the
@@ -4083,7 +3587,7 @@ class DeyeEnergyCard extends HTMLElement {
     this._mappingDraft = null;
     await this.refreshMappingFromInverter();
     if (!this._mappingSaveError) this._mappingStatus = "Restored all rows from the inverter.";
-    this.renderDialogOnly();
+    this.render();
   }
 
   collectMappingDraft() {
@@ -4194,12 +3698,12 @@ class DeyeEnergyCard extends HTMLElement {
   async saveMappingToInverter() {
     if (this._mappingSaving || this.touWritePending()) {
       this._mappingSaveError = "Saving Deye Time Of Use";
-      this.renderDialogOnly();
+      this.render();
       return false;
     }
     if (!this.hasService("deye_energy", "set_tou_slot")) {
       this._mappingSaveError = "The set_tou_slot service is unavailable.";
-      this.renderDialogOnly();
+      this.render();
       return false;
     }
     const rows = this.collectMappingDraft();
@@ -4207,18 +3711,18 @@ class DeyeEnergyCard extends HTMLElement {
     if (error) {
       this._mappingSaveError = error;
       this._mappingStatus = "";
-      this.renderDialogOnly();
+      this.render();
       return false;
     }
     const capabilities = this.touCapabilitiesDiagnostics();
     if (capabilities.length && capabilities.every((row) => row.read_only === true)) {
       this._mappingSaveError = "This provider exposes Deye Time Of Use as read-only.";
-      this.renderDialogOnly();
+      this.render();
       return false;
     }
     if (this.touControlBlocked()) {
       this._mappingSaveError = "Deye control is disabled.";
-      this.renderDialogOnly();
+      this.render();
       return false;
     }
     // Each write re-validates the whole start vector against current HA states.
@@ -4236,7 +3740,7 @@ class DeyeEnergyCard extends HTMLElement {
     this._mappingSaveError = "";
     this._mappingStatus = "";
     this.beginSave();
-    this.renderDialogOnly();
+    this.render();
     try {
       for (const row of ordered) {
         const payload = { slot: Number(row.slot) };
@@ -4266,7 +3770,7 @@ class DeyeEnergyCard extends HTMLElement {
       this.finishSave();
       this.resetMappingEditor();
       this._mappingStatus = "Saved to the inverter.";
-      this.renderDialogOnly();
+      this.render();
       await this.refreshMappingFromInverter({ keepStatus: true });
       return true;
     } catch (error) {
@@ -4274,7 +3778,7 @@ class DeyeEnergyCard extends HTMLElement {
       this._mappingSaveError = error?.message || "Could not save the mapping to the inverter.";
       this._mappingStatus = "";
       this.failSave("tou_mapping", error);
-      this.renderDialogOnly();
+      this.render();
       return false;
     }
   }
@@ -4556,8 +4060,8 @@ class DeyeEnergyCard extends HTMLElement {
       "save_manual_schedule",
       { data: JSON.stringify(this.manualSchedulePayloadRows(rows)) },
       this._manualScheduleActive
-        ? "Manual schedule saved and re-applied to the work schedule."
-        : "Manual schedule saved. Activate it to apply it to the work schedule.",
+        ? "Manual schedule saved and re-applied to the schedule slots."
+        : "Manual schedule saved. Activate it to apply it to the schedule slots.",
       true,
     );
   }
@@ -4582,7 +4086,7 @@ class DeyeEnergyCard extends HTMLElement {
     return this.runManualScheduleService(
       "activate_manual_schedule",
       {},
-      "Manual schedule activated. Its values are final on the work schedule until deactivated.",
+      "Manual schedule activated. Its values are final on the schedule slots until deactivated.",
     );
   }
 
@@ -4590,29 +4094,22 @@ class DeyeEnergyCard extends HTMLElement {
     return this.runManualScheduleService(
       "deactivate_manual_schedule",
       {},
-      "Manual schedule deactivated. The scheduler is following the work schedule again.",
+      "Manual schedule deactivated. The scheduler is following the schedule slots again.",
     );
   }
 
-  async toggleWorkSchedule() {
-    if (this._manualScheduleSaving) return false;
-    return this.manualScheduleIsActive()
-      ? this.deactivateManualSchedule()
-      : this.activateManualSchedule();
-  }
-
-  renderScheduleTabs(workPanel, manualPanel) {
-    const tab = this._scheduleTab === "work" ? "work" : "manual";
+  renderScheduleTabs(manualPanel, touPanel = "") {
+    const tab = ["manual", "tou"].includes(this._scheduleTab) ? this._scheduleTab : "manual";
     const scheduleTabButton = (key, label) => `<button type="button" class="${tab === key ? "active" : ""}" data-schedule-tab="${key}">${label}</button>`;
     const panel = (key, content) => `<div class="schedule-tab-panel" data-schedule-panel="${key}" ${tab === key ? "" : "hidden"}>${content}</div>`;
     const sourceBanner = this.manualScheduleIsActive()
-      ? `<div class="good schedule-source-banner" data-schedule-source-banner>Manual schedule is active — the scheduler is following the manual rows. The work schedule is saved but paused; use the Work schedule toggle or Disable here to switch back.</div>`
+      ? `<div class="good schedule-source-banner" data-schedule-source-banner>Manual schedule is active — the scheduler is following the manual rows. The stored schedule slots are saved but paused; use Disable here to switch back.</div>`
       : "";
     return `<section class="schedule-shell">
-      <div class="schedule-tabs">${scheduleTabButton("manual", "Manual schedule")}${scheduleTabButton("work", "Work schedule")}</div>
+      <div class="schedule-tabs">${scheduleTabButton("manual", "Manual schedule")}${touPanel ? scheduleTabButton("tou", "Deye Time Of Use") : ""}</div>
       ${sourceBanner}
       ${panel("manual", manualPanel)}
-      ${panel("work", workPanel)}
+      ${touPanel ? panel("tou", touPanel) : ""}
     </section>`;
   }
 
@@ -4675,7 +4172,7 @@ class DeyeEnergyCard extends HTMLElement {
     return `<div class="schedule-head manual-panel-head">
         <div class="schedule-title">
           <h2>Manual schedule</h2>
-          <p>Define time ranges for each row. The work schedule is saved separately and is not changed here.</p>
+          <p>Define time ranges for each row. The stored schedule slots are saved separately and are not changed here.</p>
         </div>
         <div class="schedule-tools">${toggle}${controlButton}${settingsButton}</div>
       </div>
@@ -4788,21 +4285,28 @@ class DeyeEnergyCard extends HTMLElement {
     const hint = editing
       ? `<div class="hint">${this.mapWarning(slots)}. Edit the six rows below. The first From and last To are fixed at 00:00; each To follows the next row's From. Save validates that the day starts at 00:00, ends at 00:00 and has no gaps or overlaps.</div>`
       : `<div class="hint">Values are loaded from the inverter. ${this.mapWarning(slots)}. Use Edit to change TOU slots.</div>`;
-    const actions = editing
-      ? `<div class="dialog-actions">
-        <button type="button" data-cancel-mapping="1" ${this._mappingSaving ? "disabled" : ""}>Cancel</button>
-        <button type="button" class="primary" data-save-mapping="1" ${canEdit && !this._mappingSaving ? "" : "disabled"}>${this._mappingSaving ? "Saving…" : "Save"}</button>
-      </div>`
-      : `<div class="dialog-actions">
-        <button type="button" data-refresh-mapping="1" ${this._mappingSaving ? "disabled" : ""}>${this._mappingSaving ? "Reading…" : "Refresh"}</button>
-        <button type="button" class="primary" data-edit-mapping="1" ${canEdit && !this._mappingSaving && !this.touWritePending() ? "" : "disabled"}>Edit</button>
+    const header = `<div class="schedule-head tou-panel-head">
+        <div class="schedule-title">
+          <h2>Deye Time Of Use</h2>
+          <p>Six physical inverter ranges covering the full 24 hours.</p>
+        </div>
+        <div class="schedule-tools">${editing
+          ? `<button type="button" class="tool-btn" data-cancel-mapping="1" ${this._mappingSaving ? "disabled" : ""}>Cancel</button>`
+          : `<button type="button" class="tool-btn" data-refresh-mapping="1" ${this._mappingSaving ? "disabled" : ""}>${this._mappingSaving ? "Reading…" : "Refresh"}</button>
+             <button type="button" class="tool-btn active" data-edit-mapping="1" ${canEdit && !this._mappingSaving && !this.touWritePending() ? "" : "disabled"}>Edit</button>`}</div>
       </div>`;
-    return `${hint}
+    const footer = editing
+      ? `<div class="foot-actions tou-save-actions">
+          <button type="button" class="primary" data-save-mapping="1" ${canEdit && !this._mappingSaving ? "" : "disabled"}>${this._mappingSaving ? "Saving…" : "Save"}</button>
+        </div>`
+      : "";
+    return `${header}
+      ${hint}
       ${readOnlyHint}${blockedHint}${pendingHint}
       <div class="hint">Operation status: <strong>${this.touOperationStatusLabel()}</strong></div>
-      <div style="overflow-x:auto;-webkit-overflow-scrolling:touch;"><table class="settings-table mapping-table" data-tou-capabilities-table><thead><tr><th>Slot</th><th>From</th><th>To</th><th>Mode</th><th>Charge</th><th>Sell</th><th>Power</th><th>Voltage</th><th>SOC</th></tr></thead><tbody>${rowHtml}</tbody></table></div>
+      <div class="schedule-table-card"><table class="schedule-table mapping-table" data-tou-capabilities-table><thead><tr><th>Slot</th><th>From</th><th>To</th><th>Mode</th><th>Charge</th><th>Sell</th><th>Power</th><th>Voltage</th><th>SOC</th></tr></thead><tbody>${rowHtml}</tbody></table></div>
       ${this.renderTouReverseSyncSummary()}
-      ${actions}
+      ${footer}
       ${message}`;
   }
 
@@ -5499,30 +5003,6 @@ class DeyeEnergyCard extends HTMLElement {
 .mode-zero,.mode-ct{color:#38bdf8}
 .flow-footer{text-align:center;width:${boardWidth}px;margin-top:12px;font-size:13px;color:#89a6b7}
 .es-hidden{display:none!important}
-            .ai-crisp-main{min-width:0;border:1px solid rgba(105,159,184,.25);border-radius:7px;overflow:hidden;background:rgba(3,18,28,.38)}
-            .ai-crisp-integrated-grid{min-width:0;border-top:1px solid rgba(104,151,174,.2);background:rgba(3,17,27,.28)}
-            .ai-crisp-plot,.ai-crisp-axis{height:clamp(236px,22vw,268px)}
-            .ai-crisp-axis{position:relative;align-self:start;display:block;min-height:0;color:#a9c3d0;font-size:11px;font-weight:700}
-            .ai-crisp-axis b{position:absolute;top:-21px;color:#e3f2f7;font-size:12px}
-            .ai-crisp-axis-left b{right:0}.ai-crisp-axis-right b{left:0}
-            .ai-crisp-axis-values{height:100%;display:flex;flex-direction:column;justify-content:space-between}
-            .ai-crisp-axis-left .ai-crisp-axis-values{align-items:flex-end}.ai-crisp-axis-right .ai-crisp-axis-values{align-items:flex-start}
-            .ai-crisp-now-tag{right:auto;transform:translateX(-50%);white-space:nowrap}
-            .ai-crisp-weather-grid,.ai-crisp-status,.ai-crisp-time-grid{width:100%;max-width:100%;min-width:0;box-sizing:border-box}
-            .ai-crisp-weather-grid{border-top:0}
-            .ai-crisp-weather-cell,.ai-crisp-status>div span,.ai-crisp-time-grid span{border-left:1px solid rgba(104,151,174,.12)}
-            .ai-crisp-weather-cell:first-child,.ai-crisp-status>div span:first-child,.ai-crisp-time-grid span:first-child{border-left:0}
-            .ai-crisp-status{display:grid;grid-template-columns:minmax(0,1fr);gap:3px;margin:0;padding:5px 0;border-top:1px solid rgba(104,151,174,.18)}
-            .ai-crisp-status>div{display:grid;grid-template-columns:repeat(24,minmax(0,1fr));gap:2px;height:12px}
-            .ai-crisp-status>div span{display:block;min-width:0;border-radius:2px}
-            .ai-crisp-status>div.sell span{background:rgba(105,212,56,.09)}
-            .ai-crisp-status>div.charge span{background:rgba(53,174,232,.08)}
-            .ai-crisp-status>div.tariff span{background:rgba(199,173,91,.1)}
-            .ai-crisp-status>div span.active.sell{background:#69d438;box-shadow:0 0 0 1px rgba(141,233,96,.55) inset}
-            .ai-crisp-status>div span.active.charge{background:#35aee8;box-shadow:0 0 0 1px rgba(112,205,250,.55) inset}
-            .ai-crisp-status>div span.active.tariff{background:#9f863d;box-shadow:0 0 0 1px rgba(199,173,91,.55) inset}
-            .ai-crisp-time-grid{margin:0;min-height:25px;padding-top:6px;border-top:1px solid rgba(104,151,174,.18)}
-            .ai-crisp-legend .sell i{background:#69d438}.ai-crisp-legend .charge i{background:#35aee8}.ai-crisp-legend .tariff i{background:#9f863d}
            </style>
         <div class="flow-wrapper">
           <div class="flow-scaler" data-base-width="${panelWidth}" data-base-height="${panelHeight}" data-board-height="${geometry.boardHeight}" data-tile-width="${tileWidth}" data-tile-gap="${tileGap}" data-inverter-column-width="${inverterColumnWidth}" data-inverter-visual-width="${inverterVisualWidth}">
@@ -5794,12 +5274,6 @@ class DeyeEnergyCard extends HTMLElement {
       const touSlot = hour < 4 ? 1 : hour < 8 ? 2 : hour < 12 ? 3 : hour < 16 ? 4 : hour < 20 ? 5 : 6;
       return [key, label, touSlot];
     });
-  }
-
-  aiHourSlotKeys(hour) {
-    const start = String(Number(hour)).padStart(2, "0");
-    const next = String((Number(hour) + 1) % 24).padStart(2, "0");
-    return [`${start}00_${start}30`, `${start}30_${next}00`];
   }
 
   async startSell() {
@@ -6152,2213 +5626,12 @@ class DeyeEnergyCard extends HTMLElement {
     return `<span class="bad">Incomplete mapping: ${count}/6 Deye ranges</span>`;
   }
 
-  aiSuggestions(slots) {
-    const settings = this.aiSettings();
-    const aiState = this._hass?.states?.[this.entity("sensor", "ai_state")];
-    const learning = aiState?.attributes?.learning_summary || {};
-    const sellPriceToday = this.entity("sensor", ["sell_price_today", "energy_price"]);
-    const buyPriceToday = this.entity("sensor", "buy_price_today");
-    const buyPriceTomorrow = this.entity("sensor", "buy_price_tomorrow");
-    const solcastMetrics = aiState?.attributes?.solcast_current_day || {};
-    const hasCanonicalSolcast = Object.keys(solcastMetrics).length > 0;
-    const solcastToday = hasCanonicalSolcast
-      ? (this.asNumber(solcastMetrics.forecast_today_kwh) ?? 0)
-      : (this.asNumber(this.state(this.entity("sensor", "solcast_forecast_today"), 0)) ?? 0);
-    const solcastRemaining = hasCanonicalSolcast
-      ? (this.asNumber(solcastMetrics.remaining_forecast_kwh) ?? 0)
-      : (this.asNumber(this.state(this.entity("sensor", "solcast_remaining_today"), 0)) ?? 0);
-    const dailyPv = hasCanonicalSolcast
-      ? (this.asNumber(solcastMetrics.production_today_kwh) ?? 0)
-      : (this.asNumber(this.state(this.entity("sensor", "daily_pv_production"), 0)) ?? 0);
-    const soldToday = this.asNumber(this.state(this.entity("sensor", "sold_energy_today"), 0)) || 0;
-    const [sellPrices] = this.canonicalPriceMaps("sell");
-    const [buyPrices, buyPricesTomorrow] = this.canonicalPriceMaps("buy");
-    const tariff = this.tariffData();
-    const todayKey = this.localDateKey();
-    const tomorrowDate = new Date();
-    tomorrowDate.setDate(tomorrowDate.getDate() + 1);
-    const tomorrowKey = this.localDateKey(tomorrowDate);
-    // Backend rows already contain the final effective BUY price.  Never add
-    // DSO again in the browser (notably for Octopus all-in gross prices).
-    const totalBuyPrices = new Map(buyPrices);
-    const totalBuyPricesTomorrow = new Map(buyPricesTomorrow);
-    const minSell = this.asNumber(settings.minSellPrice) ?? 0;
-    const maxBuy = this.asNumber(settings.maxBuyPrice) ?? Number.POSITIVE_INFINITY;
-    const profileRows = Array.isArray(learning.hourly_profile) ? learning.hourly_profile : [];
-    const profileByHour = new Map(profileRows.map((row) => [Number(String(row.hour || "0").slice(0, 2)), row]));
-    const hourlySurplus = new Map(profileRows.map((row) => {
-      const hour = Number(String(row.hour || "0").slice(0, 2));
-      return [hour, (this.asNumber(row.pv_kwh) || 0) - (this.asNumber(row.load_kwh) || 0)];
-    }));
-    const maxSurplus = Math.max(0.001, ...[...hourlySurplus.values()].map((value) => Math.max(0, value)));
-    const surplusWeight = settings.strategy === "autoconsumption" ? 0.25 : settings.strategy === "balanced" ? 0.12 : 0.04;
-    const sellRanking = new Map([...sellPrices.entries()].map(([hour, price]) => [
-      hour,
-      (settings.prices ? price : 0) + (Math.max(0, hourlySurplus.get(hour) || 0) / maxSurplus) * (settings.prices ? surplusWeight : 1),
-    ]));
-    const bestSell = [...sellPrices.entries()]
-      .filter(([, price]) => !settings.prices || price >= minSell)
-      .sort((a, b) => (sellRanking.get(b[0]) || b[1]) - (sellRanking.get(a[0]) || a[1]))
-      .slice(0, 4);
-    const cheapBuy = [...totalBuyPrices.entries()].filter(([, price]) => price <= maxBuy).sort((a, b) => a[1] - b[1]).slice(0, 4);
-    const cheapBuy48 = [
-      ...[...totalBuyPrices.entries()].map(([hour, price]) => ({ day: "Today", date: todayKey, hour, price })),
-      ...[...totalBuyPricesTomorrow.entries()].map(([hour, price]) => ({ day: "Tomorrow", date: tomorrowKey, hour, price })),
-    ].filter((row) => row.price <= maxBuy).sort((a, b) => a.price - b.price).slice(0, 8);
-    const activeConfigured = slots.filter(([key, label]) => {
-      const e = this.slotEntities(key, label);
-      return this.state(e.sellEnabled) === "on";
-    }).length;
-    const margin = Math.max(0, this.asNumber(settings.forecastMargin) ?? 0) / 100;
-    const historicalCorrection = this.asNumber(learning.solcast_correction_factor);
-    const forecastCorrection = settings.forecastEnabled && settings.history && settings.realPv
-      ? (historicalCorrection ?? 1)
-      : 1;
-    const weatherRiskFactor = settings.forecastEnabled
-      ? (this.asNumber(learning.weather?.risk_factor) ?? 1)
-      : 1;
-    const currentHour = new Date().getHours();
-    const expectedRemainingPv = profileRows
-      .filter((row) => Number(String(row.hour || "0").slice(0, 2)) >= currentHour)
-      .reduce((sum, row) => sum + (this.asNumber(row.pv_kwh) || 0), 0);
-    const forecastBase = settings.forecastEnabled ? solcastRemaining : expectedRemainingPv;
-    const usableForecast = Math.max(0, forecastBase * forecastCorrection * weatherRiskFactor * (1 - margin));
-    const expectedRemainingLoad = profileRows
-      .filter((row) => Number(String(row.hour || "0").slice(0, 2)) >= currentHour)
-      .reduce((sum, row) => sum + (this.asNumber(row.load_kwh) || 0), 0);
-    const reserveKwh = Math.max(0, this.asNumber(settings.reserveKwh) || 0);
-    const estimatedSurplus = Math.max(0, usableForecast - expectedRemainingLoad - reserveKwh);
-    const solcastGap = solcastToday > 0 ? Math.max(0, estimatedSurplus - soldToday) : 0;
-    const learningReady = (this.asNumber(learning.recorded_hours) || 0) >= 24;
-    const soc = this.optionalSocNumber(this.state(this.entity("sensor", "battery_soc")));
-    const batteryCapacityKwh = Math.max(0.1, this.asNumber(settings.batteryCapacityKwh) || 10);
-    const batteryEfficiency = Math.max(0.5, Math.min(1, (this.asNumber(settings.batteryEfficiency) || 90) / 100));
-    const storedEnergyKwh = soc === null
-      ? null
-      : batteryCapacityKwh * Math.max(0, Math.min(100, soc)) / 100;
-    const protectedEnergyKwh = batteryCapacityKwh * Math.max(0, Math.min(100, this.asNumber(settings.minSoc) || 0)) / 100;
-    const usableBatteryKwh = storedEnergyKwh === null
-      ? 0
-      : Math.max(0, storedEnergyKwh - protectedEnergyKwh - reserveKwh) * batteryEfficiency;
-    const targetEnergyKwh = batteryCapacityKwh * Math.max(0, Math.min(100, this.asNumber(settings.targetSoc) || 0)) / 100;
-    const chargeNeedKwh = storedEnergyKwh === null
-      ? 0
-      : Math.max(0, targetEnergyKwh - storedEnergyKwh - Math.max(0, usableForecast - expectedRemainingLoad));
-    const sellableEnergyKwh = estimatedSurplus + (settings.allowBatterySell ? usableBatteryKwh : 0);
-    const predictedSoc = this.asNumber(profileByHour.get((currentHour + 1) % 24)?.soc_avg);
-    const predictedSocTrend = estimatedSurplus > 1 ? "rising" : usableForecast < expectedRemainingLoad ? "falling" : "stable";
-    return {
-      bestSell,
-      cheapBuy,
-      cheapBuy48,
-      totalBuyPrices,
-      totalBuyPricesTomorrow,
-      tariff,
-      settings,
-      activeConfigured,
-      solcastToday,
-      solcastRemaining,
-      solcastMetrics,
-      usableForecast,
-      dailyPv,
-      forecastCorrection,
-      weatherRiskFactor,
-      solcastGap,
-      learning,
-      learningReady,
-      profileByHour,
-      sellRanking,
-      expectedRemainingLoad,
-      expectedRemainingPv,
-      estimatedSurplus,
-      predictedSocTrend,
-      predictedSoc,
-      soc,
-      batteryCapacityKwh,
-      batteryEfficiency,
-      storedEnergyKwh,
-      usableBatteryKwh,
-      chargeNeedKwh,
-      sellableEnergyKwh,
-    };
-  }
-
-  aiPlannerData(slots) {
-    const aiState = this._hass?.states?.[this.entity("sensor", "ai_state")];
-    const backend = aiState?.attributes?.planner_48h;
-    if (backend && Array.isArray(backend.rows) && backend.rows.length) return backend;
-    return {
-      rows: [],
-      days: [],
-      checkpoints: {},
-      data_quality: { learning_stage: "no plan", recorded_days: 0, tomorrow_sell_prices: 0, tomorrow_buy_prices: 0, weather_hours: 0 },
-      variants: {},
-      selected_strategy: "balanced",
-      generated_at: "",
-      plan_status: "blocked",
-      recommended_write: false,
-      diagnostic_only: true,
-      diagnostic_message: "No plan — the backend Optimizer Core is unavailable.",
-    };
-  }
-
-  aiRowsForDay(planner, day = this._aiDay) {
-    return (Array.isArray(planner?.rows) ? planner.rows : [])
-      .filter((row) => row.day === day)
-      .sort((a, b) => Number(a.hour) - Number(b.hour));
-  }
-
-  aiRepresentativeProposal(rows) {
-    let representative = null;
-    let representativeOrder = Number.POSITIVE_INFINITY;
-    (Array.isArray(rows) ? rows : []).forEach((row, index) => {
-      const dayOrder = row?.day === "today" ? 0 : row?.day === "tomorrow" ? 1 : 2;
-      const hour = this.asNumber(row?.hour);
-      const order = dayOrder * 100 + (hour === null ? 24 : Math.max(0, Math.min(23, hour))) + index / 1000;
-      if (order < representativeOrder) {
-        representative = row;
-        representativeOrder = order;
-      }
-    });
-    return representative;
-  }
-
-  aiSlotEconomics(row) {
-    return {
-      slotResult: this.asNumber(row?.net_result ?? row?.balance_gbp),
-      baselineSlotDelta: this.asNumber(row?.benefit),
-      terminalValue: this.asNumber(row?.terminal_value),
-      marginalDecisionBenefit: null,
-    };
-  }
-
-  aiSlotKey(hour) {
-    const start = String(Number(hour)).padStart(2, "0");
-    const end = String((Number(hour) + 1) % 24).padStart(2, "0");
-    return `${start}_${end}`;
-  }
-
-  aiSelection(day = this._aiDay) {
-    if (!this._aiSelections || !(this._aiSelections[day] instanceof Set)) {
-      this._aiSelections = this._aiSelections || {};
-      this._aiSelections[day] = new Set();
-    }
-    return this._aiSelections[day];
-  }
-
-  aiProfileId(row) {
-    if (row?.profile_id) return String(row.profile_id);
-    const source = String(row?.decision_source || "");
-    if (source.startsWith("profile:")) return source.slice(8);
-    const reason = (row?.reason_codes || []).find((code) => String(code).startsWith("profile:"));
-    return reason ? String(reason).slice(8) : "";
-  }
-
-  aiPlannedSlotPower(row) {
-    if (row?.action !== "sell" && row?.action !== "charge") return 0;
-    const contractPower = this.asNumber(row?.action_contract?.schedule_update?.sell_power);
-    const maxPower = this.effectiveInverterMaxPowerW();
-    if (contractPower !== null && contractPower > 0 && contractPower <= maxPower) return contractPower;
-    const explicit = this.asNumber(row.planned_power_w);
-    if (explicit !== null && explicit > 0 && explicit <= maxPower) return explicit;
-    // Compatibility fallback for older ai_state payloads that did not expose
-    // the canonical write value. New plans always use the contract above.
-    const energy = this.asNumber(row.planned_energy_kwh ?? row.energy_kwh);
-    const duration = this.asNumber(row.duration_minutes);
-    const calculated = energy !== null && energy > 1e-6 && duration !== null && duration > 0
-      ? Math.round(energy * 1000 * 60 / duration)
-      : 0;
-    if (Number.isFinite(calculated) && calculated > 0 && calculated <= maxPower) return calculated;
-    return 0;
-  }
-
-  aiIsApplicableProposal(row) {
-    if (!row?.proposed) return false;
-    if (row?.action_contract?.deployment_ready === false) return false;
-    const energy = this.asNumber(row.planned_energy_kwh ?? row.energy_kwh);
-    if (energy === null || energy <= 1e-6) return false;
-    if (row.action === "sell" && this.aiPlannedSlotPower(row) <= 0) return false;
-    if (!this.aiProfileId(row) && (this.asNumber(row.benefit) || 0) <= 0.005) return false;
-    return row.action === "sell" || row.action === "charge";
-  }
-
-  aiIsPreviewCandidate(row) {
-    return (row?.candidate_action === "sell" || row?.candidate_action === "charge")
-      && (!row?.proposed || Boolean(row?.proposal_block_reason) || Boolean(row?.deployment_block_reason));
-  }
-
-  aiCanSelectProposal(planner, row, day = this._aiDay) {
-    const readiness = planner?.execution_readiness?.by_day?.[day]?.status;
-    const recommendation = planner?.recommended_write_by_day?.[day];
-    return this.aiIsApplicableProposal(row)
-      && !this.aiIsPreviewCandidate(row)
-      && readiness === "confirmable"
-      && recommendation?.allowed === true;
-  }
-
-  initialiseAiSelections(planner) {
-    this._aiSelections = { today: new Set(), tomorrow: new Set() };
-    ["today", "tomorrow"].forEach((day) => {
-      this.aiRowsForDay(planner, day)
-        .filter((row) => this.aiCanSelectProposal(planner, row, day))
-        .forEach((row) => this._aiSelections[day].add(this.aiSlotKey(row.hour)));
-    });
-  }
-
-  aiRowUpdate(row) {
-    if (!this.aiIsApplicableProposal(row)) return null;
-    const contractUpdate = row?.action_contract?.schedule_update;
-    if (contractUpdate && typeof contractUpdate === "object") {
-      // Core Sell is power-only.  Battery current limits are never forwarded
-      // by an AI or schedule action.
-      const allowed = row.action === "sell"
-        ? new Set(["slot_key", "enabled", "mode", "sell_power"])
-        : new Set([
-          "slot_key", "enabled", "mode", "sell_power", "minimum_sell_soc", "tou_soc",
-          "min_sell_price", "charge_enabled",
-        ]);
-      const exact = {};
-      Object.entries(contractUpdate).forEach(([field, value]) => {
-        if (allowed.has(field) && value !== null && value !== undefined) exact[field] = value;
-      });
-      if (exact.slot_key !== this.aiSlotKey(row.hour)) return null;
-      return exact;
-    }
-    const selling = row.action === "sell";
-    const charging = row.action === "charge";
-    const update = {
-      slot_key: this.aiSlotKey(row.hour),
-      enabled: true,
-      mode: selling ? "Selling" : charging ? "Charging" : "Normal Operation",
-    };
-    // The selected proposal contract is authoritative for this special action.
-    // Apply Today materialises all unselected hours as Normal Operation on the
-    // backend, without duplicating that business rule in the card.
-    // Unrelated SOC and price fields are intentionally preserved.
-    if (selling) update.sell_power = this.aiPlannedSlotPower(row);
-    if (charging) {
-      const profile = this.chargeProfileStoredValues();
-      const numericFields = { tou_soc: profile.target_soc };
-      Object.entries(numericFields).forEach(([field, value]) => {
-        const number = this.asNumber(value);
-        if (number !== null) update[field] = number;
-      });
-      if (typeof profile.grid_charge_enabled === "boolean") {
-        update.charge_enabled = profile.grid_charge_enabled;
-      }
-    }
-    return update;
-  }
-
-  async applyAiDayPlan(slots, day = this._aiDay) {
-    const planner = this.aiPlannerData(slots);
-    const dayRecommendation = planner.recommended_write_by_day?.[day];
-    const writeAllowed = dayRecommendation ? dayRecommendation.allowed !== false : planner.recommended_write !== false;
-    if (!writeAllowed || planner.plan_status === "blocked") {
-      window.alert(planner.plan_status === "blocked"
-        ? "The plan is blocked due to critical missing data."
-        : dayRecommendation?.reason === "learning_dry_run"
-          ? "Optimizer Core is still learning. The plan is visible in dry-run mode, but deployment stays blocked until the apply_allowed stage is reached."
-        : dayRecommendation?.reason === "financial_data_incomplete"
-          ? `The plan for "${day === "today" ? "today" : "tomorrow"}" has incomplete financial data and cannot be saved.`
-          : `The plan for the selected day can be analysed but is not recommended for saving (${this.aiUiText(dayRecommendation?.reason || "no_recommended_changes")}).`);
-      return;
-    }
-    const selected = this.aiSelection(day);
-    const rows = this.aiRowsForDay(planner, day)
-      .filter((row) => this.aiCanSelectProposal(planner, row, day) && selected.has(this.aiSlotKey(row.hour)));
-    if (!rows.length) return;
-    const label = day === "today" ? "apply today" : "schedule for tomorrow";
-    const preview = rows.map((row) => {
-      const power = this.aiPlannedSlotPower(row);
-      const energy = this.aiFormatNumber(row.planned_energy_kwh ?? row.energy_kwh, 2);
-      const update = this.aiRowUpdate(row) || {};
-      const chargeContract = row.action === "charge"
-        ? `, SOC ${this.aiFormatNumber(update.tou_soc, 0)}%, Grid Charge ${update.charge_enabled ? "on" : "off"}`
-        : "";
-      return `${row.label || this.hourLabel(row.hour)}: ${this.aiActionLabel(row.action)}, ${power} W, about ${energy} kWh${chargeContract}`;
-    }).join("\n");
-    const scopeNotice = day === "today"
-      ? "The selected items will be the only special actions in today's plan. All remaining hours — including unselected proposals and older actions — will be set to Normal Operation."
-      : "The selected items will be the only special actions in tomorrow's plan. All remaining hours — including unselected proposals and older actions — get the Normal Operation target. Only the intent is recorded today; each current slot is executed tomorrow JIT.";
-    if (!window.confirm(`Apply ${label} to ${rows.length} selected changes?\n\n${preview}\n\n${scopeNotice}`)) return;
-    const updates = rows.map((row) => this.aiRowUpdate(row)).filter(Boolean);
-    if (updates.length !== rows.length) {
-      window.alert("The plan has changed or contains inconsistent data. Refresh AI Suggestions and select the hours again.");
-      return;
-    }
-    if (day === "today") {
-      const date = rows[0]?.date;
-      if (!await this.applySchedulePatch(updates, { replaceDay: true, date })) return;
-      await this.startSell();
-      this.saveAiAnalysis(this.aiSuggestions(slots), "accepted", {
-        segmentCount: rows.length,
-        accepted: true,
-        day,
-        selectedHours: rows.map((row) => row.label),
-      });
-      this._dialog = null;
-    } else {
-      const date = rows[0]?.date;
-      const impacts = new Map((planner.profile_impacts || []).map((item) => [String(item.profile_id || ""), item]));
-      const slotValidations = Object.fromEntries(rows.map((row) => {
-        const profileRoot = impacts.get(this.aiProfileId(row)) || {};
-        const profile = profileRoot.days?.[date] || profileRoot;
-        const deadline = row.deadline || profile.deadline || null;
-        const startHour = Number(String(profile.start || "00:00").slice(0, 2));
-        const deadlineHour = deadline ? Number(String(deadline).slice(0, 2)) : null;
-        return [this.aiSlotKey(row.hour), {
-          profile_id: this.aiProfileId(row) || null,
-          action: row.action,
-          purpose: row.purpose || profile.purpose || null,
-          minimum_price: profile.minimum_price ?? 0,
-          maximum_effective_price: profile.maximum_effective_price ?? 0,
-          planned_price: row.action === "sell" ? row.sell_price : row.effective_buy_price,
-          minimum_soc: row.action_contract?.effective_min_soc ?? row.effective_min_soc_pct ?? row.hard_min_soc_pct ?? 0,
-          allow_partial: row.action_contract?.allow_partial ?? (profile.allow_partial !== false),
-          target_energy_kwh: profile.requested_energy_kwh ?? 0,
-          planned_energy_kwh: row.planned_energy_kwh ?? 0,
-          duration_minutes: row.duration_minutes ?? 60,
-          power_limit_w: row.action_contract?.planned_power_w ?? row.planned_power_w ?? row.power_limit_w ?? null,
-          possible_energy_kwh: profile.possible_energy_kwh ?? row.planned_energy_kwh ?? 0,
-          remaining_target_kwh: profile.remaining_energy_kwh ?? profile.requested_energy_kwh ?? 0,
-          min_net_result: profile.min_net_result ?? 0,
-          profile_net_result_gbp: profile.profile_net_result_gbp ?? 0,
-          deadline,
-          deadline_next_day: deadlineHour !== null && deadlineHour <= startHour,
-          charge_source: profile.source || row.charge_source || null,
-          preserve_pv_room: profile.preserve_pv_room === true,
-          max_soc_before_pv_pct: row.max_soc_before_pv_pct ?? null,
-        }];
-      }));
-      try {
-        await this.callService("deye_energy", "save_future_plan", {
-          data: JSON.stringify({
-            date,
-            plan_id: planner.plan_id,
-            strategy: planner.selected_strategy,
-            replace_day: true,
-            labels: rows.map((row) => row.label),
-            updates,
-            slot_validations: slotValidations,
-          }),
-        });
-        this._saveStatus = "saved";
-        this._saveMessage = `Plan saved for ${this.aiFormatDate(date)} · ${rows.length} slots · ${rows.map((row) => row.label || this.hourLabel(row.hour)).join(", ")} · strategy ${this.aiUiText(planner.selected_strategy || "balanced")}`;
-      } catch (err) {
-        this._saveStatus = "error";
-        this._saveMessage = `Tomorrow plan error: ${err?.message || err}`;
-      }
-    }
-    this.render();
-  }
-
-  aiConfidenceClass(value) {
-    const confidence = this.asNumber(value) || 0;
-    return confidence >= 75 ? "good" : confidence >= 50 ? "warn" : "bad";
-  }
-
-  aiFormatNumber(value, digits = 2) {
-    const number = this.asNumber(value);
-    return number === null
-      ? "no data"
-      : new Intl.NumberFormat("en-GB", { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(number);
-  }
-
-  aiReadableKeyFactor(value) {
-    const raw = String(value ?? "");
-    const separator = raw.indexOf("=");
-    const rawKey = separator >= 0 ? raw.slice(0, separator).trim() : raw.trim();
-    const rawValue = separator >= 0 ? raw.slice(separator + 1).trim() : "";
-    const key = rawKey.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-    const numeric = this.asNumber(rawValue.replace("%", "").replace(",", "."));
-    const known = {
-      sell_price: ["Price for this hour", " £/kWh", 2],
-      soc_start: ["SOC at start", "%", 1],
-      reserve: ["Reserve", "%", 1],
-      best_later_price: ["Best later price", " £/kWh", 2],
-    };
-    if (known[key]) {
-      const [label, unit, digits] = known[key];
-      const formatted = numeric === null ? "no data" : this.aiFormatNumber(numeric, digits);
-      return `${label}: ${formatted}${numeric === null ? "" : unit}`;
-    }
-    const translated = this.aiUiText(rawKey);
-    const label = translated
-      ? translated.charAt(0).toUpperCase() + translated.slice(1)
-      : "Coefficient";
-    const formatted = numeric === null ? (rawValue || "no data") : this.aiFormatNumber(numeric, 2);
-    return `${label}: ${formatted}`;
-  }
-
-  aiFormatPercent(value, digits = 0) {
-    const number = this.asNumber(value);
-    return number === null ? "no data" : `${this.aiFormatNumber(number, digits)}%`;
-  }
-
-  aiQualityCoverage(value, total, unit = "") {
-    const number = this.asNumber(value);
-    if (number === null) return "no data";
-    const suffix = unit ? ` ${unit}` : "";
-    return `${this.aiFormatNumber(number, 0)}/${total}${suffix}`;
-  }
-
-  aiFormatDate(value) {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return this.escapeHtml(String(value || "missing"));
-    return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" }).format(date);
-  }
-
-  aiUiText(value) {
-    const text = String(value ?? "");
-    const labels = {
-      proposal: "Proposal",
-      planned: "Included in the calculation plan",
-      validated: "Verified",
-      pending: "Waiting for confirmation",
-      approved: "Waiting",
-      logical_applied: "Saved logically",
-      physical_pending: "Waiting for the inverter",
-      confirmed: "Confirmed",
-      skipped: "Not applied",
-      blocked: "Blocked",
-      failed: "Execution error",
-      manual: "Changed manually",
-      disabled: "Profile disabled",
-      ready: "Plan ready",
-      completed: "Plan executed",
-      waiting: "Waiting to start",
-      running: "In progress",
-      partial: "Partial fulfilment",
-      blocked_partial_not_allowed: "Profile not fulfilled — partial fulfilment is disabled",
-      blocked_min_net_result: "Profile blocked — net result too low",
-      partial_not_allowed: "Partial fulfilment is disabled",
-      min_net_result: "Net result below the required minimum",
-      cancelled: "Cancelled",
-      manual_override: "Changed manually",
-      missed: "Skipped",
-      superseded: "Superseded",
-      legacy_unconfirmed: "Old result without physical confirmation",
-      partially_executed: "Plan partially executed",
-      no_qualified_hours: "No hours meet the conditions",
-      no_hours_above_minimum: "No hours meet the minimum price",
-      partially_possible: "Target partially achievable",
-      proposal_pending: "Plan created — awaiting approval",
-      forecast_ready: "Forecast created",
-      startup_or_restored_state: "State restored after startup",
-      startup: "Starting the plan",
-      input_snapshot_changed: "Input data changed",
-      settings_changed: "Settings changed",
-      user_profiles_changed: "User profiles changed",
-      cached_until_input_change: "Result from cache — input data unchanged",
-      "comparison:practically-the-same": "Result practically the same as the baseline plan",
-      "optimizer:high-net-export-price": "High selling price",
-      "optimizer:profitable-charge-before-sale": "Profitable charging before selling",
-      "optimizer:no-profitable-change": "No profitable change",
-      "optimizer:none": "No optimizer change",
-      "safety:missing-load-forecast": "No house consumption forecast — action paused",
-      "limit:minimum_soc": "Limit: minimum SOC",
-      "limit:target_soc": "Limit: target SOC",
-      "limit:action_power_limit": "Limit: power set for the profile",
-      "limit:battery_discharge_limit": "Limit: maximum battery discharge power",
-      "limit:profile_max_power": "Limit: maximum profile power",
-      "limit:global_max_sell_power": "Limit: global maximum selling power",
-      "limit:export_limit": "Limit: grid export limit",
-      "limit:inverter_power": "Limit: inverter power",
-      "limit:max_sell_power_entity": "Limit: Max Sell Power entity",
-      "limit:current_voltage_battery_limit": "Limit: battery power resulting from current and voltage",
-      "limit:configured_battery_discharge_limit": "Limit: configured battery discharge limit",
-      "limit:started_hour_duration": "Limit: remaining time in the started hour",
-      "limit:grid_export_limit": "Limit: maximum grid export",
-      "limit:inverter_ac_limit": "Limit: inverter AC power",
-      "limit:physical_energy_budget": "Limit: available energy budget",
-      "limit:higher_value_slot_reserved": "Energy preserved for a more expensive hour of this profile",
-      "limit:dynamic_power_cap": "Limit: dynamic hourly power limit",
-      "limit:residual_below_minimum": "The remaining energy would need too little power",
-      "limit:minimum_auto_sell_power": "Limit: minimum automatic selling power",
-      "limit:grid_import_limit": "Limit: grid import limit",
-      "limit:missing_current_soc_fail_closed": "No SOC — plan safely blocked",
-      higher_priority_profile_reserve: "Energy preserved for a higher-priority profile",
-      pv_only_profile: "The profile allows PV-only charging",
-      pv_curtailed_by_export_or_inverter_limit: "PV production limited by export or inverter limit",
-      price_filter_or_no_qualified_hours: "No hours meet the price conditions",
-      core_budget_exceeded: "Core calculation budget exceeded",
-      operation_budget_exceeded: "Core calculation budget exceeded",
-      price_mapping_cache_invalidated: "Recalculated after a price mapping change",
-      core_blocked_missing_soc: "No reliable SOC data",
-      missing_load_forecast: "No house consumption forecast",
-      slot_elapsed: "The hour has already ended",
-      missing_current_soc_fail_closed: "No SOC — plan safely blocked",
-      minimum_soc: "minimum SOC",
-      target_soc: "target SOC",
-      action_power_limit: "profile power",
-      battery_discharge_limit: "maximum battery discharge power",
-      profile_max_power: "maximum profile power",
-      global_max_sell_power: "global maximum selling power",
-      export_limit: "grid export limit",
-      inverter_power: "inverter power",
-      max_sell_power_entity: "Max Sell Power entity",
-      current_voltage_battery_limit: "battery power resulting from current and voltage",
-      configured_battery_discharge_limit: "configured battery discharge limit",
-      started_hour_duration: "remaining time in the started hour",
-      grid_export_limit: "maximum grid export",
-      inverter_ac_limit: "inverter AC power",
-      physical_energy_budget: "available energy budget",
-      higher_value_slot_reserved: "energy preserved for a more expensive hour of this profile",
-      near_equal_price_group: "group of hours with similar prices",
-      peak_power_balancing: "power balancing within a similar-price group",
-      dynamic_power_cap: "dynamic hourly power limit",
-      residual_below_minimum: "remaining energy below the minimum automatic power",
-      minimum_auto_sell_power: "minimum automatic selling power",
-      grid_import_limit: "grid import limit",
-      no_economic_headroom: "no economic headroom in better hours",
-      pv_headroom_value: "value of room for forecast PV production",
-      profile_energy_budget: "profile energy budget",
-      unresolved_daily_constraint: "unresolved daily profile target constraint",
-      profile_energy_allocation: "distribution of target energy across hours",
-      optimizer_energy_allocation: "optimizer energy allocation",
-      price_threshold: "minimum selling price",
-      target_reached: "profile target reached",
-      past_window: "the hour has already passed",
-      inactive_day: "profile is not active on this day",
-      missing_prices: "No complete price data",
-      below_minimum_price: "price below the minimum",
-      not_selected_by_energy_budget: "energy preserved for better hours or reserve",
-      mixed: "automatic — mixed target",
-      awaiting_publication: "waiting for prices to be published after 13:00",
-      missing_after_publication: "no prices after the expected publication time",
-      financial_data_incomplete: "incomplete financial data for the day",
-      profile_confirmation_available: "user profile ready for manual approval",
-      positive_day_benefit: "positive day result versus the baseline plan",
-      terminal_value_delta: "difference in battery terminal value",
-      no_recommended_changes: "no changes recommended for saving",
-      proposals_available: "Core created proposals for this day",
-      confidence_below_minimum: "Data confidence is below the required minimum",
-      profile_window_ended: "The active profile window is not available now",
-      current_plan_already_optimal: "The current schedule is already practically optimal",
-      no_profitable_hours: "No profitable hours",
-      no_proposals: "No proposals",
-      confidence_below_profile_minimum: "confidence below the profile minimum",
-      learning_evidence_insufficient: "insufficient profile maturity",
-      action_contract_not_deployment_ready: "execution contract is not ready",
-      critical_input_missing: "missing critical data",
-      bootstrap: "Profile bootstrap",
-      learning: "Active learning",
-      stable: "Stable profile",
-      mature: "Mature profile",
-      preview: "Preview",
-      confirmable: "Ready for confirmation",
-      "profile:morning_sale": "Profile: Morning sale",
-      "profile:evening_sale": "Profile: Evening sale",
-      "profile:charging": "Profile: Charging",
-      ok: "Ready",
-      warning: "Warning",
-      rejected: "Rejected",
-      safe: "Safe",
-      caution: "Needs caution",
-      unsafe: "Unsafe",
-      balanced: "Balanced",
-      profit: "Maximum profit",
-      explain: "Explanation only",
-      review: "Rating and alternatives",
-      experimental: "Experimental analysis",
-      valid: "Response format valid",
-      connected: "Connected",
-      testing: "Testing",
-      analysing: "Analizowanie",
-      error: "Error",
-      unavailable: "Unavailable",
-      unknown: "Unknown state",
-      invalid: "Invalid value",
-      out_of_range: "Value out of range",
-      stale: "Data out of date",
-      not_configured: "Not configured",
-      own_soc_report: "Direct SOC source report",
-      sibling_health: "SOC source state confirmed by a related entity",
-      event_observed_at: "SOC change observed by Home Assistant",
-      last_updated_fallback: "Last update time of the SOC entity",
-      compatibility_fallback: "Fallback SOC freshness assessment",
-      no_fresh_source_health: "No fresh SOC source confirmation",
-      "Candidates are available for preview; the profile does not have enough evidence yet.": "Candidates are available for preview; the profile does not have enough historical data yet.",
-    };
-    if (labels[text]) return labels[text];
-    if (text.startsWith("sibling_health:")) {
-      return "SOC source state confirmed by a related entity";
-    }
-    if (text.startsWith("material_live_input_changed:")) {
-      const field = text.slice("material_live_input_changed:".length);
-      const fields = {
-        battery_power: "Recalculated after a significant battery power change",
-        grid: "Recalculated after a significant grid flow change",
-        grid_power: "Recalculated after a significant grid power change",
-        load: "Recalculated after a significant house consumption change",
-        load_power: "Recalculated after a significant load power change",
-        price_today: "Recalculated after a significant change in today's prices",
-        price_tomorrow: "Recalculated after a significant change in tomorrow's prices",
-        pv: "Recalculated after a significant PV production change",
-        pv_power: "Recalculated after a significant PV power change",
-        soc: "Recalculated after a significant SOC change",
-        soc_freshness: "Recalculated after a change in SOC data freshness",
-        soc_health: "Recalculated after a change in SOC data reliability",
-        solcast: "Recalculated after a significant Solcast forecast change",
-        weather: "Recalculated after a significant weather forecast change",
-      };
-      return fields[field] || "Recalculated after a significant input data change";
-    }
-    if (text.includes(" / ")) {
-      return text.split(" / ").map((item) => this.aiUiText(item)).join(" / ");
-    }
-    if (text.startsWith("limit:")) {
-      return labels[text.slice("limit:".length)] || "A plan constraint occurred";
-    }
-    if (text.startsWith("optimizer:")) return "The change results from optimizer calculations";
-    if (text.startsWith("profile:")) return "User profile";
-    if (text.startsWith("safety:")) return "Action blocked for safety reasons";
-    if (text.startsWith("comparison:")) return "Compared with the baseline plan";
-    if (/^[a-z0-9]+(?:[_:.-][a-z0-9]+)+$/i.test(text)) {
-      return "A plan constraint occurred";
-    }
-    return text;
-  }
-
-  aiActionLabel(action) {
-    return {
-      sell: "Selling",
-      charge: "Grid charging",
-      charge_grid: "Grid charging",
-      charge_pv: "Charging z PV",
-      discharge_load: "House powered by the battery",
-      idle: "No change",
-      none: "No change",
-      "Selling First": "Selling priority",
-    }[String(action || "")] || this.aiUiText(action || "none");
-  }
-
-  aiSourceLabel(row) {
-    const source = String(row?.decision_source || "");
-    if (source.startsWith("profile:")) return this.aiUiText(source);
-    const profileId = this.aiProfileId(row);
-    if (profileId) return this.aiUiText(`profile:${profileId}`);
-    if (source === "optimizer") return "Local optimizer";
-    if (source === "baseline") return "Baseline plan";
-    if ((row?.reason_codes || []).some((code) => String(code).startsWith("optimizer:"))) {
-      return "Local optimizer";
-    }
-    return "Pricing information";
-  }
-
-  aiSaleInsights(planner) {
-    const backend = planner?.ui_insights?.sale_profiles;
-    const profiles = this.aiProfiles().profiles || {};
-    const maps = this.canonicalPriceMaps("sell", "final_price_gbp_kwh", planner);
-    const result = {};
-    ["morning_sale", "evening_sale"].forEach((profileId) => {
-      const configured = profiles[profileId] || {};
-      const supplied = backend && typeof backend[profileId] === "object" ? backend[profileId] : {};
-      const profile = { ...supplied, ...configured };
-      const start = Number(String(profile.start || "00:00").slice(0, 2));
-      const end = Number(String(profile.end || "00:00").slice(0, 2));
-      const inWindow = (hour) => start < end ? hour >= start && hour < end : hour >= start || hour < end;
-      const minimum = this.asNumber(
-        configured.min_price
-        ?? configured.minimum_price
-        ?? supplied.minimum_price
-        ?? supplied.min_price
-      ) || 0;
-      const days = {};
-      ["today", "tomorrow"].forEach((day, dayIndex) => {
-        const suppliedRows = Array.isArray(supplied.days?.[day]) ? supplied.days[day] : null;
-        days[day] = (suppliedRows || [...maps[dayIndex].entries()]
-          .filter(([hour]) => inWindow(hour))
-          .map(([hour, price]) => ({
-            day,
-            hour,
-            label: `${String(hour).padStart(2, "0")}:00–${String((hour + 1) % 24).padStart(2, "0")}:00`,
-            sell_price: price,
-            recommended: false,
-            planned_energy_kwh: 0,
-            planned_power_w: 0,
-            soc_before: null,
-            soc_after: null,
-            decision_source: "informational",
-          })))
-          .map((row) => {
-            const price = this.asNumber(row.sell_price);
-            return {
-              ...row,
-              qualifies_minimum: typeof row.qualifies_minimum === "boolean"
-                ? row.qualifies_minimum
-                : price !== null && price + 1e-9 >= minimum,
-            };
-          });
-      });
-      const allRows = [...days.today, ...days.tomorrow];
-      const qualified = allRows.filter((row) => row.qualifies_minimum).length;
-      const target = this.asNumber(profile.target_energy_kwh) || 0;
-      const calculatedPlanned = allRows
-        .filter((row) => row.recommended)
-        .reduce((sum, row) => sum + (this.asNumber(row.planned_energy_kwh) || 0), 0);
-      const planned = this.asNumber(supplied.planned_energy_kwh);
-      const effectivePlanned = planned === null ? calculatedPlanned : planned;
-      const enabled = configured.enabled === undefined
-        ? Boolean(supplied.enabled)
-        : Boolean(configured.enabled);
-      result[profileId] = {
-        ...profile,
-        profile_id: profileId,
-        name: profile.name,
-        enabled,
-        start: profile.start,
-        end: profile.end,
-        target_energy_kwh: target,
-        planned_energy_kwh: effectivePlanned,
-        missing_energy_kwh: Math.max(0, target - effectivePlanned),
-        minimum_price: minimum,
-        minimum_soc_after: configured.min_soc_after
-          ?? configured.minimum_soc_after
-          ?? supplied.minimum_soc_after
-          ?? supplied.min_soc_after,
-        qualified_hours: qualified,
-        status: !enabled
-          ? "disabled"
-          : qualified === 0
-            ? "no_hours_above_minimum"
-            : effectivePlanned + 1e-6 < target
-              ? "partially_possible"
-              : "ready",
-        days,
-      };
-    });
-    return result;
-  }
-
-  renderAiSaleRankings(planner) {
-    const profiles = this.aiSaleInsights(planner);
-    const renderDay = (profile, dayKey, dayLabel) => {
-      const rows = Array.isArray(profile.days?.[dayKey]) ? profile.days[dayKey] : [];
-      const ranked = rows.slice().sort((a, b) => (this.asNumber(b.sell_price) || 0) - (this.asNumber(a.sell_price) || 0) || a.hour - b.hour);
-      const priceRanks = new Map(ranked.map((row, index) => [Number(row.hour), index + 1]));
-      const visible = rows.slice().sort((a, b) => Number(a.hour) - Number(b.hour));
-      return `<section class="ai-rank-day"><h5>${dayLabel}</h5>${visible.length ? visible.map((row) => {
-        const recommended = profile.enabled && row.qualifies_minimum && row.recommended;
-        const priceStatus = row.qualifies_minimum ? "Price meets the minimum" : "Below the minimum price";
-        const priceRank = this.asNumber(row.price_rank) || priceRanks.get(Number(row.hour));
-        const status = row.is_past ? "Hour completed" : recommended ? "Recommended" : priceStatus;
-        return `<details class="ai-rank-row ${recommended ? "recommended" : "informational"}"><summary><span>${this.escapeHtml(row.label || this.hourLabel(row.hour))}</span><strong>${this.aiFormatNumber(row.sell_price, 2)} £/kWh</strong><em>${status} · price no. ${priceRank}</em></summary><div><span>Estimated energy <b>${this.aiFormatNumber(row.planned_energy_kwh, 2)} kWh</b></span><span>Power passed to the slot <b>${this.aiPlannedSlotPower(row)} W</b></span><span>SOC <b>${this.aiFormatNumber(row.soc_before, 1)}% → ${this.aiFormatNumber(row.soc_after, 1)}%</b></span><span>${this.escapeHtml(row.skip_reason ? this.aiUiText(row.skip_reason) : priceStatus)}</span><span>Source: <b>${this.escapeHtml(this.aiSourceLabel(row))}</b></span></div></details>`;
-      }).join("") : '<p class="ai-empty">No price data in this window.</p>'}</section>`;
-    };
-    const section = (profileId, label) => {
-      const profile = profiles[profileId] || {};
-      const target = this.asNumber(profile.target_energy_kwh) || 0;
-      const planned = this.asNumber(profile.planned_energy_kwh) || 0;
-      const missing = this.asNumber(profile.missing_energy_kwh) || Math.max(0, target - planned);
-      const noQualified = profile.enabled && Number(profile.qualified_hours) === 0;
-      const primary = profile.explanation?.primary_constraint;
-      return `<article class="ai-sale-profile ${profile.enabled ? "enabled" : "disabled"}"><header><div><h4>${label}</h4><strong>${profile.enabled ? "Profile enabled" : "Profile disabled"}</strong></div><div class="ai-profile-parameters"><span>Window <b>${this.escapeHtml(profile.start || "--:--")}–${this.escapeHtml(profile.end || "--:--")}</b></span><span>Target <b>${this.aiFormatNumber(target, 2)} kWh</b></span><span>Minimum price <b>${this.aiFormatNumber(profile.minimum_price, 2)} £/kWh</b></span><span>Minimum SOC after selling <b>${this.aiFormatNumber(profile.minimum_soc_after, 1)}%</b></span></div></header>${noQualified ? `<p class="ai-warning">No hours meet the minimum price ${this.aiFormatNumber(profile.minimum_price, 2)} £/kWh.</p>` : ""}${profile.enabled && missing > .001 ? `<p class="ai-warning">Target: ${this.aiFormatNumber(target, 2)} kWh · plannable: ${this.aiFormatNumber(planned, 2)} kWh · missing: ${this.aiFormatNumber(missing, 2)} kWh. Main reason: ${this.escapeHtml(this.aiUiText(primary || "profile_energy_budget"))}.</p>` : ""}${!profile.enabled ? '<p class="ai-note">Only informational hours are shown below. A disabled profile is not marked as fulfilled.</p>' : ""}<div class="ai-price-columns">${renderDay(profile, "today", "Today")}${renderDay(profile, "tomorrow", "Tomorrow")}</div></article>`;
-    };
-    return `<div class="ai-sale-rankings">${section("morning_sale", "Morning sale")}${section("evening_sale", "Evening sale")}<details class="ai-other-hours"><summary>Other profitable hours</summary><p>The full informational ranking is available after enabling the 24-hour view in the "Proposed changes" tab.</p></details></div>`;
-  }
-
-  aiPurchaseInsights(planner) {
-    const backend = planner?.ui_insights?.purchase_ranking;
-    if (backend?.days) return backend;
-    const tariff = this.tariffData();
-    const rows = this.canonicalPriceRows("buy", planner);
-    const days = {};
-    ["today", "tomorrow"].forEach((day) => {
-      days[day] = rows.filter((row) => row.day === day && this.asNumber(row.final_price_gbp_kwh) !== null).map((row) => ({
-        ...row, energy_price: row.energy_component, source_price: row.source_price_gbp_kwh,
-        distribution_price: row.added_distribution, effective_price: row.final_price_gbp_kwh,
-        price_includes_distribution: row.source_semantic_scope === "all_in_variable",
-      })).sort((a, b) => (this.asNumber(a.effective_price) || 0) - (this.asNumber(b.effective_price) || 0) || a.hour - b.hour);
-    });
-    return {
-      days, provider_name: tariff.provider_name, plan_name: tariff.plan_name,
-      price_includes_distribution: tariff.price_includes_distribution,
-      dso_complete: tariff.configured !== false,
-      coverage_today: days.today.length, coverage_tomorrow: days.tomorrow.length,
-      energy_source: this.entity("sensor", "buy_price_today"),
-    };
-  }
-
-  renderAiPurchaseRanking(planner) {
-    const ranking = this.aiPurchaseInsights(planner);
-    const renderDay = (day, label) => {
-      const available = Array.isArray(ranking.days?.[day]) ? ranking.days[day] : [];
-      const ranked = available.slice().sort((a, b) => (this.asNumber(a.effective_price) || 0) - (this.asNumber(b.effective_price) || 0) || a.hour - b.hour);
-      const priceRanks = new Map(ranked.map((row, index) => [Number(row.hour), index + 1]));
-      const rows = ranked.slice(0, 8).sort((a, b) => Number(a.hour) - Number(b.hour));
-      return `<section class="ai-rank-day"><h5>${label} · hourly order</h5>${rows.length ? rows.map((row) => {
-        const allIn = row.source_semantic_scope === "all_in_variable";
-        const sourceLabel = allIn ? "Full source" : "Source price";
-        const extras = [
-          !allIn && this.asNumber(row.distribution_price) ? `<span>Distribution DSO <b>${this.aiFormatNumber(row.distribution_price, 2)} £/kWh</b></span>` : "",
-          this.asNumber(row.added_vat) ? `<span>Dodany VAT <b>${this.aiFormatNumber(row.added_vat, 2)} £/kWh</b></span>` : "",
-          this.asNumber(row.added_other_variable) ? `<span>Other variable components <b>${this.aiFormatNumber(row.added_other_variable, 2)} £/kWh</b></span>` : "",
-        ].join("");
-        return `<details class="ai-rank-row"><summary><span>${this.escapeHtml(row.label || this.hourLabel(row.hour))}</span><strong>Total: ${this.aiFormatNumber(row.effective_price, 2)} £/kWh</strong><em>Price no. ${this.asNumber(row.price_rank) || priceRanks.get(Number(row.hour))} · ${this.escapeHtml(this.tariffZoneLabel(row.zone))}</em></summary><div><span>${sourceLabel} <b>${this.aiFormatNumber(row.source_price ?? row.energy_price, 2)} £/kWh</b></span>${extras}<span>Total <b>${this.aiFormatNumber(row.effective_price, 2)} £/kWh</b></span><span>Adapter <b>${this.escapeHtml(row.source_adapter || "legacy")}</b> · ${this.escapeHtml(row.source_basis || "missing")} · ${this.escapeHtml(row.source_unit || "missing")}</span><span>${this.escapeHtml(row.provider_name || ranking.provider_name || "No operator")} · ${this.escapeHtml(row.plan_name || ranking.plan_name || "missing tariff")} · ${this.escapeHtml(this.aiUiText(row.day_type || "missing day type"))}</span></div></details>`;
-      }).join("") : '<p class="ai-empty">No price data.</p>'}</section>`;
-    };
-    return `<div class="ai-purchase-ranking">${ranking.dso_complete ? "" : '<p class="ai-warning">No full DSO data — the purchase ranking is indicative. Grid charging is not presented as a certain profitable decision.</p>'}<div class="ai-tariff-summary"><span>Operator / tariff <b>${this.escapeHtml(ranking.provider_name || "missing")} · ${this.escapeHtml(ranking.plan_name || "missing")}</b></span><span>Energy price source <b>${this.escapeHtml(ranking.energy_source || "missing")}</b></span><span>Distribution <b>${ranking.price_includes_distribution ? "included in the price" : "added by the DSO"}</b></span><span>Coverage <b>today ${ranking.coverage_today || 0}/24 · tomorrow ${ranking.coverage_tomorrow || 0}/24</b></span></div><div class="ai-price-columns">${renderDay("today", "Today")}${renderDay("tomorrow", "Tomorrow")}</div></div>`;
-  }
-
-  aiLegacyWeatherCard(planner, day) {
-    const aiState = this._hass?.states?.[this.entity("sensor", "ai_state")];
-    const weather = aiState?.attributes?.weather || {};
-    const targetDate = new Date();
-    if (day === "tomorrow") targetDate.setDate(targetDate.getDate() + 1);
-    const targetKey = this.localDateKey(targetDate);
-    const rawForecast = Array.isArray(weather.forecast) ? weather.forecast : [];
-    const datedForecast = rawForecast.filter((row) => {
-      const raw = row?.datetime ?? row?.time;
-      if (!raw) return false;
-      const stamp = new Date(raw);
-      return !Number.isNaN(stamp.getTime()) && this.localDateKey(stamp) === targetKey;
-    });
-    const forecast = datedForecast.length ? datedForecast : rawForecast.slice(day === "today" ? 0 : 24, day === "today" ? 24 : 48);
-    if (!weather.available || !forecast.length) {
-      return `<section class="ai-metric-card ai-weather"><h3>Weather</h3><p class="ai-empty">No weather data</p><small>Solcast remains the primary source; no fictitious correction was applied.</small></section>`;
-    }
-    const temperatures = forecast.map((row) => this.asNumber(row.temperature)).filter((value) => value !== null);
-    const clouds = forecast.map((row) => this.asNumber(row.cloud_coverage)).filter((value) => value !== null);
-    const rain = forecast.map((row) => this.asNumber(row.precipitation_probability)).filter((value) => value !== null);
-    const average = (rows) => rows.length ? rows.reduce((sum, value) => sum + value, 0) / rows.length : null;
-    const cloud = average(clouds);
-    const risk = cloud === null ? null : Math.max(0.65, Math.min(1.05, 1 - cloud * 0.002 - (average(rain) || 0) * 0.001));
-    return `<section class="ai-metric-card ai-weather"><h3>Weather</h3><div class="ai-weather-main"><span>${this.iconSvg("weather")}</span><strong>${temperatures.length ? `${average(temperatures).toFixed(1)}°C` : "missing temperature"}</strong></div><p>${this.escapeHtml(String(forecast[0]?.condition || weather.condition || "missing"))}<br>Cloud cover: ${cloud === null ? "missing" : `${cloud.toFixed(0)}%`}<br>Precipitation: ${rain.length ? `${average(rain).toFixed(0)}%` : "missing"}</p><small>${risk === null ? "No weather correction" : `Auxiliary PV correction ×${risk.toFixed(2)}`}</small></section>`;
-  }
-
-  aiLegacyCompactEnergyChart(rows, title = "Energy plan") {
-    const values = rows.length ? rows : [];
-    const count = Math.max(1, values.length);
-    const width = 760;
-    const height = 236;
-    const left = 38;
-    const top = 24;
-    const chartWidth = width - left - 16;
-    const chartHeight = 158;
-    const maxEnergy = Math.max(1, ...values.flatMap((row) => [this.asNumber(row.load_kwh) || 0, this.asNumber(row.pv_kwh) || 0]));
-    const distributionValues = values.map((row) => this.asNumber(row.distribution) || 0).filter((value) => value > 0);
-    const minDistribution = distributionValues.length ? Math.min(...distributionValues) : null;
-    const step = chartWidth / count;
-    const bars = values.map((row, index) => {
-      const x = left + index * step;
-      const loadHeight = (this.asNumber(row.load_kwh) || 0) / maxEnergy * chartHeight;
-      const pvHeight = (this.asNumber(row.pv_kwh) || 0) / maxEnergy * chartHeight;
-      const marker = row.action === "sell" ? "#7ee22d" : row.action === "charge" ? "#ffd166" : "transparent";
-      const cheapZone = minDistribution !== null && (this.asNumber(row.distribution) || 0) <= minDistribution + .00001;
-      const weatherMarker = this.asNumber(row.weather_factor) !== null && this.asNumber(row.weather_factor) < .9 ? "☁" : "";
-      return `<rect x="${x.toFixed(1)}" y="${top}" width="${Math.max(1, step).toFixed(1)}" height="${chartHeight}" fill="${cheapZone ? "rgba(255,209,102,.055)" : "transparent"}"/><rect x="${x.toFixed(1)}" y="${(top + chartHeight - loadHeight).toFixed(1)}" width="${Math.max(2, step * .38).toFixed(1)}" height="${loadHeight.toFixed(1)}" fill="#32a8e8"/><rect x="${(x + step * .4).toFixed(1)}" y="${(top + chartHeight - pvHeight).toFixed(1)}" width="${Math.max(2, step * .38).toFixed(1)}" height="${pvHeight.toFixed(1)}" fill="#67bd2e"/><circle cx="${(x + step * .5).toFixed(1)}" cy="${top + 5}" r="3.5" fill="${marker}"/>${weatherMarker ? `<text x="${(x + step * .5).toFixed(1)}" y="${top + 19}" text-anchor="middle" fill="#a9c7d8" font-size="9">${weatherMarker}</text>` : ""}`;
-    }).join("");
-    const points = values.map((row, index) => `${(left + index * step + step / 2).toFixed(1)},${(top + chartHeight - (this.asNumber(row.soc_after) || 0) / 100 * chartHeight).toFixed(1)}`).join(" ");
-    const labels = values.map((row, index) => index % (values.length > 24 ? 4 : 2) === 0
-      ? `<text x="${(left + index * step).toFixed(1)}" y="${top + chartHeight + 18}" fill="#8fb0c2" font-size="9">${String(row.hour).padStart(2, "0")}</text>` : "").join("");
-    return `<section class="ai-chart-card"><h3>${title}</h3><div class="ai-chart-legend"><span class="load">Consumption</span><span class="pv">PV production</span><span class="soc">SOC</span><span class="sell">Selling</span><span class="charge">Charging</span><span class="tariff">Cheap tariff</span></div><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${title}"><line x1="${left}" y1="${top + chartHeight}" x2="${width - 10}" y2="${top + chartHeight}" stroke="#24465a"/>${bars}<polyline points="${points}" fill="none" stroke="#ffd200" stroke-width="2.4"/>${labels}</svg></section>`;
-  }
-
-  aiWeatherMeta(condition) {
-    const key = String(condition || "").toLowerCase();
-    const values = {
-      "clear-night": ["🌙", "clear night"], cloudy: ["☁️", "cloudy"], exceptional: ["⚠️", "exceptional conditions"],
-      fog: ["🌫️", "fog"], hail: ["🌨️", "hail"], lightning: ["⛈️", "thunderstorm"], "lightning-rainy": ["⛈️", "thunderstorm with rain"],
-      partlycloudy: ["🌤️", "partly cloudy"], pouring: ["🌧️", "pouring"], rainy: ["🌧️", "rainy"],
-      snowy: ["🌨️", "snowy"], "snowy-rainy": ["🌨️", "sleet"], sunny: ["☀️", "sunny"],
-      windy: ["💨", "windy"], "windy-variant": ["🌬️", "windy with clouds"],
-    };
-    return values[key] || ["🌡️", key || "no data"];
-  }
-
-  aiWeatherRows(weather, day, kind = "hourly") {
-    const source = kind === "daily" ? weather.daily_forecast : weather.forecast;
-    const rows = Array.isArray(source) ? source : [];
-    if (kind === "daily") return rows;
-    const target = new Date();
-    if (day === "tomorrow") target.setDate(target.getDate() + 1);
-    const targetKey = this.localDateKey(target);
-    return rows.filter((row) => {
-      const stamp = new Date(row?.datetime ?? row?.time ?? "");
-      return !Number.isNaN(stamp.getTime()) && this.localDateKey(stamp) === targetKey;
-    });
-  }
-
-  aiWeatherCard(planner, day) {
-    const aiState = this._hass?.states?.[this.entity("sensor", "ai_state")];
-    const weather = aiState?.attributes?.weather || {};
-    const hourly = this.aiWeatherRows(weather, day, "hourly");
-    const daily = this.aiWeatherRows(weather, day, "daily");
-    const target = new Date();
-    if (day === "tomorrow") target.setDate(target.getDate() + 1);
-    const targetKey = this.localDateKey(target);
-    const dailyTarget = daily.find((row) => {
-      const stamp = new Date(row?.datetime ?? row?.time ?? "");
-      return !Number.isNaN(stamp.getTime()) && this.localDateKey(stamp) === targetKey;
-    }) || {};
-    const first = hourly[0] || dailyTarget;
-    const currentCondition = day === "today" ? weather.condition : first?.condition;
-    const [icon, label] = this.aiWeatherMeta(currentCondition);
-    const number = (value, digits = 0, unit = "") => {
-      const parsed = this.asNumber(value);
-      return parsed === null ? "no data" : `${this.aiFormatNumber(parsed, digits)}${unit}`;
-    };
-    const temps = hourly.map((row) => this.asNumber(row.temperature)).filter((value) => value !== null);
-    const high = this.asNumber(dailyTarget.temperature) ?? (temps.length ? Math.max(...temps) : null);
-    const low = this.asNumber(dailyTarget.templow) ?? (temps.length ? Math.min(...temps) : null);
-    const currentTemp = day === "today" ? this.asNumber(weather.temperature) : (this.asNumber(first?.temperature) ?? high);
-    const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    const dailyStrip = daily.length ? daily.slice(0, 7).map((row) => {
-      const stamp = new Date(row.datetime ?? row.time ?? "");
-      const [rowIcon, rowLabel] = this.aiWeatherMeta(row.condition);
-      return `<div class="ai-weather-day" title="${this.escapeHtml(rowLabel)}"><strong>${Number.isNaN(stamp.getTime()) ? "day" : dayNames[stamp.getDay()]}</strong><span>${rowIcon}</span><b>${number(row.temperature, 1, "°")}</b><small>${number(row.templow, 1, "°")}</small></div>`;
-    }).join("") : `<p class="ai-empty">No daily forecast</p>`;
-    const hourlyStrip = hourly.length ? hourly.slice(0, 24).map((row) => {
-      const stamp = new Date(row.datetime ?? row.time ?? "");
-      const [rowIcon, rowLabel] = this.aiWeatherMeta(row.condition);
-      return `<div class="ai-weather-hour" title="${this.escapeHtml(rowLabel)}"><strong>${Number.isNaN(stamp.getTime()) ? "--" : `${String(stamp.getHours()).padStart(2, "0")}:00`}</strong><span>${rowIcon}</span><b>${number(row.temperature, 0, "°")}</b><small>${number(row.precipitation_probability, 0, "%")}</small></div>`;
-    }).join("") : `<p class="ai-empty">No hourly forecast</p>`;
-    if (!weather.available) {
-      return `<section class="ai-metric-card ai-weather ai-weather-v2"><h3>Weather — ${day === "today" ? "today" : "tomorrow"}</h3><p class="ai-empty">No data z ${this.escapeHtml(String(weather.entity_id || "entity not specified"))}</p><small>Solcast remains the primary source; missing weather data is not replaced with zeros.</small></section>`;
-    }
-    return `<section class="ai-metric-card ai-weather ai-weather-v2"><div class="ai-weather-head"><div><span class="ai-weather-icon">${icon}</span><div><h3>${this.escapeHtml(label)}</h3><small>${day === "today" ? "Today" : "Tomorrow"} · updated ${this.formatTimeShort(weather.last_updated)}</small></div></div><div class="ai-weather-temperature"><strong>${currentTemp === null ? "--" : `${this.aiFormatNumber(currentTemp, 1)}°C`}</strong><span>${high === null ? "--" : this.aiFormatNumber(high, 1)}° / ${low === null ? "--" : this.aiFormatNumber(low, 1)}°</span></div></div><div class="ai-weather-facts"><span>Pressure <b>${number(weather.pressure, 0, ` ${weather.pressure_unit || "hPa"}`)}</b></span><span>Humidity <b>${number(weather.humidity, 0, "%")}</b></span><span>Wiatr <b>${number(weather.wind_speed, 1, ` ${weather.wind_speed_unit || "km/h"}`)}${weather.wind_bearing ? ` · ${this.escapeHtml(String(weather.wind_bearing))}` : ""}</b></span></div><div class="ai-weather-tabs"><button class="${this._aiWeatherMode !== "hourly" ? "active" : ""}" data-ai-weather-mode="daily">Daily</button><button class="${this._aiWeatherMode === "hourly" ? "active" : ""}" data-ai-weather-mode="hourly">Hourly</button></div><div class="ai-weather-strip">${this._aiWeatherMode === "hourly" ? hourlyStrip : dailyStrip}</div><small class="ai-weather-source">Source: ${this.escapeHtml(String(weather.entity_id || "missing"))}${weather.last_error ? ` · ${this.escapeHtml(String(weather.last_error))}` : ""}. Solcast remains the primary forecast.</small></section>`;
-  }
-
-  aiHistoricalHours() {
-    const aiState = this._hass?.states?.[this.entity("sensor", "ai_state")];
-    const samples = Array.isArray(aiState?.attributes?.energy_samples) ? aiState.attributes.energy_samples.slice() : [];
-    samples.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-    const result = new Map();
-    samples.forEach((sample, index) => {
-      const stamp = new Date(sample?.timestamp || "");
-      if (Number.isNaN(stamp.getTime())) return;
-      const next = new Date(samples[index + 1]?.timestamp || "");
-      const minutes = Number.isNaN(next.getTime()) ? 5 : Math.max(0, Math.min(15, (next - stamp) / 60000));
-      if (!minutes) return;
-      const key = `${this.localDateKey(stamp)}-${stamp.getHours()}`;
-      const row = result.get(key) || { pv: 0, load: 0, pvSamples: 0, loadSamples: 0 };
-      const pv = this.asNumber(sample.pv_power);
-      const load = this.asNumber(sample.load_power);
-      if (pv !== null) { row.pv += Math.max(0, pv) * minutes / 60000; row.pvSamples += 1; }
-      if (load !== null) { row.load += Math.max(0, load) * minutes / 60000; row.loadSamples += 1; }
-      result.set(key, row);
-    });
-    return result;
-  }
-
-  aiLegacyDetailedEnergyChart(rows, title = "Energy plan") {
-    const values = Array.isArray(rows) ? rows : [];
-    const count = Math.max(1, values.length);
-    const width = 1120, height = 455, left = 62, right = 54;
-    const top = 48, topHeight = 185, weatherY = 256, socTop = 294, socHeight = 92, axisY = 414;
-    const chartWidth = width - left - right;
-    const step = chartWidth / count;
-    const history = this.aiHistoricalHours();
-    const weatherState = this._hass?.states?.[this.entity("sensor", "ai_state")]?.attributes?.weather || {};
-    const weatherRows = Array.isArray(weatherState.forecast) ? weatherState.forecast : [];
-    const weatherMap = new Map(weatherRows.map((row) => {
-      const stamp = new Date(row?.datetime ?? row?.time ?? "");
-      return Number.isNaN(stamp.getTime()) ? ["", null] : [`${this.localDateKey(stamp)}-${stamp.getHours()}`, row];
-    }));
-    const actual = values.map((row) => history.get(`${row.date}-${row.hour}`) || null);
-    const energyValues = [];
-    values.forEach((row, index) => {
-      [actual[index]?.pvSamples ? actual[index].pv : null, actual[index]?.loadSamples ? actual[index].load : null,
-        this.asNumber(row.solcast_kwh), this.asNumber(row.corrected_pv_kwh), this.asNumber(row.forecast_high_kwh), this.asNumber(row.load_kwh)]
-        .forEach((value) => { if (value !== null) energyValues.push(Math.max(0, value)); });
-    });
-    const maxEnergy = Math.max(1, ...energyValues) * 1.08;
-    const yEnergy = (value) => top + topHeight - Math.max(0, value) / maxEnergy * topHeight;
-    const xCenter = (index) => left + index * step + step / 2;
-    const distributionValues = values.map((row) => this.asNumber(row.distribution)).filter((value) => value !== null && value > 0);
-    const minDistribution = distributionValues.length ? Math.min(...distributionValues) : null;
-    const grid = [0, .25, .5, .75, 1].map((part) => `<line x1="${left}" y1="${(top + topHeight * part).toFixed(1)}" x2="${width - right}" y2="${(top + topHeight * part).toFixed(1)}" class="ai-chart-grid"/><text x="${left - 9}" y="${(top + topHeight * part + 4).toFixed(1)}" text-anchor="end" class="ai-chart-axis">${(maxEnergy * (1 - part)).toFixed(1)}</text>`).join("");
-    const cheapZones = values.map((row, index) => {
-      const rate = this.asNumber(row.distribution);
-      const cheap = minDistribution !== null && rate !== null && rate <= minDistribution + .00001;
-      return cheap ? `<rect x="${(left + index * step).toFixed(1)}" y="${top}" width="${Math.max(1, step).toFixed(1)}" height="${socTop + socHeight - top}" class="ai-cheap-zone"/>` : "";
-    }).join("");
-    const bars = values.map((row, index) => {
-      const actualPv = actual[index]?.pvSamples ? actual[index].pv : null;
-      const actualLoad = actual[index]?.loadSamples ? actual[index].load : null;
-      const plannedLoad = this.asNumber(row.load_kwh);
-      const solcast = this.asNumber(row.solcast_kwh);
-      const bar = (value, offset, css) => value === null ? "" : `<rect x="${(left + index * step + step * offset).toFixed(1)}" y="${yEnergy(value).toFixed(1)}" width="${Math.max(2, step * .22).toFixed(1)}" height="${Math.max(0, top + topHeight - yEnergy(value)).toFixed(1)}" class="${css}"/>`;
-      return `${bar(actualLoad ?? plannedLoad, .08, "ai-bar-load")}${bar(actualPv, .32, "ai-bar-actual")}${bar(solcast, .58, "ai-bar-solcast")}`;
-    }).join("");
-    const linePoints = (field, yFn = yEnergy) => values.map((row, index) => {
-      const value = this.asNumber(row[field]);
-      return value === null ? null : `${xCenter(index).toFixed(1)},${yFn(value).toFixed(1)}`;
-    }).filter(Boolean).join(" ");
-    const upper = values.map((row, index) => {
-      const value = this.asNumber(row.forecast_high_kwh);
-      return value === null ? null : `${xCenter(index).toFixed(1)},${yEnergy(value).toFixed(1)}`;
-    }).filter(Boolean);
-    const lower = values.map((row, index) => {
-      const value = this.asNumber(row.forecast_low_kwh);
-      return value === null ? null : `${xCenter(index).toFixed(1)},${yEnergy(value).toFixed(1)}`;
-    }).filter(Boolean).reverse();
-    const band = upper.length && lower.length ? `<polygon points="${[...upper, ...lower].join(" ")}" class="ai-forecast-band"/>` : "";
-    const minSoc = this.asNumber(this.aiSettings()?.minSoc);
-    const socY = (value) => socTop + socHeight - Math.max(0, Math.min(100, value)) / 100 * socHeight;
-    const socLine = linePoints("soc_after", socY);
-    const minSocLine = minSoc === null ? "" : `<line x1="${left}" y1="${socY(minSoc).toFixed(1)}" x2="${width - right}" y2="${socY(minSoc).toFixed(1)}" class="ai-min-soc"/><text x="${left + 4}" y="${(socY(minSoc) - 5).toFixed(1)}" class="ai-chart-axis">Min. SOC ${minSoc.toFixed(0)}%</text>`;
-    const actions = values.map((row, index) => row.action === "sell" || row.action === "charge"
-      ? `<rect x="${(left + index * step + step * .2).toFixed(1)}" y="${(socTop + socHeight - 15).toFixed(1)}" width="${Math.max(3, step * .6).toFixed(1)}" height="12" class="${row.action === "sell" ? "ai-action-sell" : "ai-action-charge"}"/>` : "").join("");
-    const weatherIcons = values.map((row, index) => {
-      const weather = weatherMap.get(`${row.date}-${row.hour}`);
-      if (!weather) return "";
-      const [icon] = this.aiWeatherMeta(weather.condition);
-      return `<text x="${xCenter(index).toFixed(1)}" y="${weatherY}" text-anchor="middle" class="ai-chart-weather">${icon}</text>`;
-    }).join("");
-    const labels = values.map((row, index) => {
-      const interval = values.length > 24 ? 4 : 2;
-      return index % interval === 0 ? `<text x="${xCenter(index).toFixed(1)}" y="${axisY}" text-anchor="middle" class="ai-chart-axis">${String(row.hour).padStart(2, "0")}</text>` : "";
-    }).join("");
-    const daySeparator = values.length > 24 ? `<line x1="${(left + step * 24).toFixed(1)}" y1="${top - 20}" x2="${(left + step * 24).toFixed(1)}" y2="${socTop + socHeight}" class="ai-day-separator"/><text x="${left + step * 12}" y="${top - 25}" text-anchor="middle" class="ai-day-label">Today</text><text x="${left + step * 36}" y="${top - 25}" text-anchor="middle" class="ai-day-label">Tomorrow</text>` : "";
-    const now = new Date();
-    const nowIndex = values.findIndex((row) => row.date === this.localDateKey(now) && Number(row.hour) === now.getHours());
-    const currentLine = nowIndex < 0 ? "" : `<line x1="${(left + step * (nowIndex + now.getMinutes() / 60)).toFixed(1)}" y1="${top - 5}" x2="${(left + step * (nowIndex + now.getMinutes() / 60)).toFixed(1)}" y2="${socTop + socHeight}" class="ai-now-line"/><text x="${(left + step * (nowIndex + now.getMinutes() / 60) + 4).toFixed(1)}" y="${top + 12}" class="ai-now-label">now</text>`;
-    const chartId = `chart-${String(title).toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
-    const display = (value, digits = 2, unit = "") => {
-      const parsed = this.asNumber(value);
-      return parsed === null ? "no data" : `${parsed.toFixed(digits)}${unit}`;
-    };
-    const tipSources = values.map((row, index) => {
-      const actualRow = actual[index];
-      const weather = weatherMap.get(`${row.date}-${row.hour}`) || {};
-      const [, weatherLabel] = this.aiWeatherMeta(weather.condition);
-      return `<div class="ai-chart-tip-source" data-ai-tip-source="${chartId}-${index}"><strong>${this.escapeHtml(String(row.date || ""))} · ${this.escapeHtml(String(row.label || this.hourLabel(row.hour)))}</strong><div><span>Actual production</span><b>${actualRow?.pvSamples ? display(actualRow.pv, 2, " kWh") : "no data"}</b><span>Solcast forecast</span><b>${display(row.solcast_kwh, 2, " kWh")}</b><span>Corrected forecast</span><b>${display(row.corrected_pv_kwh, 2, " kWh")}</b><span>Forecast range</span><b>${display(row.forecast_low_kwh, 2)}–${display(row.forecast_high_kwh, 2, " kWh")}</b><span>Consumption</span><b>${actualRow?.loadSamples ? display(actualRow.load, 2, " kWh") : display(row.load_kwh, 2, " kWh")}</b><span>SOC after</span><b>${display(row.soc_after, 1, "%")}</b><span>Action</span><b>${row.action === "sell" ? "selling" : row.action === "charge" ? "charging" : "no change"}</b><span>Balance</span><b>${display(row.balance_gbp, 2, " GBP")}</b><span>Weather</span><b>${this.escapeHtml(weatherLabel)} · ${display(weather.temperature, 1, "°C")}</b><span>Confidence</span><b>${display(row.confidence, 0, "%")}</b></div></div>`;
-    }).join("");
-    const overlays = values.map((row, index) => `<rect x="${(left + index * step).toFixed(1)}" y="${top - 10}" width="${Math.max(1, step).toFixed(1)}" height="${socTop + socHeight - top + 10}" class="ai-chart-hit" data-ai-chart-point="${chartId}" data-ai-chart-index="${index}"/>`).join("");
-    return `<section class="ai-chart-card ai-chart-v2" data-ai-chart="${chartId}"><h3>${this.escapeHtml(title)}</h3><div class="ai-chart-legend"><span class="load">Consumption</span><span class="actual">Actual production</span><span class="solcast">Solcast forecast</span><span class="corrected">Corrected forecast</span><span class="band">Forecast range</span><span class="soc">SOC</span><span class="sell">Selling</span><span class="charge">Charging</span><span class="tariff">Cheap tariff</span></div><div class="ai-chart-scroll"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${this.escapeHtml(title)}"><text x="15" y="${top + 6}" class="ai-chart-axis">kWh</text>${cheapZones}${grid}${band}${bars}<polyline points="${linePoints("corrected_pv_kwh")}" class="ai-line-corrected"/><line x1="${left}" y1="${top + topHeight}" x2="${width - right}" y2="${top + topHeight}" class="ai-chart-baseline"/><text x="15" y="${socTop + 10}" class="ai-chart-axis">SOC</text><line x1="${left}" y1="${socTop}" x2="${width - right}" y2="${socTop}" class="ai-chart-grid"/><line x1="${left}" y1="${socTop + socHeight}" x2="${width - right}" y2="${socTop + socHeight}" class="ai-chart-baseline"/>${minSocLine}<polyline points="${socLine}" class="ai-line-soc"/>${actions}${weatherIcons}${labels}${daySeparator}${currentLine}<line class="ai-chart-crosshair-x" x1="0" x2="0" y1="${top}" y2="${socTop + socHeight}"/><line class="ai-chart-crosshair-y" x1="${left}" x2="${width - right}" y1="0" y2="0"/>${overlays}</svg></div><div class="ai-chart-tooltip" data-ai-chart-tooltip></div>${tipSources}<small class="ai-chart-help">Hover over or tap an hour to see details. Missing data is marked as "no data".</small></section>`;
-  }
-
-  aiLegacyReadableEnergyChart(rows, title = "Energy plan") {
-    const values = Array.isArray(rows) ? rows : [];
-    const is48h = values.length > 24;
-    const count = Math.max(1, values.length);
-    const width = is48h ? 1800 : 1080;
-    const height = 610;
-    const left = 76, right = 72, top = 58, plotHeight = 305;
-    const axisY = 390, weatherTimeY = 423, weatherIconY = 451;
-    const statusTop = 486, statusRowHeight = 31;
-    const chartWidth = width - left - right;
-    const step = chartWidth / count;
-    const hidden = this._aiChartHiddenSeries instanceof Set ? this._aiChartHiddenSeries : new Set();
-    const visible = (name) => !hidden.has(name);
-    const history = this.aiHistoricalHours();
-    const now = new Date();
-    const todayKey = this.localDateKey(now);
-    const actual = values.map((row) => {
-      if (row.date !== todayKey || Number(row.hour) > now.getHours()) return null;
-      return history.get(`${row.date}-${row.hour}`) || null;
-    });
-    const actualSource = (row, actualRow) => {
-      if (row.date !== todayKey || Number(row.hour) > now.getHours()) return "No data — future hour";
-      if (Number(row.hour) === now.getHours()) return actualRow?.pvSamples ? "Current — partial hour" : "No data";
-      return actualRow?.pvSamples ? "Actual" : "No data";
-    };
-    const weatherState = this._hass?.states?.[this.entity("sensor", "ai_state")]?.attributes?.weather || {};
-    const weatherRows = Array.isArray(weatherState.forecast) ? weatherState.forecast : [];
-    const weatherMap = new Map(weatherRows.map((row) => {
-      const stamp = new Date(row?.datetime ?? row?.time ?? "");
-      return Number.isNaN(stamp.getTime()) ? ["", null] : [`${this.localDateKey(stamp)}-${stamp.getHours()}`, row];
-    }));
-    const energyNumbers = [];
-    values.forEach((row, index) => {
-      [actual[index]?.pvSamples ? actual[index].pv : null, actual[index]?.loadSamples ? actual[index].load : null,
-        this.asNumber(row.load_kwh), this.asNumber(row.solcast_kwh), this.asNumber(row.corrected_pv_kwh), this.asNumber(row.forecast_high_kwh)]
-        .forEach((value) => { if (value !== null) energyNumbers.push(Math.max(0, value)); });
-    });
-    const maxEnergy = Math.max(1, ...energyNumbers) * 1.08;
-    const x = (index) => left + index * step + step / 2;
-    const yEnergy = (value) => top + plotHeight - Math.max(0, value) / maxEnergy * plotHeight;
-    const ySoc = (value) => top + plotHeight - Math.max(0, Math.min(100, value)) / 100 * plotHeight;
-    const linePoints = (field, yFn) => values.map((row, index) => {
-      const value = this.asNumber(row[field]);
-      return value === null ? null : `${x(index).toFixed(1)},${yFn(value).toFixed(1)}`;
-    }).filter(Boolean).join(" ");
-    const horizontalGrid = [0, .2, .4, .6, .8, 1].map((part) => {
-      const y = top + plotHeight * part;
-      const energyLabel = maxEnergy * (1 - part);
-      const socLabel = 100 * (1 - part);
-      return `<line x1="${left}" y1="${y.toFixed(1)}" x2="${width - right}" y2="${y.toFixed(1)}" class="ai-readable-grid"/><text x="${left - 12}" y="${(y + 4).toFixed(1)}" text-anchor="end" class="ai-readable-axis">${energyLabel.toFixed(1)}</text><text x="${width - right + 12}" y="${(y + 4).toFixed(1)}" class="ai-readable-axis">${socLabel.toFixed(0)}</text>`;
-    }).join("");
-    const gridInterval = is48h ? 4 : 2;
-    const verticalGrid = values.map((row, index) => index % gridInterval === 0
-      ? `<line x1="${x(index).toFixed(1)}" y1="${top}" x2="${x(index).toFixed(1)}" y2="${top + plotHeight}" class="ai-readable-grid ai-readable-grid-v"/>` : "").join("");
-    const bars = values.map((row, index) => {
-      const actualRow = actual[index];
-      const load = actualRow?.loadSamples ? actualRow.load : this.asNumber(row.load_kwh);
-      const production = actualRow?.pvSamples ? actualRow.pv : null;
-      const draw = (value, offset, css) => value === null ? "" : `<rect x="${(x(index) + step * offset - Math.max(2.5, step * .14)).toFixed(1)}" y="${yEnergy(value).toFixed(1)}" width="${Math.max(5, step * .28).toFixed(1)}" height="${Math.max(0, top + plotHeight - yEnergy(value)).toFixed(1)}" rx="1.5" class="${css}"/>`;
-      return `${visible("load") ? draw(load, -.18, "ai-readable-load") : ""}${visible("actual") ? draw(production, .18, "ai-readable-actual") : ""}`;
-    }).join("");
-    const upper = values.map((row, index) => {
-      const value = this.asNumber(row.forecast_high_kwh);
-      return value === null ? null : `${x(index).toFixed(1)},${yEnergy(value).toFixed(1)}`;
-    }).filter(Boolean);
-    const lower = values.map((row, index) => {
-      const value = this.asNumber(row.forecast_low_kwh);
-      return value === null ? null : `${x(index).toFixed(1)},${yEnergy(value).toFixed(1)}`;
-    }).filter(Boolean).reverse();
-    const band = visible("band") && upper.length && lower.length ? `<polygon points="${[...upper, ...lower].join(" ")}" class="ai-readable-band"/>` : "";
-    const solcastLine = visible("solcast") ? `<polyline points="${linePoints("solcast_kwh", yEnergy)}" class="ai-readable-solcast"/>` : "";
-    const correctedLine = visible("corrected") ? `<polyline points="${linePoints("corrected_pv_kwh", yEnergy)}" class="ai-readable-corrected"/>` : "";
-    const socLine = visible("soc") ? `<polyline points="${linePoints("soc_after", ySoc)}" class="ai-readable-soc"/>` : "";
-    const minSoc = this.asNumber(this.aiSettings()?.minSoc);
-    const minSocLine = visible("minimum") && minSoc !== null
-      ? `<line x1="${left}" y1="${ySoc(minSoc).toFixed(1)}" x2="${width - right}" y2="${ySoc(minSoc).toFixed(1)}" class="ai-readable-min-soc"/><text x="${left + 7}" y="${(ySoc(minSoc) - 7).toFixed(1)}" class="ai-readable-min-label">Min. SOC ${minSoc.toFixed(0)}%</text>` : "";
-    const xLabels = values.map((row, index) => index % gridInterval === 0
-      ? `<text x="${x(index).toFixed(1)}" y="${axisY}" text-anchor="middle" class="ai-readable-hour">${String(row.hour).padStart(2, "0")}:00</text>` : "").join("");
-    const weather = values.map((row, index) => {
-      const forecast = weatherMap.get(`${row.date}-${row.hour}`);
-      const meta = forecast ? this.aiWeatherMeta(forecast.condition) : ["—", "no forecast"];
-      const precipitation = this.asNumber(forecast?.precipitation_probability);
-      const rainClass = precipitation === null ? "missing" : precipitation >= 70 ? "high" : precipitation >= 35 ? "medium" : "low";
-      return `<text x="${x(index).toFixed(1)}" y="${weatherIconY}" text-anchor="middle" class="ai-readable-weather">${meta[0]}</text><rect x="${(x(index) - Math.max(3, step * .25)).toFixed(1)}" y="${weatherIconY + 9}" width="${Math.max(6, step * .5).toFixed(1)}" height="3" rx="1.5" class="ai-weather-risk ${rainClass}"/>`;
-    }).join("");
-    const distributionValues = values.map((row) => this.asNumber(row.distribution)).filter((value) => value !== null && value > 0);
-    const minDistribution = distributionValues.length ? Math.min(...distributionValues) : null;
-    const statuses = values.map((row, index) => {
-      const cellX = left + index * step + step * .08;
-      const cellWidth = Math.max(3, step * .84);
-      const selling = row.action === "sell";
-      const charging = row.action === "charge";
-      const rate = this.asNumber(row.distribution);
-      const cheap = minDistribution !== null && rate !== null && rate <= minDistribution + .00001;
-      return `${selling ? `<rect x="${cellX.toFixed(1)}" y="${(statusTop + 5).toFixed(1)}" width="${cellWidth.toFixed(1)}" height="${statusRowHeight - 10}" rx="3" class="ai-status-sell"/>` : ""}${charging ? `<rect x="${cellX.toFixed(1)}" y="${(statusTop + statusRowHeight + 5).toFixed(1)}" width="${cellWidth.toFixed(1)}" height="${statusRowHeight - 10}" rx="3" class="ai-status-charge"/>` : ""}${cheap ? `<rect x="${cellX.toFixed(1)}" y="${(statusTop + statusRowHeight * 2 + 5).toFixed(1)}" width="${cellWidth.toFixed(1)}" height="${statusRowHeight - 10}" rx="3" class="ai-status-tariff"/>` : ""}`;
-    }).join("");
-    const statusGrid = [0, 1, 2, 3].map((index) => `<line x1="${left}" y1="${statusTop + index * statusRowHeight}" x2="${width - right}" y2="${statusTop + index * statusRowHeight}" class="ai-status-grid"/>`).join("");
-    const statusVertical = values.map((row, index) => index % gridInterval === 0 ? `<line x1="${x(index).toFixed(1)}" y1="${statusTop}" x2="${x(index).toFixed(1)}" y2="${statusTop + statusRowHeight * 3}" class="ai-status-grid ai-status-grid-v"/>` : "").join("");
-    const firstDate = values[0]?.date || "";
-    const secondDate = values[24]?.date || "";
-    const daySeparator = is48h ? `<line x1="${(left + step * 24).toFixed(1)}" y1="${top - 18}" x2="${(left + step * 24).toFixed(1)}" y2="${statusTop + statusRowHeight * 3}" class="ai-readable-day-separator"/><text x="${left + step * 12}" y="${top - 25}" text-anchor="middle" class="ai-readable-day-label">Today · ${this.escapeHtml(firstDate)}</text><text x="${left + step * 36}" y="${top - 25}" text-anchor="middle" class="ai-readable-day-label">Tomorrow · ${this.escapeHtml(secondDate)}</text>` : "";
-    const currentIndex = values.findIndex((row) => row.date === this.localDateKey(now) && Number(row.hour) === now.getHours());
-    const nowX = currentIndex < 0 ? null : left + step * (currentIndex + now.getMinutes() / 60);
-    const currentLine = nowX === null ? "" : `<line x1="${nowX.toFixed(1)}" y1="${top}" x2="${nowX.toFixed(1)}" y2="${statusTop + statusRowHeight * 3}" class="ai-readable-now"/><rect x="${(nowX + 6).toFixed(1)}" y="${top + 5}" width="42" height="20" rx="4" class="ai-readable-now-tag"/><text x="${(nowX + 27).toFixed(1)}" y="${top + 19}" text-anchor="middle" class="ai-readable-now-text">Now</text>`;
-    const chartId = `readable-${String(title).toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
-    const display = (value, digits = 2, unit = "") => {
-      const number = this.asNumber(value);
-      return number === null ? "no data" : `${number.toFixed(digits)}${unit}`;
-    };
-    const tips = values.map((row, index) => {
-      const actualRow = actual[index];
-      const forecast = weatherMap.get(`${row.date}-${row.hour}`) || {};
-      const [, condition] = this.aiWeatherMeta(forecast.condition);
-      return `<div class="ai-chart-tip-source" data-ai-tip-source="${chartId}-${index}"><strong>${this.escapeHtml(String(row.date || ""))} · ${this.escapeHtml(String(row.label || this.hourLabel(row.hour)))}</strong><div><span>Actual production</span><b>${actualRow?.pvSamples ? display(actualRow.pv, 2, " kWh") : "no data"}</b><span>Consumption</span><b>${actualRow?.loadSamples ? display(actualRow.load, 2, " kWh") : display(row.load_kwh, 2, " kWh")}</b><span>Solcast forecast</span><b>${display(row.solcast_kwh, 2, " kWh")}</b><span>Corrected forecast</span><b>${display(row.corrected_pv_kwh, 2, " kWh")}</b><span>Forecast range</span><b>${display(row.forecast_low_kwh, 2)}–${display(row.forecast_high_kwh, 2, " kWh")}</b><span>SOC</span><b>${display(row.soc_after, 1, "%")}</b><span>Status</span><b>${row.action === "sell" ? "selling" : row.action === "charge" ? "charging" : "no change"}</b><span>Distribution</span><b>${display(row.distribution, 4, " GBP/kWh")}</b><span>Weather</span><b>${forecast.condition ? `${this.escapeHtml(condition)} · ${display(forecast.temperature, 1, "°C")}` : "no data"}</b><span>Precipitation</span><b>${display(forecast.precipitation_probability, 0, "%")}</b><span>Balance</span><b>${display(row.balance_gbp, 2, " GBP")}</b></div></div>`;
-    }).join("");
-    const hits = values.map((row, index) => `<rect x="${(left + index * step).toFixed(1)}" y="${top}" width="${Math.max(1, step).toFixed(1)}" height="${statusTop + statusRowHeight * 3 - top}" class="ai-chart-hit" data-ai-chart-point="${chartId}" data-ai-chart-index="${index}"/>`).join("");
-    const legend = [
-      ["load", "Consumption"], ["actual", "Actual production"], ["solcast", "Solcast forecast"],
-      ["corrected", "Corrected forecast"], ["band", "Forecast range"], ["soc", "SOC (%)"], ["minimum", `Min. SOC ${minSoc === null ? "" : `${minSoc.toFixed(0)}%`}`],
-    ].map(([key, label]) => `<button class="${hidden.has(key) ? "disabled" : ""} ${key}" data-ai-chart-series="${key}" type="button"><i></i>${label}</button>`).join("");
-    return `<section class="ai-chart-card ai-readable-chart" data-ai-chart="${chartId}"><h3>${this.escapeHtml(title)}</h3><div class="ai-readable-legend">${legend}</div><div class="ai-chart-scroll"><svg viewBox="0 0 ${width} ${height}" style="min-width:${width}px" role="img" aria-label="${this.escapeHtml(title)}"><text x="${left - 40}" y="${top - 16}" class="ai-readable-unit">kWh</text><text x="${width - right + 24}" y="${top - 16}" class="ai-readable-unit">%</text>${horizontalGrid}${verticalGrid}${band}${bars}${solcastLine}${correctedLine}${socLine}${minSocLine}<line x1="${left}" y1="${top + plotHeight}" x2="${width - right}" y2="${top + plotHeight}" class="ai-readable-baseline"/>${xLabels}<text x="12" y="${weatherIconY}" class="ai-readable-section-label">Weather</text>${weather}${statusGrid}${statusVertical}<text x="12" y="${statusTop - 10}" class="ai-readable-section-label">Hour status</text><text x="15" y="${statusTop + 21}" class="ai-status-label sell">■ Selling</text><text x="15" y="${statusTop + statusRowHeight + 21}" class="ai-status-label charge">■ Charging</text><text x="15" y="${statusTop + statusRowHeight * 2 + 21}" class="ai-status-label tariff">■ Cheap tariff</text>${statuses}${daySeparator}${currentLine}<line class="ai-chart-crosshair-x" x1="0" x2="0" y1="${top}" y2="${statusTop + statusRowHeight * 3}"/><line class="ai-chart-crosshair-y" x1="${left}" x2="${width - right}" y1="0" y2="0"/>${hits}</svg></div><div class="ai-chart-tooltip" data-ai-chart-tooltip></div>${tips}<small class="ai-chart-help">Click the legend to hide a series. Hover over or tap an hour to see energy, SOC, weather and status.</small></section>`;
-  }
-
-  aiReadableEnergyChart(rows, title = "Energy plan") {
-    const values = Array.isArray(rows) ? rows : [];
-    if (values.length <= 24) return this.aiReadableDayChart(values, title, "single");
-
-    const days = [];
-    values.slice(0, 48).forEach((row) => {
-      const date = row?.date || "missing date";
-      let day = days.find((item) => item.date === date);
-      if (!day) {
-        day = { date, rows: [] };
-        days.push(day);
-      }
-      day.rows.push(row);
-    });
-    return `<section class="ai-energy-48-crisp"><h3>${this.escapeHtml(title)}</h3><div class="ai-readable-stack">${days.slice(0, 2).map((day, index) => this.aiReadableDayChart(day.rows, `${index === 0 ? "Today" : "Tomorrow"} · ${day.date}`, `day-${index}`)).join("")}</div></section>`;
-  }
-
-  aiReadableDayChart(rows, title, chartSuffix = "single") {
-    const values = Array.isArray(rows) ? rows.slice(0, 24) : [];
-    const count = Math.max(1, values.length);
-    const width = 1000;
-    const top = 10;
-    const plotHeight = 252;
-    const bottom = top + plotHeight;
-    const step = width / count;
-    const hidden = this._aiChartHiddenSeries instanceof Set ? this._aiChartHiddenSeries : new Set();
-    const visible = (name) => !hidden.has(name);
-    const history = this.aiHistoricalHours();
-    const now = new Date();
-    const todayKey = this.localDateKey(now);
-    const actual = values.map((row) => {
-      if (row.date !== todayKey || Number(row.hour) > now.getHours()) return null;
-      return history.get(`${row.date}-${row.hour}`) || null;
-    });
-    const actualSource = (row, actualRow) => {
-      if (row.date !== todayKey || Number(row.hour) > now.getHours()) return "No data — future hour";
-      if (Number(row.hour) === now.getHours()) return actualRow?.pvSamples ? "Current — partial hour" : "No data";
-      return actualRow?.pvSamples ? "Actual" : "No data";
-    };
-    const weatherState = this._hass?.states?.[this.entity("sensor", "ai_state")]?.attributes?.weather || {};
-    const forecastRows = Array.isArray(weatherState.forecast) ? weatherState.forecast : [];
-    const weatherMap = new Map(forecastRows.map((row) => {
-      const stamp = new Date(row?.datetime ?? row?.time ?? "");
-      return Number.isNaN(stamp.getTime()) ? ["", null] : [`${this.localDateKey(stamp)}-${stamp.getHours()}`, row];
-    }));
-    const energyValues = [];
-    values.forEach((row, index) => {
-      [actual[index]?.pvSamples ? actual[index].pv : null, actual[index]?.loadSamples ? actual[index].load : null,
-        this.asNumber(row.load_kwh), this.asNumber(row.solcast_kwh), this.asNumber(row.corrected_pv_kwh), this.asNumber(row.forecast_high_kwh)]
-        .forEach((value) => { if (value !== null) energyValues.push(Math.max(0, value)); });
-    });
-    const maxEnergy = Math.max(1, ...energyValues) * 1.08;
-    const x = (index) => index * step + step / 2;
-    const yEnergy = (value) => bottom - Math.max(0, value || 0) / maxEnergy * plotHeight;
-    const ySoc = (value) => bottom - Math.max(0, Math.min(100, value || 0)) / 100 * plotHeight;
-    const linePoints = (field, yFn) => values.map((row, index) => {
-      const value = this.asNumber(row[field]);
-      return value === null ? null : `${x(index).toFixed(1)},${yFn(value).toFixed(1)}`;
-    }).filter(Boolean).join(" ");
-    const horizontalGrid = [.2, .4, .6, .8].map((part) => `<line x1="0" y1="${(top + plotHeight * part).toFixed(1)}" x2="${width}" y2="${(top + plotHeight * part).toFixed(1)}" class="ai-crisp-grid"/>`).join("");
-    const verticalGuides = [0, 6, 12, 18, 24].map((hour) => `<line x1="${(hour * step).toFixed(1)}" y1="${top}" x2="${(hour * step).toFixed(1)}" y2="${bottom}" class="ai-crisp-guide"/>`).join("");
-    const bars = values.map((row, index) => {
-      const actualRow = actual[index];
-      const load = actualRow?.loadSamples ? actualRow.load : this.asNumber(row.load_kwh);
-      const production = actualRow?.pvSamples ? actualRow.pv : null;
-      const draw = (value, offset, css) => value === null ? "" : `<rect x="${(x(index) + step * offset - Math.max(2, step * .13)).toFixed(1)}" y="${yEnergy(value).toFixed(1)}" width="${Math.max(4, step * .26).toFixed(1)}" height="${Math.max(0, bottom - yEnergy(value)).toFixed(1)}" rx="2" class="${css}"/>`;
-      return `${visible("load") ? draw(load, -.17, "ai-crisp-load") : ""}${visible("actual") ? draw(production, .17, "ai-crisp-actual") : ""}`;
-    }).join("");
-    const upper = values.map((row, index) => {
-      const value = this.asNumber(row.forecast_high_kwh);
-      return value === null ? null : `${x(index).toFixed(1)},${yEnergy(value).toFixed(1)}`;
-    }).filter(Boolean);
-    const lower = values.map((row, index) => {
-      const value = this.asNumber(row.forecast_low_kwh);
-      return value === null ? null : `${x(index).toFixed(1)},${yEnergy(value).toFixed(1)}`;
-    }).filter(Boolean).reverse();
-    const band = visible("band") && upper.length && lower.length ? `<polygon points="${[...upper, ...lower].join(" ")}" class="ai-crisp-band"/>` : "";
-    const solcastLine = visible("solcast") ? `<polyline points="${linePoints("solcast_kwh", yEnergy)}" class="ai-crisp-solcast"/>` : "";
-    const correctedLine = visible("corrected") ? `<polyline points="${linePoints("corrected_pv_kwh", yEnergy)}" class="ai-crisp-corrected"/>` : "";
-    const socLine = visible("soc") ? `<polyline points="${linePoints("soc_after", ySoc)}" class="ai-crisp-soc"/>` : "";
-    const minSoc = this.asNumber(values[0]?.hard_min_soc_pct ?? this.aiSettings()?.minSoc);
-    const effectiveMinSoc = this.asNumber(values[0]?.effective_min_soc_pct ?? minSoc);
-    const sameMinimum = minSoc !== null
-      && effectiveMinSoc !== null
-      && Math.abs(effectiveMinSoc - minSoc) <= .05;
-    const minSocLine = visible("minimum") && minSoc !== null ? `<line x1="0" y1="${ySoc(minSoc).toFixed(1)}" x2="${width}" y2="${ySoc(minSoc).toFixed(1)}" class="ai-crisp-min-soc"/>` : "";
-    const effectiveMinSocLine = visible("effective-minimum") && effectiveMinSoc !== null && !sameMinimum ? `<line x1="0" y1="${ySoc(effectiveMinSoc).toFixed(1)}" x2="${width}" y2="${ySoc(effectiveMinSoc).toFixed(1)}" class="ai-crisp-effective-min-soc"/>` : "";
-    const currentIndex = values.findIndex((row) => row.date === this.localDateKey(now) && Number(row.hour) === now.getHours());
-    const currentX = currentIndex < 0 ? null : (currentIndex + now.getMinutes() / 60) * step;
-    const currentPercent = currentX === null
-      ? null
-      : Math.max(3, Math.min(97, currentX / width * 100)).toFixed(2);
-    const currentLine = currentX === null ? "" : `<line x1="${currentX.toFixed(1)}" y1="${top}" x2="${currentX.toFixed(1)}" y2="${bottom}" class="ai-crisp-now"/>`;
-    const distribution = values.map((row) => this.asNumber(row.distribution)).filter((value) => value !== null && value > 0);
-    const cheapRate = distribution.length ? Math.min(...distribution) : null;
-    const timeLabels = values.map((row, index) => `<span>${index % 3 === 0 ? `${String(row.hour).padStart(2, "0")}:00` : ""}</span>`).join("");
-    const weatherCells = values.map((row) => {
-      const forecast = weatherMap.get(`${row.date}-${row.hour}`);
-      const [icon, label] = forecast ? this.aiWeatherMeta(forecast.condition) : ["—", "no forecast"];
-      const precipitation = this.asNumber(forecast?.precipitation_probability);
-      const risk = precipitation === null ? "missing" : precipitation >= 70 ? "high" : precipitation >= 35 ? "medium" : "low";
-      return `<span class="ai-crisp-weather-cell" title="${this.escapeHtml(`${label}${precipitation === null ? "" : ` · precipitation ${precipitation.toFixed(0)}%`}`)}"><b>${icon}</b><i class="${risk}"></i></span>`;
-    }).join("");
-    const statusCells = (kind) => values.map((row) => {
-      const rate = this.asNumber(row.distribution);
-      const matches = kind === "sell" ? row.action === "sell" : kind === "charge" ? row.action === "charge" : cheapRate !== null && rate !== null && rate <= cheapRate + .00001;
-      const active = visible(kind) && matches;
-      return `<span class="${active ? `active ${kind}` : `inactive ${kind}`}"></span>`;
-    }).join("");
-    const chartId = `crisp-${String(chartSuffix).replace(/[^a-z0-9]+/gi, "-")}-${String(values[0]?.date || "empty").replace(/[^a-z0-9]+/gi, "-")}`;
-    const display = (value, digits = 2, unit = "") => {
-      const number = this.asNumber(value);
-      return number === null ? "no data" : `${this.aiFormatNumber(number, digits)}${unit}`;
-    };
-    const tips = values.map((row, index) => {
-      const actualRow = actual[index];
-      const forecast = weatherMap.get(`${row.date}-${row.hour}`) || {};
-      const [, condition] = this.aiWeatherMeta(forecast.condition);
-      return `<div class="ai-chart-tip-source" data-ai-tip-source="${chartId}-${index}"><strong>${this.aiFormatDate(row.date)} · ${this.escapeHtml(String(row.label || this.hourLabel(row.hour)))}</strong><div><span>Actual production</span><b>${actualRow?.pvSamples ? display(actualRow.pv, 2, " kWh") : "no data"}</b><span>Point source</span><b>${this.escapeHtml(actualSource(row, actualRow))}</b><span>Consumption</span><b>${actualRow?.loadSamples ? display(actualRow.load, 2, " kWh") : display(row.load_kwh, 2, " kWh")}</b><span>Solcast forecast</span><b>${display(row.solcast_kwh, 2, " kWh")}</b><span>Corrected forecast</span><b>${display(row.corrected_pv_kwh, 2, " kWh")}</b><span>Forecast range</span><b>${display(row.forecast_low_kwh, 2)}–${display(row.forecast_high_kwh, 2, " kWh")}</b><span>SOC</span><b>${display(row.soc_after, 1, "%")}</b><span>User min. SOC</span><b>${display(minSoc, 1, "%")}</b><span>Effective plan minimum</span><b title="The plan stopped discharge earlier to preserve additional energy reserve.">${display(effectiveMinSoc, 1, "%")}</b><span>Status</span><b>${this.escapeHtml(this.aiActionLabel(row.action))}</b><span>Weather</span><b>${forecast.condition ? `${this.escapeHtml(condition)} · ${display(forecast.temperature, 1, "°C")}` : "no data"}</b><span>Balance</span><b>${display(row.balance_gbp, 2, " £")}</b></div></div>`;
-    }).join("");
-    const hits = values.map((row, index) => `<rect x="${(index * step).toFixed(1)}" y="${top}" width="${Math.max(1, step).toFixed(1)}" height="${plotHeight}" class="ai-chart-hit ai-crisp-hit" data-ai-chart-point="${chartId}" data-ai-chart-index="${index}"/>`).join("");
-    const minimumLabel = sameMinimum
-      ? `Minimum SOC ${this.aiFormatNumber(minSoc, 1)}% (user = plan)`
-      : `User min. SOC ${minSoc === null ? "" : `${this.aiFormatNumber(minSoc, 1)}%`}`;
-    const legendItems = [
-      ["load", "Consumption"],
-      ["actual", "Actual production"],
-      ["solcast", "Solcast forecast"],
-      ["corrected", "Corrected forecast"],
-      ["band", "Forecast range"],
-      ["soc", "SOC (%)"],
-      ["minimum", minimumLabel],
-      sameMinimum ? null : ["effective-minimum", `Effective plan minimum ${effectiveMinSoc === null ? "" : `${this.aiFormatNumber(effectiveMinSoc, 1)}%`}`],
-      ["sell", "Selling"],
-      ["charge", "Charging"],
-      ["tariff", "Cheap tariff"],
-    ].filter(Boolean);
-    const legend = legendItems.map(([key, label]) => `<button class="${hidden.has(key) ? "disabled" : ""} ${key}" data-ai-chart-series="${key}" type="button"><i></i>${label}</button>`).join("");
-    const leftAxis = [maxEnergy, maxEnergy / 2, 0].map((value) => `<span>${this.aiFormatNumber(value, 1)}</span>`).join("");
-    return `<section class="ai-chart-card ai-crisp-chart" data-ai-chart="${chartId}"><h3>${this.escapeHtml(title)}</h3><div class="ai-crisp-legend">${legend}</div><div class="ai-crisp-layout"><div class="ai-crisp-axis ai-crisp-axis-left"><b>kWh</b><div class="ai-crisp-axis-values">${leftAxis}</div></div><div class="ai-crisp-main"><div class="ai-crisp-plot"><svg class="ai-crisp-svg" viewBox="0 0 ${width} ${bottom}" preserveAspectRatio="none" role="img" aria-label="${this.escapeHtml(title)}">${horizontalGrid}${verticalGuides}${band}${bars}${solcastLine}${correctedLine}${socLine}${minSocLine}${effectiveMinSocLine}${currentLine}<line x1="0" y1="${bottom}" x2="${width}" y2="${bottom}" class="ai-crisp-baseline"/><line class="ai-chart-crosshair-x" x1="0" x2="0" y1="${top}" y2="${bottom}"/><line class="ai-chart-crosshair-y" x1="0" x2="${width}" y1="0" y2="0"/>${hits}</svg>${currentX === null ? "" : `<span class="ai-crisp-now-tag" style="left:${currentPercent}%">Now</span>`}</div><div class="ai-crisp-integrated-grid"><div class="ai-crisp-weather-grid">${weatherCells}</div><div class="ai-crisp-status"><div class="sell" title="Selling">${statusCells("sell")}</div><div class="charge" title="Charging">${statusCells("charge")}</div><div class="tariff" title="Cheap tariff">${statusCells("tariff")}</div></div><div class="ai-crisp-time-grid">${timeLabels}</div></div></div><div class="ai-crisp-axis ai-crisp-axis-right"><b>%</b><div class="ai-crisp-axis-values"><span>100</span><span>50</span><span>0</span></div></div></div><div class="ai-chart-tooltip" data-ai-chart-tooltip></div>${tips}<small class="ai-chart-help">The energy axis starts at 0 kWh and the SOC axis ranges from 0 to 100%. Weather, actions and tariff are aligned to the same 24 hourly columns. Actual production is not drawn for future hours.</small></section>`;
-  }
-
-  aiApiPresentation(planner = null) {
-    const api = this.aiApiContext() || {};
-    const error = String(api.last_error || api.error || "");
-    const authError = /(?:401|invalid token|unauthori[sz]ed|authori[sz]ation)/i.test(error);
-    if (authError) return {
-      status: "AI assistant: authorisation error",
-      message: "Check the provider API key.",
-      detail: "HTTP 401 — invalid key or token",
-      external: false,
-    };
-    if (error) return {
-      status: "AI assistant: connection error",
-      message: "The local plan remains available.",
-      detail: error.replace(/\{.*$/s, "").trim(),
-      external: false,
-    };
-    const rawStatus = String(api.status || (api.config?.enabled ? "ready" : "disabled")).toLowerCase();
-    const sourceMatches = !planner || (
-      String(api.last_plan_id || "") === String(planner.plan_id || "")
-      && String(api.last_input_snapshot_id || "") === String(planner.input_snapshot_id || "")
-    );
-    const external = ["ok", "success", "completed"].includes(rawStatus) && !!api.last_analysis && sourceMatches;
-    if (!!api.last_analysis && !sourceMatches) return {
-      status: "AI assistant: explanation out of date",
-      message: "Optimizer Core recalculated the plan after this response. Only current local data is shown.",
-      detail: "Mismatched plan_id or input_snapshot_id",
-      external: false,
-      stale: true,
-      provider: api.provider,
-      model: api.model,
-    };
-    const statusLabels = {
-      disabled: "AI assistant: disabled",
-      ready: "AI assistant: ready",
-      waiting: "AI assistant: waiting",
-      testing: "AI assistant: testing the connection",
-      busy: "AI assistant: analysing",
-      analysing: "AI assistant: analysing",
-      analyzing: "AI assistant: analysing",
-      connected: "AI assistant: connected",
-      ok: "AI assistant: analysis completed",
-      success: "AI assistant: analysis completed",
-      completed: "AI assistant: analysis completed",
-      rejected: "AI assistant: response rejected",
-    };
-    return {
-      status: statusLabels[rawStatus] || `AI assistant: ${this.aiUiText(rawStatus)}`,
-      message: external ? "An external response is available." : "The plan is explained locally by Optimizer Core.",
-      detail: "",
-      external,
-      provider: api.provider,
-      model: api.model,
-      summary: external ? String(api.last_analysis?.summary || "") : "",
-      candidateValidated: api.candidate?.accepted_by_core === true,
-    };
-  }
-
-  aiPlanStatus(planner, future) {
-    const results = Object.values(future?.slot_results || {}).filter((item) => item && typeof item === "object");
-    const count = (status) => results.filter((item) => item.status === status).length;
-    const total = Array.isArray(future?.updates) ? future.updates.length : 0;
-    const details = [
-      count("confirmed") ? `confirmed ${count("confirmed")}` : "",
-      count("physical_pending") ? `waiting for the inverter ${count("physical_pending")}` : "",
-      count("logical_applied") ? `saved logically ${count("logical_applied")}` : "",
-      count("waiting_data") ? `waiting for data ${count("waiting_data")}` : "",
-      count("missed") ? `skipped ${count("missed")}` : "",
-      count("blocked") ? `blocked ${count("blocked")}` : "",
-      count("manual_override") ? `overridden manually ${count("manual_override")}` : "",
-    ].filter(Boolean).join(" · ");
-    if (["scheduled", "partial", "confirmed", "legacy_unconfirmed"].includes(future?.status)) {
-      return `Plan ${this.aiUiText(future.status)} for ${this.aiFormatDate(future.date)} · ${total} slots${details ? ` · ${details}` : ""}`;
-    }
-    if (planner.plan_status === "blocked") return "Plan blocked";
-    const tomorrow = String(planner?.ui_insights?.tomorrow_plan_status || "");
-    if (tomorrow) return this.aiUiText(tomorrow);
-    const hasTomorrow = (planner.rows || []).some((row) => row.day === "tomorrow" && row.proposed);
-    return hasTomorrow ? "Plan for tomorrow created — awaiting approval" : "Forecast created";
-  }
-
-  renderAiExplanation(planner) {
-    const profiles = this.aiSaleInsights(planner);
-    const publication = planner.ui_insights?.price_publication || {};
-    const api = this.aiApiPresentation(planner);
-    const day = this._aiExplanationDay === "tomorrow" ? "tomorrow" : "today";
-    const dayLabel = day === "today" ? "Today" : "Tomorrow";
-    const plannerRows = this.aiRowsForDay(planner, day);
-    const optimizerRows = plannerRows
-      .filter((row) => this.aiIsApplicableProposal(row) && row.action === "sell" && !this.aiProfileId(row))
-      .sort((a, b) => Number(a.hour) - Number(b.hour));
-    const dateValue = plannerRows[0]?.date
-      || profiles.morning_sale?.day_summaries?.[day]?.date
-      || profiles.evening_sale?.day_summaries?.[day]?.date;
-    const optimizerEnergy = optimizerRows.reduce((sum, row) => sum + (this.asNumber(row.planned_energy_kwh ?? row.energy_kwh) || 0), 0);
-    const profileEnergy = Object.values(profiles).reduce((sum, profile) => {
-      const summary = profile?.day_summaries?.[day];
-      if (summary) return sum + (this.asNumber(summary.profile_planned_energy_kwh) || 0);
-      const compact = Array.isArray(profile?.days?.[day]) ? profile.days[day] : [];
-      return sum + compact.filter((row) => row.recommended).reduce((acc, row) => acc + (this.asNumber(row.planned_energy_kwh) || 0), 0);
-    }, 0);
-    const explainProfile = (profileId, defaultLabel) => {
-      const profile = profiles[profileId] || {};
-      if (!profile.enabled) return "";
-      const target = this.asNumber(profile.target_energy_kwh) || 0;
-      const rows = Array.isArray(profile.days?.[day]) ? profile.days[day] : [];
-      const selected = rows.filter((row) => row.recommended).sort((a, b) => Number(a.hour) - Number(b.hour));
-      const omitted = rows.filter((row) => !row.recommended).sort((a, b) => Number(a.hour) - Number(b.hour));
-      const fallbackPlanned = selected.reduce((sum, row) => sum + (this.asNumber(row.planned_energy_kwh) || 0), 0);
-      const summary = profile.day_summaries?.[day] || {
-        ...(profile.explanation || {}),
-        target_energy_kwh: target,
-        profile_planned_energy_kwh: fallbackPlanned,
-        optimizer_extra_energy_kwh: 0,
-        total_proposed_energy_kwh: fallbackPlanned,
-        missing_profile_energy_kwh: Math.max(0, target - fallbackPlanned),
-        primary_constraint: profile.explanation?.primary_constraint,
-      };
-      const dailyTarget = this.asNumber(summary.target_energy_kwh) ?? target;
-      const planned = this.asNumber(summary.profile_planned_energy_kwh) || 0;
-      const extra = this.asNumber(summary.optimizer_extra_energy_kwh) || 0;
-      const total = this.asNumber(summary.total_proposed_energy_kwh) ?? planned + extra;
-      const missing = this.asNumber(summary.missing_profile_energy_kwh) ?? Math.max(0, dailyTarget - planned);
-      const selectedRows = selected.map((row) => {
-        const source = plannerRows.find((item) => item.date === row.date && Number(item.hour) === Number(row.hour) && this.aiProfileId(item) === profileId) || row;
-        const priceRank = this.asNumber(row.price_rank);
-        const basis = source.power_basis || row.limit_reasons?.[0] || "profile_energy_allocation";
-        const power = this.aiPlannedSlotPower(source) || this.aiPlannedSlotPower(row);
-        const requested = this.asNumber(source.requested_action_energy_kwh ?? row.requested_energy_kwh);
-        const powerLimit = this.asNumber(source.power_limit_w ?? row.power_limit_w);
-        return `<li><strong>${dayLabel} · ${this.aiFormatDate(row.date)} · ${this.escapeHtml(row.label || this.hourLabel(row.hour))}</strong><span>Price ${this.aiFormatNumber(row.sell_price, 2)} £/kWh${priceRank === null ? "" : ` · rank ${priceRank} on this day`}. Planned ${this.aiFormatNumber(source.planned_energy_kwh ?? row.planned_energy_kwh, 2)} kWh at <b>${power} W</b>. Source: user profile. Binding constraint: ${this.escapeHtml(this.aiUiText(basis))}.${requested === null ? "" : ` Requested energy: ${this.aiFormatNumber(requested, 2)} kWh.`}${powerLimit === null ? "" : ` Power limit: ${this.aiFormatNumber(powerLimit, 0)} W.`} SOC ${this.aiFormatNumber(source.soc_start_pct ?? row.soc_before, 1)}% → ${this.aiFormatNumber(source.soc_end_pct ?? row.soc_after, 1)}%.</span></li>`;
-      }).join("") || "<li>No hours selected for selling on this day.</li>";
-      const omittedRows = omitted.map((row) => `<li><strong>${dayLabel} · ${this.aiFormatDate(row.date)} · ${this.escapeHtml(row.label || this.hourLabel(row.hour))}</strong><span>${this.escapeHtml(this.aiUiText(row.skip_reason || "not_selected_by_energy_budget"))}; price ${this.aiFormatNumber(row.sell_price, 2)} £/kWh${this.asNumber(row.price_rank) === null ? "" : ` · rank ${this.aiFormatNumber(row.price_rank, 0)} on this day`}.</span></li>`).join("") || "<li>No skipped hours in the profile window for the selected day.</li>";
-      const primaryCode = summary.primary_constraint || (missing > .001 ? "unresolved_daily_constraint" : "target_reached");
-      const primary = this.aiUiText(primaryCode);
-      const ended = primaryCode === "past_window" || summary.window_ended;
-      const decisionSummary = ended
-        ? "Today's morning selling window has already ended. The next profile evaluation is for tomorrow."
-        : `The user profile planned <b>${this.aiFormatNumber(planned, 2)} kWh</b> of the <b>${this.aiFormatNumber(dailyTarget, 2)} kWh</b>. Optimizer suggestions in this window: <b>${this.aiFormatNumber(extra, 2)} kWh</b>; full day proposal: <b>${this.aiFormatNumber(total, 2)} kWh</b>. ${missing > .001 ? `The profile target is still missing <b>${this.aiFormatNumber(missing, 2)} kWh</b>.` : "The profile target was reached."} Main reason: <b>${this.escapeHtml(primary)}</b>.`;
-      return `<section class="ai-explanation-profile ai-metric-card"><h3>${this.escapeHtml(profile.name || defaultLabel)} · ${dayLabel}${summary.date ? ` · ${this.aiFormatDate(summary.date)}` : ""}</h3><p class="ai-decision-summary">${decisionSummary}</p><div class="ai-explanation-balance"><div><span>Profile target</span><strong>${this.aiFormatNumber(dailyTarget, 2)} kWh</strong></div><div><span>Profile plan</span><strong>${this.aiFormatNumber(planned, 2)} kWh</strong></div><div><span>Optimizer extra</span><strong>${this.aiFormatNumber(extra, 2)} kWh</strong></div><div><span>Full proposal</span><strong>${this.aiFormatNumber(total, 2)} kWh</strong></div><div><span>Missing to profile target</span><strong>${this.aiFormatNumber(missing, 2)} kWh</strong></div><div><span>SOC at window start</span><strong>${this.aiFormatNumber(summary.initial_soc_pct, 1)}%</strong></div><div><span>Minimum SOC</span><strong>${this.aiFormatNumber(summary.minimum_soc_pct ?? profile.minimum_soc_after, 1)}%</strong></div><div><span>Usable energy at start</span><strong>${this.aiFormatNumber(summary.usable_energy_at_window_start_kwh, 2)} kWh</strong></div><div><span>House / PV forecast in window</span><strong>${this.aiFormatNumber(summary.forecast_home_in_window_kwh, 2)} / ${this.aiFormatNumber(summary.forecast_pv_in_window_kwh, 2)} kWh</strong></div></div><p class="ai-note">Energy from additional optimizer suggestions does not count towards fulfilment of the user profile target.</p><details open><summary>Why were these hours and powers chosen?</summary><ul class="ai-explanation-list">${selectedRows}</ul></details><details><summary>Why were the other hours skipped?</summary><ul class="ai-explanation-list">${omittedRows}</ul></details><details><summary>What can change the plan?</summary><p>A higher SOC or PV production can increase the available energy. Higher house consumption, a higher SOC reserve or inverter limits can reduce it. A price change can move energy to more favourable hours. This information does not change the safeguards or the Deye settings.</p></details></section>`;
-    };
-    const optimizerCard = optimizerRows.length ? `<section class="ai-metric-card ai-explanation-profile"><h3>Additional optimizer suggestions · ${dayLabel}</h3><p class="ai-note">These hours come from local whole-day optimisation and do not count towards the user profile energy target.</p><ul class="ai-explanation-list">${optimizerRows.map((row) => {
-      const basis = row.power_basis || row.limit_reason || "optimizer_energy_allocation";
-      return `<li><strong>${dayLabel} · ${this.aiFormatDate(row.date)} · ${this.escapeHtml(row.label || this.hourLabel(row.hour))}</strong><span>Price ${this.aiFormatNumber(row.sell_price, 2)} £/kWh. Planned ${this.aiFormatNumber(row.planned_energy_kwh, 2)} kWh at <b>${this.aiPlannedSlotPower(row)} W</b>. Source: local optimizer. Binding constraint: ${this.escapeHtml(this.aiUiText(basis))}. SOC ${this.aiFormatNumber(row.soc_start_pct, 1)}% → ${this.aiFormatNumber(row.soc_end_pct, 1)}%.</span></li>`;
-    }).join("")}</ul></section>` : "";
-    const shadow = planner.optimizer_shadow || {};
-    const shadowCard = shadow.mode === "comparison_only" ? `<details class="ai-metric-card ai-shadow"><summary>Optimizer shadow diagnostic comparison</summary><div class="ai-kpis"><div><span>Baseline plan</span><strong>${this.formatSignedMoney(shadow.legacy_result)}</strong></div><div><span>Shadow candidate</span><strong>${this.formatSignedMoney(shadow.candidate_result)}</strong></div><div><span>Difference</span><strong>${this.formatSignedMoney(shadow.candidate_delta)}</strong></div><div><span>Changed slots</span><strong>${Array.isArray(shadow.changed_slots) ? shadow.changed_slots.length : 0}</strong></div></div><p class="ai-note">The comparison is diagnostic only. It saves no settings and always requires manual confirmation.</p></details>` : "";
-    const publicationText = publication.tomorrow_status === "complete"
-      ? "Tomorrow's prices are complete — selling and buying 24/24."
-      : publication.tomorrow_status === "awaiting_publication"
-        ? `Tomorrow's prices have not been published yet. Expected publication after ${publication.expected_tomorrow_after_hour || 13}:00; the tomorrow plan is temporary and will be recalculated when the data changes.`
-        : `Tomorrow's prices are still incomplete after the safety threshold ${publication.warning_after_hour || 14}:${String(publication.warning_after_minute ?? 30).padStart(2, "0")}. Check the price sources; the tomorrow plan remains blocked.`;
-    return `<div class="ai-explanation-view"><h2>Why this plan?</h2><div class="ai-proposal-toolbar"><div class="ai-day-tabs"><button class="${day === "today" ? "active" : ""}" data-ai-explanation-day="today">Today</button><button class="${day === "tomorrow" ? "active" : ""}" data-ai-explanation-day="tomorrow">Tomorrow</button></div></div><section class="ai-metric-card ai-analysis-source"><h3>Decision source and freshness · ${dayLabel}${dateValue ? ` · ${this.aiFormatDate(dateValue)}` : ""}</h3><div class="ai-kpis"><div><span>Plan source</span><strong>Local Optimizer Core</strong></div><div><span>Calculated</span><strong>${this.formatTimeShort(planner.generated_at)}</strong></div><div><span>Profile energy</span><strong>${this.aiFormatNumber(profileEnergy, 2)} kWh</strong></div><div><span>Optimizer extra</span><strong>${this.aiFormatNumber(optimizerEnergy, 2)} kWh</strong></div></div><p>${this.escapeHtml(publicationText)}</p><small>${this.escapeHtml(api.status)}. The AI API does not write Deye settings automatically.</small></section>${explainProfile("morning_sale", "Morning sale")}${explainProfile("evening_sale", "Evening sale")}${optimizerCard}${shadowCard}<details class="ai-metric-card ai-help"><summary>? How to read the plan</summary><dl><dt>SOC</dt><dd>Percentage of energy stored in the battery.</dd><dt>Profile plan</dt><dd>Energy allocated to the target set by the user.</dd><dt>Optimizer suggestion</dt><dd>An additional change chosen from the whole-day balance; it does not increase fulfilment of the profile target.</dd><dt>Binding constraint</dt><dd>The factor that actually stopped increasing the energy or power of the slot.</dd><dt>Confidence</dt><dd>Rating of the completeness of prices, forecast, history, entities and current SOC.</dd><dt>Optimizer shadow</dt><dd>A comparison variant that saves nothing by itself.</dd></dl></details></div>`;
-  }
-
-  renderAiProfileSummaries(planner) {
-    const profiles = this.aiProfiles().profiles || {};
-    const impacts = new Map((planner.profile_impacts || []).map((item) => [item.profile_id, item]));
-    const labels = { morning_sale: "Morning sale", evening_sale: "Evening sale", charging: "Charging" };
-    return `<div class="ai-profile-cards">${["morning_sale", "evening_sale", "charging"].map((profileId) => {
-      const profile = profiles[profileId] || {};
-      const impact = impacts.get(profileId) || {};
-      const charging = profileId === "charging";
-      const energyTarget = charging && profile.target_type !== "energy" ? null : this.asNumber(charging ? profile.target_value : profile.target_energy_kwh);
-      const targetText = energyTarget === null ? `${this.aiFormatNumber(profile.target_value, 1)}% SOC` : `${this.aiFormatNumber(energyTarget, 2)} kWh`;
-      const planned = this.asNumber(impact.planned_energy_kwh) || 0;
-      const actual = this.asNumber(impact.actual_energy_kwh) || 0;
-      const backendRemaining = this.asNumber(impact.remaining_energy_kwh ?? impact.missing_energy_kwh);
-      const remaining = energyTarget === null
-        ? "calculated from SOC"
-        : `${this.aiFormatNumber(backendRemaining === null ? Math.max(0, energyTarget - actual) : backendRemaining, 2)} kWh`;
-      const source = charging ? ({ auto: "PV + grid per plan", pv: "PV", grid: "grid", pv_and_grid: "PV + grid" }[profile.source] || "automatic") : "export to grid";
-      const reason = impact.block_reason || impact.limit_reason || impact.skip_reason || (profile.enabled ? "missing constraint" : "profile disabled");
-      return `<article class="ai-profile-card ${profile.enabled ? "enabled" : "disabled"}"><h4>${labels[profileId]}</h4><dl><div><dt>Profile state</dt><dd>${profile.enabled ? "enabled" : "disabled"}</dd></div><div><dt>Okno</dt><dd>${this.escapeHtml(profile.start || "--:--")}–${this.escapeHtml(profile.end || "--:--")}</dd></div><div><dt>Cel</dt><dd>${targetText}</dd></div><div><dt>Planned</dt><dd>${this.aiFormatNumber(planned, 2)} kWh</dd></div><div><dt>Executed</dt><dd>${this.aiFormatNumber(actual, 2)} kWh</dd></div><div><dt>Remaining</dt><dd>${remaining}</dd></div><div><dt>Status</dt><dd>${this.escapeHtml(this.aiUiText(impact.status || (profile.enabled ? "pending" : "disabled")))}</dd></div><div><dt>Source / direction</dt><dd>${this.escapeHtml(source)}</dd></div>${charging ? `<div><dt>Max effective cost</dt><dd>${this.aiFormatNumber(profile.max_effective_price, 2)} £/kWh</dd></div><div><dt>Room for PV</dt><dd>${profile.preserve_pv_room ? `${this.aiFormatNumber(profile.minimum_free_room_kwh, 2)} kWh` : "not required"}</dd></div>` : ""}<div><dt>Limiting reason</dt><dd>${this.escapeHtml(this.aiUiText(reason))}</dd></div></dl></article>`;
-    }).join("")}</div>`;
-  }
-
-  aiCompactWeather() {
-    const aiState = this._hass?.states?.[this.entity("sensor", "ai_state")];
-    const weather = aiState?.attributes?.weather || {};
-    const hourly = Array.isArray(weather.forecast) ? weather.forecast : [];
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const tomorrowKey = this.localDateKey(tomorrow);
-    const tomorrowRow = hourly.find((row) => {
-      const stamp = new Date(row?.datetime ?? row?.time ?? "");
-      return !Number.isNaN(stamp.getTime()) && this.localDateKey(stamp) === tomorrowKey;
-    });
-    const [todayIcon, todayLabel] = this.aiWeatherMeta(weather.condition);
-    const [tomorrowIcon, tomorrowLabel] = this.aiWeatherMeta(tomorrowRow?.condition);
-    return `<section class="ai-metric-card ai-weather-compact"><h3>Weather and data freshness</h3><div><span>${todayIcon} Today</span><strong>${this.escapeHtml(todayLabel)} · ${this.aiFormatNumber(weather.temperature, 1)}°C</strong></div><div><span>${tomorrowIcon} Tomorrow</span><strong>${this.escapeHtml(tomorrowLabel)}${tomorrowRow ? ` · ${this.aiFormatNumber(tomorrowRow.temperature, 1)}°C` : ""}</strong></div><small>Updated: ${this.formatTimeShort(weather.last_updated)} · ${weather.available ? "data available" : "incomplete data"}</small></section>`;
-  }
-
-  renderAiOverview(_slots, planner) {
-    const summaries = new Map((planner.days || []).map((row) => [row.day, row]));
-    const dayFinancial = (day, label) => {
-      const summary = summaries.get(day) || {};
-      const complete = summary.financial_data_complete !== false;
-      return `${label}: ${this.formatEnergy(summary.sold_kwh || 0)} exported / ${complete ? this.formatSignedMoney(summary.balance_gbp) : "partial result — missing prices"}`;
-    };
-    const checkpoints = planner.checkpoints || {};
-    const future = this._hass?.states?.[this.entity("sensor", "ai_state")]?.attributes?.future_plan || {};
-    const proposed = (planner.rows || []).filter((row) => row.proposed);
-    const representative = this.aiRepresentativeProposal(proposed);
-    const representativeEconomics = this.aiSlotEconomics(representative);
-    const confidenceValues = proposed
-      .map((row) => this.asNumber(row.effective_confidence ?? row.confidence))
-      .filter((value) => value !== null);
-    const confidence = confidenceValues.length ? Math.min(...confidenceValues) : null;
-    const benefit = this.asNumber(planner.benefit) || 0;
-    const threshold = Math.max(0, this.asNumber(planner.neutrality_threshold) || 0);
-    const comparison = planner.ui_insights?.comparison || {};
-    const assessment = comparison.assessment || (benefit > threshold ? "better" : benefit < -threshold ? "worse" : "neutral");
-    const comparisonText = comparison.comparison_details || (assessment === "better"
-      ? `Better than the baseline plan by ${this.formatSignedMoney(benefit)}.`
-      : assessment === "worse"
-        ? `The plan gives a result of ${this.formatSignedMoney(planner.optimized_result)}, but is ${this.aiFormatNumber(Math.abs(benefit), 2)} worse than the baseline plan. It was created taking user profiles into account.`
-        : "Result practically the same as the baseline plan.");
-    const api = this.aiApiPresentation(planner);
-    const purchase = this.aiPurchaseInsights(planner);
-    const warnings = [
-      planner.plan_status === "blocked" ? "No SOC data — the plan was safely blocked." : "",
-      purchase.dso_complete ? "" : "No full DSO data — the purchase ranking is indicative.",
-      api.external ? "" : `${api.status}. ${api.message}`,
-    ].filter(Boolean);
-    return `<div class="ai-overview-grid">
-      <section class="ai-metric-card ai-best-decision"><h3>Example proposed change</h3><strong>${representative ? `${this.escapeHtml(representative.label)} · ${this.escapeHtml(this.aiActionLabel(representative.action))}` : "No qualifying change"}</strong><p>${representative ? `Modelled slot result: ${this.formatSignedMoney(representativeEconomics.slotResult)}. Source: ${this.escapeHtml(this.aiSourceLabel(representative))}.` : "The local plan may correctly end without buying or selling."}</p>${representative ? "<small>Full economic result of the modelled slot taking energy flows and prices into account. This is not the marginal profit caused by the decision alone; the last slot may include the battery terminal value.</small>" : ""}</section>
-      <section class="ai-metric-card"><h3>Plan result and comparison</h3><div class="ai-kpis"><div><span>Modelled result of the whole plan</span><strong>${this.formatSignedMoney(planner.optimized_result)}</strong></div><div><span>Whole-plan benefit versus baseline</span><strong>${this.formatSignedMoney(benefit)}</strong></div><div><span>Neutrality threshold</span><strong>${this.aiFormatNumber(threshold, 2)} £</strong></div><div><span>Assessment</span><strong>${assessment === "better" ? "better" : assessment === "worse" ? "worse" : "neutral"}</strong></div><div><span>Final SOC</span><strong>${this.aiFormatNumber(checkpoints.tomorrow_end, 1)}%</strong></div><div><span>Plan confidence</span><strong>${this.aiFormatNumber(confidence, 0)}%</strong></div></div><small>Full economic result of the modelled plan taking energy flows and prices into account. ${this.escapeHtml(comparisonText)}</small></section>
-      <section class="ai-metric-card ai-wide-card"><h3>Best selling hours</h3>${this.renderAiSaleRankings(planner)}</section>
-      <section class="ai-metric-card ai-wide-card"><h3>Cheapest buying hours</h3>${this.renderAiPurchaseRanking(planner)}</section>
-      <section class="ai-metric-card"><h3>SOC forecast 48 h</h3><div class="ai-kpis"><div><span>End today</span><strong>${this.aiFormatNumber(checkpoints.today_end, 1)}%</strong></div><div><span>Tomorrow 05:00</span><strong>${this.aiFormatNumber(checkpoints.tomorrow_05, 1)}%</strong></div><div><span>Tomorrow 09:00</span><strong>${this.aiFormatNumber(checkpoints.tomorrow_09, 1)}%</strong></div><div><span>End tomorrow</span><strong>${this.aiFormatNumber(checkpoints.tomorrow_end, 1)}%</strong></div></div><small>User min. SOC: ${this.aiFormatNumber(planner.ui_insights?.minimum_soc?.hard_min_soc_pct, 1)}% · effective plan minimum: ${this.aiFormatNumber(planner.ui_insights?.minimum_soc?.effective_min_soc_pct, 1)}%</small></section>
-      <section class="ai-metric-card"><h3>Modelled result of the whole plan</h3><p>${dayFinancial("today", "Today")}<br>${dayFinancial("tomorrow", "Tomorrow")}</p><small>Each day value is the full economic result of the modelled plan taking energy flows and prices into account. It is a forecast value, not a promise of the outcome and not just the revenue from the selected selling.</small></section>
-      <section class="ai-metric-card ai-wide-card"><h3>User profiles</h3>${this.renderAiProfileSummaries(planner)}</section>
-      <section class="ai-metric-card"><h3>Plan status</h3><ul class="ai-status-list"><li><span>Plan for tomorrow</span><strong>${this.escapeHtml(this.aiPlanStatus(planner, future))}</strong></li><li><span>Learning</span><strong>${this.escapeHtml(this.aiUiText(planner.learning_status || planner.data_quality?.learning_stage || "missing"))}</strong></li><li><span>API assistant</span><strong>${this.escapeHtml(api.status)}</strong></li><li><span>Recalculated</span><strong>${this.formatTimeShort(planner.generated_at)}</strong></li><li><span>Reason</span><strong>${this.escapeHtml(this.aiUiText(planner.generation_reason || "missing"))}</strong></li><li><span>Time</span><strong>${this.aiFormatNumber(planner.duration_ms, 1)} ms</strong></li></ul>${future.status === "scheduled" ? '<button class="ai-cancel-plan" data-cancel-future-plan="1">Cancel the plan for tomorrow</button>' : ""}</section>
-      <section class="ai-metric-card ai-warnings"><h3>Key warnings</h3>${warnings.length ? `<ul>${warnings.map((item) => `<li>${this.escapeHtml(item)}</li>`).join("")}</ul>` : "<p>No active warnings.</p>"}</section>
-      ${this.aiCompactWeather()}
-    </div>`;
-  }
-
-  renderAiProposalView(slots, planner) {
-    const day = this._aiDay;
-    const allRows = this.aiRowsForDay(planner, day);
-    const applicableRows = allRows.filter((row) => this.aiIsApplicableProposal(row));
-    const previewCandidates = allRows.filter((row) => this.aiIsPreviewCandidate(row));
-    const selectable = allRows.filter((row) => this.aiCanSelectProposal(planner, row, day));
-    const visibleRows = allRows.filter((row) => this.aiIsApplicableProposal(row) || this.aiIsPreviewCandidate(row));
-    const rows = this._aiShow24 ? allRows : visibleRows;
-    const selected = this.aiSelection(day);
-    const allSelected = selectable.length > 0 && selectable.every((row) => selected.has(this.aiSlotKey(row.hour)));
-    const selectedCount = selectable.filter((row) => selected.has(this.aiSlotKey(row.hour))).length;
-    const selectedRows = selectable.filter((row) => selected.has(this.aiSlotKey(row.hour)));
-    const selectedEnergy = selectedRows.reduce((sum, row) => sum + (this.asNumber(row.planned_energy_kwh ?? row.energy_kwh) || 0), 0);
-    const renderRow = (row) => {
-      const key = this.aiSlotKey(row.hour);
-      const applicable = this.aiIsApplicableProposal(row);
-      const preview = this.aiIsPreviewCandidate(row);
-      const canSelect = this.aiCanSelectProposal(planner, row, day);
-      const visibleAction = preview ? row.candidate_action : row.action;
-      const selling = visibleAction === "sell";
-      const charging = visibleAction === "charge";
-      const confidenceValue = this.asNumber(row.actual_confidence ?? row.effective_confidence ?? row.confidence);
-      const confidence = confidenceValue ?? 0;
-      const power = preview ? Math.round(this.asNumber(row.candidate_power_w) || 0) : this.aiPlannedSlotPower(row);
-      const energy = this.asNumber(preview ? row.candidate_energy_kwh : row.planned_energy_kwh ?? row.energy_kwh);
-      const required = this.asNumber(row.required_confidence);
-      const confidenceText = confidenceValue === null
-        ? "unavailable — missing critical data"
-        : preview && required !== null
-          ? `Confidence ${this.aiFormatNumber(confidence, 0)}% · required ${this.aiFormatNumber(required, 0)}%`
-          : `${this.aiFormatNumber(confidence, 0)}%`;
-      const blockReason = row.proposal_block_reason || row.deployment_block_reason;
-      const economics = this.aiSlotEconomics(row);
-      return `<tr class="${preview ? "preview-candidate" : applicable ? "proposed" : "unchanged"} ${this._aiDetailKey === `${day}-${row.hour}` ? "selected-detail" : ""}" data-ai-hour-detail="${day}-${row.hour}"><td>${canSelect ? `<input type="checkbox" data-ai-plan-row="${key}" ${selected.has(key) ? "checked" : ""}>` : "–"}</td><td>${this.escapeHtml(row.label || this.hourLabel(row.hour))}</td><td>${this.escapeHtml(this.aiActionLabel(visibleAction))}${preview ? `<small>preview · ${this.escapeHtml(this.aiUiText(blockReason || "blocked"))}</small>` : ""}</td><td>${this.escapeHtml(this.aiSourceLabel(row))}</td><td>${selling && power > 0 ? `<strong>${power} W</strong><small>${preview ? "candidate" : "to the slot"}</small>` : charging ? "charging profile" : "–"}</td><td>${energy !== null ? `<strong>${this.aiFormatNumber(energy, 2)} kWh</strong><small>${preview ? "candidate" : "estimated value"}</small>` : "–"}</td><td>${this.aiFormatNumber(row.soc_after, 1)}%</td><td title="Full economic result of the modelled slot taking energy flows and prices into account." class="${(economics.slotResult || 0) >= 0 ? "good" : "warn"}">${this.formatSignedMoney(economics.slotResult)}</td><td><span class="ai-confidence ${this.aiConfidenceClass(confidence)}">${confidenceText}</span></td></tr>`;
-    };
-    const profileRows = rows.filter((row) => this.aiIsApplicableProposal(row) && !this.aiIsPreviewCandidate(row) && this.aiProfileId(row));
-    const optimizerRows = rows.filter((row) => this.aiIsApplicableProposal(row) && !this.aiIsPreviewCandidate(row) && !this.aiProfileId(row));
-    const previewRows = rows.filter((row) => this.aiIsPreviewCandidate(row));
-    const unchangedRows = rows.filter((row) => !profileRows.includes(row) && !optimizerRows.includes(row) && !previewRows.includes(row));
-    const group = (title, groupRows, optional = false) => groupRows.length
-      ? `<tr class="ai-plan-group ${optional ? "optional" : ""}"><th colspan="9">${title}</th></tr>${groupRows.map(renderRow).join("")}`
-      : "";
-    const emptyReason = planner.empty_reason_by_day?.[day] || {};
-    const tableRows = rows.length
-      ? `${group("A. User profile fulfilment", profileRows)}${group("B. Optimizer suggestions", optimizerRows)}${group("C. Candidates — preview only", previewRows, true)}${group("D. Other hours — after applying Normal Operation", unchangedRows, true)}`
-      : `<tr><td colspan="9" class="ai-empty">${this.escapeHtml(this.aiUiText(emptyReason.summary || emptyReason.code || "no_proposals"))}</td></tr>`;
-    const representative = this.aiRepresentativeProposal(applicableRows) || this.aiRepresentativeProposal(previewCandidates);
-    const variants = planner.variants || {};
-    const variantSummary = (key, label) => {
-      const summary = variants[key]?.days?.find((item) => item.day === day);
-      return `<button class="${planner.selected_strategy === key ? "active" : ""}" disabled><strong>${label}</strong><span>${summary ? `SOC ${this.formatNumber(summary.end_soc, 1)}% · ${this.formatNumber(summary.balance_gbp, 2)} GBP` : "no data"}</span></button>`;
-    };
-    const quality = planner.data_quality || {};
-    const dayRecommendation = planner.recommended_write_by_day?.[day];
-    const dayWriteAllowed = dayRecommendation ? dayRecommendation.allowed !== false : planner.recommended_write !== false;
-    const detail = allRows.find((row) => `${day}-${row.hour}` === this._aiDetailKey) || representative;
-    const detailEconomics = this.aiSlotEconomics(detail);
-      const detailCard = detail ? `<section class="ai-hour-detail"><h3>Decision details · ${this.escapeHtml(detail.label || this.hourLabel(detail.hour))}</h3><div class="ai-hour-detail-grid"><div><span>Action</span><strong>${this.escapeHtml(this.aiActionLabel(detail.action))}</strong></div><div><span>Decision source</span><strong>${this.escapeHtml(this.aiSourceLabel(detail))}</strong></div><div><span>Price</span><strong>${this.aiFormatNumber(detail.action === "sell" ? detail.sell_price : detail.effective_buy_price, 2)} £/kWh</strong></div><div><span>Slot time</span><strong>${Math.max(0, Math.round(this.asNumber(detail.duration_minutes) || 0))} min</strong></div><div><span>Power passed to the slot</span><strong>${detail.action === "sell" && this.aiIsApplicableProposal(detail) ? `${this.aiPlannedSlotPower(detail)} W` : "not applicable"}</strong></div><div><span>Estimated energy</span><strong>${this.aiFormatNumber(detail.planned_energy_kwh ?? detail.energy_kwh, 2)} kWh</strong></div><div><span>SOC before / after</span><strong>${this.aiFormatNumber(detail.soc_start_pct, 1)}% / ${this.aiFormatNumber(detail.soc_end_pct ?? detail.soc_after, 1)}%</strong></div><div><span>PV / house</span><strong>${this.aiFormatNumber(detail.pv_corrected_kwh ?? detail.corrected_pv_kwh, 2)} / ${this.aiFormatNumber(detail.home_load_kwh ?? detail.load_kwh, 2)} kWh</strong></div><div><span>Charging target</span><strong>${this.escapeHtml(this.aiUiText(detail.purpose || "not applicable"))}</strong></div><div><span>PV forecast source</span><strong>${detail.pv_forecast_source === "solcast_raw" ? "Raw Solcast forecast" : "Local corrected forecast"}</strong></div><div><span>Forecast PV surplus</span><strong>${this.aiFormatNumber(detail.predicted_pv_surplus_kwh, 2)} kWh</strong></div><div><span>Possible export during production</span><strong>${this.aiFormatNumber(detail.possible_pv_export_kwh, 2)} kWh</strong></div><div><span>Minimum free room</span><strong>${this.aiFormatNumber(detail.minimum_free_room_kwh, 2)} kWh</strong></div><div><span>Calculated required room</span><strong>${this.aiFormatNumber(detail.required_pv_room_kwh, 2)} kWh</strong></div><div><span>Maximum SOC before production</span><strong>${this.aiFormatNumber(detail.max_soc_before_pv_pct, 1)}%</strong></div><div><span>Later target</span><strong>${this.escapeHtml(this.aiUiText(detail.future_target_type || "missing"))}${detail.future_target_hour === null || detail.future_target_hour === undefined ? "" : ` · hour ${String(Number(detail.future_target_hour) % 24).padStart(2, "0")}:00`}</strong></div><div><span>Expected margin</span><strong>${this.formatSignedMoney(detail.expected_margin)}</strong></div><div><span>Modelled slot result</span><strong>${this.formatSignedMoney(detailEconomics.slotResult)}</strong></div><div><span>Difference of modelled slot results versus the baseline</span><strong>${this.formatSignedMoney(detailEconomics.baselineSlotDelta)}</strong></div><div><span>Confidence</span><strong>${this.aiFormatNumber(detail.confidence, 0)}%</strong></div><div><span>Main constraint</span><strong>${this.escapeHtml(this.aiUiText(detail.limit_reason || "missing"))}</strong></div></div><p>${(detail.reason_codes || []).map((code) => this.escapeHtml(this.aiUiText(code))).join(" · ") || "No additional justification."}</p><p class="ai-note">The full economic result of the modelled slot takes energy flows and prices into account. The difference versus the baseline compares two slot results but is not an isolated counterfactual of the action itself at an identical starting state. The last slot may include the battery terminal value.</p><p class="ai-note">Only the selected slot mode and the shown selling power are passed to the existing schedule. The energy is a forecast for the slot length; the actual result may be lower due to SOC, house consumption or inverter limits.</p></section>` : "";
-    const api = this.aiApiPresentation(planner);
-    return `<div class="ai-proposals-view"><h2>Proposed changes</h2>
-      <section class="ai-proposal-explainer"><strong>What will be saved?</strong><span>${day === "today" ? "The selected items will be the only special actions in the complete plan for today. All remaining hours will be set to Normal Operation — including unselected proposals and older actions from a previous plan." : "The selected items will be the only special actions in the complete dated plan for tomorrow. All remaining hours will get the Normal Operation target. Acceptance only records the intent today; execution happens tomorrow JIT, for the current slot only."}</span><span>The \"Estimated energy\" column shows the predicted result, not a separate schedule setting. The other fields are informational or describe the exact selling power and other parameters of the selected slot. Selected: <b>${selectedCount} slots</b> · estimated energy: <b>${this.aiFormatNumber(selectedEnergy, 2)} kWh</b>.</span></section>
-      <div class="ai-proposal-toolbar"><div class="ai-day-tabs"><button class="${day === "today" ? "active" : ""}" data-ai-day="today">Today</button><button class="${day === "tomorrow" ? "active" : ""}" data-ai-day="tomorrow">Tomorrow</button></div><div class="ai-view-tools"><button data-ai-toggle-24="1">${this._aiShow24 ? "Proposals only" : "Full 24 h"}</button><button class="${allSelected ? "neutral" : "select"}" data-ai-toggle-selection="1" ${!selectable.length ? "disabled" : ""}>${allSelected ? "× Deselect all" : "✓ Select all"}</button></div></div>
-      <div class="ai-plan-table-wrap"><table class="ai-plan-table"><thead><tr><th>Selection</th><th>Hour</th><th>Action</th><th>Source</th><th>Slot power</th><th>Estimated energy</th><th>SOC after</th><th title="Full economic result of the modelled slot taking energy flows and prices into account.">Modelled result</th><th>Confidence</th></tr></thead><tbody>${tableRows}</tbody></table></div>
-      ${detail?.reason_summary ? `<p class="ai-note"><strong>${this.escapeHtml(this.aiUiText(detail.reason_summary))}</strong>${Array.isArray(detail.key_factors) && detail.key_factors.length ? ` · ${detail.key_factors.map((item) => this.escapeHtml(this.aiReadableKeyFactor(item))).join(" · ")}` : ""}</p>` : ""}
-      ${detailCard}
-      <div class="ai-decision-grid"><section><h3>↗ Example proposed change</h3><p>${representative ? `${this.escapeHtml(representative.label)}<br>${this.escapeHtml(this.aiActionLabel(representative.action))} · confidence ${this.aiFormatNumber(representative.confidence, 0)}%` : "No qualifying decision"}</p><small>The row is chosen chronologically for presentation, not ranked by whole-slot result.</small></section><section><h3>⚖ Three variants</h3><div class="ai-variants">${variantSummary("safe", "Safe")}${variantSummary("balanced", "Balanced")}${variantSummary("profit", "Maximum profit")}</div></section><section><h3>💡 ${api.external ? "AI rationale" : "Plan rationale"}</h3><p>${api.external ? this.escapeHtml(api.summary || "The assistant did not provide a summary.") : `The plan accounts for energy and distribution prices, Solcast, the learned house profile, efficiency and battery reserve. ${quality.learning_stage === "ready" ? "The model has enough history." : "The model is in early learning, so confidence is limited."}`}</p><small>Source: ${api.external ? `external AI assistant — ${this.escapeHtml(api.provider || "provider")} / ${this.escapeHtml(api.model || "model")}${api.candidateValidated ? " · candidate recalculated locally" : ""}` : "local Optimizer Core"}. The AI does not write Deye settings automatically.</small></section></div>
-      ${this.aiReadableEnergyChart(allRows, `Plan for ${day === "today" ? "today" : "tomorrow"}`)}
-      <div class="ai-support-grid">${this.aiWeatherCard(planner, day)}</div>
-      ${dayRecommendation && !dayWriteAllowed ? `<p class="ai-warning">The plan for this day is not ready to save: ${this.escapeHtml(this.aiUiText(dayRecommendation.reason || "no_recommended_changes"))}.</p>` : ""}
-      <footer class="ai-action-footer"><button class="ai-apply-plan" data-apply-ai-day="1" ${!selectedCount || !dayWriteAllowed || planner.plan_status === "blocked" ? "disabled" : ""}>${selectedCount ? `${day === "today" ? "Apply selected for today" : "Schedule selected for tomorrow"} (${selectedCount})` : "Select at least one hour"}</button></footer>
-    </div>`;
-  }
-
-  renderAiLegacyQualityCard(planner) {
-    const quality = planner.data_quality || {};
-    const tariff = this.tariffData();
-    const aiState = this._hass?.states?.[this.entity("sensor", "ai_state")];
-    const learning = aiState?.attributes?.learning_summary || {};
-    const weather = aiState?.attributes?.weather || {};
-    const mapping = this.state(this.entity("sensor", "mapping_status"), "missing");
-    const accuracy = this.asNumber(learning.solcast_accuracy_avg);
-    return `<section class="ai-metric-card ai-quality-card"><h3>Data and quality</h3><ul><li><span>Learning status</span><strong>${quality.learning_stage || "missing"}</strong></li><li><span>Recorded days / hours</span><strong>${quality.recorded_days || 0} / ${learning.recorded_hours || 0}</strong></li><li><span>Accuracy of completed days</span><strong>${accuracy === null ? "no data" : `${accuracy.toFixed(1)}% (${learning.solcast_accuracy_days || 0} days)`}</strong></li><li><span>Tomorrow's prices</span><strong>selling ${quality.tomorrow_sell_prices || 0}/24 · buy ${quality.tomorrow_buy_prices || 0}/24</strong></li><li><span>Weather / update</span><strong>${quality.weather_hours || 0}/48 h · ${this.formatTimeShort(weather.last_updated)}</strong></li><li><span>Profile PV</span><strong>${quality.pv_profile_learned ? "learned" : "auxiliary curve"}</strong></li><li><span>DSO / tariff</span><strong>${tariff.provider_name || tariff.provider || "missing"} · ${tariff.plan_name || tariff.plan || "missing"}</strong></li><li><span>Catalog version</span><strong>${tariff.catalog_version || "bundled"}</strong></li><li><span>Deye mapping</span><strong>${mapping}</strong></li><li><span>Last analysis</span><strong>${this.formatTimeShort(planner.generated_at)}</strong></li></ul></section>`;
-  }
-
-  renderAiQualityCard(planner) {
-    const quality = planner.data_quality || {};
-    const publication = planner.ui_insights?.price_publication || {};
-    const tariff = this.tariffData();
-    const aiState = this._hass?.states?.[this.entity("sensor", "ai_state")];
-    const learning = aiState?.attributes?.learning_summary || {};
-    const maturity = planner.learning_maturity || quality.learning_maturity || learning.learning_maturity || {};
-    const readiness = planner.execution_readiness || {};
-    const weather = aiState?.attributes?.weather || {};
-    const accuracy = this.asNumber(learning.solcast_accuracy_avg);
-    const pvDiagnostics = learning.pv_profile_diagnostics || learning.pv_diagnostics || {};
-    const loadDiagnostics = learning.load_profile_diagnostics || learning.load_diagnostics || {};
-    const channelDiagnostics = learning.channel_diagnostics || quality.channel_diagnostics || {};
-    const channelLabels = {
-      pv: "PV production",
-      load: "House consumption",
-      grid: "Grid",
-      battery: "Battery",
-      soc: "SOC",
-      sell_price: "Sell price",
-      buy_price: "Purchase price",
-    };
-    const channelRows = Object.entries(channelLabels).map(([key, label]) => {
-      const item = channelDiagnostics[key] || {};
-      const coverage = this.asNumber(item.average_coverage_percent);
-      const usable = this.asNumber(item.usable_hours);
-      const hours = this.asNumber(item.hours);
-      return `<li><span>Channel · ${label}</span><strong>${coverage === null ? "no quality history" : `${this.aiFormatPercent(coverage, 1)} · usable ${usable ?? 0}/${hours ?? 0} h`}</strong></li>`;
-    }).join("");
-    const accepted = this.asNumber(quality.pv_profile_samples ?? pvDiagnostics.accepted_samples);
-    const rejected = this.asNumber(quality.pv_profile_rejected_samples ?? pvDiagnostics.rejected_samples);
-    const sampleTotal = accepted === null && rejected === null ? null : (accepted || 0) + (rejected || 0);
-    const completeness = sampleTotal ? (accepted || 0) / sampleTotal * 100 : null;
-    const api = this.aiApiPresentation(planner);
-    const rows = Array.isArray(planner.rows) ? planner.rows : [];
-    const todayRows = rows.filter((row) => row.day === "today");
-    const tomorrowRows = rows.filter((row) => row.day === "tomorrow");
-    const currentDispatch = todayRows.find((row) => Number(row.hour) === new Date().getHours())?.dispatch_status;
-    const executionRows = Array.isArray(planner.profile_execution) ? planner.profile_execution : [];
-    const todayDate = todayRows.find((row) => row.date)?.date;
-    const todayExecutions = executionRows.filter((row) => !todayDate || row?.date === todayDate);
-    const currentExecution = todayExecutions.find((row) => row?.status === "running")
-      || todayExecutions.find((row) => row?.status === "waiting")
-      || todayExecutions[0];
-    const executionLabel = currentExecution
-      ? `${this.aiUiText(`profile:${currentExecution.profile_id || ""}`)} · ${this.aiUiText(currentExecution.status || "missing")}`
-      : "No active execution";
-    const average = (values) => {
-      const numbers = values.map((value) => this.asNumber(value)).filter((value) => value !== null);
-      return numbers.length ? numbers.reduce((sum, value) => sum + value, 0) / numbers.length : null;
-    };
-    const confidenceLabels = {
-      prices: "Energy prices",
-      solcast: "Solcast forecast",
-      learning: "Learning state",
-      load_profile: "House consumption profile",
-      pv_profile: "PV production profile",
-      entities: "Entity availability",
-      soc: "SOC reading",
-      tariff_dso: "Tariff and DSO",
-    };
-    const confidenceRows = rows.filter((row) => row?.confidence_components);
-    const confidenceComponents = Object.fromEntries(
-      Object.keys(confidenceLabels).map((key) => [
-        key,
-        average(confidenceRows.map((row) => row.confidence_components?.[key])),
-      ]),
-    );
-    const todayConfidence = average(todayRows.map((row) => row.confidence));
-    const tomorrowConfidence = average(tomorrowRows.map((row) => row.confidence));
-    const finalConfidence = average(rows.map((row) => row.confidence));
-    const confidenceBreakdown = Object.entries(confidenceLabels)
-      .map(([key, label]) => `<li><span>Confidence · ${label}</span><strong>${this.aiFormatPercent(confidenceComponents[key], 0)}</strong></li>`)
-      .join("");
-    const socDiagnostics = quality.soc || quality.soc_diagnostics || {};
-    const requiredCoverage = [
-      [quality.today_sell_prices, 24],
-      [quality.today_buy_prices, 24],
-      [quality.tomorrow_sell_prices, 24],
-      [quality.tomorrow_buy_prices, 24],
-      [quality.dso_hours, 48],
-    ];
-    const incompleteInputs = requiredCoverage.some(([value, expected]) => {
-      const number = this.asNumber(value);
-      return number === null || number < expected;
-    });
-    const planStatus = quality.fail_closed
-      ? "blocked — critical missing SOC"
-      : incompleteInputs
-      ? "calculated with fallback data — limited confidence"
-      : "calculated on complete input data";
-    return `<section class="ai-metric-card ai-quality-card"><h3>Data quality</h3><ul>
-      <li><span>Data quality</span><strong>${this.aiFormatPercent(quality.score, 0)}</strong></li>
-      <li><span>Profile maturity</span><strong>${this.aiFormatPercent(maturity.score, 0)} · ${this.escapeHtml(maturity.label || this.aiUiText(maturity.status || "missing"))}</strong></li>
-      <li><span>Plan confidence</span><strong>${this.aiFormatPercent(planner.plan_confidence ?? finalConfidence, 0)}</strong></li>
-      <li><span>Execution readiness</span><strong>${this.escapeHtml(readiness.label || this.aiUiText(readiness.status || "missing"))}</strong></li>
-      <li><span>Learning status</span><strong>${this.escapeHtml(maturity.label || this.aiUiText(quality.learning_stage || planner.learning_status || "missing"))}</strong></li>
-      <li><span>Deployment mode</span><strong>${quality.learning_apply_allowed === false ? "dry-run — plan visible, saving blocked" : "deployment allowed"}</strong></li>
-      <li><span>Source SOC</span><strong>${this.escapeHtml(socDiagnostics.entity_id || "no entity")} · ${this.escapeHtml(this.aiUiText(socDiagnostics.status || "no data"))}</strong></li>
-      <li><span>SOC raw / normalised</span><strong>${this.escapeHtml(String(socDiagnostics.raw_value ?? "missing"))} / ${this.aiFormatPercent(socDiagnostics.normalized_value, 1)}</strong></li>
-      <li><span>SOC freshness source</span><strong>${this.escapeHtml(this.aiUiText(socDiagnostics.source_health_source || socDiagnostics.freshness_reason || "missing"))}</strong></li>
-      <li><span>Effective SOC freshness age</span><strong>${this.asNumber(socDiagnostics.effective_soc_age_seconds ?? socDiagnostics.age_seconds) === null ? "no data" : `${this.aiFormatNumber(socDiagnostics.effective_soc_age_seconds ?? socDiagnostics.age_seconds, 0)} s`}</strong></li>
-      <li><span>Proposal status</span><strong>${this.escapeHtml(this.aiUiText(planner.plan_status || "missing"))} · ${this.escapeHtml(this.aiUiText(currentDispatch || "missing"))}</strong></li>
-      <li><span>Profile execution status</span><strong>${this.escapeHtml(executionLabel)}</strong></li>
-      <li><span>Full days of the new profile</span><strong>${learning.completed_full_days ?? quality.recorded_days ?? "no data"}</strong></li>
-      <li><span>Historical days available for evaluation</span><strong>${learning.solcast_accuracy_days ?? "no data"}</strong></li>
-      <li><span>Valid hours</span><strong>${learning.recorded_hours ?? "no data"}</strong></li>
-      <li><span>Usable hours for learning</span><strong>${learning.usable_hours ?? quality.usable_history_hours ?? "no data"}</strong></li>
-      <li><span>History range</span><strong>${this.escapeHtml(learning.history_first_hour || quality.history_first_hour || "missing")} → ${this.escapeHtml(learning.history_last_hour || quality.history_last_hour || "missing")}</strong></li>
-      <li><span>All samples</span><strong>${learning.raw_samples ?? "no data"}</strong></li>
-      ${channelRows}
-      <li><span>Accuracy of completed days</span><strong>${this.asNumber(learning.solcast_accuracy_days) === null ? "no data" : Number(learning.solcast_accuracy_days) < 1 ? "No completed days" : accuracy === null ? "no data" : `${this.aiFormatPercent(accuracy, 1)} — ${learning.solcast_accuracy_days} days`}</strong></li>
-      <li><span>PV samples accepted</span><strong>${accepted === null ? "no data" : `${accepted} / ${sampleTotal}`}</strong></li>
-      <li><span>PV samples rejected</span><strong>${rejected === null ? "no data" : rejected}</strong></li>
-      <li><span>Hours with curtailment</span><strong>${pvDiagnostics.curtailment_hours ?? "no data"}</strong></li>
-      <li><span>House profile coverage</span><strong>${this.aiQualityCoverage(quality.load_profile_covered_cells ?? loadDiagnostics.coverage_cells ?? learning.coverage?.load_cells, 168, "hours")}</strong></li>
-      <li><span>House profile samples</span><strong>${quality.load_profile_samples ?? "no data"}</strong></li>
-      <li><span>PV profile samples</span><strong>${quality.pv_profile_samples ?? accepted ?? "no data"}</strong></li>
-      <li><span>PV profile coverage</span><strong>${this.aiQualityCoverage(quality.pv_profile_covered_cells, 288, "cells")}</strong></li>
-      <li><span>House profile fallback</span><strong>${this.asNumber(loadDiagnostics.coverage_cells ?? quality.load_profile_covered_cells) === null ? "no data" : Number(loadDiagnostics.coverage_cells ?? quality.load_profile_covered_cells) > 0 ? `${loadDiagnostics.fallback_count ?? "no data"} hours` : "insufficient data"}</strong></li>
-      <li><span>PV sample completeness</span><strong>${completeness === null ? "insufficient data" : this.aiFormatPercent(completeness, 1)}</strong></li>
-      <li><span>Plan</span><strong>${planStatus}</strong></li>
-      <li><span>Today's price coverage</span><strong>selling ${this.aiQualityCoverage(quality.today_sell_prices, 24)} · buy ${this.aiQualityCoverage(quality.today_buy_prices, 24)}</strong></li>
-      <li><span>Tomorrow price coverage</span><strong>selling ${this.aiQualityCoverage(quality.tomorrow_sell_prices, 24)} · buy ${this.aiQualityCoverage(quality.tomorrow_buy_prices, 24)}</strong></li>
-      <li><span>Tomorrow's price publication status</span><strong>${this.escapeHtml(this.aiUiText(publication.tomorrow_status || "no data"))}</strong></li>
-      <li><span>Coverage DSO</span><strong>${this.aiQualityCoverage(quality.dso_hours, 48, "hours")}</strong></li>
-      <li><span>Weather source</span><strong>${this.escapeHtml(weather.entity_id || "no entity")}</strong></li>
-      <li><span>Weather coverage</span><strong>${this.aiQualityCoverage(weather.hourly_count, 48, "hours")} · ${this.aiQualityCoverage(weather.daily_count, 7, "days")}</strong></li>
-      <li><span>Last weather update</span><strong>${this.formatTimeShort(weather.last_updated)} · ${weather.available ? "data available" : "incomplete data"}</strong></li>
-      <li><span>DSO / tariff</span><strong>${this.escapeHtml(tariff.provider_name || tariff.provider || "missing")} · ${this.escapeHtml(tariff.plan_name || tariff.plan || "missing")}</strong></li>
-      <li><span>Distribution</span><strong>${tariff.price_includes_distribution ? "included in the source price" : "added from the DSO profile"}</strong></li>
-      <li><span>AI assistant</span><strong>${this.escapeHtml(api.status)}${api.message ? ` · ${this.escapeHtml(api.message)}` : ""}</strong></li>
-      ${confidenceBreakdown}
-      <li><span>Plan confidence today</span><strong>${this.aiFormatPercent(todayConfidence, 0)}</strong></li>
-      <li><span>Plan confidence tomorrow</span><strong>${this.aiFormatPercent(tomorrowConfidence, 0)}</strong></li>
-      <li><span>Final plan confidence</span><strong>${this.aiFormatPercent(finalConfidence, 0)}</strong></li>
-      <li><span>Last analysis</span><strong>${this.formatTimeShort(planner.generated_at)} · ${this.escapeHtml(this.aiUiText(planner.generation_reason || "missing"))} · ${this.aiFormatNumber(planner.duration_ms, 1)} ms</strong></li>
-    </ul></section>`;
-  }
-
-  renderAiPlanDay(planner, day) {
-    const rows = this.aiRowsForDay(planner, day);
-    const summary = (planner.days || []).find((item) => item.day === day) || {};
-    return `<div class="ai-day-plan"><div class="ai-kpis"><div><span>SOC start</span><strong>${this.formatNumber(summary.start_soc, 1)}%</strong></div><div><span>SOC end</span><strong>${this.formatNumber(summary.end_soc, 1)}%</strong></div><div><span>Export</span><strong>${this.formatEnergy(summary.sold_kwh || 0)}</strong></div><div><span>Import</span><strong>${this.formatEnergy(summary.bought_kwh || 0)}</strong></div><div title="Full economic result of the modelled day plan taking energy flows and prices into account."><span>Modelled day result</span><strong>${this.formatSignedMoney(summary.balance_gbp)}</strong></div></div>${this.aiReadableEnergyChart(rows, day === "today" ? "Plan for today" : "Plan for tomorrow")}${this.aiWeatherCard(planner, day)}</div>`;
-  }
-
-  aiExecutionFallback(planner, day) {
-    const rows = this.aiRowsForDay(planner, day).map((row) => ({
-      date: row.date,
-      hour: Number(row.hour),
-      label: row.label || this.hourLabel(row.hour),
-      proposal_status: row.dispatch_status === "blocked" ? "blocked" : row.proposed ? "proposed" : "skipped",
-      approval_status: "not_selected",
-      deployment_status: "not_deployed",
-      actual_status: "waiting",
-      action: row.action || "none",
-      profile_id: row.profile_id || "",
-      planned_power_w: row.planned_power_w,
-      planned_energy_kwh: row.planned_energy_kwh,
-      soc_start_pct: row.soc_start_pct,
-      soc_end_pct: row.soc_end_pct ?? row.soc_after,
-      corrected_pv_kwh: row.corrected_pv_kwh,
-      solcast_kwh: row.solcast_kwh,
-      load_kwh: row.load_kwh,
-      expected_import_kwh: row.expected_import_kwh,
-      expected_export_kwh: row.expected_export_kwh,
-      sell_price: row.sell_price,
-      effective_buy_price: row.effective_buy_price,
-      net_result_gbp: row.net_result ?? row.balance_gbp,
-      confidence: row.confidence,
-      reason_codes: row.reason_codes || [],
-    }));
-    const future = this._hass?.states?.[this.entity("sensor", "ai_state")]?.attributes?.future_plan || {};
-    if (future.date && rows[0]?.date === future.date) {
-      const selected = new Set((future.updates || []).map((item) => String(item.slot_key || "")));
-      const results = future.slot_results || {};
-      rows.forEach((row) => {
-        const keys = [
-          `${String(row.hour).padStart(2, "0")}_${String((row.hour + 1) % 24).padStart(2, "0")}`,
-          ...this.aiHourSlotKeys(row.hour),
-        ];
-        const entries = keys.map((slotKey) => results[slotKey]).filter((entry) => entry && entry.status);
-        const statusOf = (name) => entries.find((entry) => entry.status === name);
-        if (keys.some((slotKey) => selected.has(slotKey))) row.approval_status = future.status === "cancelled" ? "cancelled" : "approved";
-        const halves = this.aiHourSlotKeys(row.hour).map((slotKey) => results[slotKey]?.status);
-        if (halves.length && halves.every((status) => status === "confirmed")) row.deployment_status = "confirmed";
-        else if (entries.length && entries.every((entry) => entry.status === "confirmed")) row.deployment_status = "confirmed";
-        const pendingEntry = statusOf("physical_pending") || statusOf("logical_applied");
-        if (pendingEntry) row.deployment_status = pendingEntry.status;
-        for (const name of ["waiting_data", "missed", "blocked", "manual_override"]) {
-          const entry = statusOf(name);
-          if (entry) {
-            row.deployment_status = name;
-            row.deployment_reason = entry.reason;
-          }
-        }
-      });
-    }
-    return { date: rows[0]?.date || "", rows, summary: {} };
-  }
-
-  aiExecutionStatus(row) {
-    if (row.deployment_status === "confirmed") return ["Physically confirmed", "done"];
-    if (row.actual_status === "completed") return ["Telemetry complete", "done"];
-    if (row.actual_status === "partial") return ["Partial data", "partial"];
-    if (row.deployment_status === "waiting_data") return ["Waiting for data", "waiting"];
-    if (row.deployment_status === "missed") return ["Skipped", "missed"];
-    if (row.deployment_status === "blocked") return ["Blocked", "blocked"];
-    if (row.deployment_status === "physical_pending") return ["Waiting for the inverter", "waiting"];
-    if (row.deployment_status === "logical_applied") return ["Saved logically", "waiting"];
-    if (row.deployment_status === "manual_override") return ["Overridden manually", "blocked"];
-    if (row.deployment_status === "deployed") return ["Deployed", "deployed"];
-    if (row.approval_status === "cancelled") return ["Cancelled", "cancelled"];
-    if (row.approval_status === "approved") return ["Approved", "approved"];
-    if (row.proposal_status === "blocked") {
-      const reason = row.deployment_reason || row.reason_summary || row.limit_reason || "missing current critical data";
-      return [`Core blocked — ${this.aiUiText(reason)}`, "blocked"];
-    }
-    if (row.proposal_status === "proposed") return ["Proposal Core", "proposed"];
-    if (row.proposal_status === "missing") return ["No saved plan", "missing"];
-    return ["No change", "skipped"];
-  }
-
-  aiExecutionNumber(value, digits = 2, unit = "") {
-    const number = this.asNumber(value);
-    return number === null ? "—" : `${number.toFixed(digits)}${unit}`;
-  }
-
-  renderAiExecutionChart(data, title, showNowLine = false) {
-    const rows = Array.isArray(data?.rows) ? data.rows : [];
-    if (!rows.length) return `<section class="ai-chart-card ai-execution-chart"><h3>${this.escapeHtml(title)}</h3><div class="ai-empty-state"><span class="ai-empty-icon">📉</span><strong>No frozen data for the selected day.</strong></div></section>`;
-    const width = 1200;
-    const height = 430;
-    const left = 58;
-    const right = 70;
-    const top = 38;
-    const plotHeight = 310;
-    const bottom = top + plotHeight;
-    const zeroY = top + plotHeight / 2;
-    const statusTop = bottom + 12;
-    const statusHeight = 18;
-    const step = (width - left - right) / 24;
-    const byHour = new Map(rows.map((row) => [Number(row.hour), row]));
-    const values = Array.from({ length: 24 }, (_, hour) => byHour.get(hour) || { hour });
-    const energyValues = values.flatMap((row) => [
-      row.corrected_pv_kwh, row.load_kwh, row.expected_export_kwh,
-      row.actual?.pv_kwh, row.actual?.load_kwh, row.actual?.grid_export_kwh,
-      row.expected_import_kwh, row.actual?.grid_import_kwh,
-    ]).map((value) => this.asNumber(value)).filter((value) => value !== null);
-    const maxEnergy = Math.max(1, ...energyValues);
-    const x = (index) => left + step * (index + .5);
-    const yEnergy = (value) => zeroY - Math.max(0, Number(value || 0)) / maxEnergy * (plotHeight / 2);
-    const ySoc = (value) => bottom - Math.max(0, Math.min(100, Number(value || 0))) / 100 * plotHeight;
-    const formatMoney = (value) => this.aiExecutionNumber(value, 2, " £");
-    const formatEnergy = (value) => this.aiExecutionNumber(value, 2, " kWh");
-    const formatSoc = (value) => this.aiExecutionNumber(value, 1, " %");
-    const tickLabel = (value) => {
-      if (Math.abs(value) < 0.05) return "0";
-      const text = Math.abs(value) >= 10 ? String(Math.round(value)) : value.toFixed(1);
-      return text;
-    };
-    const gridParts = [0, .25, .5, .75, 1];
-    const grid = gridParts.map((part) => {
-      const y = top + plotHeight * part;
-      return `<line x1="${left}" y1="${y}" x2="${width - right}" y2="${y}" class="ai-exec-grid"/>` +
-        `<text x="${left - 9}" y="${y + 4}" text-anchor="end" class="ai-readable-axis">${tickLabel(maxEnergy * (1 - 2 * part))}</text>` +
-        `<text x="${width - right + 7}" y="${y + 4}" class="ai-readable-axis">${(100 * (1 - part)).toFixed(0)}%</text>`;
-    }).join("");
-    const bar = (value, index, offset, css, down = false) => {
-      const number = this.asNumber(value);
-      if (number === null || number === 0) return "";
-      const barWidth = Math.max(3, step * .10);
-      const xv = x(index) + step * offset;
-      if (down) {
-        const h = Math.max(0, number / maxEnergy * (plotHeight / 2));
-        return `<rect x="${xv - barWidth / 2}" y="${zeroY}" width="${barWidth}" height="${h}" rx="2" class="${css}"/>`;
-      }
-      const y = yEnergy(number);
-      return `<rect x="${xv - barWidth / 2}" y="${y}" width="${barWidth}" height="${Math.max(0, zeroY - y)}" rx="2" class="${css}"/>`;
-    };
-    const bars = values.map((row, index) => [
-      bar(row.corrected_pv_kwh, index, -.165, "ai-exec-pv-plan"),
-      bar(row.actual?.pv_kwh, index, -.055, "ai-exec-pv-wykonanie"),
-      bar(row.load_kwh, index, .055, "ai-exec-load-plan"),
-      bar(row.actual?.load_kwh, index, .165, "ai-exec-load-wykonanie"),
-      bar(row.expected_export_kwh, index, .275, "ai-exec-export-plan"),
-      bar(row.actual?.grid_export_kwh, index, .385, "ai-exec-export-wykonanie"),
-      bar(row.expected_import_kwh, index, -.275, "ai-exec-import-plan", true),
-      bar(row.actual?.grid_import_kwh, index, -.385, "ai-exec-import-wykonanie", true),
-    ].join("")).join("");
-    const line = (getter, css) => {
-      const points = values.map((row, index) => {
-        const value = this.asNumber(getter(row));
-        return value === null ? null : `${x(index)},${ySoc(value)}`;
-      }).filter(Boolean);
-      return points.length > 1 ? `<polyline points="${points.join(" ")}" class="${css}"/>` : "";
-    };
-    const statuses = values.map((row, index) => {
-      const [, statusClass] = this.aiExecutionStatus(row);
-      return `<rect x="${left + index * step + 1}" y="${statusTop}" width="${Math.max(2, step - 2)}" height="${statusHeight}" rx="4" class="ai-exec-status ${statusClass}"/>`;
-    }).join("");
-    const vGrid = values.map((row, index) => (index % 3 === 0 || index === 23)
-      ? `<line x1="${x(index)}" y1="${top}" x2="${x(index)}" y2="${bottom}" class="ai-exec-grid-v"/>`
-      : "").join("");
-    const hours = values.map((row, index) => (index % 3 === 0 || index === 23)
-      ? `<text x="${x(index)}" y="${bottom + 42}" text-anchor="middle" class="ai-readable-hour">${String(index).padStart(2, "0")}:00</text>`
-      : "").join("");
-    const nowLine = showNowLine ? this.renderAiExecutionNowLine(left, right, bottom, top, width) : "";
-    const hitBoxes = values.map((row, index) => `<rect x="${left + index * step}" y="${top}" width="${step}" height="${plotHeight + statusHeight + 28}" fill="transparent" class="ai-chart-hit" data-ai-chart-point="execution" data-ai-chart-index="${index}"/>`).join("");
-    const tooltipData = values.map((row, index) => {
-      const [status, statusClass] = this.aiExecutionStatus(row);
-      const actual = row.actual || {};
-      const action = row.action === "sell" ? "Selling" : row.action === "charge" ? "Charging" : "No change";
-      return { index, status, statusClass, action, row, actual };
-    });
-    const tipSources = tooltipData.map((item) => this._renderAiExecutionTip(item, formatMoney, formatEnergy, formatSoc)).join("");
-    const legend = [
-      ["pv-plan", "PV plan"], ["pv-wykonanie", "PV actual"], ["load-plan", "House plan"],
-      ["load-wykonanie", "House actual"], ["soc-plan", "SOC plan"], ["soc-wykonanie", "SOC actual"],
-    ].map(([css, label]) => `<span class="${css}"><i></i>${label}</span>`).join("");
-    return `<section class="ai-chart-card ai-execution-chart" data-ai-chart="execution"><h3>${this.escapeHtml(title)}</h3><div class="ai-execution-legend">${legend}</div><div class="ai-chart-scroll"><svg viewBox="0 0 ${width} ${height}" style="min-width:${width}px" role="img" aria-label="${this.escapeHtml(title)}"><defs>${this._aiExecutionGradients()}</defs><text x="10" y="22" class="ai-readable-unit">kWh</text><text x="${width - 10}" y="22" text-anchor="end" class="ai-readable-unit">SOC %</text>${grid}${vGrid}${bars}${line((row) => row.soc_end_pct, "ai-exec-soc-plan")}${line((row) => row.actual?.soc_end_pct, "ai-exec-soc-wykonanie")}${nowLine}<line x1="${left}" y1="${zeroY}" x2="${width - right}" y2="${zeroY}" class="ai-exec-baseline"/>${hours}<text x="10" y="${statusTop + 13}" class="ai-readable-section-label">Status</text>${statuses}${hitBoxes}<line class="ai-chart-crosshair-x" x1="0" y1="${top}" x2="0" y2="${bottom}"/><line class="ai-chart-crosshair-y" x1="${left}" y1="0" x2="${width - right}" y2="0"/></svg></div><div class="ai-execution-status-legend"><span class="proposed">Proposal Core</span><span class="approved">Approved</span><span class="deployed">Deployed</span><span class="done">Executed</span><span class="blocked">Blocked</span></div><div class="ai-chart-tooltip" data-ai-chart-tooltip></div>${tipSources}</section>`;
-  }
-
-  _aiExecutionGradients() {
-    return `<linearGradient id="aiExecGradPvPlan" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#9ccc65" stop-opacity=".95"/><stop offset="100%" stop-color="#7cb342" stop-opacity=".75"/></linearGradient>` +
-      `<linearGradient id="aiExecGradPvWyk" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#69f0ae" stop-opacity=".95"/><stop offset="100%" stop-color="#00e676" stop-opacity=".75"/></linearGradient>` +
-      `<linearGradient id="aiExecGradLoadPlan" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ffca28" stop-opacity=".95"/><stop offset="100%" stop-color="#ff9f43" stop-opacity=".75"/></linearGradient>` +
-      `<linearGradient id="aiExecGradLoadWyk" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#64b5f6" stop-opacity=".95"/><stop offset="100%" stop-color="#42a5f5" stop-opacity=".75"/></linearGradient>` +
-      `<linearGradient id="aiExecGradExportPlan" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#00e5ff" stop-opacity=".95"/><stop offset="100%" stop-color="#00b8d4" stop-opacity=".75"/></linearGradient>` +
-      `<linearGradient id="aiExecGradExportWyk" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#80f7ff" stop-opacity=".95"/><stop offset="100%" stop-color="#00e5ff" stop-opacity=".75"/></linearGradient>` +
-      `<linearGradient id="aiExecGradImportPlan" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ff8a80" stop-opacity=".95"/><stop offset="100%" stop-color="#ff5252" stop-opacity=".75"/></linearGradient>` +
-      `<linearGradient id="aiExecGradImportWyk" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ff5252" stop-opacity=".95"/><stop offset="100%" stop-color="#d50000" stop-opacity=".75"/></linearGradient>`;
-  }
-
-  _renderAiExecutionTip(item, formatMoney, formatEnergy, formatSoc) {
-    if (!item) return "";
-    const { index, row, actual, status, statusClass, action } = item;
-    const hasActual = [actual.pv_kwh, actual.load_kwh, actual.soc_end_pct, actual.grid_import_kwh, actual.grid_export_kwh, actual.net_result_gbp]
-      .some((value) => this.asNumber(value) !== null);
-    const profile = row.profile_id ? this.aiUiText(`profile:${row.profile_id}`) : this.aiUiText(row.decision_source || "optimizer");
-    const pairRow = (label, planText, actualText) => hasActual
-      ? `<span>${label} plan / act.</span><b>${planText} / ${actualText}</b>`
-      : `<span>${label} plan</span><b>${planText}</b>`;
-    return `<div class="ai-chart-tip-source" data-ai-tip-source="execution-${index}"><strong>${this.escapeHtml(row.label || this.hourLabel(row.hour))} · <span class="${statusClass}">${status}</span></strong><div><span>Action</span><b>${action}</b><span>Profile</span><b>${this.escapeHtml(profile)}</b><span>Slot power</span><b>${this.aiExecutionNumber(row.planned_power_w, 0, " W")}</b></div><div class="ai-exec-tip-sep"></div><div>${pairRow("PV", formatEnergy(row.corrected_pv_kwh), formatEnergy(actual.pv_kwh))}${pairRow("House", formatEnergy(row.load_kwh), formatEnergy(actual.load_kwh))}${pairRow("SOC", formatSoc(row.soc_end_pct), formatSoc(actual.soc_end_pct))}${pairRow("Import", formatEnergy(row.expected_import_kwh), formatEnergy(actual.grid_import_kwh))}${pairRow("Export", formatEnergy(row.expected_export_kwh), formatEnergy(actual.grid_export_kwh))}</div><div class="ai-exec-tip-sep"></div><div><span>Buy price</span><b>${this.aiExecutionNumber(row.effective_buy_price, 2, " £/kWh")}</b><span>Sell price</span><b>${this.aiExecutionNumber(row.sell_price, 2, " £/kWh")}</b>${pairRow("Full economic result", formatMoney(row.net_result_gbp), formatMoney(actual.net_result_gbp))}</div></div>`;
-  }
-
-  renderAiExecutionNowLine(left, right, bottom, top, width = 1400) {
-    const now = new Date();
-    const minutes = now.getHours() * 60 + now.getMinutes();
-    const plotWidth = width - left - right;
-    const x = left + (minutes / 1440) * plotWidth;
-    if (x < left || x > width - right) return "";
-    return `<line x1="${x}" y1="${top}" x2="${x}" y2="${bottom}" class="ai-now-line"/><text x="${x + 4}" y="${top + 14}" class="ai-now-label">now</text>`;
-  }
-
-  renderAiExecutionTable(data, planOnly = false) {
-    const rows = Array.isArray(data?.rows) ? data.rows : [];
-    if (!rows.length) return `<div class="ai-empty-state"><span class="ai-empty-icon">📋</span><strong>No hourly data for the selected day.</strong></div>`;
-    const numberCell = (value, digits = 2, unit = "", cls = "") => `<td class="${cls}">${this.aiExecutionNumber(value, digits)}${unit ? ` <span class="ai-exec-unit">${unit}</span>` : ""}</td>`;
-    const priceCell = (sell, buy, cls = "") => `<td class="${cls}"><span class="ai-exec-price-sell">${this.aiExecutionNumber(sell, 2)}</span><span class="ai-exec-price-sep">/</span><span class="ai-exec-price-buy">${this.aiExecutionNumber(buy, 2)}</span></td>`;
-    const sum = (field, actualField) => rows.reduce((acc, row) => acc + (this.asNumber(actualField ? row.actual?.[actualField] : row[field]) || 0), 0);
-    const emptyCell = `<td></td>`;
-    const wykonanieClass = (plan, wykonanie) => {
-      const p = this.asNumber(plan);
-      const w = this.asNumber(wykonanie);
-      if (p === null || w === null) return "";
-      const diff = Math.abs(p - w);
-      return diff > p * 0.2 + 0.05 ? " ai-exec-wykonanie-diverge" : diff > p * 0.08 + 0.02 ? " ai-exec-wykonanie-off" : " ai-exec-wykonanie-match";
-    };
-    const footer = planOnly ? "" : `<tfoot><tr class="ai-exec-summary"><td class="ai-exec-col-hour"><strong>TOTAL</strong></td><td class="ai-exec-col-status"></td><td class="ai-exec-col-action"></td><td class="ai-exec-col-power"></td>${emptyCell}${emptyCell}${numberCell(sum("corrected_pv_kwh"), 2, "")}${numberCell(sum("actual", "pv_kwh"), 2, "")}${numberCell(sum("load_kwh"), 2, "")}${numberCell(sum("actual", "load_kwh"), 2, "")}${numberCell(sum("expected_import_kwh"), 2, "")}${numberCell(sum("actual", "grid_import_kwh"), 2, "")}${numberCell(sum("expected_export_kwh"), 2, "")}${numberCell(sum("actual", "grid_export_kwh"), 2, "")}${emptyCell}${numberCell(sum("net_result_gbp"), 2, "")}${numberCell(sum("actual", "net_result_gbp"), 2, "")}${emptyCell}${emptyCell}</tr></tfoot>`;
-    const body = rows.map((row, idx) => {
-      const [status, statusClass] = this.aiExecutionStatus(row);
-      const actual = row.actual || {};
-      const errors = row.errors || {};
-      const action = row.action === "sell" ? "Selling" : row.action === "charge" ? "Charging" : "No change";
-      const source = row.profile_id ? this.aiUiText(`profile:${row.profile_id}`) : this.aiUiText(row.decision_source || "optimizer");
-      const pvPlan = this.aiExecutionNumber(row.corrected_pv_kwh, 2);
-      const pvWyk = this.aiExecutionNumber(actual.pv_kwh, 2);
-      const domPlan = this.aiExecutionNumber(row.load_kwh, 2);
-      const domWyk = this.aiExecutionNumber(actual.load_kwh, 2);
-      const impPlan = this.aiExecutionNumber(row.expected_import_kwh, 2);
-      const impWyk = this.aiExecutionNumber(actual.grid_import_kwh, 2);
-      const expPlan = this.aiExecutionNumber(row.expected_export_kwh, 2);
-      const expWyk = this.aiExecutionNumber(actual.grid_export_kwh, 2);
-      const pricePlan = `<span class="ai-exec-price-buy">${this.aiExecutionNumber(row.effective_buy_price, 2)}</span><span class="ai-exec-price-sep">/</span><span class="ai-exec-price-sell">${this.aiExecutionNumber(row.sell_price, 2)}</span>`;
-      return `<tr class="${idx % 2 === 0 ? "" : "ai-exec-odd"}"><td class="ai-exec-col-hour"><strong>${this.escapeHtml(row.label || this.hourLabel(row.hour))}</strong></td><td class="ai-exec-col-status"><span class="ai-exec-badge ${statusClass}" title="${this.escapeHtml(this.aiUiText(row.deployment_reason || ""))}">${status}</span></td><td class="ai-exec-col-action"><span class="ai-exec-action">${action}</span><span class="ai-exec-source">${this.escapeHtml(source)}</span></td><td class="ai-exec-col-power">${this.aiExecutionNumber(row.planned_power_w, 0, " W")}</td>${numberCell(row.soc_end_pct, 1, "%")}${numberCell(actual.soc_end_pct, 1, "%", "ai-exec-wykonanie" + wykonanieClass(row.soc_end_pct, actual.soc_end_pct))}<td>${pvPlan}</td><td class="ai-exec-wykonanie${wykonanieClass(row.corrected_pv_kwh, actual.pv_kwh)}">${pvWyk}</td><td>${domPlan}</td><td class="ai-exec-wykonanie${wykonanieClass(row.load_kwh, actual.load_kwh)}">${domWyk}</td><td>${impPlan}</td><td class="ai-exec-wykonanie${wykonanieClass(row.expected_import_kwh, actual.grid_import_kwh)}">${impWyk}</td><td>${expPlan}</td><td class="ai-exec-wykonanie${wykonanieClass(row.expected_export_kwh, actual.grid_export_kwh)}">${expWyk}</td><td>${pricePlan}</td><td>${this.aiExecutionNumber(row.net_result_gbp, 2)}</td><td class="ai-exec-wykonanie${wykonanieClass(row.net_result_gbp, actual.net_result_gbp)}">${this.aiExecutionNumber(actual.net_result_gbp, 2)}</td><td colspan="2" class="ai-exec-col-error">${this.aiExecutionNumber(errors.pv_percent, 1, "%")}<span class="ai-exec-error-sep">/</span>${this.aiExecutionNumber(errors.load_percent, 1, "%")}</td></tr>`;
-    }).join("");
-    return `<div class="ai-plan-table-wrap ai-execution-table-wrap"><table class="ai-plan-table ai-execution-table"><thead><tr class="ai-exec-head-main"><th rowspan="2" class="ai-exec-col-hour">Hour</th><th rowspan="2" class="ai-exec-col-status">Status</th><th rowspan="2" class="ai-exec-col-action">Action / profile</th><th rowspan="2" class="ai-exec-col-power">Power</th><th colspan="2">SOC (%)</th><th colspan="2" class="ai-exec-group-pv">PV (kWh)</th><th colspan="2" class="ai-exec-group-dom">House (kWh)</th><th colspan="2" class="ai-exec-group-imp">Import (kWh)</th><th colspan="2" class="ai-exec-group-exp">Export (kWh)</th><th>Price (£/kWh)</th><th colspan="2" title="Full economic result of the slot taking energy flows and prices into account.">Economic result (£)</th><th colspan="2" class="ai-exec-col-error">Forecast error (%)</th></tr><tr class="ai-exec-head-sub"><th>Plan</th><th>Actual</th><th>Plan</th><th>Actual</th><th>Plan</th><th>Actual</th><th>Plan</th><th>Actual</th><th>Plan</th><th>Actual</th><th>Plan: buy / selling</th><th>Plan</th><th>Actual</th><th>PV</th><th>House</th></tr></thead><tbody>${body}</tbody>${footer}</table></div>`;
-  }
-  renderAiPlanExecution(planner) {
-    const aiState = this._hass?.states?.[this.entity("sensor", "ai_state")];
-    const attrs = aiState?.attributes || {};
-    const range = this._aiExecutionRange || "today";
-    const buttons = [["today", "Today"], ["tomorrow", "Tomorrow"], ["48h", "48 h"], ["history", "History"]]
-      .map(([key, label]) => `<button type="button" class="${range === key ? "active" : ""}" data-ai-execution-range="${key}">${label}</button>`).join("");
-    if (range === "48h") {
-      return `<div class="ai-plan-execution"><div class="ai-execution-toolbar"><div class="ai-day-tabs">${buttons}</div></div>${this.aiReadableEnergyChart(planner.rows || [], "48 h energy plan")}<div class="ai-execution-note">The 48 h view shows the current Core proposal. Historical data is frozen per hour and is not recalculated retroactively.</div></div>`;
-    }
-    if (range === "history") {
-      const index = attrs.plan_execution_index || {};
-      const available = Array.isArray(index.available_dates) ? index.available_dates : [];
-      const selectedDate = this._aiExecutionDate || available[0] || this.localDateKey(new Date());
-      const data = this._aiExecutionData?.date === selectedDate ? this._aiExecutionData : null;
-      const content = this._aiExecutionLoading
-        ? `<div class="ai-empty-state"><span class="ai-empty-icon">⏳</span><strong>Loading the frozen plan and measurements…</strong></div>`
-        : this._aiExecutionError
-        ? `<div class="ai-empty-state ai-empty-error"><span class="ai-empty-icon">⚠</span><strong>${this.escapeHtml(this._aiExecutionError)}</strong></div>`
-        : data
-        ? `${this.renderAiExecutionChart(data, `Plan and actual · ${selectedDate}`, selectedDate === this.localDateKey(new Date()))}${this.renderAiExecutionTable(data)}`
-        : `<div class="ai-empty-state"><span class="ai-empty-icon">🗂️</span><strong>No history day selected</strong><span>Select a date and use "Show day".</span><small>Available days: ${available.length}</small></div>`;
-      return `<div class="ai-plan-execution"><div class="ai-execution-toolbar"><div class="ai-day-tabs">${buttons}</div><div class="ai-execution-date"><input type="date" value="${this.escapeHtml(selectedDate)}" min="${this.escapeHtml(available[available.length - 1] || "")}" max="${this.escapeHtml(available[0] || this.localDateKey(new Date()))}" data-ai-execution-date><button type="button" data-ai-execution-load>Show day</button></div></div>${content}</div>`;
-    }
-    const day = range === "tomorrow" ? "tomorrow" : "today";
-    const data = day === "today" && attrs.plan_execution_today?.rows?.length
-      ? attrs.plan_execution_today
-      : this.aiExecutionFallback(planner, day);
-    const summary = data.summary || {};
-    const isPlanOnly = day === "tomorrow";
-    const title = isPlanOnly ? "Tomorrow · plan" : "Today · plan and execution";
-    const sumRows = (field, actualField) => (data.rows || []).reduce((acc, row) => acc + (this.asNumber(actualField ? row.actual?.[actualField] : row[field]) || 0), 0);
-    const planned_import_kwh = summary.planned_import_kwh ?? sumRows("expected_import_kwh");
-    const actual_import_kwh = summary.actual_import_kwh ?? sumRows("grid_import_kwh", true);
-    const kpi = (icon, title, plan, wykonanie, unit, cls = "") => {
-      const planText = this.aiExecutionNumber(plan, 2);
-      const wykText = this.aiExecutionNumber(wykonanie, 2);
-      return `<div class="ai-exec-kpi ${cls}"><div class="ai-exec-kpi-icon">${icon}</div><div class="ai-exec-kpi-body"><span class="ai-exec-kpi-title">${title}</span><div class="ai-exec-kpi-row">${isPlanOnly ? `<div class="ai-exec-kpi-pair"><small>Plan</small><b class="ai-exec-kpi-plan">${planText} <span class="ai-exec-kpi-unit">${unit}</span></b></div>` : `<div class="ai-exec-kpi-pair"><small>Plan</small><b class="ai-exec-kpi-plan">${planText} <span class="ai-exec-kpi-unit">${unit}</span></b></div><div class="ai-exec-kpi-pair"><small>Actual</small><b class="ai-exec-kpi-wykonanie">${wykText} <span class="ai-exec-kpi-unit">${unit}</span></b></div>`}</div></div></div>`;
-    };
-    const summaryCards = `<div class="ai-execution-kpis">${kpi("☀", "PV", summary.planned_pv_kwh, summary.actual_pv_kwh, "kWh", "ai-exec-kpi-pv")}${kpi("🏠", "House", summary.planned_load_kwh, summary.actual_load_kwh, "kWh", "ai-exec-kpi-dom")}${kpi("↗", "Export", summary.planned_export_kwh, summary.actual_export_kwh, "kWh", "ai-exec-kpi-exp")}${kpi("↘", "Import", planned_import_kwh, actual_import_kwh, "kWh", "ai-exec-kpi-imp")}${kpi("£", "Economic result", summary.planned_result_gbp, summary.actual_result_gbp, "£", "ai-exec-kpi-wynik")}</div>`;
-    const explainer = `<details class="ai-execution-info"><summary>ℹ What do the data mean?</summary><p>The plan is a frozen Optimizer Core proposal. Execution comes from completed hourly measurements. The economic result is the full balance of energy flows and prices for the plan or execution, not the profit of the decision itself. This view alone writes nothing to the schedule or Deye.</p></details>`;
-    return `<div class="ai-plan-execution"><div class="ai-execution-toolbar"><div class="ai-day-tabs">${buttons}</div>${explainer}</div>${summaryCards}${this.renderAiExecutionChart(data, title, !isPlanOnly)}${this.renderAiExecutionTable(data, isPlanOnly)}</div>`;
-  }
-
-  async loadAiExecutionDay(dateKey) {
-    if (!dateKey || !this._hass?.callWS) return;
-    this._aiExecutionDate = dateKey;
-    this._aiExecutionLoading = true;
-    this._aiExecutionError = "";
-    this.renderDialogOnly();
-    try {
-      const result = await this._hass.callWS({
-        type: "call_service",
-        domain: "deye_energy",
-        service: "get_plan_execution",
-        service_data: { date: dateKey },
-        return_response: true,
-      });
-      this._aiExecutionData = result?.response || result || null;
-    } catch (error) {
-      this._aiExecutionError = `Could not load the day data: ${error?.message || error}`;
-    } finally {
-      this._aiExecutionLoading = false;
-      this.renderDialogOnly();
-    }
-  }
-
-  renderAiDialog(slots) {
-    const planner = this.aiPlannerData(slots);
-    const nav = [
-      ["overview", "⌂", "Overview"], ["proposals", "↗", "Proposed changes"],
-      ["explanation", "?", "Why this plan?"],
-      ["execution", "▣", "Plan and actual"], ["quality", "▦", "Data quality"],
-    ].map(([key, icon, label]) => `<button class="${this._aiView === key ? "active" : ""}" data-ai-view="${key}"><span>${icon}</span>${label}</button>`).join("");
-    let body = this.renderAiOverview(slots, planner);
-    if (this._aiView === "proposals") body = this.renderAiProposalView(slots, planner);
-    if (this._aiView === "explanation") body = this.renderAiExplanation(planner);
-    if (this._aiView === "execution") body = this.renderAiPlanExecution(planner);
-    if (this._aiView === "quality") body = `<div class="ai-quality-full">${this.renderAiQualityCard(planner)}</div>`;
-    const quality = planner.data_quality || {};
-    const maturity = planner.learning_maturity || quality.learning_maturity || {};
-    return `<div class="overlay" data-close-dialog="1"><section class="dialog ai-dialog ai-dialog-v2" data-dialog-box="1"><div class="dialog-head"><strong>AI suggestions</strong><button type="button" data-close-dialog="1">${this.iconSvg("close")}</button></div><div class="ai-shell"><aside class="ai-sidebar"><nav>${nav}</nav><div class="ai-learning-status"><span>Profile maturity</span><strong>${this.escapeHtml(String(maturity.label || this.aiUiText(maturity.status || "missing")).toUpperCase())}</strong><small>${this.aiFormatPercent(maturity.score, 0)} · usable hours: ${maturity.valid_hours ?? quality.usable_history_hours ?? 0}</small></div></aside><main class="ai-main" data-scroll-key="ai-main">${body}</main></div></section></div>`;
-  }
-
-  renderAnalysisDetails(item) {
-    const strategy = {
-      balanced: "Balanced",
-      profit: "Maximum profit",
-      autoconsumption: "Maximum self-consumption",
-    }[item.strategy] || item.strategy || "No data";
-    const priceRows = (rows, empty) => Array.isArray(rows) && rows.length
-      ? rows.map(([hour, price]) => `<li><strong>${this.hourLabel(hour)}</strong><span>${this.formatPrice(price)} GBP/kWh</span></li>`).join("")
-      : `<li><span>${empty}</span></li>`;
-    const sellRows = priceRows(item.bestSell, "No hours meet the selling conditions");
-    const buyRows = priceRows(item.cheapBuy, "No hours meet the buying conditions");
-    const applied = item.event === "accepted" || item.accepted
-      ? "Applied manually"
-      : item.event === "daily_summary" ? "Daily summary" : "Not applied";
-    const reason = item.event === "daily_summary"
-      ? "Summary of the collected daily data."
-      : item.strategy === "profit"
-        ? "Hours with the highest selling prices and the lowest buying prices were selected."
-        : item.strategy === "autoconsumption"
-          ? "The priority is using energy in the house and limiting grid import."
-          : "The suggestion balances energy prices, the PV forecast, house consumption and battery reserve.";
-    const outcome = item.outcome
-      ? `${this.formatNumber(item.outcome.sold_kwh, 2)} kWh / ${this.formatNumber(item.outcome.sold_value, 2)} GBP, PV accuracy ${this.formatNumber(item.outcome.pv_accuracy_percent, 0)}%`
-      : item.rating ? `User rating: ${item.rating}/5` : "No completed result";
-    const correction = this.asNumber(item.forecastCorrection);
-    const predictedSoc = this.asNumber(item.predictedSoc);
-    const maxSellPower = this.asNumber(item.maxSellPower);
-    const minSoc = this.asNumber(item.minSoc);
-    return `<div class="analysis-details">
-      <div class="analysis-detail-grid">
-        <div><span>Status</span><strong>${applied}</strong></div>
-        <div><span>Strategy</span><strong>${this.escapeHtml(strategy)}</strong></div>
-        <div><span>Max sell power</span><strong>${maxSellPower === null ? "No data" : `${this.formatNumber(maxSellPower, 0)} W`}</strong></div>
-        <div><span>Minimum SOC</span><strong>${minSoc === null ? "No data" : `${this.formatNumber(minSoc, 0)}%`}</strong></div>
-        <div><span>Solcast forecast</span><strong>${this.formatNumber(item.solcastToday, 2)} kWh</strong></div>
-        <div><span>Remaining forecast</span><strong>${this.formatNumber(item.solcastRemaining, 2)} kWh</strong></div>
-        <div><span>Actual PV production</span><strong>${this.formatNumber(item.dailyPv, 2)} kWh</strong></div>
-        <div><span>Forecast correction</span><strong>${correction === null ? "No data" : `${this.formatNumber(correction * 100, 0)}%`}</strong></div>
-        <div><span>Expected house consumption</span><strong>${this.formatNumber(item.expectedRemainingLoad, 2)} kWh</strong></div>
-        <div><span>Estimated surplus</span><strong>${this.formatNumber(item.estimatedSurplus, 2)} kWh</strong></div>
-        <div><span>Prognozowany SOC</span><strong>${predictedSoc === null ? "No data" : `${this.formatNumber(predictedSoc, 0)}%`}</strong></div>
-        <div><span>Battery trend</span><strong>${this.escapeHtml(item.predictedSocTrend || "No data")}</strong></div>
-      </div>
-      <div class="analysis-price-groups">
-        <section><h4>Best selling hours</h4><ul>${sellRows}</ul></section>
-        <section><h4>Cheapest buying hours</h4><ul>${buyRows}</ul></section>
-      </div>
-      <div class="analysis-explanation"><span>Reason for the suggestion</span><strong>${reason}</strong></div>
-      <div class="analysis-explanation"><span>Result and effectiveness</span><strong>${outcome}</strong></div>
-    </div>`;
-  }
-
   renderHistoryTab() {
     const data = this.historyData();
     const filters = this._historyFilters || { from: "", to: "", type: "all" };
     const inRange = (date) => (!filters.from || date >= filters.from) && (!filters.to || date <= filters.to);
-    const analyses = this.filteredAnalyses();
     const daily = data.daily.filter((item) => inRange(String(item.date || "")));
     const monthly = data.monthly.filter((item) => inRange(`${item.month || ""}-01`));
-    const eventLabel = (event) => this.escapeHtml(({ suggestion: "Suggestion", accepted: "Accepted", daily_summary: "Daily summary" }[event] || event || "Suggestion"));
-    const analysisRows = analyses.length ? analyses.map((item) => {
-      const date = new Date(Number(item.timestamp) || item.date || 0);
-      const dateLabel = Number.isNaN(date.getTime()) ? (item.date || "missing") : date.toLocaleString("en-GB");
-      const sell = item.bestSell?.[0] ? `${this.hourLabel(item.bestSell[0][0])} · ${this.formatPrice(item.bestSell[0][1])} GBP` : "missing";
-      const outcome = item.event === "daily_summary" ? `Accuracy ${this.formatNumber(item.accuracy_percent, 1)}%` : item.outcome ? `${this.formatNumber(item.outcome.sold_kwh, 2)} kWh / ${this.formatNumber(item.outcome.sold_value, 2)} GBP · PV ${this.formatNumber(item.outcome.pv_accuracy_percent, 0)}%` : item.rating ? `Rating ${item.rating}/5` : item.event === "accepted" ? "Waiting for the day's result" : "Not applied";
-      const rating = item.event === "accepted" || item.event === "suggestion" ? `<span class="history-rating">${[1,2,3,4,5].map((value) => `<button data-rate-history="${item.timestamp}" data-rating="${value}" class="${Number(item.rating) === value ? "active" : ""}">${value}</button>`).join("")}</span>` : "";
-      return `<tr><td>${this.escapeHtml(dateLabel)}</td><td>${eventLabel(item.event)}</td><td>${sell}</td><td>${outcome}<br>${rating}</td><td></td></tr>
-        <tr class="analysis-detail-row"><td colspan="5"><details class="analysis-record"><summary>Details</summary>${this.renderAnalysisDetails(item)}</details></td></tr>`;
-    }).join("") : `<tr><td colspan="5">No records for the selected filters</td></tr>`;
     const dailyRows = daily.length ? daily.map((item) => {
       const currentRealization = this.asNumber(item.realization_today_pct ?? item.forecast_progress_percent);
       const accuracy = item.accuracy_percent === null || item.accuracy_percent === undefined
@@ -8370,13 +5643,10 @@ class DeyeEnergyCard extends HTMLElement {
     return `<div class="history-toolbar">
       <label>From<input type="date" data-history-filter="from" value="${filters.from || ""}"></label>
       <label>To<input type="date" data-history-filter="to" value="${filters.to || ""}"></label>
-      <label>Type<select data-history-filter="type"><option value="all">All</option><option value="suggestion" ${filters.type === "suggestion" ? "selected" : ""}>Suggestions</option><option value="accepted" ${filters.type === "accepted" ? "selected" : ""}>Accepted</option><option value="daily_summary" ${filters.type === "daily_summary" ? "selected" : ""}>Daily summaries</option></select></label>
       <button data-export-history="csv">Export CSV</button><button data-export-history="json">Export JSON</button><button data-export-monthly="1">Monthly report</button>
     </div>
     <section class="history-section"><h3>Forecast and actual production</h3><div class="history-scroll"><table class="settings-table"><thead><tr><th>Date</th><th>Forecast kWh</th><th>Production kWh</th><th>Accuracy / state</th><th>House kWh</th><th>Chg./Disch. kWh</th><th>Selling</th></tr></thead><tbody>${dailyRows}</tbody></table></div></section>
-    <section class="history-section"><h3>Earlier suggestions and effectiveness</h3><div class="history-scroll analysis-history-scroll"><table class="settings-table analysis-history-table"><thead><tr><th>Date</th><th>Type</th><th>Best selling</th><th>Result / rating</th><th>Record</th></tr></thead><tbody>${analysisRows}</tbody></table></div></section>
-    <section class="history-section"><h3>Monthly summaries</h3><div class="history-scroll"><table class="settings-table"><thead><tr><th>Month</th><th>Days</th><th>PV kWh</th><th>House kWh</th><th>Import / export</th><th>Selling</th></tr></thead><tbody>${monthlyRows}</tbody></table></div></section>
-    <button class="danger-action" data-clear-all-history="1">Clear history and data</button>`;
+    <section class="history-section"><h3>Monthly summaries</h3><div class="history-scroll"><table class="settings-table"><thead><tr><th>Month</th><th>Days</th><th>PV kWh</th><th>House kWh</th><th>Import / export</th><th>Selling</th></tr></thead><tbody>${monthlyRows}</tbody></table></div></section>`;
   }
 
   renderDialog(slots, touStarts) {
@@ -8385,7 +5655,6 @@ class DeyeEnergyCard extends HTMLElement {
     if (this._dialog.type === "settings") {
       const tab = this._settingsTab || "defaults";
       const tabButton = (key, label) => `<button class="${tab === key ? "active" : ""}" data-settings-tab="${key}">${label}</button>`;
-      const aiSettings = this.aiSettings();
       let body = "";
       if (tab === "defaults") {
         body = `
@@ -8413,12 +5682,8 @@ class DeyeEnergyCard extends HTMLElement {
           <div class="hint">The physical SOC written to Deye Time Of Use for Normal Operation slots. This is not the minimum selling SOC.</div>
           <button class="wide-action" data-save-normal-profile="1">Save Normal Operation settings</button>
           <div class="hint defaults-status ${this._defaultsStatus}" data-defaults-status ${this._defaultsMessage ? "" : "hidden"}>${this.escapeHtml(this._defaultsMessage)}</div>`;
-      } else if (tab === "tou") {
-        body = this.renderTouSettingsContent(slots);
       } else if (tab === "energy-status") {
         body = this.renderEnergyStatusTab();
-      } else if (tab === "ai") {
-        body = this.renderAiSettingsPanel();
       } else if (tab === "tariff") {
         body = this.renderTariffTab();
       } else if (tab === "history") {
@@ -8433,9 +5698,7 @@ class DeyeEnergyCard extends HTMLElement {
           <div class="settings-layout">
             <nav class="settings-nav">
               ${tabButton("defaults", "Mode settings")}
-              ${tabButton("tou", "Deye Time Of Use")}
               ${tabButton("energy-status", "Energy status sensors")}
-              ${tabButton("ai", "AI and analysis")}
               ${tabButton("tariff", "Tariff and distribution")}
               ${tabButton("history", "History and data")}
               ${tabButton("system", "System and diagnostics")}
@@ -8444,10 +5707,6 @@ class DeyeEnergyCard extends HTMLElement {
           </div>
         </section>
       </div>`;
-    }
-
-    if (this._dialog.type === "ai") {
-      return this.renderAiDialog(slots);
     }
 
     if (this._dialog.type === "multi") {
@@ -8534,8 +5793,6 @@ class DeyeEnergyCard extends HTMLElement {
     const masterControl = control.entity_id;
     const masterControlOn = control.enabled;
     const controlStatus = control.status;
-    const workScheduleEnabled = !this.manualScheduleIsActive();
-
     const batterySoc = this.entity("sensor", "battery_soc");
     const soldEnergyToday = this.entity("sensor", "sold_energy_today");
     const soldValueToday = this.entity("sensor", "sold_value_today");
@@ -8672,7 +5929,7 @@ class DeyeEnergyCard extends HTMLElement {
     const showSolcast = isSingle ? layout.section === "solcast" : layout.sections.solcast;
     const showSchedule = isSingle ? layout.section === "schedule" : layout.sections.schedule;
     const showSales = isSingle ? layout.section === "sales_stats" : layout.sections.sales_stats;
-    if (isSingle && ["ai", "settings"].includes(layout.section) && !this._dialog) {
+    if (isSingle && ["settings"].includes(layout.section) && !this._dialog) {
       this._dialog = { type: layout.section };
     }
 
@@ -8720,48 +5977,8 @@ class DeyeEnergyCard extends HTMLElement {
             ${buyPricesSection}
             ${solcastSection}
            </div>` : "";
-    const workSchedulePanel = `
-             <div class="schedule-head">
-               <div class="schedule-title">
-                 <h2>Work schedule <button class="title-icon ai" data-open-ai="1" title="AI suggestions">${this.iconSvg("ai")}</button><span class="save-indicator ${this._saveStatus}" data-save-indicator>${this._saveStatus === "saving" ? this._saveMessage || "Saving..." : this._saveStatus === "saved" ? this._saveMessage || "Saved" : this._saveStatus === "error" ? this._saveMessage : ""}</span></h2>
-                 <p>Click an hour to edit a single slot or select several to edit them together.</p>
-                </div>
-                <div class="schedule-tools">
-                 <button class="tool-btn ${workScheduleEnabled ? "active" : ""}" data-work-schedule-toggle="1" ${this._manualScheduleSaving ? "disabled" : ""}>Work schedule — ${workScheduleEnabled ? "Enabled" : "Disabled"}</button>
-                 <button class="tool-btn ${masterControlOn ? "active" : ""}" data-control-toggle="1" ${control.pending ? "disabled" : ""}>Deye control — ${this.escapeHtml(controlStatus)}</button>
-                 <button class="tool-btn ${this._selectionMode ? "active" : ""}" data-toggle-selection="1">${this.iconSvg("check")} Selection mode</button>
-                 <button class="tool-btn" data-schedule-select-all="1">${this.iconSvg("copy")} Select all</button>
-                 <button class="tool-btn" data-schedule-clear="1">${this.iconSvg("close")} Deselect all</button>
-                 <button class="gear-btn" data-open-settings="1" title="Settings">${this.iconSvg("gear")}</button>
-               </div>
-             </div>
-             <div class="schedule-main ${this._selectionMode ? "selecting" : ""}">
-               <div class="schedule-left">
-                 <div class="mode-legend">${this.modeLegend()}</div>
-                 <div class="schedule-table-card">
-                   <table class="schedule-table">
-                     <colgroup>
-                       <col class="col-check"><col class="col-time"><col class="col-mode"><col class="col-power">
-                       <col class="col-grid">
-                       <col class="col-soc"><col class="col-price"><col class="col-active"><col class="col-action">
-                     </colgroup>
-                     <thead><tr><th class="check-col"></th><th class="time-col">Hour</th><th>Mode</th><th>Power</th><th>Grid charging</th><th>SOC</th><th>Price min.</th><th>Active</th><th>Action</th></tr></thead>
-                     <tbody>${scheduleRows}</tbody>
-                   </table>
-                   <div class="schedule-foot">
-                     <span>Selected: <strong>${selectedCount} hours</strong></span>
-                     <div class="foot-actions">
-                       <button data-schedule-clear="1">${this.iconSvg("close")} Deselect</button>
-                       <button class="primary" data-open-multi="1" ${selectedCount ? "" : "disabled"}>${this.iconSvg("edit")} Edit selected (${selectedCount})</button>
-                       <button data-open-settings="tou">${this.iconSvg("copy")} Deye Time Of Use</button>
-                     </div>
-                   </div>
-                 </div>
-               </div>
-               ${selectedInfo}
-             </div>`;
     const scheduleSection = showSchedule
-      ? this.renderScheduleTabs(workSchedulePanel, this.renderManualScheduleTab())
+      ? this.renderScheduleTabs(this.renderManualScheduleTab(), this.renderTouSettingsContent(slots))
       : "";
     const salesSection = showSales ? `
            <section class="panel sales-panel"><h2 class="panel-title">${this.iconSvg("chart")} Selling statistics</h2><div data-live-html="sales-stats">${this.salesStatsPanel()}</div></section>` : "";
@@ -8786,7 +6003,7 @@ class DeyeEnergyCard extends HTMLElement {
           .defaults-status{margin-top:10px}.defaults-status.saving{color:#ffd166}.defaults-status.saved{color:var(--green)}.defaults-status.error{color:#ff8b98}button[data-default-action]:disabled{opacity:.55;cursor:wait}
            .schedule-shell{width:100%;max-width:100%;min-width:0;box-sizing:border-box;overflow:hidden;padding:10px;background:radial-gradient(circle at 12% 8%,rgba(20,85,130,.22),transparent 30%),linear-gradient(180deg,rgba(5,16,26,.98),rgba(7,21,32,.98))}
           .schedule-tabs{display:flex;gap:8px;padding:10px;border-bottom:1px solid var(--line);overflow-x:auto}.schedule-tabs button{border:1px solid var(--line2);border-radius:7px;background:rgba(255,255,255,.03);color:#dfeef6;padding:8px 12px;white-space:nowrap;cursor:pointer}.schedule-tabs button.active{border-color:var(--blue);color:#fff;background:rgba(21,155,255,.22)}.schedule-tab-panel[hidden]{display:none}.manual-save-actions{justify-content:flex-end;margin-top:10px}
-          .schedule-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:8px}.schedule-title h2{margin:0;display:flex;align-items:center;gap:8px;font-size:22px;font-weight:850}.schedule-title p{margin:3px 0 0;color:#c1d4df;font-size:13px}.title-icon{width:28px;height:28px;border-radius:999px;border:1px solid rgba(142,181,202,.42);background:rgba(255,255,255,.03);color:#d9ecf6;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}.title-icon.ai{color:#2fa8ff}.title-icon:hover{border-color:var(--blue);color:#fff}.save-indicator{display:none;border-radius:999px;padding:4px 9px;font-size:11px;font-weight:800;line-height:1.2}.save-indicator.saving{display:inline-flex;color:#ffd166;background:rgba(246,166,25,.16)}.save-indicator.saved{display:inline-flex;color:var(--green);background:rgba(53,214,111,.14)}.save-indicator.error{display:inline-flex;max-width:360px;color:#ff8b98;background:rgba(255,77,99,.15);white-space:normal}
+          .schedule-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:8px}.schedule-title h2{margin:0;display:flex;align-items:center;gap:8px;font-size:22px;font-weight:850}.schedule-title p{margin:3px 0 0;color:#c1d4df;font-size:13px}.title-icon{width:28px;height:28px;border-radius:999px;border:1px solid rgba(142,181,202,.42);background:rgba(255,255,255,.03);color:#d9ecf6;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}.title-icon:hover{border-color:var(--blue);color:#fff}.save-indicator{display:none;border-radius:999px;padding:4px 9px;font-size:11px;font-weight:800;line-height:1.2}.save-indicator.saving{display:inline-flex;color:#ffd166;background:rgba(246,166,25,.16)}.save-indicator.saved{display:inline-flex;color:var(--green);background:rgba(53,214,111,.14)}.save-indicator.error{display:inline-flex;max-width:360px;color:#ff8b98;background:rgba(255,77,99,.15);white-space:normal}
           .schedule-tools{display:flex;gap:9px;align-items:center;flex-wrap:wrap;justify-content:flex-end}.tool-btn,.gear-btn,.bulk-actions button,.set-btn,.icon-only{border:1px solid rgba(100,145,170,.42);border-radius:8px;background:rgba(7,17,27,.72);color:#eaf7ff;min-height:38px;padding:0 13px;display:inline-flex;align-items:center;gap:9px;cursor:pointer}.tool-btn.active{border-color:var(--blue);color:#2ea7ff;background:rgba(8,53,92,.55)}.gear-btn{width:48px;justify-content:center;padding:0}.gear-btn:hover,.tool-btn:hover,.set-btn:hover,.icon-only:hover{border-color:var(--blue);box-shadow:0 0 0 1px rgba(21,155,255,.25) inset}.icon-only{width:32px;min-height:28px;padding:0;justify-content:center}.set-btn{min-height:29px;padding:0 12px;font-weight:800}
           .mode-legend{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin:4px 0 8px}.mode-tile{display:flex;align-items:center;gap:8px;min-width:0}.mode-icon{width:32px;height:32px;border-radius:11px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}.mode-tile.selling .mode-icon{background:rgba(126,226,45,.16);color:var(--green)}.mode-tile.zero .mode-icon{background:rgba(21,155,255,.16);color:var(--blue)}.mode-tile.ct .mode-icon{background:rgba(188,99,255,.18);color:var(--purple)}.mode-tile.charge .mode-icon{background:rgba(246,166,25,.18);color:var(--gold)}.mode-tile.disabled .mode-icon{background:rgba(155,178,193,.12);color:#b9c9d4}.mode-tile.normal .mode-icon{background:rgba(77,171,247,.16);color:#4dabf7}.mode-tile strong{display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mode-tile.selling strong{color:var(--green)}.mode-tile.zero strong{color:var(--blue)}.mode-tile.ct strong{color:var(--purple)}.mode-tile.charge strong{color:var(--gold)}.mode-tile.normal strong{color:#4dabf7}.mode-tile span{display:block;color:#c2d4de;margin-top:1px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
            .schedule-main{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}.schedule-main.selecting{grid-template-columns:minmax(0,1fr) 340px}.schedule-left{min-width:0}.schedule-table-card{width:100%;max-width:100%;min-width:0;box-sizing:border-box;border:1px solid rgba(107,157,182,.28);border-radius:8px;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;background:rgba(6,19,29,.62)}.schedule-table{width:100%;border-collapse:collapse;table-layout:auto}.schedule-table th,.schedule-table td{padding:1px 4px;border-top:1px solid var(--line);text-align:left;vertical-align:middle}.schedule-table th{background:rgba(19,41,56,.86);color:#d9ecf6;font-size:10px;font-weight:800}.schedule-table td{font-size:11px}.schedule-table tr{height:24px}.schedule-table tr.active{background:rgba(37,105,151,.32);animation:schedule-current-row 1.6s ease-in-out infinite}.schedule-table tr.active td{animation:schedule-current-cell 1.6s ease-in-out infinite}.schedule-table tr.active .time-col{color:#fff;font-weight:800;text-shadow:0 0 8px rgba(87,185,255,.9)}@keyframes schedule-current-row{0%,100%{background:rgba(37,105,151,.26)}50%{background:rgba(37,105,151,.58)}}@keyframes schedule-current-cell{0%,100%{box-shadow:inset 0 0 0 1px rgba(87,185,255,.32),inset 0 0 8px rgba(87,185,255,.10)}50%{box-shadow:inset 0 0 0 1px rgba(87,185,255,.95),inset 0 0 16px rgba(87,185,255,.38)}}.schedule-table tr.selected{background:rgba(0,122,255,.14);box-shadow:inset 0 0 0 1px var(--blue)}.check-col{width:30px}.time-col{width:56px;min-width:56px;max-width:56px;text-align:left;white-space:nowrap}.schedule-table .metric,.schedule-table .mode-pill{white-space:nowrap}.schedule-table col.col-check{width:30px}.schedule-table col.col-time{width:58px}.schedule-table col.col-mode{width:118px}.schedule-table col.col-power{width:76px}.schedule-table col.col-current{width:78px}.schedule-table col.col-grid{width:54px}.schedule-table col.col-grid-current{width:72px}.schedule-table col.col-soc{width:56px}.schedule-table col.col-price{width:70px}.schedule-table col.col-active{width:56px}.schedule-table col.col-action{width:42px}.slot-check{display:inline-flex;align-items:center;justify-content:center}.slot-check input{display:none}.slot-check span{width:18px;height:18px;border:1px solid rgba(159,190,207,.55);border-radius:5px;background:rgba(255,255,255,.02)}.slot-check input:checked+span{background:var(--blue);border-color:var(--blue);box-shadow:inset 0 0 0 3px rgba(0,0,0,.18)}.slot-check input:checked+span::after{content:"";display:block;width:8px;height:5px;border-left:2px solid #00131f;border-bottom:2px solid #00131f;transform:rotate(-45deg);margin:5px 0 0 5px}
@@ -8795,9 +6012,8 @@ class DeyeEnergyCard extends HTMLElement {
           .pill{border:0;border-radius:999px;min-width:42px;padding:3px 9px;font-weight:900;cursor:pointer;background:#233849;color:#d9edf5}.pill.on{background:linear-gradient(90deg,#0a68d7,#159bff);color:#fff}.pill.off{background:#263e51;color:#d9edf5}.pill.missing{opacity:.62}
           .schedule-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--line);padding:7px 12px}.schedule-foot strong{color:#2ea7ff}.foot-actions{display:flex;gap:9px;flex-wrap:wrap}.foot-actions button{border:1px solid rgba(100,145,170,.42);border-radius:8px;background:rgba(7,17,27,.72);color:#eaf7ff;min-height:32px;padding:0 12px;display:inline-flex;align-items:center;gap:8px;cursor:pointer}.foot-actions .primary{background:linear-gradient(180deg,#0b7eee,#075bc0);border-color:#159bff}
           .bulk-panel{border:1px solid rgba(107,157,182,.28);border-radius:8px;background:linear-gradient(180deg,rgba(10,29,45,.95),rgba(7,21,33,.96));padding:20px}.bulk-panel h3{margin:0 0 16px;font-size:20px}.range-box{border:1px solid rgba(21,155,255,.35);border-radius:8px;background:rgba(0,81,145,.18);padding:14px;margin-bottom:16px;color:#2ea7ff}.range-box span,.range-box small{display:block;margin-top:5px}.apply-row{display:grid;grid-template-columns:24px 1fr 1.25fr;gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}.apply-row input[type="checkbox"]{width:20px;height:20px;accent-color:var(--blue)}.preview-box{margin-top:12px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03);padding:12px;color:#cbdce5}.bulk-actions{display:flex;justify-content:space-between;gap:10px;margin-top:16px}.bulk-actions .primary{background:linear-gradient(180deg,#72d13b,#41a91d);border-color:#75e247;color:#041007}
-          input,select{width:100%;min-width:0;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:8px}option,select option{background:#fff!important;color:#111!important}.field{position:relative;display:block}.field input{padding-right:42px}.field span{position:absolute;right:10px;top:50%;transform:translateY(-50%);font-weight:800;color:#d8ecf7}.row{min-height:38px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border-top:1px solid var(--line)}.row strong{text-align:right}.settings-row{min-height:40px;display:grid;grid-template-columns:1fr 260px;gap:12px;align-items:center;padding:9px 12px;border-top:1px solid var(--line)}.settings-row>input[type="checkbox"]{justify-self:end;width:20px;height:20px;accent-color:var(--blue)}.settings-row select,.settings-row .compact-field{max-width:260px;justify-self:end}.tou-reverse-sync{display:grid;gap:5px}.hint{padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03);color:#c7d9e2;margin-bottom:12px}.wide-action{width:100%;min-height:38px;border:1px solid rgba(100,145,170,.45);border-radius:8px;background:#173a57;color:#fff;font-weight:800;cursor:pointer}.wide-action:disabled{opacity:.45;cursor:not-allowed}.settings-table{width:100%;border-collapse:collapse}.settings-table th,.settings-table td{padding:8px;border-top:1px solid var(--line);text-align:left}.settings-tabs{display:flex;gap:8px;padding:10px;border-bottom:1px solid var(--line);overflow-x:auto}.settings-tabs button{border:1px solid var(--line2);border-radius:7px;background:rgba(255,255,255,.03);color:#dfeef6;padding:8px 10px;white-space:nowrap}.settings-tabs button.active{border-color:var(--blue);color:#fff;background:rgba(21,155,255,.22)}.overlay{position:fixed;inset:0;background:rgba(0,0,0,.68);display:flex;align-items:center;justify-content:center;z-index:20;padding:16px}.dialog{width:min(760px,100%);max-height:92vh;overflow:auto;border:1px solid rgba(107,157,182,.45);border-radius:12px;background:radial-gradient(circle at 16% 0%,rgba(22,91,139,.2),transparent 36%),linear-gradient(180deg,#071b2a,#061420);box-shadow:0 25px 70px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.04)}.settings-dialog{width:min(880px,100%)}.dialog-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;background:linear-gradient(180deg,rgba(14,50,70,.9),rgba(10,30,44,.86));border-bottom:1px solid rgba(107,157,182,.28)}.dialog-head strong{font-size:19px}.dialog-head button{border:0;background:transparent;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center}.dialog-head button svg{pointer-events:none}.dialog-body{padding:14px}.dialog-actions{display:flex;justify-content:flex-end;gap:10px;padding:0 14px 14px}.dialog-actions button{border:1px solid var(--line2);border-radius:8px;background:#173a57;color:#fff;min-height:38px;padding:0 16px}.dialog-actions button:disabled{opacity:.45;cursor:not-allowed}.ai-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.ai-card{border:1px solid var(--line);border-radius:9px;background:rgba(255,255,255,.03);padding:12px}.ai-card h3{margin:0 0 8px;color:#7ee22d}.ai-proposal,.ai-history{grid-column:1/-1}.ai-proposal-scroll,.ai-history-scroll{overflow:auto;max-height:300px;margin-bottom:10px}.ai-proposal .mini-table,.ai-history .mini-table{min-width:620px}
-           .history-toolbar{display:grid;grid-template-columns:repeat(3,minmax(130px,1fr)) repeat(3,auto);gap:8px;align-items:end;margin-bottom:12px}.history-toolbar label{display:grid;gap:4px;color:#a9c1d0;font-size:11px}.history-toolbar button,.danger-action{min-height:38px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 12px;cursor:pointer}.history-section{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);margin-bottom:12px;overflow:hidden}.history-section h3{margin:0;padding:10px 12px;color:var(--green);background:rgba(18,42,59,.74)}.history-scroll{max-height:270px;overflow:auto;overscroll-behavior:contain}.history-scroll .settings-table{min-width:780px}.history-scroll details summary{cursor:pointer;color:var(--blue)}.history-scroll pre{max-width:520px;max-height:220px;overflow:auto;white-space:pre-wrap;color:#cfe1ea}.history-rating{display:inline-flex;gap:3px;margin-top:4px}.history-rating button{width:25px;height:24px;border:1px solid var(--line2);border-radius:5px;background:rgba(255,255,255,.03);color:#b9ced9;cursor:pointer}.history-rating button.active{background:var(--green);color:#041007;border-color:var(--green)}.danger-action{background:rgba(138,24,42,.28);border-color:rgba(255,77,99,.55);color:#ff9cab}
-           .analysis-history-scroll{overflow-x:hidden}.history-scroll .analysis-history-table{width:100%;min-width:0;table-layout:fixed}.analysis-history-table th,.analysis-history-table td{overflow-wrap:anywhere}.analysis-history-table th:nth-child(1){width:19%}.analysis-history-table th:nth-child(2){width:14%}.analysis-history-table th:nth-child(3){width:20%}.analysis-history-table th:nth-child(4){width:32%}.analysis-history-table th:nth-child(5){width:15%}.analysis-detail-row td{padding:0 10px 8px!important;background:rgba(3,14,23,.45)}.analysis-record{width:100%}.analysis-record summary{padding:8px 2px;font-weight:800;cursor:pointer;color:var(--blue)}.analysis-details{display:grid;gap:10px;padding:2px 0 10px}.analysis-detail-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.analysis-detail-grid>div,.analysis-price-groups section,.analysis-explanation{border:1px solid var(--line);border-radius:7px;background:rgba(255,255,255,.025);padding:9px}.analysis-detail-grid span,.analysis-explanation span{display:block;margin-bottom:4px;color:#9db7c6;font-size:10px}.analysis-detail-grid strong,.analysis-explanation strong{display:block;overflow-wrap:anywhere}.analysis-price-groups{display:grid;grid-template-columns:1fr 1fr;gap:8px}.analysis-price-groups h4{margin:0 0 6px;color:var(--green)}.analysis-price-groups ul{list-style:none;margin:0;padding:0}.analysis-price-groups li{display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-top:1px solid var(--line)}
+          input,select{width:100%;min-width:0;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:8px}option,select option{background:#fff!important;color:#111!important}.field{position:relative;display:block}.field input{padding-right:42px}.field span{position:absolute;right:10px;top:50%;transform:translateY(-50%);font-weight:800;color:#d8ecf7}.row{min-height:38px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border-top:1px solid var(--line)}.row strong{text-align:right}.settings-row{min-height:40px;display:grid;grid-template-columns:1fr 260px;gap:12px;align-items:center;padding:9px 12px;border-top:1px solid var(--line)}.settings-row>input[type="checkbox"]{justify-self:end;width:20px;height:20px;accent-color:var(--blue)}.settings-row select,.settings-row .compact-field{max-width:260px;justify-self:end}.tou-reverse-sync{display:grid;gap:5px}.hint{padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03);color:#c7d9e2;margin-bottom:12px}.wide-action{width:100%;min-height:38px;border:1px solid rgba(100,145,170,.45);border-radius:8px;background:#173a57;color:#fff;font-weight:800;cursor:pointer}.wide-action:disabled{opacity:.45;cursor:not-allowed}.settings-table{width:100%;border-collapse:collapse}.settings-table th,.settings-table td{padding:8px;border-top:1px solid var(--line);text-align:left}.settings-tabs{display:flex;gap:8px;padding:10px;border-bottom:1px solid var(--line);overflow-x:auto}.settings-tabs button{border:1px solid var(--line2);border-radius:7px;background:rgba(255,255,255,.03);color:#dfeef6;padding:8px 10px;white-space:nowrap}.settings-tabs button.active{border-color:var(--blue);color:#fff;background:rgba(21,155,255,.22)}.overlay{position:fixed;inset:0;background:rgba(0,0,0,.68);display:flex;align-items:center;justify-content:center;z-index:20;padding:16px}.dialog{width:min(760px,100%);max-height:92vh;overflow:auto;border:1px solid rgba(107,157,182,.45);border-radius:12px;background:radial-gradient(circle at 16% 0%,rgba(22,91,139,.2),transparent 36%),linear-gradient(180deg,#071b2a,#061420);box-shadow:0 25px 70px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.04)}.settings-dialog{width:min(880px,100%)}.dialog-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;background:linear-gradient(180deg,rgba(14,50,70,.9),rgba(10,30,44,.86));border-bottom:1px solid rgba(107,157,182,.28)}.dialog-head strong{font-size:19px}.dialog-head button{border:0;background:transparent;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center}.dialog-head button svg{pointer-events:none}.dialog-body{padding:14px}.dialog-actions{display:flex;justify-content:flex-end;gap:10px;padding:0 14px 14px}.dialog-actions button{border:1px solid var(--line2);border-radius:8px;background:#173a57;color:#fff;min-height:38px;padding:0 16px}.dialog-actions button:disabled{opacity:.45;cursor:not-allowed}
+           .history-toolbar{display:grid;grid-template-columns:repeat(3,minmax(130px,1fr)) repeat(3,auto);gap:8px;align-items:end;margin-bottom:12px}.history-toolbar label{display:grid;gap:4px;color:#a9c1d0;font-size:11px}.history-toolbar button,.danger-action{min-height:38px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 12px;cursor:pointer}.history-section{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);margin-bottom:12px;overflow:hidden}.history-section h3{margin:0;padding:10px 12px;color:var(--green);background:rgba(18,42,59,.74)}.history-scroll{max-height:270px;overflow:auto;overscroll-behavior:contain}.history-scroll .settings-table{min-width:780px}.history-scroll details summary{cursor:pointer;color:var(--blue)}.history-scroll pre{max-width:520px;max-height:220px;overflow:auto;white-space:pre-wrap;color:#cfe1ea}.danger-action{background:rgba(138,24,42,.28);border-color:rgba(255,77,99,.55);color:#ff9cab}
            .settings-dialog{width:min(1180px,96vw)!important;height:min(820px,92vh);max-height:92vh!important;overflow:hidden!important;display:grid;grid-template-rows:auto minmax(0,1fr)}.settings-layout{min-height:0;display:grid;grid-template-columns:220px minmax(0,1fr)}.settings-nav{padding:12px;border-right:1px solid var(--line);background:rgba(4,15,24,.58);display:flex;flex-direction:column;gap:7px;overflow-y:auto}.settings-nav button{width:100%;min-height:42px;border:1px solid var(--line2);border-radius:7px;background:rgba(255,255,255,.025);color:#dfeef6;padding:8px 10px;text-align:left;cursor:pointer}.settings-nav button.active{border-color:var(--blue);color:#fff;background:rgba(21,155,255,.22)}.settings-content{min-width:0;overflow:auto;overscroll-behavior:contain;padding:14px}.diagnostic-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-bottom:12px}.diagnostic-summary>div{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03);padding:11px}.diagnostic-summary span{display:block;color:#9db7c6;font-size:11px}.diagnostic-summary strong{display:block;margin-top:5px;overflow-wrap:anywhere}.diagnostic-section{border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:12px;background:rgba(255,255,255,.025)}.diagnostic-section h3{margin:0;padding:10px 12px;background:rgba(18,42,59,.78);color:#dff4ff}.diagnostic-entities{max-height:260px;overflow:auto}.diag-badge{display:inline-flex;border-radius:999px;padding:3px 9px;font-weight:800}.diag-badge.ok{color:var(--green);background:rgba(53,214,111,.12)}.diag-badge.error{color:#ff8b98;background:rgba(255,77,99,.13)}.diagnostic-actions{display:flex;flex-wrap:wrap;gap:8px;padding:12px}.diagnostic-actions button{min-height:38px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 13px;cursor:pointer}.diagnostic-actions button.danger{background:rgba(138,24,42,.28);border-color:rgba(255,77,99,.55);color:#ff9cab}.diagnostic-actions button.resume{background:rgba(38,112,64,.55);border-color:rgba(103,229,100,.65)}.tou-diagnostics{padding:12px;display:flex;gap:10px;align-items:center;overflow-wrap:anywhere}.schedule-attempt{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;padding:12px}.schedule-attempt>div{border:1px solid var(--line);border-radius:7px;padding:9px;overflow-wrap:anywhere}.schedule-attempt .schedule-attempt-message{grid-column:span 3}.schedule-attempt span{display:block;font-size:11px;color:#9db7c6}.schedule-attempt strong{display:block;margin-top:4px}.schedule-attempt ul{margin:6px 0 0;padding:0;list-style:none}.schedule-attempt li{display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:2px 0}.schedule-attempt.failed{background:rgba(145,28,48,.08)}
            .sales-summary{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:10px}.sales-chart{height:130px;display:grid;grid-template-columns:repeat(24,1fr);gap:4px;align-items:end;padding:10px;border-top:1px solid var(--line)}.sales-bar{height:112px;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:4px;min-width:0}.sales-bar span{display:block;width:100%;min-height:4px;border-radius:4px 4px 0 0;background:#35d66f}.sales-bar.now span{background:#ffd166}.sales-bar em{font-style:normal;font-size:10px;color:#8aa8b8;writing-mode:vertical-rl;transform:rotate(180deg)}.sales-tables{display:grid;grid-template-columns:1fr .8fr 1fr;gap:10px;padding:0 10px 10px}.section-label{padding:8px 10px;color:#d9f7ff;background:#1b3445;font-size:12px;font-weight:900;text-transform:uppercase}.sales-scroll{max-height:170px;overflow:auto;overscroll-behavior:contain}.mini-table{width:100%;border-collapse:collapse}.mini-table td{padding:5px 8px;border-top:1px solid var(--line);font-size:12px}
           .status-panel,.sales-panel{background:radial-gradient(circle at 12% 0%,rgba(20,85,130,.22),transparent 30%),linear-gradient(180deg,rgba(5,16,26,.99),rgba(7,21,32,.99));border-color:rgba(107,157,182,.3)}
@@ -8809,21 +6025,9 @@ class DeyeEnergyCard extends HTMLElement {
                      .sales-panel{width:100%;box-sizing:border-box}.sales-panel>div{padding:0 2px 2px}.sales-summary{gap:10px;padding:12px}.sales-summary .stat{border-left:3px solid rgba(21,155,255,.72)}.sales-summary .stat:nth-child(1){border-left-color:var(--green)}.sales-summary .stat:nth-child(2){border-left-color:#ffd166}.sales-summary .stat:nth-child(3){border-left-color:var(--blue)}.sales-summary .stat:nth-child(4){border-left-color:var(--purple)}.sales-summary .stat:nth-child(5){border-left-color:var(--gold)}
           .sales-chart{height:118px;margin:0 12px 12px;padding:10px 8px 7px;border:1px solid rgba(107,157,182,.25);border-radius:8px;background:rgba(4,15,24,.7)}.sales-bar{height:98px}.sales-bar span{background:linear-gradient(180deg,#74ea4b,#28b963);box-shadow:0 0 10px rgba(53,214,111,.12)}.sales-bar.now span{background:linear-gradient(180deg,#ffe08a,#f5b942)}
           .sales-tables{gap:12px;padding:0 12px 12px}.sales-tables>div{overflow:hidden;border:1px solid rgba(107,157,182,.25);border-radius:8px;background:rgba(4,15,24,.62)}.section-label{padding:9px 11px;background:rgba(18,42,59,.86);color:#d8edf8;font-size:11px;letter-spacing:0;text-transform:uppercase}.mini-table td{padding:6px 9px;border-top:1px solid rgba(118,166,190,.16);font-size:11px}.mini-table tr:hover td{background:rgba(21,155,255,.05)}
-           .dialog-head{position:sticky;top:0;z-index:5;background:linear-gradient(180deg,rgba(14,50,70,.98),rgba(10,30,44,.98))}.dialog-actions{position:sticky;bottom:0;z-index:4;padding:12px 14px;background:rgba(6,20,32,.98);border-top:1px solid var(--line)}.ai-dialog{width:min(900px,96vw);height:min(900px,92vh);max-height:92vh;overflow:hidden;display:grid;grid-template-rows:auto minmax(0,1fr)}.ai-dialog>.dialog-body{overflow:auto;overscroll-behavior:contain}.ai-proposal-scroll,.ai-history-scroll{max-height:360px}
-           .ai-dialog-v2{width:min(1700px,96vw)!important;height:min(1040px,90vh)!important;grid-template-rows:auto minmax(0,1fr);background:radial-gradient(circle at 18% 5%,rgba(0,117,190,.14),transparent 38%),linear-gradient(150deg,#061a29,#03111d 72%)}.ai-shell{min-height:0;display:grid;grid-template-columns:225px minmax(0,1fr)}.ai-sidebar{min-height:0;border-right:1px solid rgba(96,151,178,.28);background:rgba(3,14,23,.54);display:flex;flex-direction:column;padding:14px 10px}.ai-sidebar nav{display:grid;gap:8px}.ai-sidebar nav button{display:flex;align-items:center;gap:10px;min-height:44px;padding:0 12px;border:1px solid transparent;border-radius:7px;background:transparent;color:#cfe1eb;text-align:left;cursor:pointer}.ai-sidebar nav button span{width:20px;color:#45b8ff;font-size:18px;text-align:center}.ai-sidebar nav button:hover{background:rgba(21,155,255,.08)}.ai-sidebar nav button.active{border-color:#169cf5;background:rgba(21,155,255,.13);color:#fff}.ai-sidebar nav button.active:nth-child(2){border-color:#58bd21;background:rgba(77,180,37,.14)}.ai-sidebar nav button.active:nth-child(2) span{color:#7ee22d}.ai-learning-status{margin-top:auto;padding:13px 9px;border-top:1px solid var(--line);display:grid;gap:4px}.ai-learning-status span,.ai-learning-status small{color:#91adbc;font-size:11px}.ai-learning-status strong{color:#7ee22d;font-size:12px}.ai-main{min-width:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;padding:18px}.ai-main h3{margin:0 0 10px;color:#7ee22d;font-size:17px}.ai-overview-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.ai-metric-card,.ai-decision-grid>section,.ai-chart-card{border:1px solid rgba(103,158,184,.28);border-radius:8px;background:linear-gradient(180deg,rgba(14,38,54,.72),rgba(7,25,38,.75));padding:14px}.ai-overview-grid>.ai-chart-card{grid-column:1/-1}.ai-price-columns{display:grid;grid-template-columns:1fr 1fr;gap:12px}.ai-price-columns section{min-width:0;border:1px solid rgba(103,158,184,.18);border-radius:6px;overflow:hidden}.ai-price-columns h4{margin:0;padding:8px 10px;background:rgba(20,56,76,.55);color:#dff3fc}.ai-price-columns table{width:100%;border-collapse:collapse}.ai-price-columns td{padding:6px 10px;border-top:1px solid rgba(103,158,184,.16);font-size:12px}.ai-price-columns td:last-child{text-align:right;font-weight:800}.ai-empty{color:#90aab9;text-align:center;padding:12px}.ai-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.ai-kpis>div{border:1px solid rgba(103,158,184,.2);border-radius:6px;padding:9px;background:rgba(3,16,25,.45)}.ai-kpis span{display:block;color:#93adbc;font-size:10px}.ai-kpis strong{display:block;margin-top:4px;color:#f3fbff}.ai-proposal-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}.ai-day-tabs,.ai-view-tools{display:flex;align-items:center;gap:7px}.ai-day-tabs button,.ai-view-tools button{min-height:36px;padding:0 14px;border:1px solid var(--line2);border-radius:6px;background:#122f45;color:#e2f1f8;cursor:pointer}.ai-day-tabs button.active{background:#4b9d25;border-color:#64ba32;color:#fff}.ai-view-tools button.select{background:#1b77b5;border-color:#37a9f3}.ai-view-tools button.neutral{background:#173043}.ai-view-tools button:disabled{opacity:.42;cursor:not-allowed}.ai-plan-table-wrap{overflow-x:auto;border:1px solid rgba(103,158,184,.28);border-radius:8px}.ai-plan-table{width:100%;min-width:940px;border-collapse:collapse}.ai-plan-table th{position:sticky;top:0;z-index:2;padding:9px 8px;background:#0b283a;color:#d9ecf5;font-size:11px}.ai-plan-table td{padding:8px;border-top:1px solid rgba(103,158,184,.17);font-size:11px;white-space:nowrap}.ai-plan-table tr.proposed{background:rgba(32,91,46,.05)}.ai-plan-table tr.unchanged{opacity:.62}.ai-plan-table input{width:17px;height:17px;accent-color:#6ccc33}.ai-confidence{display:inline-flex;min-width:43px;justify-content:center;border-radius:999px;padding:3px 7px;font-weight:900}.ai-confidence.good{color:#7ee22d;background:rgba(126,226,45,.12)}.ai-confidence.warn{color:#ffd166;background:rgba(255,209,102,.12)}.ai-confidence.bad{color:#ff7585;background:rgba(255,77,99,.14)}.ai-decision-grid{display:grid;grid-template-columns:1fr 1.25fr 1.35fr;gap:10px;margin:12px 0}.ai-decision-grid>section{min-height:116px}.ai-decision-grid p{line-height:1.45;color:#d3e5ed}.ai-variants{display:grid;gap:5px}.ai-variants button{display:flex;justify-content:space-between;gap:8px;border:0;background:transparent;color:#d6e7ee;text-align:left;padding:3px}.ai-variants button.active strong{color:#7ee22d}.ai-variants span{color:#94adba;font-size:10px}.ai-chart-card{margin-top:12px;overflow:hidden}.ai-chart-legend{display:flex;flex-wrap:wrap;gap:14px;justify-content:center;color:#a9c0cc;font-size:11px}.ai-chart-legend span:before{content:"";display:inline-block;width:11px;height:7px;margin-right:5px;border-radius:2px;background:#7d96a3}.ai-chart-legend .load:before{background:#32a8e8}.ai-chart-legend .pv:before{background:#67bd2e}.ai-chart-legend .soc:before{background:#ffd200}.ai-chart-legend .sell:before{background:#7ee22d;border-radius:50%}.ai-chart-legend .charge:before{background:#ffd166;border-radius:50%}.ai-chart-card svg{display:block;width:100%;height:auto;max-height:270px}.ai-support-grid{display:grid;grid-template-columns:.8fr 1.7fr;gap:10px;margin-top:10px}.ai-weather-main{display:flex;align-items:center;gap:12px}.ai-weather-main svg{width:46px;height:46px;color:#ffd166}.ai-weather-main strong{font-size:27px}.ai-weather small{color:#93adbc}.ai-quality-card ul{list-style:none;margin:0;padding:0}.ai-quality-card li{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid rgba(103,158,184,.15)}.ai-quality-card li span{color:#91aeba}.ai-quality-card li strong{text-align:right}.ai-apply-plan{position:sticky;bottom:-18px;z-index:4;width:100%;min-height:44px;margin:14px 0 -18px;border:1px solid #4e9e28;border-radius:7px;background:linear-gradient(180deg,#37871d,#276414);color:#fff;font-weight:900;cursor:pointer;box-shadow:0 -9px 22px rgba(3,15,24,.8)}.ai-apply-plan:disabled{opacity:.4;cursor:not-allowed}.ai-day-plan>.ai-kpis{grid-template-columns:repeat(5,minmax(0,1fr))}.ai-quality-full{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
-           .ai-cancel-plan{min-height:34px;border:1px solid rgba(255,95,112,.5);border-radius:6px;background:rgba(120,24,39,.28);color:#ffabb5;padding:0 11px;cursor:pointer}
-           .ai-chart-legend .tariff:before{background:rgba(255,209,102,.45)}
-           .ai-chart-v2{position:relative;overflow:visible}.ai-chart-v2 h3{margin-bottom:8px}.ai-chart-scroll{overflow-x:auto;overflow-y:hidden;scrollbar-color:#527385 #071924}.ai-chart-v2 svg{width:100%;min-width:790px;max-height:none}.ai-chart-grid{stroke:rgba(152,195,216,.17);stroke-width:1}.ai-chart-baseline{stroke:#88a9b9;stroke-width:1.5}.ai-chart-axis,.ai-day-label,.ai-now-label{fill:#9ab7c6;font-size:11px}.ai-day-label{fill:#d7edf7;font-weight:800}.ai-bar-load{fill:#35aee8}.ai-bar-actual{fill:#ff9f43}.ai-bar-solcast{fill:#77d84b;opacity:.72}.ai-forecast-band{fill:rgba(255,209,102,.14);stroke:rgba(255,209,102,.3);stroke-width:1}.ai-line-corrected{fill:none;stroke:#b77cff;stroke-width:3;stroke-linejoin:round;stroke-linecap:round}.ai-line-soc{fill:none;stroke:#ffd200;stroke-width:3;stroke-linejoin:round;stroke-linecap:round}.ai-min-soc{stroke:#ff7585;stroke-width:1.3;stroke-dasharray:6 5}.ai-action-sell{fill:#7ee22d}.ai-action-charge{fill:#ffd166}.ai-cheap-zone{fill:rgba(255,209,102,.07)}.ai-chart-weather{font-size:15px}.ai-day-separator{stroke:#5cc2ff;stroke-width:2;stroke-dasharray:6 5}.ai-now-line{stroke:#ff5f70;stroke-width:2;stroke-dasharray:5 4}.ai-now-label{fill:#ff9aa5;font-weight:800}.ai-chart-hit{fill:transparent;pointer-events:all;cursor:crosshair}.ai-chart-crosshair-x,.ai-chart-crosshair-y{display:none;stroke:#d8f2ff;stroke-width:1;stroke-dasharray:4 3;pointer-events:none}.ai-chart-crosshair-x.visible,.ai-chart-crosshair-y.visible{display:block}.ai-chart-tooltip{display:none;position:absolute;z-index:20;width:min(286px,calc(100% - 16px));padding:11px;border:1px solid #4d7b94;border-radius:7px;background:rgba(3,16,25,.97);box-shadow:0 12px 30px rgba(0,0,0,.45);color:#e9f6fb;font-size:11px;pointer-events:none}.ai-chart-tooltip.visible{display:block}.ai-chart-tooltip>strong{display:block;margin-bottom:8px;color:#7ee22d;font-size:12px}.ai-chart-tooltip>div{display:grid;grid-template-columns:1fr auto;gap:4px 10px}.ai-chart-tooltip span{color:#91adbc}.ai-chart-tooltip b{text-align:right}.ai-chart-tip-source{display:none}.ai-chart-help{display:block;margin-top:5px;color:#83a3b3}.ai-chart-legend .actual:before{background:#ff9f43}.ai-chart-legend .solcast:before{background:#77d84b}.ai-chart-legend .corrected:before{height:3px;background:#b77cff}.ai-chart-legend .band:before{background:rgba(255,209,102,.35);border:1px solid rgba(255,209,102,.6)}
-           .ai-weather-v2{min-width:0}.ai-weather-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.ai-weather-head>div:first-child{display:flex;align-items:center;gap:12px}.ai-weather-icon{font-size:42px;line-height:1}.ai-weather-head h3{margin:0!important;text-transform:none}.ai-weather-temperature{text-align:right}.ai-weather-temperature strong{display:block;color:#f3fbff;font-size:26px}.ai-weather-temperature span{color:#9db7c5}.ai-weather-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin:12px 0}.ai-weather-facts span{padding:8px;border:1px solid rgba(103,158,184,.18);border-radius:6px;color:#91adbc}.ai-weather-facts b{display:block;margin-top:3px;color:#e6f4fa}.ai-weather-tabs{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid rgba(103,158,184,.25)}.ai-weather-tabs button{padding:9px;border:0;border-bottom:2px solid transparent;background:transparent;color:#b7cfda;cursor:pointer}.ai-weather-tabs button.active{border-bottom-color:#2aaaff;color:#52baff}.ai-weather-strip{display:flex;gap:7px;overflow-x:auto;padding:10px 0}.ai-weather-day,.ai-weather-hour{min-width:66px;display:grid;justify-items:center;gap:3px;padding:7px;border-radius:6px;background:rgba(3,16,25,.42)}.ai-weather-day span,.ai-weather-hour span{font-size:25px}.ai-weather-day small,.ai-weather-hour small{color:#92aebb}.ai-weather-source{display:block;margin-top:3px}.ai-energy-48>.ai-support-grid{grid-template-columns:1fr 1fr}
-           .ai-proposals-view>h2{margin:0 0 14px;color:#7ee22d;font-size:18px}.ai-proposal-explainer{display:grid;grid-template-columns:auto minmax(0,1fr);gap:5px 12px;margin:0 0 12px;padding:11px 13px;border:1px solid rgba(126,226,45,.32);border-radius:8px;background:rgba(56,128,29,.09);color:#cfe2eb}.ai-proposal-explainer strong{grid-row:1/3;color:#7ee22d}.ai-proposal-explainer span{line-height:1.4}.ai-plan-table td strong,.ai-plan-table td small{display:block}.ai-plan-table td small{margin-top:2px;color:#91adbc;font-size:9px}
-           .ai-readable-chart{position:relative;overflow:visible;padding:15px 12px 12px;background:radial-gradient(circle at 45% 15%,rgba(17,84,117,.13),transparent 45%),linear-gradient(180deg,rgba(9,35,51,.88),rgba(5,23,35,.92))}.ai-readable-chart h3{margin:0 0 10px;color:#7ee22d}.ai-readable-chart .ai-chart-scroll{border-top:1px solid rgba(111,166,191,.13);overflow-x:auto;overflow-y:hidden;scrollbar-color:#527385 #071924;scrollbar-width:thin}.ai-readable-chart svg{display:block;width:100%;height:auto;max-height:none!important}.ai-readable-legend{display:flex;flex-wrap:wrap;justify-content:center;gap:6px 13px;padding:0 5px 10px}.ai-readable-legend button{display:inline-flex;align-items:center;gap:6px;border:0;background:transparent;color:#adc5d1;font:inherit;font-size:11px;cursor:pointer;padding:4px 5px;border-radius:4px}.ai-readable-legend button:hover{background:rgba(89,164,201,.1);color:#e9f7fd}.ai-readable-legend button.disabled{opacity:.3;text-decoration:line-through}.ai-readable-legend i{display:block;width:14px;height:7px;border-radius:2px;background:#7b96a4}.ai-readable-legend .load i{background:#35aee8}.ai-readable-legend .actual i{background:#ff8a32}.ai-readable-legend .solcast i{height:3px;background:#67c842}.ai-readable-legend .corrected i{height:3px;background:#bd6dff}.ai-readable-legend .band i{height:9px;background:rgba(151,191,213,.34);border:1px solid rgba(161,205,228,.55)}.ai-readable-legend .soc i{height:3px;background:#ffd200}.ai-readable-legend .minimum i{height:2px;background:repeating-linear-gradient(90deg,#ff6577 0 5px,transparent 5px 8px)}
-           .ai-readable-grid{stroke:rgba(136,184,205,.16);stroke-width:1}.ai-readable-grid-v{stroke-dasharray:3 4;stroke:rgba(139,187,207,.24)}.ai-readable-baseline{stroke:#66899b;stroke-width:1.2}.ai-readable-axis,.ai-readable-hour,.ai-readable-unit,.ai-readable-section-label,.ai-readable-day-label{fill:#a7c1ce;font-size:11px}.ai-readable-unit{fill:#dcecf4;font-weight:800;font-size:12px}.ai-readable-hour{fill:#c6dce6;font-weight:700}.ai-readable-load{fill:#35aee8;filter:drop-shadow(0 0 2px rgba(53,174,232,.25))}.ai-readable-actual{fill:#ff8a32;filter:drop-shadow(0 0 2px rgba(255,138,50,.25))}.ai-readable-band{fill:rgba(151,191,213,.2);stroke:rgba(165,204,224,.3);stroke-width:1}.ai-readable-solcast{fill:none;stroke:#67c842;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}.ai-readable-corrected{fill:none;stroke:#bd6dff;stroke-width:2.8;stroke-linecap:round;stroke-linejoin:round}.ai-readable-soc{fill:none;stroke:#ffd200;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.ai-readable-min-soc{stroke:#ff6577;stroke-width:1.6;stroke-dasharray:7 6}.ai-readable-min-label{fill:#ff8996;font-size:10px;font-weight:700}.ai-readable-weather{font-size:18px}.ai-weather-risk{opacity:.9}.ai-weather-risk.low{fill:#65c95a}.ai-weather-risk.medium{fill:#ffd166}.ai-weather-risk.high{fill:#49aaff}.ai-weather-risk.missing{fill:#536d79;opacity:.35}.ai-readable-section-label{font-weight:800;fill:#9fb9c6}.ai-status-grid{stroke:rgba(116,166,188,.16);stroke-width:1}.ai-status-grid-v{stroke-dasharray:3 4}.ai-status-label{font-size:10px;font-weight:700}.ai-status-label.sell{fill:#7ee22d}.ai-status-label.charge{fill:#ffd200}.ai-status-label.tariff{fill:#b39a50}.ai-status-sell{fill:#69d438;stroke:#8de960;stroke-width:1}.ai-status-charge{fill:#ffd200;stroke:#ffe36a;stroke-width:1}.ai-status-tariff{fill:#9f863d;stroke:#c7ad5b;stroke-width:1}.ai-readable-day-separator{stroke:#52bfff;stroke-width:2.2;stroke-dasharray:7 5}.ai-readable-day-label{fill:#d8eff9;font-size:12px;font-weight:900}.ai-readable-now{stroke:#ff5d70;stroke-width:2;stroke-dasharray:6 4}.ai-readable-now-tag{fill:#f3f7f9;stroke:#ff5d70}.ai-readable-now-text{fill:#172d38;font-size:10px;font-weight:900}.ai-readable-chart .ai-chart-help{margin:8px 2px 0}.ai-readable-chart .ai-chart-tooltip{width:min(300px,calc(100% - 16px))}
-           .ai-energy-48-crisp{grid-column:1/-1;min-width:0}.ai-energy-48-crisp>h3{margin:0 0 10px;color:#7ee22d}.ai-readable-stack{display:grid;gap:12px}.ai-crisp-chart{position:relative;overflow:visible;padding:15px 14px 12px;background:radial-gradient(circle at 50% 0%,rgba(18,86,117,.12),transparent 46%),linear-gradient(180deg,rgba(9,34,49,.92),rgba(5,22,33,.94))}.ai-crisp-chart h3{margin:0 0 9px;color:#7ee22d;font-size:16px}.ai-crisp-legend{display:flex;justify-content:center;flex-wrap:wrap;gap:4px 8px;margin:0 0 10px;padding:6px 8px;border:1px solid rgba(103,158,184,.22);border-radius:7px;background:rgba(3,14,23,.38)}.ai-crisp-legend button{display:inline-flex;align-items:center;gap:4px;border:1px solid rgba(103,158,184,.18);border-radius:5px;background:rgba(255,255,255,.04);color:#b8cdd7;font:inherit;font-size:10px;padding:3px 6px;cursor:pointer}.ai-crisp-legend button:hover{background:rgba(69,149,188,.12);color:#fff}.ai-crisp-legend button.disabled{opacity:.32;text-decoration:line-through}.ai-crisp-legend i{display:block;width:13px;height:7px;border-radius:2px;background:#35aee8}.ai-crisp-legend .actual i{background:#ff8a32}.ai-crisp-legend .solcast i,.ai-crisp-legend .corrected i,.ai-crisp-legend .soc i,.ai-crisp-legend .minimum i{height:3px}.ai-crisp-legend .solcast i{background:#67c842}.ai-crisp-legend .corrected i{background:#bd6dff}.ai-crisp-legend .band i{height:9px;background:rgba(151,191,213,.34);border:1px solid rgba(161,205,228,.55)}.ai-crisp-legend .soc i{background:#ffd200}.ai-crisp-legend .minimum i{background:repeating-linear-gradient(90deg,#ff6577 0 5px,transparent 5px 8px)}.ai-crisp-layout{display:grid;grid-template-columns:44px minmax(0,1fr) 38px;gap:7px;align-items:stretch}.ai-crisp-main{min-width:0}.ai-crisp-plot{position:relative;height:268px;border-bottom:1px solid rgba(119,166,188,.3);background:linear-gradient(180deg,rgba(4,18,28,.25),rgba(4,18,28,.52))}.ai-crisp-svg{display:block!important;width:100%!important;min-width:0!important;height:100%!important;max-height:none!important;overflow:visible}.ai-crisp-grid{stroke:rgba(118,164,185,.18);stroke-width:1}.ai-crisp-guide{stroke:rgba(123,170,191,.2);stroke-width:1;stroke-dasharray:5 6}.ai-crisp-baseline{stroke:rgba(157,202,222,.58);stroke-width:1}.ai-crisp-load{fill:#35aee8}.ai-crisp-actual{fill:#ff8a32}.ai-crisp-band{fill:rgba(151,191,213,.18);stroke:rgba(171,210,228,.38);stroke-width:1}.ai-crisp-solcast{fill:none;stroke:#67c842;stroke-width:2.6;stroke-linejoin:round;stroke-linecap:round}.ai-crisp-corrected{fill:none;stroke:#bd6dff;stroke-width:2.7;stroke-linejoin:round;stroke-linecap:round}.ai-crisp-soc{fill:none;stroke:#ffd200;stroke-width:2.8;stroke-linejoin:round;stroke-linecap:round}.ai-crisp-min-soc{stroke:#ff6577;stroke-width:1.5;stroke-dasharray:7 5}.ai-crisp-now{stroke:#ff5d70;stroke-width:1.8;stroke-dasharray:6 4}.ai-crisp-now-tag{position:absolute;top:7px;right:8px;border:1px solid #ff5d70;border-radius:4px;background:#f4f7f8;color:#263943;padding:2px 6px;font-size:10px;font-weight:900}.ai-crisp-hit{stroke:none!important;stroke-width:0!important;fill:transparent!important}.ai-crisp-axis{display:flex;flex-direction:column;justify-content:space-between;min-height:268px;color:#a9c3d0;font-size:11px;font-weight:700}.ai-crisp-axis b{color:#e3f2f7;font-size:12px}.ai-crisp-axis-left{align-items:flex-end;text-align:right}.ai-crisp-axis-right{align-items:flex-start;text-align:left}.ai-crisp-time-grid,.ai-crisp-weather-grid{display:grid;grid-template-columns:repeat(24,minmax(0,1fr));margin-left:0}.ai-crisp-time-grid{min-height:25px;align-items:start;padding-top:6px;color:#c6dbe5;font-size:10px;font-weight:800}.ai-crisp-time-grid span{text-align:center;white-space:nowrap}.ai-crisp-weather-grid{min-height:31px;border-top:1px solid rgba(104,151,174,.12);align-items:center}.ai-crisp-weather-cell{position:relative;display:flex;align-items:center;justify-content:center;min-width:0;height:30px;cursor:default}.ai-crisp-weather-cell b{font-size:18px;line-height:1;font-weight:400}.ai-crisp-weather-cell i{position:absolute;bottom:2px;width:13px;height:2px;border-radius:4px;background:#536d79;opacity:.35}.ai-crisp-weather-cell i.low{background:#65c95a;opacity:.9}.ai-crisp-weather-cell i.medium{background:#ffd166;opacity:.9}.ai-crisp-weather-cell i.high{background:#49aaff;opacity:.9}.ai-crisp-status{display:grid;grid-template-columns:74px minmax(0,1fr);align-items:center;gap:3px 8px;margin-top:4px;padding-top:5px;border-top:1px solid rgba(104,151,174,.18);font-size:10px}.ai-crisp-status>span{font-weight:800;color:#92afbd}.ai-crisp-status>div{display:grid;grid-template-columns:repeat(24,minmax(0,1fr));gap:2px;height:13px}.ai-crisp-status>div span{display:block;border-radius:3px;background:rgba(102,137,153,.12)}.ai-crisp-status>div span.active.sell{background:#69d438;box-shadow:0 0 0 1px rgba(141,233,96,.55) inset}.ai-crisp-status>div span.active.charge{background:#ffd200;box-shadow:0 0 0 1px rgba(255,227,106,.55) inset}.ai-crisp-status>div span.active.tariff{background:#9f863d;box-shadow:0 0 0 1px rgba(199,173,91,.55) inset}.ai-crisp-chart .ai-chart-tooltip{width:min(300px,calc(100% - 18px))}.ai-crisp-chart .ai-chart-help{margin:8px 1px 0}.ai-energy-48-crisp .ai-crisp-chart{margin-top:0}
-           .ai-overview-grid>.ai-wide-card{grid-column:1/-1}.ai-sale-rankings,.ai-profile-cards{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}.ai-sale-profile{min-width:0;border:1px solid rgba(103,158,184,.25);border-radius:8px;background:rgba(3,17,27,.38);padding:11px}.ai-sale-profile.disabled{opacity:.82}.ai-sale-profile header{display:grid;gap:8px;margin-bottom:9px}.ai-sale-profile header h4{margin:0;color:#7ee22d}.ai-sale-profile header strong{color:#b9d0dc;font-size:11px}.ai-profile-parameters,.ai-tariff-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.ai-profile-parameters span,.ai-tariff-summary span{min-width:0;border:1px solid rgba(103,158,184,.16);border-radius:5px;padding:6px;color:#91adbc;font-size:10px;overflow-wrap:anywhere}.ai-profile-parameters b,.ai-tariff-summary b{display:block;margin-top:3px;color:#e6f5fa}.ai-rank-day h5{margin:0;padding:7px 9px;background:rgba(20,56,76,.55);color:#dff3fc}.ai-rank-row{border-top:1px solid rgba(103,158,184,.16)}.ai-rank-row summary{display:grid;grid-template-columns:minmax(90px,.8fr) minmax(110px,max-content) minmax(150px,1.4fr);gap:8px;align-items:center;padding:8px;cursor:pointer;font-size:11px}.ai-rank-row summary>*{min-width:0}.ai-rank-row summary strong{color:#fff;text-align:right;white-space:nowrap}.ai-rank-row summary em{color:#90aeba;text-align:right;font-style:normal;white-space:normal;overflow-wrap:anywhere}.ai-rank-row.recommended summary em{color:#7ee22d}.ai-rank-row>div{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;padding:0 9px 9px;color:#a9c1cd;font-size:10px}.ai-rank-row>div span{overflow-wrap:anywhere}.ai-rank-row>div b{color:#e4f3f8}.ai-warning{border-left:3px solid #ffd166;padding:7px 9px;background:rgba(255,209,102,.07);color:#ffe3a0}.ai-note{color:#98b2bf}.ai-other-hours{grid-column:1/-1;margin-top:3px;color:#a9c1cd}.ai-other-hours summary{cursor:pointer;color:#d8ebf3}.ai-profile-cards{grid-template-columns:repeat(3,minmax(0,1fr))}.ai-profile-card{min-width:0;border:1px solid rgba(103,158,184,.24);border-radius:7px;padding:10px;background:rgba(4,20,31,.48)}.ai-profile-card.disabled{opacity:.72}.ai-profile-card h4{margin:0 0 8px;color:#7ee22d}.ai-profile-card dl{display:grid;gap:4px;margin:0}.ai-profile-card dl div{display:flex;justify-content:space-between;gap:8px;border-top:1px solid rgba(103,158,184,.13);padding-top:4px}.ai-profile-card dt{color:#91adbc;font-size:10px}.ai-profile-card dd{margin:0;text-align:right;font-size:10px;font-weight:800;overflow-wrap:anywhere}.ai-weather-compact>div{display:flex;justify-content:space-between;gap:9px;padding:6px 0;border-top:1px solid rgba(103,158,184,.15)}.ai-weather-compact span{color:#91adbc}.ai-warnings ul{margin:0;padding-left:20px}.ai-warnings li{margin:5px 0}.ai-plan-group th{position:static!important;text-align:left!important;background:#12384c!important;color:#7ee22d!important;border-top:1px solid #28566c}.ai-plan-group.optional th{color:#a9c1cd!important}.ai-proposals-view{min-height:100%;display:flex;flex-direction:column;padding-bottom:72px}.ai-action-footer{position:sticky;bottom:0;z-index:8;margin:14px -18px -18px;padding:10px 18px max(10px,env(safe-area-inset-bottom));border-top:1px solid rgba(103,158,184,.35);background:#061724}.ai-action-footer .ai-apply-plan{position:static;bottom:auto;margin:0;box-shadow:none}.ai-crisp-effective-min-soc{stroke:#ffad42;stroke-width:1.5;stroke-dasharray:4 4}.ai-crisp-legend .effective-minimum i{height:3px;background:repeating-linear-gradient(90deg,#ffad42 0 4px,transparent 4px 7px)}
-           @media(max-width:980px){.ai-energy-48>.ai-support-grid{grid-template-columns:1fr}.ai-chart-v2 svg{min-width:860px}.ai-weather-facts{grid-template-columns:1fr 1fr}.ai-weather-facts span:last-child{grid-column:1/-1}.ai-crisp-chart{padding:12px 9px}.ai-crisp-layout{grid-template-columns:36px minmax(0,1fr) 31px;gap:4px}.ai-crisp-plot{height:236px}.ai-crisp-axis{min-height:236px;font-size:10px}.ai-crisp-legend{justify-content:flex-start;gap:4px 7px}.ai-crisp-legend button{font-size:10px}.ai-crisp-status{grid-template-columns:66px minmax(0,1fr);font-size:9px}.ai-crisp-svg{min-width:0!important}.ai-sale-rankings,.ai-profile-cards{grid-template-columns:minmax(0,1fr)}.ai-action-footer{margin-left:-10px;margin-right:-10px;margin-bottom:-10px;padding-left:10px;padding-right:10px}}
+           .dialog-head{position:sticky;top:0;z-index:5;background:linear-gradient(180deg,rgba(14,50,70,.98),rgba(10,30,44,.98))}.dialog-actions{position:sticky;bottom:0;z-index:4;padding:12px 14px;background:rgba(6,20,32,.98);border-top:1px solid var(--line)}
            @media(max-width:1500px){.info-grid{grid-template-columns:1fr 1fr}.info-grid>.panel:nth-child(3){grid-column:1/-1}.schedule-main.selecting{grid-template-columns:1fr}.bulk-panel{max-width:none}.mode-legend{grid-template-columns:repeat(3,minmax(0,1fr))}}
-           .ai-settings-pane{min-width:0}.ai-settings-tabs{position:sticky;top:0;z-index:3;background:#071b2a}.ai-days-row{align-items:start}.ai-day-presets{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}.ai-day-presets button{border:1px solid var(--line2);border-radius:6px;background:#15354d;color:#e5f3f9;padding:6px 8px}.ai-weekdays{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:5px;padding:8px 12px;border-top:1px solid var(--line)}.ai-weekdays label{display:flex;align-items:center;justify-content:center;gap:4px;border:1px solid var(--line);border-radius:6px;padding:7px 3px;font-size:11px}.ai-weekdays input{width:auto}.ai-note-row textarea{width:100%;min-height:70px;box-sizing:border-box;background:#081622;color:#fff;border:1px solid var(--line2);border-radius:7px;padding:8px;resize:vertical}.ai-profile-summary,.ai-hour-detail-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:10px 0}.ai-profile-summary>div,.ai-hour-detail-grid>div{border:1px solid var(--line);border-radius:7px;padding:9px;background:rgba(4,20,31,.55)}.ai-profile-summary span,.ai-hour-detail-grid span{display:block;color:#91adbc;font-size:10px}.ai-profile-summary strong,.ai-hour-detail-grid strong{display:block;margin-top:4px;overflow-wrap:anywhere}.ai-hour-detail{margin:10px 0;padding:12px;border:1px solid rgba(22,156,245,.5);border-radius:8px;background:rgba(7,37,55,.78)}.ai-hour-detail p{overflow-wrap:anywhere;color:#bcd0dc}.ai-plan-table tr[data-ai-hour-detail]{cursor:pointer}.ai-plan-table tr.selected-detail{outline:1px solid #169cf5;outline-offset:-1px}.ai-profile-impact,.ai-status-list{list-style:none;margin:0;padding:0}.ai-profile-impact li,.ai-status-list li{display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid var(--line)}.ai-profile-impact span,.ai-status-list span{color:#91adbc}.ai-profile-impact strong,.ai-status-list strong{text-align:right;overflow-wrap:anywhere}
-           @media(max-width:980px){.dem-v073{padding:10px}.info-grid{grid-template-columns:1fr}.status-grid,.sales-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.info-grid>.panel{height:auto;min-height:340px}.schedule-head{display:grid}.schedule-tools{justify-content:stretch}.tool-btn{flex:1}.mode-legend{grid-template-columns:1fr 1fr}.schedule-table{min-width:1160px}.schedule-table-card{overflow-x:auto}.sales-tables{grid-template-columns:1fr}.sales-chart{overflow-x:auto;grid-template-columns:repeat(24,24px)}.price-scroll{height:260px;overflow:auto;scrollbar-gutter:stable}.solcast-days{grid-template-columns:repeat(2,1fr)}.settings-layout{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.settings-nav{flex-direction:row;overflow-x:auto;overflow-y:hidden;border-right:0;border-bottom:1px solid var(--line)}.settings-nav button{width:auto;min-width:max-content;text-align:center}.diagnostic-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ai-shell{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.ai-sidebar{border-right:0;border-bottom:1px solid var(--line);padding:7px}.ai-sidebar nav{display:flex;overflow-x:auto}.ai-sidebar nav button{min-width:max-content}.ai-learning-status{display:none}.ai-overview-grid{grid-template-columns:1fr}.ai-overview-grid>.ai-chart-card{grid-column:auto}.ai-decision-grid,.ai-quality-full{grid-template-columns:1fr}.ai-support-grid{grid-template-columns:1fr}.ai-day-plan>.ai-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}.ai-dialog-v2{width:100%!important;max-width:100%!important;min-width:0!important;box-sizing:border-box;overflow:hidden}.ai-dialog-v2 .ai-shell,.ai-dialog-v2 .ai-sidebar,.ai-dialog-v2 .ai-main,.ai-dialog-v2 .ai-overview-grid,.ai-dialog-v2 .ai-price-columns,.ai-dialog-v2 .ai-kpis,.ai-dialog-v2 .ai-decision-grid,.ai-dialog-v2 .ai-support-grid,.ai-dialog-v2 .ai-quality-full,.ai-dialog-v2 .ai-metric-card,.ai-dialog-v2 .ai-chart-card{width:100%;max-width:100%;min-width:0;box-sizing:border-box}.ai-dialog-v2 .ai-sidebar{overflow:hidden}.ai-dialog-v2 .ai-sidebar nav{display:flex;width:100%;max-width:100%;min-width:0;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;touch-action:pan-x}.ai-dialog-v2 .ai-sidebar nav button{flex:0 0 auto;min-width:max-content;max-width:none;white-space:nowrap}.ai-dialog-v2 .ai-main{overflow-x:hidden}.ai-dialog-v2 .ai-plan-table-wrap,.ai-dialog-v2 .ai-chart-scroll,.ai-dialog-v2 .ai-weather-strip{width:100%;max-width:100%;min-width:0;box-sizing:border-box;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain}.ai-dialog-v2 .ai-crisp-chart,.ai-dialog-v2 .ai-crisp-layout,.ai-dialog-v2 .ai-crisp-main,.ai-dialog-v2 .ai-crisp-plot{width:100%;max-width:100%;min-width:0;box-sizing:border-box}.ai-dialog-v2 .ai-crisp-chart{overflow:hidden}.ai-dialog-v2 .ai-crisp-svg{width:100%!important;max-width:100%!important;min-width:0!important}.ai-dialog-v2 .ai-weather-head{min-width:0;flex-wrap:wrap}.ai-dialog-v2 .ai-weather-head>div:first-child{min-width:0}.ai-dialog-v2 .ai-weather-day,.ai-dialog-v2 .ai-weather-hour{flex:0 0 66px}.ai-dialog-v2 .ai-weather-source{max-width:100%;white-space:normal;overflow-wrap:anywhere}}
+           @media(max-width:980px){.dem-v073{padding:10px}.info-grid{grid-template-columns:1fr}.status-grid,.sales-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.info-grid>.panel{height:auto;min-height:340px}.schedule-head{display:grid}.schedule-tools{justify-content:stretch}.tool-btn{flex:1}.mode-legend{grid-template-columns:1fr 1fr}.schedule-table{min-width:1160px}.schedule-table-card{overflow-x:auto}.sales-tables{grid-template-columns:1fr}.sales-chart{overflow-x:auto;grid-template-columns:repeat(24,24px)}.price-scroll{height:260px;overflow:auto;scrollbar-gutter:stable}.solcast-days{grid-template-columns:repeat(2,1fr)}.settings-layout{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.settings-nav{flex-direction:row;overflow-x:auto;overflow-y:hidden;border-right:0;border-bottom:1px solid var(--line)}.settings-nav button{width:auto;min-width:max-content;text-align:center}.diagnostic-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
            @media(max-width:620px){
              .dem-v073{padding:4px;gap:8px}.panel,.schedule-shell,.table-wrap{border-radius:7px}.panel-title{padding:10px 12px;font-size:18px}
              .status-grid,.sales-summary{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px!important;padding:7px!important}.status-panel .stat,.sales-summary .stat{min-height:52px;padding:7px 8px;gap:7px}.status-panel .status-mode{grid-column:1/-1}.stat-icon{width:29px;height:29px}.stat-icon svg{width:17px;height:17px}.status-panel .stat span,.sales-summary .stat span{font-size:10px}.status-panel .stat strong,.sales-summary .stat strong{font-size:13px;line-height:1.25;white-space:normal;overflow-wrap:anywhere}
@@ -8831,13 +6035,8 @@ class DeyeEnergyCard extends HTMLElement {
               .solcast-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.solcast-days{display:flex;max-width:100%;gap:6px;overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x proximity;padding-bottom:5px}.solcast-day{min-width:132px;scroll-snap-align:start}.solcast-chart{height:162px;padding-left:5px;padding-right:5px}.solcast-bars{height:138px;min-width:0;width:100%;max-width:100%;grid-template-columns:repeat(24,minmax(0,1fr))}.solcast-performance{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;padding:7px}
              .schedule-shell{padding:7px}.schedule-head{gap:8px}.schedule-title h2{font-size:19px}.schedule-title p{font-size:11px;line-height:1.35}.schedule-tools{display:grid;grid-template-columns:1fr 1fr;gap:6px}.tool-btn{min-height:36px;padding:0 8px;justify-content:center;font-size:12px}.gear-btn{width:100%;min-height:36px}.mode-legend{display:flex;gap:10px;overflow-x:auto;padding:3px 1px 7px;scroll-snap-type:x proximity}.mode-tile{min-width:150px;scroll-snap-align:start}.mode-icon{width:30px;height:30px}.mode-tile strong{font-size:12px}.mode-tile span{font-size:10px}.schedule-table{min-width:880px}.schedule-table th,.schedule-table td{padding:2px 3px}.schedule-table td{font-size:10px}.schedule-foot{padding:7px;align-items:flex-start;flex-direction:column}.foot-actions{width:100%;display:grid;grid-template-columns:1fr 1fr}.foot-actions button{justify-content:center;padding:0 7px;font-size:11px}
              .sales-summary{padding:8px}.sales-chart{min-height:150px}.sales-tables{gap:8px}.sales-table-card h3{font-size:14px;padding:9px}.sales-table-card th,.sales-table-card td{font-size:11px;padding:6px 8px}
-              .overlay{padding:0;align-items:stretch}.dialog,.ai-dialog,.settings-dialog{width:100%!important;height:100dvh!important;max-height:100dvh!important;border-radius:0}.dialog-head{padding-top:max(14px,env(safe-area-inset-top))}.dialog-actions{padding-bottom:max(12px,env(safe-area-inset-bottom))}.apply-row{grid-template-columns:24px 1fr}.apply-row .field,.apply-row select{grid-column:2}.ai-grid{grid-template-columns:1fr}.ai-proposal-scroll,.ai-history-scroll{max-height:none}.history-toolbar{grid-template-columns:1fr 1fr}.history-toolbar button{width:100%}.analysis-detail-grid,.analysis-price-groups{grid-template-columns:1fr}.settings-content{padding:9px}.diagnostic-summary{grid-template-columns:1fr}.diagnostic-actions{display:grid}.diagnostic-actions button{width:100%}.ai-main{padding:10px}.ai-price-columns{grid-template-columns:1fr}.ai-kpis,.ai-day-plan>.ai-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.ai-proposal-toolbar{align-items:stretch;flex-direction:column}.ai-day-tabs,.ai-view-tools{display:grid;grid-template-columns:1fr 1fr}.ai-decision-grid{grid-template-columns:1fr}.ai-chart-card{padding:9px}.ai-chart-card svg{min-width:620px}.ai-chart-card{overflow-x:auto}.ai-crisp-chart svg{min-width:0!important}.ai-crisp-chart{overflow:visible}.ai-dialog-v2 .ai-main{padding:10px}.ai-dialog-v2 .ai-overview-grid,.ai-dialog-v2 .ai-price-columns,.ai-dialog-v2 .ai-decision-grid,.ai-dialog-v2 .ai-support-grid,.ai-dialog-v2 .ai-quality-full{grid-template-columns:minmax(0,1fr)}.ai-dialog-v2 .ai-proposal-explainer{grid-template-columns:minmax(0,1fr)}.ai-dialog-v2 .ai-proposal-explainer strong{grid-row:auto}.ai-dialog-v2 .ai-proposal-toolbar{width:100%;max-width:100%;min-width:0}.ai-dialog-v2 .ai-day-tabs,.ai-dialog-v2 .ai-view-tools{width:100%;max-width:100%;min-width:0}.ai-dialog-v2 .ai-day-tabs button,.ai-dialog-v2 .ai-view-tools button{min-width:0;white-space:normal;overflow-wrap:anywhere}.ai-dialog-v2 .ai-chart-card{max-width:100%}.ai-dialog-v2 .ai-crisp-chart{overflow:hidden}.ai-dialog-v2 .ai-crisp-layout{grid-template-columns:30px minmax(0,1fr) 26px}.ai-dialog-v2 .ai-crisp-status{grid-template-columns:58px minmax(0,1fr)}.ai-dialog-v2 .ai-weather-head{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}.ai-dialog-v2 .ai-weather-temperature{text-align:left}.ai-dialog-v2 .ai-weather-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.ai-dialog-v2 .ai-quality-card li{min-width:0;flex-wrap:wrap}.ai-dialog-v2 .ai-quality-card li span,.ai-dialog-v2 .ai-quality-card li strong{min-width:0;overflow-wrap:anywhere}.ai-dialog-v2 .ai-quality-card li strong{text-align:left}
+              .overlay{padding:0;align-items:stretch}.dialog,.settings-dialog{width:100%!important;height:100dvh!important;max-height:100dvh!important;border-radius:0}.dialog-head{padding-top:max(14px,env(safe-area-inset-top))}.dialog-actions{padding-bottom:max(12px,env(safe-area-inset-bottom))}.apply-row{grid-template-columns:24px 1fr}.apply-row .field,.apply-row select{grid-column:2}.history-toolbar{grid-template-columns:1fr 1fr}.history-toolbar button{width:100%}.settings-content{padding:9px}.diagnostic-summary{grid-template-columns:1fr}.diagnostic-actions{display:grid}.diagnostic-actions button{width:100%}
            }
-           @media(max-width:620px){.ai-settings-tabs{overflow-x:auto;flex-wrap:nowrap}.ai-settings-tabs button{flex:0 0 auto}.ai-settings-pane .settings-row{grid-template-columns:minmax(0,1fr);gap:7px}.ai-settings-pane .settings-row select,.ai-settings-pane .settings-row .compact-field{max-width:100%;width:100%;justify-self:stretch}.ai-settings-pane .settings-row>input[type=checkbox]{justify-self:start}.ai-weekdays{grid-template-columns:repeat(4,minmax(0,1fr))}.ai-day-presets{justify-content:flex-start}.ai-profile-summary,.ai-hour-detail-grid{grid-template-columns:minmax(0,1fr)}.ai-profile-impact li,.ai-status-list li{min-width:0;flex-wrap:wrap}.ai-profile-impact strong,.ai-status-list strong{text-align:left;min-width:0}.ai-hour-detail{padding:9px}}
-           .ai-plan-execution{display:grid;gap:12px;min-width:0}.ai-execution-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.ai-execution-toolbar .ai-day-tabs{display:flex;flex-wrap:wrap;gap:6px}.ai-execution-toolbar .ai-day-tabs button{border-radius:8px;min-height:38px;padding:0 18px;font-weight:700}.ai-execution-date{display:flex;align-items:center;gap:7px}.ai-execution-date input,.ai-execution-date button{min-height:36px;box-sizing:border-box;border:1px solid var(--line2);border-radius:6px;background:#102d42;color:#e7f5fb;padding:0 10px}.ai-execution-date button{cursor:pointer;background:#1b638f}.ai-execution-info{border:1px solid rgba(100,145,170,.35);border-radius:7px;background:rgba(3,20,32,.55);color:#b7cdd9}.ai-execution-info summary{cursor:pointer;padding:7px 11px;font-size:12px;list-style:none;display:flex;align-items:center;gap:6px}.ai-execution-info summary::-webkit-details-marker{display:none}.ai-execution-info p{margin:0;padding:9px 12px;border-top:1px solid rgba(100,145,170,.25);font-size:11px;line-height:1.5;color:#c9dce5}.ai-execution-error{border-left:3px solid #ff6577;background:rgba(255,101,119,.08);padding:12px;color:#ffb1ba}.ai-execution-kpis{display:flex;flex-wrap:wrap;gap:12px}.ai-exec-kpi{flex:1;min-width:150px;display:flex;align-items:center;gap:11px;padding:10px 14px;border:1px solid rgba(103,158,184,.28);border-radius:8px;background:linear-gradient(180deg,rgba(14,38,54,.72),rgba(7,25,38,.75))}.ai-exec-kpi-icon{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;background:rgba(103,158,184,.12)}.ai-exec-kpi-body{flex:1;display:flex;flex-direction:column;min-width:0}.ai-exec-kpi-title{font-size:11px;color:#91adbc}.ai-exec-kpi-row{display:flex;gap:14px;font-size:12px;margin-top:2px}.ai-exec-kpi-pair{display:flex;flex-direction:column;min-width:0}.ai-exec-kpi-pair small{font-size:9px;color:#64748b}.ai-exec-kpi-pair b{font-size:14px;white-space:nowrap}.ai-exec-kpi-plan{color:#e6f5fa}.ai-exec-kpi-wykonanie{color:#7ee22d}.ai-exec-kpi-pv .ai-exec-kpi-icon{color:#7ee22d;background:rgba(126,226,45,.14)}.ai-exec-kpi-pv b{color:#7ee22d}.ai-exec-kpi-dom .ai-exec-kpi-icon{color:#ff9f43;background:rgba(255,159,67,.14)}.ai-exec-kpi-dom b{color:#ff9f43}.ai-exec-kpi-exp .ai-exec-kpi-icon{color:#2ee6c8;background:rgba(46,230,200,.13)}.ai-exec-kpi-exp b{color:#2ee6c8}.ai-exec-kpi-imp .ai-exec-kpi-icon{color:#ff7a85;background:rgba(255,122,133,.13)}.ai-exec-kpi-imp b{color:#ff7a85}.ai-exec-kpi-wynik .ai-exec-kpi-icon{color:#ffd200;background:rgba(255,210,0,.14);font-size:13px;font-weight:800}.ai-exec-kpi-wynik b{color:#ffd200}.ai-exec-kpi-unit{font-size:10px;color:#91adbc;margin-left:2px}.ai-execution-chart{overflow:visible;position:relative}.ai-execution-chart .ai-chart-scroll svg{width:100%;height:auto;display:block;max-height:none;stroke:none}.ai-exec-grid{stroke:rgba(136,184,205,.10);stroke-width:1}.ai-exec-grid-v{stroke:rgba(136,184,205,.12);stroke-width:1;stroke-dasharray:3 4}.ai-exec-baseline{stroke:#9fc0d2;stroke-width:1.5}.ai-execution-chart .ai-now-line{stroke:#ffd200;stroke-width:2;stroke-dasharray:6 5}.ai-execution-chart .ai-now-label{fill:#ffd200;font-weight:800}.ai-chart-tooltip strong span.proposed{color:#70c8ff}.ai-chart-tooltip strong span.approved{color:#ffe071}.ai-chart-tooltip strong span.deployed{color:#c9ee72}.ai-chart-tooltip strong span.done{color:#78ed7d}.ai-chart-tooltip strong span.blocked,.ai-chart-tooltip strong span.cancelled{color:#ff94a2}.ai-chart-tooltip strong span.partial{color:#ffd38a}.ai-chart-tooltip strong span.skipped,.ai-chart-tooltip strong span.missing{color:#a8bdc7}.ai-chart-tooltip .ai-exec-tip-sep{display:block;height:1px;background:rgba(103,158,184,.28);margin:7px 0}.ai-execution-legend,.ai-execution-status-legend{display:flex;justify-content:center;flex-wrap:wrap;gap:7px 13px;color:#a9c2ce;font-size:10px}.ai-execution-legend span{display:inline-flex;align-items:center;gap:5px}.ai-execution-legend i{display:inline-block;width:12px;height:7px;border-radius:2px}.ai-execution-legend .pv-plan i{background:#7cb342}.ai-execution-legend .pv-wykonanie i{background:#00e676}.ai-execution-legend .load-plan i{background:#ff9f43}.ai-execution-legend .load-wykonanie i{background:#42a5f5}.ai-execution-legend .soc-plan i{height:3px;background:#ffd200}.ai-execution-legend .soc-wykonanie i{height:3px;background:#f4f7f9}.ai-exec-pv-plan,.ai-exec-load-plan,.ai-exec-export-plan,.ai-exec-import-plan{opacity:.75}.ai-exec-pv-plan{fill:url(#aiExecGradPvPlan)}.ai-exec-pv-wykonanie{fill:url(#aiExecGradPvWyk)}.ai-exec-load-plan{fill:url(#aiExecGradLoadPlan)}.ai-exec-load-wykonanie{fill:url(#aiExecGradLoadWyk)}.ai-exec-export-plan{fill:url(#aiExecGradExportPlan)}.ai-exec-export-wykonanie{fill:url(#aiExecGradExportWyk)}.ai-exec-import-plan{fill:url(#aiExecGradImportPlan)}.ai-exec-import-wykonanie{fill:url(#aiExecGradImportWyk)}.ai-exec-soc-plan{fill:none;stroke:#ffd200;stroke-width:2.8}.ai-exec-soc-wykonanie{fill:none;stroke:#f4f7f9;stroke-width:2;stroke-dasharray:5 4}.ai-exec-status{fill:#435967}.ai-exec-status.proposed{fill:#42a5f5}.ai-exec-status.approved{fill:#ffd200}.ai-exec-status.deployed{fill:#8aaa2d}.ai-exec-status.done{fill:#69d438}.ai-exec-status.partial{fill:#d4932c}.ai-exec-status.blocked,.ai-exec-status.cancelled{fill:#ff5252}.ai-execution-status-legend span,.ai-exec-badge{border-radius:999px;padding:3px 8px;font-weight:800;font-size:10px;white-space:nowrap}.ai-execution-status-legend .proposed,.ai-exec-badge.proposed{color:#70c8ff;background:rgba(56,135,185,.2)}.ai-execution-status-legend .approved,.ai-exec-badge.approved{color:#ffe071;background:rgba(157,124,40,.2)}.ai-execution-status-legend .deployed,.ai-exec-badge.deployed{color:#c9ee72;background:rgba(138,170,45,.2)}.ai-execution-status-legend .done,.ai-exec-badge.done{color:#78ed7d;background:rgba(66,189,71,.2)}.ai-execution-status-legend .blocked,.ai-exec-badge.blocked,.ai-exec-badge.cancelled{color:#ff94a2;background:rgba(195,68,85,.2)}.ai-exec-badge.partial{color:#ffd38a;background:rgba(212,147,44,.2)}.ai-exec-badge.skipped,.ai-exec-badge.missing{color:#a8bdc7;background:rgba(91,120,134,.18)}.ai-empty-state{display:grid;place-items:center;gap:8px;padding:34px 18px;text-align:center;color:#a9c2ce;border:1px dashed rgba(103,158,184,.35);border-radius:9px;background:rgba(3,16,25,.42)}.ai-empty-state strong{color:#d8ebf4;font-size:14px}.ai-empty-state span{display:block}.ai-empty-icon{font-size:32px;line-height:1}.ai-empty-error{border-color:rgba(255,95,112,.45);background:rgba(120,24,39,.22)}.ai-execution-table{min-width:1240px;border-collapse:separate;border-spacing:0;font-size:11px}.ai-execution-table thead{position:sticky;top:0;z-index:3}.ai-execution-table tfoot{position:sticky;bottom:0;z-index:2}.ai-execution-table th,.ai-execution-table td{padding:5px 6px;border-bottom:1px solid rgba(103,158,184,.15);text-align:center;white-space:nowrap}.ai-execution-table th{background:rgba(8,28,42,.92);color:#c6e0ec;font-weight:800}.ai-execution-table tbody tr:hover{background:rgba(21,155,255,.08)}.ai-exec-odd{background:rgba(255,255,255,.025)}.ai-exec-head-main th{border-bottom:0;padding:8px 6px}.ai-exec-head-sub th{padding:4px 6px;font-size:10px;color:#9ab7c6;border-top:0}th.ai-exec-group-pv{border-top:2px solid rgba(124,195,66,.5)}th.ai-exec-group-dom{border-top:2px solid rgba(255,159,67,.5)}th.ai-exec-group-imp{border-top:2px solid rgba(255,82,82,.5)}th.ai-exec-group-exp{border-top:2px solid rgba(0,229,255,.5)}.ai-exec-col-hour{position:sticky;left:0;z-index:4;background:rgba(8,28,42,.97);width:72px;box-sizing:border-box;box-shadow:1px 0 0 rgba(103,158,184,.15)}.ai-exec-col-status{position:sticky;left:72px;z-index:4;background:rgba(8,28,42,.97);width:94px;box-sizing:border-box;box-shadow:1px 0 0 rgba(103,158,184,.15)}.ai-exec-col-action{position:sticky;left:166px;z-index:4;background:rgba(8,28,42,.97);width:122px;box-sizing:border-box;text-align:left;box-shadow:1px 0 0 rgba(103,158,184,.15)}.ai-exec-col-power{position:sticky;left:288px;z-index:4;background:rgba(8,28,42,.97);width:82px;box-sizing:border-box;box-shadow:1px 0 0 rgba(103,158,184,.15)}.ai-exec-col-error{min-width:72px}.ai-exec-summary td{background:rgba(8,28,42,.96);font-weight:800;color:#7ee22d;border-top:2px solid rgba(126,226,45,.35)}.ai-exec-summary strong{color:#7ee22d}.ai-exec-action{display:block;color:#e6f5fa}.ai-exec-source{display:block;font-size:9px;color:#7a9aad;margin-top:1px}.ai-exec-unit{font-size:9px;color:#7a9aad}.ai-exec-price-sell{color:#ff7a85}.ai-exec-price-buy{color:#bd6dff}.ai-exec-price-sep,.ai-exec-error-sep{color:#5e7d8c;margin:0 3px}.ai-exec-wykonanie{color:#c9dce5}.ai-exec-wykonanie-match{color:#a8f0c6}.ai-exec-wykonanie-off{color:#ffd38a}.ai-exec-wykonanie-diverge{color:#ff94a2}.ai-execution-table-wrap{max-height:430px;overflow:auto!important;border:1px solid rgba(103,158,184,.28);border-radius:8px;background:rgba(3,14,23,.42)}
-            @media(max-width:620px){.ai-execution-toolbar,.ai-execution-date{width:100%}.ai-execution-date{display:grid;grid-template-columns:minmax(0,1fr) auto}.ai-exec-kpi{min-width:calc(50% - 4px)}.ai-execution-chart{padding:8px}.ai-execution-toolbar .ai-day-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}}
-@media(max-width:620px){.ai-execution-toolbar,.ai-execution-date{width:100%}.ai-execution-date{display:grid;grid-template-columns:minmax(0,1fr) auto}.ai-exec-kpi{min-width:calc(50% - 4px)}.ai-execution-chart{padding:8px}.ai-execution-toolbar .ai-day-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}}
-           .ai-explanation-view{display:grid;gap:12px}.ai-explanation-view>h2{margin:0}.ai-explanation-profile details,.ai-shadow,.ai-help{margin-top:10px}.ai-explanation-profile summary,.ai-shadow summary,.ai-help summary{cursor:pointer;color:#dff3fc;font-weight:800}.ai-decision-summary{line-height:1.55}.ai-explanation-balance{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0}.ai-explanation-balance>div{border:1px solid rgba(103,158,184,.2);border-radius:6px;padding:9px;background:rgba(3,16,25,.45)}.ai-explanation-balance span{display:block;color:#93adbc;font-size:10px}.ai-explanation-balance strong{display:block;margin-top:4px}.ai-explanation-list{display:grid;gap:7px;padding-left:18px}.ai-explanation-list li{padding:6px 0;border-top:1px solid rgba(103,158,184,.15)}.ai-explanation-list strong{display:block;color:#7ee22d}.ai-explanation-list span{display:block;margin-top:3px;color:#b9d0dc;line-height:1.4}.ai-help dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:7px 12px}.ai-help dt{color:#7ee22d;font-weight:800}.ai-help dd{margin:0;color:#b9d0dc}@media(max-width:620px){.ai-explanation-balance{grid-template-columns:minmax(0,1fr)}.ai-help dl{grid-template-columns:minmax(0,1fr)}}
            .manual-schedule-table{min-width:820px}.manual-schedule-table .time-col{white-space:nowrap}.manual-schedule-table tr.editing{background:rgba(21,155,255,.09)}.manual-schedule-table tr.disabled{opacity:.72}.manual-schedule-table tr.editing td{border-top-color:rgba(21,155,255,.38)}.manual-schedule-table input,.manual-schedule-table select{width:100%;min-width:90px;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:5px 6px}.manual-schedule-table input[type=checkbox]{width:auto;min-width:0;accent-color:var(--blue)}.manual-action-cell{display:flex;gap:6px;align-items:center}.manual-schedule-table .icon-only.active{border-color:var(--blue);color:#2ea7ff;background:rgba(8,53,92,.55)}.manual-schedule-table .icon-only.remove:hover{border-color:rgba(255,77,99,.7);color:#ff9cab}.manual-schedule-table .icon-only:disabled{opacity:.35;cursor:not-allowed}.manual-row-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.manual-row-actions button{min-height:36px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 12px;cursor:pointer}.manual-row-actions button:disabled{opacity:.45;cursor:not-allowed}.manual-schedule-table tr.time-current td{background:transparent;box-shadow:none;color:#fff8ea}.manual-schedule-table tr.time-current td,.manual-schedule-table tr.time-current td *{text-shadow:0 0 0 rgba(255,166,45,0);animation:manual-time-current-text-glow 2.4s ease-in-out infinite}.manual-schedule-table tr.time-current td svg,.manual-schedule-table tr.time-current td .icon-only{animation:manual-time-current-icon-glow 2.4s ease-in-out infinite}@keyframes manual-time-current-text-glow{0%,100%{text-shadow:0 0 0 rgba(255,166,45,0);color:inherit}50%{text-shadow:0 0 4px rgba(255,244,214,.95),0 0 10px rgba(255,176,58,.95),0 0 18px rgba(255,140,0,.55);color:#fffaf0}}@keyframes manual-time-current-icon-glow{0%,100%{filter:drop-shadow(0 0 0 rgba(255,166,45,0))}50%{filter:drop-shadow(0 0 3px rgba(255,244,214,.95)) drop-shadow(0 0 8px rgba(255,166,45,.85))}}
            </style>
             <div class="dem-v073" style="${demStyle}">
@@ -8934,26 +6133,13 @@ class DeyeEnergyCard extends HTMLElement {
       this.openScheduleSlotEditor(key, label, type);
       this.render();
     }));
-    root.querySelectorAll("[data-open-ai]").forEach((el) => el.addEventListener("click", (event) => {
-      event.preventDefault();
-      this.captureScrollPositions();
-      this.saveAiAnalysis(this.aiSuggestions(slots));
-      this._aiView = "proposals";
-      this._aiDay = "today";
-      this._aiShow24 = false;
-      this.initialiseAiSelections(this.aiPlannerData(slots));
-      this._dialog = { type: "ai" };
-      this.render();
-    }));
     root.querySelectorAll("[data-open-settings]").forEach((el) => el.addEventListener("click", (event) => {
       event.preventDefault();
       this.captureScrollPositions();
       const tab = el.dataset.openSettings;
       this._settingsTab = tab && tab !== "1" ? tab : "defaults";
       this._dialog = { type: "settings" };
-      this.resetMappingEditor();
       this.render();
-      if (this._settingsTab === "tou") this.refreshMappingFromInverter();
     }));
     root.querySelectorAll("[data-toggle-selection]").forEach((el) => el.addEventListener("click", () => {
       this._selectionMode = !this._selectionMode;
@@ -8986,8 +6172,28 @@ class DeyeEnergyCard extends HTMLElement {
     root.querySelectorAll("[data-apply-multi]").forEach((el) => el.addEventListener("click", () => this.applyMultiEdit(slots)));
     root.querySelectorAll("[data-schedule-tab]").forEach((el) => el.addEventListener("click", (event) => {
       event.preventDefault();
-      this._scheduleTab = el.dataset.scheduleTab === "work" ? "work" : "manual";
+      const tab = el.dataset.scheduleTab;
+      this._scheduleTab = ["manual", "tou"].includes(tab) ? tab : "manual";
+      if (this._scheduleTab === "tou") this.resetMappingEditor();
       this.render();
+      if (this._scheduleTab === "tou") this.refreshMappingFromInverter();
+    }));
+    root.querySelectorAll("[data-mapping-field]").forEach((el) => {
+      const update = () => this.collectMappingDraft();
+      el.addEventListener("change", update);
+      if (el.tagName !== "SELECT") el.addEventListener("input", update);
+    });
+    root.querySelectorAll("[data-refresh-mapping]").forEach((el) => el.addEventListener("click", () => {
+      this.rollbackTouTable();
+    }));
+    root.querySelectorAll("[data-edit-mapping]").forEach((el) => el.addEventListener("click", () => {
+      this.startMappingEdit();
+    }));
+    root.querySelectorAll("[data-cancel-mapping]").forEach((el) => el.addEventListener("click", () => {
+      this.cancelMappingEdit();
+    }));
+    root.querySelectorAll("[data-save-mapping]").forEach((el) => el.addEventListener("click", () => {
+      this.saveMappingToInverter();
     }));
     root.querySelectorAll("[data-manual-field]").forEach((el) => {
       const update = () => {
@@ -9017,7 +6223,6 @@ class DeyeEnergyCard extends HTMLElement {
     root.querySelectorAll("[data-manual-save]").forEach((el) => el.addEventListener("click", () => this.saveManualSchedule()));
     root.querySelectorAll("[data-manual-activate]").forEach((el) => el.addEventListener("click", () => this.activateManualSchedule()));
     root.querySelectorAll("[data-manual-deactivate]").forEach((el) => el.addEventListener("click", () => this.deactivateManualSchedule()));
-    root.querySelectorAll("[data-work-schedule-toggle]").forEach((el) => el.addEventListener("click", () => this.toggleWorkSchedule()));
   }
 
   bindDialogControls(slots) {
@@ -9074,23 +6279,6 @@ class DeyeEnergyCard extends HTMLElement {
       this.applyProfileToSlotDraft("Charging", true);
       this.renderDialogOnly();
     }));
-    root.querySelectorAll("[data-mapping-field]").forEach((el) => {
-      const update = () => this.collectMappingDraft();
-      el.addEventListener("change", update);
-      if (el.tagName !== "SELECT") el.addEventListener("input", update);
-    });
-    root.querySelectorAll("[data-refresh-mapping]").forEach((el) => el.addEventListener("click", () => {
-      this.rollbackTouTable();
-    }));
-    root.querySelectorAll("[data-edit-mapping]").forEach((el) => el.addEventListener("click", () => {
-      this.startMappingEdit();
-    }));
-    root.querySelectorAll("[data-cancel-mapping]").forEach((el) => el.addEventListener("click", () => {
-      this.cancelMappingEdit();
-    }));
-    root.querySelectorAll("[data-save-mapping]").forEach((el) => el.addEventListener("click", () => {
-      this.saveMappingToInverter();
-    }));
     root.querySelectorAll("[data-energy-role-field]").forEach((el) => {
       const update = () => this.collectEnergyStatusDraft();
       el.addEventListener("change", update);
@@ -9108,44 +6296,8 @@ class DeyeEnergyCard extends HTMLElement {
     root.querySelectorAll("[data-settings-tab]").forEach((el) => el.addEventListener("click", () => {
       this._settingsTab = el.dataset.settingsTab;
       this._tariffDraft = null;
-      if (this._settingsTab === "tou") this.resetMappingEditor();
-      this.renderDialogOnly();
-      if (this._settingsTab === "tou") this.refreshMappingFromInverter();
-    }));
-    root.querySelectorAll("[data-ai-settings-section]").forEach((el) => el.addEventListener("click", () => {
-      this.collectAiProfiles();
-      this._aiSettingsSection = el.dataset.aiSettingsSection;
-      this._aiProfileStatus = "";
       this.renderDialogOnly();
     }));
-    root.querySelectorAll("[data-ai-profile][data-ai-profile-field]").forEach((el) => {
-      const update = () => this.collectAiProfiles();
-      el.addEventListener("change", update);
-      if (el.tagName !== "SELECT" && el.type !== "checkbox") el.addEventListener("input", update);
-    });
-    root.querySelectorAll("[data-ai-profile-day]").forEach((el) => el.addEventListener("change", () => this.collectAiProfiles()));
-    root.querySelectorAll("[data-ai-profile-days]").forEach((el) => el.addEventListener("click", () => {
-      const selected = new Set(String(el.dataset.days || "").split(",").filter(Boolean));
-      this.querySelectorAll(`[data-ai-profile-day="${el.dataset.aiProfileDays}"]`).forEach((box) => {
-        box.checked = !selected.size || selected.has(box.value);
-      });
-      const draft = this.collectAiProfiles();
-      draft.profiles[el.dataset.aiProfileDays].active_days = selected.size ? [...selected] : [];
-    }));
-    root.querySelectorAll("[data-save-ai-profiles]").forEach((el) => el.addEventListener("click", () => this.saveAiProfiles()));
-    root.querySelectorAll("[data-ai-api-field]").forEach((el) => {
-      const update = () => {
-        this.collectAiApiDraft();
-        if (el.dataset.aiApiField === "provider") this.renderDialogOnly();
-      };
-      el.addEventListener("change", update);
-      if (el.tagName !== "SELECT" && el.type !== "checkbox" && el.dataset.aiApiField !== "api_key") {
-        el.addEventListener("input", update);
-      }
-    });
-    root.querySelectorAll("[data-save-ai-api]").forEach((el) => el.addEventListener("click", () => this.saveAiApiSettings()));
-    root.querySelectorAll("[data-test-ai-api]").forEach((el) => el.addEventListener("click", () => this.runAiApiService("test_ai_api")));
-    root.querySelectorAll("[data-analyze-ai-api]").forEach((el) => el.addEventListener("click", () => this.runAiApiService("analyze_ai_api")));
     root.querySelectorAll("[data-tariff-field='dso_provider'],[data-tariff-field='tariff_plan'],[data-tariff-field='buy_seller_id'],[data-tariff-field='buy_seller_tariff_id']").forEach((el) => el.addEventListener("change", () => {
       const draft = this.collectTariffDraft();
       if (el.dataset.tariffField === "dso_provider") {
@@ -9218,50 +6370,12 @@ class DeyeEnergyCard extends HTMLElement {
       this._selectedSlots.clear();
       this.renderDialogOnly();
     }));
-    const saveAiValue = (el) => {
-      const settings = this.aiSettings();
-      const key = el.dataset.aiSetting;
-      if (el.type === "checkbox") {
-        settings[key] = el.checked;
-      } else if (el.tagName === "SELECT") {
-        settings[key] = el.value;
-      } else {
-        const parsed = this.asNumber(el.value);
-        settings[key] = parsed === null ? el.value : parsed;
-      }
-      this.saveAiSettings(settings);
-    };
-    root.querySelectorAll("[data-ai-setting]").forEach((el) => {
-      el.addEventListener("change", () => saveAiValue(el));
-      if (el.tagName !== "SELECT" && el.type !== "checkbox") {
-        el.addEventListener("input", () => saveAiValue(el));
-      }
-    });
-    root.querySelectorAll("[data-clear-ai-history]").forEach((el) => el.addEventListener("click", () => {
-      this.clearAiHistory();
-      this.renderDialogOnly();
-    }));
     root.querySelectorAll("[data-history-filter]").forEach((el) => el.addEventListener("change", () => {
       this._historyFilters = { ...(this._historyFilters || {}), [el.dataset.historyFilter]: el.value };
       this.renderDialogOnly();
     }));
     root.querySelectorAll("[data-export-history]").forEach((el) => el.addEventListener("click", () => this.exportHistory(el.dataset.exportHistory)));
     root.querySelectorAll("[data-export-monthly]").forEach((el) => el.addEventListener("click", () => this.exportMonthlyReport()));
-    root.querySelectorAll("[data-rate-history]").forEach((el) => el.addEventListener("click", () => {
-      const timestamp = Number(el.dataset.rateHistory);
-      const rating = Number(el.dataset.rating);
-      this.callService("deye_energy", "rate_ai_analysis", { timestamp, rating });
-      const item = this.aiHistory().find((entry) => Number(entry.timestamp) === timestamp);
-      if (item) item.rating = rating;
-      this.renderDialogOnly();
-    }));
-    root.querySelectorAll("[data-clear-all-history]").forEach((el) => el.addEventListener("click", () => {
-      if (!window.confirm("Delete the suggestion history, learning data and Solcast comparisons? This cannot be undone.")) return;
-      this._aiHistoryCache = [];
-      this.callService("deye_energy", "clear_history", {});
-      try { localStorage.removeItem("deye_energy_ai_history_v073"); } catch (_err) { /* ignored */ }
-      this.render();
-    }));
     root.querySelectorAll("[data-resume-manager]").forEach((el) => el.addEventListener("click", () => {
       if (window.confirm("Enable the Manager and schedule? This will not enable a grid-charge schedule.")) this.resumeManager();
     }));
@@ -9294,118 +6408,6 @@ class DeyeEnergyCard extends HTMLElement {
       } finally {
         el.value = "";
       }
-    }));
-    root.querySelectorAll("[data-ai-view]").forEach((el) => el.addEventListener("click", () => {
-      this._aiView = el.dataset.aiView;
-      this.renderDialogOnly();
-    }));
-    root.querySelectorAll("[data-ai-day]").forEach((el) => el.addEventListener("click", () => {
-      this._aiDay = el.dataset.aiDay;
-      this.renderDialogOnly();
-    }));
-    root.querySelectorAll("[data-ai-explanation-day]").forEach((el) => el.addEventListener("click", () => {
-      this._aiExplanationDay = el.dataset.aiExplanationDay === "tomorrow" ? "tomorrow" : "today";
-      this.renderDialogOnly();
-    }));
-    root.querySelectorAll("[data-ai-execution-range]").forEach((el) => el.addEventListener("click", () => {
-      this._aiExecutionRange = el.dataset.aiExecutionRange || "today";
-      this.renderDialogOnly();
-    }));
-    root.querySelectorAll("[data-ai-execution-date]").forEach((el) => el.addEventListener("change", () => {
-      this._aiExecutionDate = el.value;
-      this._aiExecutionData = null;
-      this._aiExecutionError = "";
-    }));
-    root.querySelectorAll("[data-ai-execution-load]").forEach((el) => el.addEventListener("click", () => {
-      const input = root.querySelector("[data-ai-execution-date]");
-      this.loadAiExecutionDay(input?.value || this._aiExecutionDate);
-    }));
-    root.querySelectorAll("[data-ai-weather-mode]").forEach((el) => el.addEventListener("click", () => {
-      this._aiWeatherMode = el.dataset.aiWeatherMode === "hourly" ? "hourly" : "daily";
-      this.renderDialogOnly();
-    }));
-    root.querySelectorAll("[data-ai-chart-series]").forEach((el) => el.addEventListener("click", () => {
-      if (!(this._aiChartHiddenSeries instanceof Set)) this._aiChartHiddenSeries = new Set();
-      const series = el.dataset.aiChartSeries;
-      if (this._aiChartHiddenSeries.has(series)) this._aiChartHiddenSeries.delete(series);
-      else this._aiChartHiddenSeries.add(series);
-      this.renderDialogOnly();
-    }));
-    root.querySelectorAll("[data-ai-chart-point]").forEach((el) => {
-      const show = (event, pin = false) => {
-        const card = el.closest("[data-ai-chart]");
-        if (!card) return;
-        const chartId = el.dataset.aiChartPoint;
-        const index = el.dataset.aiChartIndex;
-        const key = `${chartId}-${index}`;
-        if (pin) this._aiChartPinned = this._aiChartPinned === key ? null : key;
-        const source = card.querySelector(`[data-ai-tip-source="${key}"]`);
-        const tooltip = card.querySelector("[data-ai-chart-tooltip]");
-        const svg = card.querySelector("svg");
-        const crossX = card.querySelector(".ai-chart-crosshair-x");
-        const crossY = card.querySelector(".ai-chart-crosshair-y");
-        if (!source || !tooltip || !svg || !crossX || !crossY) return;
-        tooltip.innerHTML = source.innerHTML;
-        tooltip.classList.add("visible");
-        const x = Number(el.getAttribute("x")) + Number(el.getAttribute("width")) / 2;
-        const svgRect = svg.getBoundingClientRect();
-        const viewBox = svg.viewBox.baseVal;
-        const pointerY = event?.clientY ? (event.clientY - svgRect.top) / svgRect.height * viewBox.height : 150;
-        crossX.setAttribute("x1", x); crossX.setAttribute("x2", x);
-        const hitTop = Number(el.getAttribute("y")) || 48;
-        const hitBottom = hitTop + (Number(el.getAttribute("height")) || 338);
-        crossY.setAttribute("y1", Math.max(hitTop, Math.min(hitBottom, pointerY))); crossY.setAttribute("y2", Math.max(hitTop, Math.min(hitBottom, pointerY)));
-        crossX.classList.add("visible"); crossY.classList.add("visible");
-        const cardRect = card.getBoundingClientRect();
-        const pointerX = event?.clientX || cardRect.left + cardRect.width / 2;
-        const pointerClientY = event?.clientY || cardRect.top + 180;
-        const maxLeft = Math.max(8, cardRect.width - 300);
-        tooltip.style.left = `${Math.max(8, Math.min(maxLeft, pointerX - cardRect.left + 14))}px`;
-        tooltip.style.top = `${Math.max(52, Math.min(cardRect.height - 300, pointerClientY - cardRect.top + 12))}px`;
-        this.holdInteraction(1400);
-      };
-      const hide = () => {
-        const key = `${el.dataset.aiChartPoint}-${el.dataset.aiChartIndex}`;
-        if (this._aiChartPinned === key) return;
-        const card = el.closest("[data-ai-chart]");
-        card?.querySelector("[data-ai-chart-tooltip]")?.classList.remove("visible");
-        card?.querySelector(".ai-chart-crosshair-x")?.classList.remove("visible");
-        card?.querySelector(".ai-chart-crosshair-y")?.classList.remove("visible");
-      };
-      el.addEventListener("pointerenter", (event) => show(event));
-      el.addEventListener("pointermove", (event) => show(event));
-      el.addEventListener("pointerleave", hide);
-      el.addEventListener("click", (event) => { event.stopPropagation(); show(event, true); });
-    });
-    root.querySelectorAll("[data-ai-toggle-24]").forEach((el) => el.addEventListener("click", () => {
-      this._aiShow24 = !this._aiShow24;
-      this.renderDialogOnly();
-    }));
-    root.querySelectorAll("[data-ai-plan-row]").forEach((el) => el.addEventListener("change", () => {
-      const selected = this.aiSelection();
-      if (el.checked) selected.add(el.dataset.aiPlanRow);
-      else selected.delete(el.dataset.aiPlanRow);
-      this.renderDialogOnly();
-    }));
-    root.querySelectorAll("[data-ai-hour-detail]").forEach((el) => el.addEventListener("click", (event) => {
-      if (event.target.closest("input,button,a")) return;
-      this._aiDetailKey = el.dataset.aiHourDetail;
-      this.renderDialogOnly();
-    }));
-    root.querySelectorAll("[data-ai-toggle-selection]").forEach((el) => el.addEventListener("click", () => {
-      const planner = this.aiPlannerData(slots);
-      const proposedKeys = this.aiRowsForDay(planner).filter((row) => this.aiCanSelectProposal(planner, row)).map((row) => this.aiSlotKey(row.hour));
-      const selected = this.aiSelection();
-      const allSelected = proposedKeys.length && proposedKeys.every((key) => selected.has(key));
-      if (allSelected) selected.clear();
-      else proposedKeys.forEach((key) => selected.add(key));
-      this.renderDialogOnly();
-    }));
-    root.querySelectorAll("[data-apply-ai-day]").forEach((el) => el.addEventListener("click", () => this.applyAiDayPlan(slots)));
-    root.querySelectorAll("[data-cancel-future-plan]").forEach((el) => el.addEventListener("click", async () => {
-      if (!window.confirm("Cancel the saved plan for tomorrow?")) return;
-      await this.callService("deye_energy", "cancel_future_plan", {});
-      this.render();
     }));
   }
 
@@ -11831,7 +8833,10 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
           .pf-value-click:hover{text-decoration-color:currentColor}
           @keyframes pfFlowDash{to{stroke-dashoffset:-${pfOffset}}}
           @keyframes pfFlowDashMobile{to{stroke-dashoffset:-${Math.round(pfOffset * 18 / 22)}}}
-          @media (max-width:640px){.pf-flow-active{stroke-dasharray:1 18;animation-name:pfFlowDashMobile}}
+          @media (max-width:640px){.pf-flow-active{stroke-dasharray:1 18;animation-name:pfFlowDashMobile}
+            .pf-periods{position:static!important;margin:0 0 10px!important;max-width:none!important;justify-content:flex-start!important}
+            .pf-diagram{aspect-ratio:auto!important}
+            .pf-diagram svg{height:auto!important;aspect-ratio:${W} / ${H}}}
         </style>
         <div style="display:flex;flex-direction:column;height:100%;padding:18px;box-sizing:border-box;">
           <div style="display:flex;justify-content:space-between;gap:14px;align-items:flex-start;flex-wrap:wrap;">
@@ -11843,7 +8848,8 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
             </div>
           </div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;">${summaryChips}</div>
-          <div style="width:100%;aspect-ratio:${W} / ${H};margin-top:14px;border-radius:20px;overflow:hidden;border:1px solid rgba(118,166,190,.18);background:linear-gradient(180deg,rgba(255,255,255,.025),rgba(255,255,255,.008));position:relative;">
+          <div class="pf-diagram" style="width:100%;aspect-ratio:${W} / ${H};margin-top:14px;border-radius:20px;overflow:hidden;border:1px solid rgba(118,166,190,.18);background:linear-gradient(180deg,rgba(255,255,255,.025),rgba(255,255,255,.008));position:relative;">
+            <div class="pf-periods" style="position:absolute;top:12px;right:12px;z-index:2;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100% - 24px);">${periodBtns}</div>
             <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMin meet" style="width:100%;height:100%;display:block;">
               <defs>
                 <linearGradient id="pf-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="rgba(77,163,255,.10)"/><stop offset="100%" stop-color="rgba(126,226,45,.04)"/></linearGradient>
@@ -11868,7 +8874,6 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
                 ${battNode}
               </g>
             </svg>
-            <div style="position:absolute;top:12px;right:12px;z-index:2;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100% - 24px);">${periodBtns}</div>
           </div>
           ${consumerHtml}
           ${warn}
@@ -11886,7 +8891,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.0.86",
+  description: "Deye Energy 0.8.0.87",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

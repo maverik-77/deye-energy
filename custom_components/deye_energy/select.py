@@ -117,14 +117,6 @@ class DeyeSlotModeSelect(DeyeEnergyEntity, SelectEntity, RestoreEntity):
     def current_option(self):
         return self.runtime.slots[self.slot_key].mode
 
-    @property
-    def extra_state_attributes(self):
-        return {
-            "ai_sell_power_only": bool(
-                self.runtime.slots[self.slot_key].ai_sell_power_only
-            )
-        }
-
     async def async_added_to_hass(self):
         if (last_state := await self.async_get_last_state()) is not None:
             normalized = normalize_manager_mode(last_state.state)
@@ -132,14 +124,9 @@ class DeyeSlotModeSelect(DeyeEnergyEntity, SelectEntity, RestoreEntity):
                 await self.runtime.async_restore_slot_mode(
                     self.slot_key,
                     normalized,
-                    ai_sell_power_only=bool(
-                        last_state.attributes.get("ai_sell_power_only", False)
-                    ),
                 )
 
     async def async_select_option(self, option: str):
-        # An explicit mode selection is a manual schedule decision.
-        self.runtime.slots[self.slot_key].ai_sell_power_only = False
         self.runtime.set_work_mode_for_slot(self.slot_key, option)
         self.runtime.mark_config_saved()
         await self.runtime.async_tick()

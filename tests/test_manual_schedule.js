@@ -334,7 +334,7 @@ function test_manual_tab_renders_rows_controls_and_active_status() {
   const { card } = makeCard();
   const inactive = card.renderManualScheduleTab();
   assertTrue(inactive.includes("Manual schedule — Enable"), "Enable label must be shown");
-  assertTrue(inactive.includes('class="tool-btn" data-manual-activate="1"'), "Enable control must use the work-schedule tool button styling");
+  assertTrue(inactive.includes('class="tool-btn" data-manual-activate="1"'), "Enable control must use the tool button styling");
   assertTrue(inactive.includes('data-manual-add="1"'), "add row control must be present");
   assertTrue(!inactive.includes('data-manual-init="1"'), "initialize control must be absent");
   assertTrue(!inactive.includes("Initialize from Deye Time Of Use"), "initialize label must be absent");
@@ -353,7 +353,7 @@ function test_manual_tab_renders_rows_controls_and_active_status() {
   card.applyManualScheduleState({ active: true, rows: [manualRow()] });
   const active = card.renderManualScheduleTab();
   assertTrue(active.includes("Manual schedule — Disable"), "Disable label must be shown");
-  assertTrue(active.includes('class="tool-btn active" data-manual-deactivate="1"'), "Disable control must use the active work-schedule tool button styling");
+  assertTrue(active.includes('class="tool-btn active" data-manual-deactivate="1"'), "Disable control must use the active tool button styling");
   assertTrue(active.includes('<div class="schedule-tools">'), "toggle must live in the header tools row");
 }
 
@@ -385,11 +385,11 @@ function test_manual_tab_shares_settings_and_control_buttons() {
   assertTrue(html.includes('class="gear-btn"'), "Settings button must use the same gear styling");
 }
 
-function test_manual_tab_uses_work_schedule_table_styling() {
+function test_manual_tab_uses_schedule_table_styling() {
   const { card } = makeCard();
   const html = card.renderManualScheduleTab();
-  assertTrue(html.includes('<div class="schedule-table-card">'), "manual rows must use the work schedule table card");
-  assertTrue(html.includes('<table class="schedule-table manual-schedule-table">'), "manual rows must use the work schedule table styling");
+  assertTrue(html.includes('<div class="schedule-table-card">'), "manual rows must use the schedule table card");
+  assertTrue(html.includes('<table class="schedule-table manual-schedule-table">'), "manual rows must use the schedule table styling");
   assertTrue(html.includes('<thead><tr><th class="time-col">From</th><th class="time-col">To</th><th>Mode</th><th>Sell power</th><th>Grid charging</th><th>Battery charge</th><th>Stop selling at SOC</th><th>Active</th><th>Action</th></tr></thead>'), "manual table headers must describe the manual fields");
   assertTrue(html.indexOf('<td data-label="Active">') < html.indexOf('<td data-label="Action">'), "Active must sit immediately before the Action icons");
   assertTrue(html.includes('data-manual-edit="0"'), "edit icon must be in the Action column");
@@ -448,38 +448,40 @@ function test_manual_remove_asks_for_confirmation() {
   }
 }
 
-function test_schedule_tabs_default_to_manual_and_switch_to_work() {
+function test_schedule_tabs_default_to_manual_and_switch_to_tou() {
   const { card } = makeCard();
+  const touPanel = "<div>tou panel</div>";
   assertEqual(card._scheduleTab, "manual", "Manual schedule must be the default page tab");
-  const manual = card.renderScheduleTabs("<div>work panel</div>", "<div>manual panel</div>");
-  assertTrue(manual.indexOf('data-schedule-tab="manual"') < manual.indexOf('data-schedule-tab="work"'), "Manual tab must be first");
-  assertTrue(manual.includes('data-schedule-tab="work"'), "Work tab button must be present");
+  const manual = card.renderScheduleTabs("<div>manual panel</div>", touPanel);
+  assertTrue(manual.indexOf('data-schedule-tab="manual"') < manual.indexOf('data-schedule-tab="tou"'), "Manual tab must be first");
+  assertTrue(manual.includes('data-schedule-tab="tou"'), "Deye Time Of Use tab button must be present");
+  assertTrue(!manual.includes('data-schedule-tab="work"'), "Work schedule tab must be removed");
   assertTrue(manual.includes('class="active" data-schedule-tab="manual"'), "Manual tab must be active by default");
   assertTrue(manual.includes('data-schedule-panel="manual"'), "Manual panel must be present");
-  assertTrue(manual.indexOf('data-schedule-panel="manual"') < manual.indexOf('data-schedule-panel="work"'), "Manual panel must come first");
-  assertTrue(manual.includes('data-schedule-panel="work" hidden'), "Work panel must be hidden by default");
+  assertTrue(manual.includes('data-schedule-panel="tou" hidden'), "TOU panel must be hidden by default");
   assertEqual((manual.match(/class="active"/g) || []).length, 1, "Exactly one tab must be active");
 
-  card._scheduleTab = "work";
-  const work = card.renderScheduleTabs("<div>work panel</div>", "<div>manual panel</div>");
-  assertTrue(work.includes('class="active" data-schedule-tab="work"'), "Work tab must become active");
-  assertTrue(work.includes('data-schedule-panel="manual" hidden'), "Manual panel must be hidden when Work is active");
-  assertTrue(!work.includes('data-schedule-panel="work" hidden'), "Work panel must be visible when active");
-  assertEqual((work.match(/class="active"/g) || []).length, 1, "Exactly one tab must stay active");
+  card._scheduleTab = "tou";
+  const tou = card.renderScheduleTabs("<div>manual panel</div>", touPanel);
+  assertTrue(tou.includes('class="active" data-schedule-tab="tou"'), "TOU tab must become active");
+  assertTrue(tou.includes('data-schedule-panel="tou"') && !tou.includes('data-schedule-panel="tou" hidden'), "TOU panel must be visible when active");
+  assertTrue(tou.includes('data-schedule-panel="manual" hidden'), "Manual panel must be hidden on TOU");
+  assertTrue(!tou.includes('data-schedule-panel="work"'), "Work panel must be removed");
+  assertEqual((tou.match(/class="active"/g) || []).length, 1, "Exactly one tab must stay active on TOU");
 }
 
 function test_schedule_tabs_show_active_source_banner() {
   const { card } = makeCard();
-  let html = card.renderScheduleTabs("<div>work panel</div>", "<div>manual panel</div>");
-  assertTrue(!html.includes("data-schedule-source-banner"), "No source banner while the work schedule is active");
+  let html = card.renderScheduleTabs("<div>manual panel</div>");
+  assertTrue(!html.includes("data-schedule-source-banner"), "No source banner while stored schedule slots are active");
 
   card.applyManualScheduleState({ active: true, rows: [] });
-  html = card.renderScheduleTabs("<div>work panel</div>", "<div>manual panel</div>");
+  html = card.renderScheduleTabs("<div>manual panel</div>");
   assertTrue(html.includes("data-schedule-source-banner"), "Source banner must appear while manual schedule is active");
   assertTrue(html.includes("scheduler is following the manual rows"), "Banner must name the active trigger source");
 }
 
-function test_manual_tab_uses_the_work_schedule_page_styling() {
+function test_manual_tab_uses_the_schedule_page_styling() {
   const { card } = makeCard();
   const html = card.renderManualScheduleTab();
   assertTrue(html.includes('class="schedule-head manual-panel-head"'), "Manual tab must use the page schedule head");
@@ -495,7 +497,7 @@ function test_manual_schedule_is_removed_from_the_settings_overlay() {
   assertTrue(!source.includes('tabButton("manual"'), "Manual schedule must not be a settings nav item");
   assertTrue(!source.includes('else if (tab === "manual")'), "Manual schedule must not be a settings dialog branch");
   assertTrue(!source.includes('data-open-settings="manual"'), "Manual schedule must not be opened from the page toolbar");
-  assertTrue(source.includes('this.renderScheduleTabs(workSchedulePanel, this.renderManualScheduleTab())'), "Both schedules must render as page tabs");
+  assertTrue(source.includes('this.renderScheduleTabs(this.renderManualScheduleTab(), this.renderTouSettingsContent(slots))'), "Manual and TOU schedules must render as page tabs");
 }
 
 function test_page_schedule_controls_are_bound_in_the_dashboard_binder() {
@@ -507,6 +509,8 @@ function test_page_schedule_controls_are_bound_in_the_dashboard_binder() {
     "[data-schedule-tab]", "[data-manual-field]", "[data-manual-add]",
     "[data-manual-edit]", "[data-manual-remove]", "[data-manual-save]",
     "[data-manual-activate]", "[data-manual-deactivate]",
+    "[data-mapping-field]", "[data-refresh-mapping]", "[data-edit-mapping]",
+    "[data-cancel-mapping]", "[data-save-mapping]",
   ]) {
     assertTrue(dashboard.includes(selector), `${selector} must be bound on the page`);
     assertTrue(!dialog.includes(selector), `${selector} must not be bound inside the dialog host`);
@@ -516,6 +520,18 @@ function test_page_schedule_controls_are_bound_in_the_dashboard_binder() {
   assertTrue(dashboard.includes("[data-open-settings]"), "shared settings button must be bound on the page");
   assertTrue(!dashboard.includes("[data-manual-init]"), "manual init binding must be gone");
   assertTrue(!dialog.includes("[data-manual-init]"), "manual init binding must not exist in the dialog");
+}
+
+function test_tou_page_tab_is_bound_on_the_dashboard_not_in_the_dialog() {
+  const source = fs.readFileSync(componentCard, "utf8");
+  const dashboard = methodBody(source, "bindDashboardControls(slots) {");
+  const dialog = methodBody(source, "bindDialogControls(slots) {");
+  assertTrue(dashboard.includes('["manual", "tou"].includes(tab)'), "schedule tab handler must accept the TOU tab");
+  assertTrue(dashboard.includes("this.refreshMappingFromInverter()"), "opening TOU must refresh the inverter values");
+  assertTrue(!dialog.includes("refreshMappingFromInverter"), "TOU refresh must not live in the dialog binder");
+  assertTrue(!source.includes('data-open-settings="tou"'), "TOU footer shortcut must be removed");
+  assertTrue(!source.includes('tabButton("tou"'), "TOU must not be a settings overlay nav item");
+  assertTrue(!source.includes('tab === "tou"'), "TOU must not be a settings dialog branch");
 }
 
 function test_manual_activation_is_independent_of_deye_control() {
@@ -551,27 +567,21 @@ function test_deye_control_toggle_is_independent_of_manual_schedule() {
   });
 }
 
-function test_work_schedule_toggle_is_rendered_and_bound_on_the_page() {
+function test_work_schedule_ui_is_removed_from_the_card() {
   const source = fs.readFileSync(componentCard, "utf8");
-  assertTrue(source.includes('data-work-schedule-toggle="1"'), "work schedule toggle must be rendered");
-  assertTrue(source.includes("Work schedule — ${workScheduleEnabled"), "work toggle label must reflect the active source");
+  assertTrue(!source.includes('data-work-schedule-toggle="1"'), "work schedule toggle must be removed");
+  assertTrue(!source.includes("Work schedule —"), "work toggle label must be removed");
+  assertTrue(!source.includes("toggleWorkSchedule"), "work schedule toggle method must be removed");
   const dashboard = methodBody(source, "bindDashboardControls(slots) {");
-  assertTrue(dashboard.includes("[data-work-schedule-toggle]"), "work toggle must be bound on the page");
+  assertTrue(!dashboard.includes("[data-work-schedule-toggle]"), "work toggle binding must be removed");
 }
 
-function test_work_schedule_toggle_switches_to_the_opposite_source() {
-  const { card, calls } = makeCard();
-  return card.toggleWorkSchedule().then((ok) => {
-    assertTrue(ok, "work disable must call a source service");
-    assertEqual(serviceCalls(calls, "activate_manual_schedule").length, 1, "disabling work must activate manual");
-    assertEqual(serviceCalls(calls, "deactivate_manual_schedule").length, 0, "disabling work must not deactivate manual");
-  }).then(() => {
-    card.applyManualScheduleState({ active: true, rows: [manualRow()] });
-    return card.toggleWorkSchedule();
-  }).then((ok) => {
-    assertTrue(ok, "work enable must call a source service");
-    assertEqual(serviceCalls(calls, "deactivate_manual_schedule").length, 1, "enabling work must deactivate manual");
-  });
+function test_work_schedule_source_switching_is_removed() {
+  const source = fs.readFileSync(componentCard, "utf8");
+  assertTrue(!source.includes("async toggleWorkSchedule"), "work schedule source switching must be removed");
+  assertTrue(!source.includes('schedule_source === "work"'), "work schedule source branch must be removed");
+  assertTrue(source.includes('data-manual-activate="1"'), "manual Enable control must remain");
+  assertTrue(source.includes('data-manual-deactivate="1"'), "manual Disable control must remain");
 }
 
 function withFixedDate(iso, fn) {
@@ -675,18 +685,19 @@ const tests = [
   test_manual_tab_drops_stale_slot_mapping_copy,
   test_manual_tab_exposes_fixed_last_midnight_boundary,
   test_manual_tab_shares_settings_and_control_buttons,
-  test_manual_tab_uses_work_schedule_table_styling,
+  test_manual_tab_uses_schedule_table_styling,
   test_manual_editing_lifecycle_clears_only_on_save,
   test_manual_remove_asks_for_confirmation,
-  test_schedule_tabs_default_to_manual_and_switch_to_work,
+  test_schedule_tabs_default_to_manual_and_switch_to_tou,
   test_schedule_tabs_show_active_source_banner,
-  test_manual_tab_uses_the_work_schedule_page_styling,
+  test_manual_tab_uses_the_schedule_page_styling,
   test_manual_schedule_is_removed_from_the_settings_overlay,
   test_page_schedule_controls_are_bound_in_the_dashboard_binder,
+  test_tou_page_tab_is_bound_on_the_dashboard_not_in_the_dialog,
   test_manual_activation_is_independent_of_deye_control,
   test_deye_control_toggle_is_independent_of_manual_schedule,
-  test_work_schedule_toggle_is_rendered_and_bound_on_the_page,
-  test_work_schedule_toggle_switches_to_the_opposite_source,
+  test_work_schedule_ui_is_removed_from_the_card,
+  test_work_schedule_source_switching_is_removed,
   test_manual_current_row_index_follows_the_local_clock,
   test_manual_tab_glows_only_the_row_covering_now,
   test_manual_glow_follows_time_on_live_updates,

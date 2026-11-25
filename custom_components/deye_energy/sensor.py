@@ -109,38 +109,8 @@ def build_ai_state_snapshot(runtime):
 
 
 def ai_state_attrs(runtime):
-    """Return only the ready runtime cache; never run optimizer or Store work."""
+    """Return only the ready runtime cache; never run Store work."""
     return runtime._ai_state_snapshot
-
-
-def solcast_accuracy_value(runtime):
-    """Read the value from the same cached learning snapshot as the attributes."""
-    return runtime.learning_summary().get("solcast_accuracy_avg")
-
-
-def solcast_accuracy_attrs(runtime):
-    summary = runtime.learning_summary()
-    metrics = runtime.solcast_current_day_metrics(
-        historical_accuracy_pct=summary.get("solcast_accuracy_avg"),
-    )
-    return {
-        "history": runtime.solcast_history,
-        **metrics,
-        # Stable legacy aliases are retained for existing dashboards, but they
-        # now point at the canonical fields instead of independent formulas.
-        "historical_accuracy_percent": metrics.get("historical_accuracy_pct"),
-        "historical_correction_factor": summary.get("solcast_correction_factor"),
-        "completed_days": summary.get("solcast_accuracy_days", 0),
-        "last_completed_day": summary.get("solcast_last_date"),
-        "last_completed_accuracy_percent": summary.get("solcast_last_accuracy"),
-        "current_day": metrics.get("tracking_day"),
-        "actual_today_kwh": metrics.get("production_today_kwh"),
-        "difference_today_kwh": metrics.get("forecast_difference_today_kwh"),
-        "forecast_progress_percent": metrics.get("realization_today_pct"),
-        "day_complete": False,
-        "source_forecast": runtime.solcast_forecast_today_sensor,
-        "source_actual": runtime.daily_pv_production_sensor,
-    }
 
 
 def diagnostics_attrs(runtime):
@@ -303,31 +273,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 lambda r: "ready",
                 attrs_fn=ai_state_attrs,
                 unrecorded_attributes={
-                    "settings",
-                    "user_profiles",
-                    "optimizer_plan_history",
-                    "optimizer_plan_history_format",
-                    "optimizer_plan_history_schema_version",
-                    "api_assistant",
-                    "history",
-                    "learning_summary",
-                     "learning_recent",
-                     "learning_current_hour",
-                     "current_hour_partial",
-                     "live_state",
+                    "manual_schedule",
+                    "energy_status_display",
+                    "power_flow_display",
+                    "weather",
+                    "tariff",
                     "daily_summary",
                     "monthly_summary",
                     "solcast_history",
                     "energy_samples",
-                    "weather",
-                    "tariff",
-                    "planner_48h",
-                    "future_plan",
-                    "power_flow_display",
+                    "current_hour_partial",
+                    "live_state",
                 },
             ),
             DeyeManagerSensor(runtime, "daily_pv_production", "Daily PV production", lambda r: r.daily_energy_value(r.daily_pv_production_sensor), "kWh", SensorDeviceClass.ENERGY, attrs_fn=source_sensor_attrs(lambda r: r.daily_pv_production_sensor), source_fn=lambda r: r.daily_pv_production_sensor),
-            DeyeManagerSensor(runtime, "solcast_accuracy", "Historical Solcast accuracy", solcast_accuracy_value, "%", attrs_fn=solcast_accuracy_attrs),
             DeyeManagerSensor(runtime, "weather_forecast", "Weather forecast support", lambda r: r.weather_context().get("condition"), attrs_fn=weather_attrs, source_fn=lambda r: r.weather_entity),
             DeyeManagerSensor(runtime, "tariff_status", "Distribution tariff", lambda r: r.tariff_context().get("zone"), attrs_fn=tariff_attrs),
             # Status panel detail sensors (optional, source configurable in mapping wizard)

@@ -75,7 +75,7 @@ def test_issue_7_manager_has_no_slot_or_target_current_contract():
         assert not hasattr(runtime.active_slot, attr)
 
 
-def test_issue_7_current_fields_are_rejected_by_schedule_and_plan_contracts():
+def test_issue_7_current_fields_are_rejected_by_schedule_contract():
     runtime = make_runtime()
     slot_key = runtime.active_slot_key()
     with pytest.raises(ValueError, match="Unsupported schedule fields"):
@@ -89,16 +89,6 @@ def test_issue_7_current_fields_are_rejected_by_schedule_and_plan_contracts():
                     }
                 ]
             )
-        )
-    with pytest.raises(ValueError, match="Unsupported plan fields"):
-        runtime._validate_future_plan_updates(
-            [
-                {
-                    "slot_key": slot_key,
-                    "mode": const.MODE_NORMAL_OPERATION,
-                    "discharge_current": 75,
-                }
-            ]
         )
 
 
@@ -208,11 +198,13 @@ def test_issue_8_solcast_rollover_closes_valid_day_once(monkeypatch):
     asyncio.run(runtime.async_update_solcast_history())
 
     assert len(runtime.solcast_history) == 1
-    assert runtime.solcast_history[0]["day_complete"] is True
+    row = runtime.solcast_history[0]
+    assert row["date"] == (now.date() - timedelta(days=1)).isoformat()
+    assert row["forecast_kwh"] == 10
+    assert row["actual_kwh"] == 8
+    assert row["day_complete"] is True
+    assert row["accuracy_percent"] is not None
     assert runtime.solcast_tracking["date"] == now.date().isoformat()
-    summary = runtime.learning_summary()
-    assert summary["solcast_accuracy_days"] == 1
-    assert summary["solcast_correction_factor"] is not None
 
 
 def test_issue_8_solcast_rollover_does_not_close_day_without_forecast(monkeypatch):

@@ -11,29 +11,10 @@ from collections import Counter
 import json
 import logging
 import time
-from typing import Any, Callable
+from typing import Any
 
 
 _LOGGER = logging.getLogger("custom_components.deye_energy.performance")
-
-
-def run_core_with_timings(
-    core_fn: Callable[[dict[str, Any], str], dict[str, Any]],
-    payload: dict[str, Any],
-    strategy: str,
-    queued_clock: float,
-) -> tuple[dict[str, Any], dict[str, float]]:
-    """Run pure optimizer Core and return worker-side wall/CPU timings."""
-    worker_started = time.perf_counter()
-    cpu_started = time.thread_time()
-    result = core_fn(payload, strategy)
-    cpu_ms = (time.thread_time() - cpu_started) * 1000.0
-    wall_ms = (time.perf_counter() - worker_started) * 1000.0
-    return result, {
-        "queue_wait_ms": max(0.0, (worker_started - queued_clock) * 1000.0),
-        "wall_ms": max(0.0, wall_ms),
-        "thread_cpu_ms": max(0.0, cpu_ms),
-    }
 
 
 class RuntimePerformanceMonitor:
@@ -103,21 +84,6 @@ class RuntimePerformanceMonitor:
     def mapped(self, group: str) -> dict[str, int]:
         """Expose a copied map for focused tests, never HA state."""
         return dict(self._maps.get(group, {}))
-
-    def record_optimizer_request(self, reasons: set[str]) -> None:
-        self.inc("optimizer_request_total")
-        for reason in reasons:
-            self.inc_map("optimizer_request_by_reason", reason)
-
-    def record_input_event(
-        self, entity_id: str, *, accepted: bool, coalesced: bool
-    ) -> None:
-        self.inc("optimizer_input_events_total")
-        self.inc_map("optimizer_input_events_by_entity", entity_id)
-        if accepted:
-            self.inc("optimizer_input_events_accepted_for_debounce")
-        if coalesced:
-            self.inc("optimizer_input_events_coalesced_debounced")
 
     def record_proxy_event(self, entity_id: str) -> None:
         self.inc("proxy_source_events_total")
@@ -218,7 +184,6 @@ class RuntimePerformanceMonitor:
             "ai_state_payload_bytes": getattr(runtime, "_ai_state_snapshot", {}),
             "diagnostics_payload_bytes": diagnostics,
             "historical_solcast_attrs_bytes": solcast_payload,
-            "learning_summary_payload_bytes": getattr(runtime, "_learning_summary_cache", {}),
             "energy_store_payload_bytes": energy_payload,
         }
         self.set_value("energy_sample_count", len(getattr(runtime, "energy_samples", [])))
@@ -307,28 +272,6 @@ class RuntimePerformanceMonitor:
             f"ge250={int(get('event_loop_lag_ge_250ms', 0))} "
             f"ge500={int(get('event_loop_lag_ge_500ms', 0))} "
             f"ge1000={int(get('event_loop_lag_ge_1000ms', 0))}",
-            "optimizer "
-            f"requests={int(get('optimizer_request_total', 0))} "
-            f"started={int(get('optimizer_started', 0))} "
-            f"same={int(get('optimizer_skipped_same_snapshot', 0))} "
-            f"busy={int(get('optimizer_skipped_busy', 0))} "
-            f"pending={int(get('optimizer_pending_set', 0))} "
-            f"followup={int(get('optimizer_followup_started', 0))} "
-            f"completed={int(get('optimizer_completed', 0))} "
-            f"failed={int(get('optimizer_failed', 0))} "
-            f"reasons=[{top('optimizer_request_by_reason')}]",
-            "optimizer_timing "
-            f"prepare_count={int(get('optimizer_prepare_count', 0))} "
-            f"prepare_total_ms={get('optimizer_prepare_total_ms', 0):.2f} "
-            f"prepare_max_ms={get('optimizer_prepare_max_ms', 0):.2f} "
-            f"queue_total_ms={get('optimizer_executor_queue_wait_total_ms', 0):.2f} "
-            f"queue_max_ms={get('optimizer_executor_queue_wait_max_ms', 0):.2f} "
-            f"core_wall_total_ms={get('optimizer_core_wall_total_ms', 0):.2f} "
-            f"core_wall_max_ms={get('optimizer_core_wall_max_ms', 0):.2f} "
-            f"core_thread_cpu_total_ms={get('optimizer_core_thread_cpu_total_ms', 0):.2f} "
-            f"core_thread_cpu_max_ms={get('optimizer_core_thread_cpu_max_ms', 0):.2f} "
-            f"apply_total_ms={get('optimizer_apply_result_total_ms', 0):.2f} "
-            f"apply_max_ms={get('optimizer_apply_result_max_ms', 0):.2f}",
             "snapshots "
             f"ai_builds={int(get('ai_snapshot_build_count', 0))} "
             f"ai_total_ms={get('ai_snapshot_build_total_ms', 0):.2f} "
@@ -349,29 +292,14 @@ class RuntimePerformanceMonitor:
             f"source_events={int(get('proxy_source_events_total', 0))} "
             f"output_writes={int(get('proxy_output_writes_total', 0))} "
             f"top=[{top('proxy_source_events_by_entity')}]",
-            "optimizer_inputs "
-            f"events={int(get('optimizer_input_events_total', 0))} "
-            f"accepted={int(get('optimizer_input_events_accepted_for_debounce', 0))} "
-            f"coalesced={int(get('optimizer_input_events_coalesced_debounced', 0))} "
-            f"semantic_changed={int(get('optimizer_semantic_snapshot_changed', 0))} "
-            f"semantic_same={int(get('optimizer_semantic_snapshot_same', 0))} "
-            f"top=[{top('optimizer_input_events_by_entity')}]",
-            "learning "
-            f"wrapper_calls={int(get('learning_summary_wrapper_calls', 0))} "
-            f"cache_hits={int(get('learning_summary_cache_hits', 0))} "
-            f"build_calls={int(get('learning_summary_build_count', 0))} "
-            f"build_total_ms={get('learning_summary_build_total_ms', 0):.2f} "
-            f"build_max_ms={get('learning_summary_build_max_ms', 0):.2f}",
             "energy "
             f"collect_calls={int(get('energy_collect_count', 0))} "
             f"collect_total_ms={get('energy_collect_total_ms', 0):.2f} "
             f"collect_max_ms={get('energy_collect_max_ms', 0):.2f} "
             f"sample_count={int(get('energy_sample_count', 0))}",
             "stores "
-            f"ai_saves={int(get('ai_store_save_count', 0))}/{get('ai_store_save_total_ms', 0):.2f}ms "
-            f"ai_prep={int(get('ai_store_prepare_count', 0))}/{get('ai_store_prepare_total_ms', 0):.2f}ms "
-            f"learning_saves={int(get('learning_store_save_count', 0))}/{get('learning_store_save_total_ms', 0):.2f}ms "
-            f"learning_prep={int(get('learning_store_prepare_count', 0))}/{get('learning_store_prepare_total_ms', 0):.2f}ms "
+            f"schedule_saves={int(get('ai_store_save_count', 0))}/{get('ai_store_save_total_ms', 0):.2f}ms "
+            f"schedule_prep={int(get('ai_store_prepare_count', 0))}/{get('ai_store_prepare_total_ms', 0):.2f}ms "
             f"energy_saves={int(get('energy_store_save_count', 0))}/{get('energy_store_save_total_ms', 0):.2f}ms "
             f"energy_prep={int(get('energy_store_prepare_count', 0))}/{get('energy_store_prepare_total_ms', 0):.2f}ms",
             "control "
@@ -388,7 +316,6 @@ class RuntimePerformanceMonitor:
             f"ai={int(get('ai_state_payload_bytes', 0))} "
             f"diagnostics={int(get('diagnostics_payload_bytes', 0))} "
             f"solcast={int(get('historical_solcast_attrs_bytes', 0))} "
-            f"learning={int(get('learning_summary_payload_bytes', 0))} "
             f"energy_store={int(get('energy_store_payload_bytes', 0))} "
             f"measure_ms={get('payload_size_measure_total_ms', 0):.2f}",
         ]
