@@ -4,6 +4,17 @@ All notable changes to Deye Energy. Versions before 0.8.0 are the history of the
 upstream Deye Energy Manager project and are not repeated here. Attribution is
 recorded at the bottom of README.md.
 
+## [0.8.1.04] - 2026-11-26
+
+### Changed
+
+- **Power Flow left-right layout spacing**: separated PV/Battery and Grid/Home inverter attachment points on the inverter ring to avoid shared junctions, and moved left-right nodes upward for a more compact layout.
+- **Power Flow period pill placement**: period filters (Power/Today/24h/Week/Month) are centered at the top of the Power Flow card in `left_right` layout and remain right-aligned in `cross` layout.
+
+### Fixed
+
+- **Power Flow layout persistence at runtime**: `entity_map` now merges `power_flow.layout` from override files, so saved layout selection is retained after save/reload/restart.
+
 ## [0.8.1.03] - 2026-11-26
 
 ### Fixed

@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.1.03
+// Resource revision: v=0.8.1.04
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -1690,7 +1690,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.1.03 (resource revision v=0.8.1.03)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.1.04 (resource revision v=0.8.1.04)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -6227,7 +6227,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       batt: { w:223, h:dynamicNodeH('batt',220,battDetails) },
     };
     const N = layout === 'left_right'
-      ? { pv:[220,240], grid:[220,760], inv:[600,500], home:[980,760], batt:[980,240] }
+      ? { pv:[220,230], grid:[220,640], inv:[600,435], home:[980,640], batt:[980,230] }
       : { pv:[600,188.5], grid:[254.5,470], inv:[600,470], home:[945.5,470], batt:[600,825.5] };
     const PF_BOUNDS = {
       left: Math.min(N.pv[0]-SZ.pv.w/2-HALO_PAD, N.grid[0]-SZ.grid.w/2-HALO_PAD, N.inv[0]-RING_R-RING_SW/2, N.batt[0]-SZ.batt.w/2-HALO_PAD),
@@ -6267,23 +6267,24 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       const cx2 = x2 - dx * bend;
       return `M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}`;
     };
+    const invAttachY = (side, sign) => N.inv[1] + sign * (ringR * 0.45);
     const pvToInv = layout === 'left_right'
-      ? curve(edge.pv.r, N.pv[1], N.inv[0], edge.inv.t, 0.45)
+      ? curve(edge.pv.r, N.pv[1], edge.inv.l, invAttachY('left', -1), 0.45)
       : straight(N.pv[0], edge.pv.b, N.inv[0], edge.inv.t);
     const gridToInv = layout === 'left_right'
-      ? curve(edge.grid.r, N.grid[1], N.inv[0], edge.inv.b, 0.45)
+      ? curve(edge.grid.r, N.grid[1], edge.inv.l, invAttachY('left', 1), 0.45)
       : straight(edge.grid.r, N.grid[1], edge.inv.l, N.inv[1]);
     const invToGrid = layout === 'left_right'
-      ? curve(N.inv[0], edge.inv.b, edge.grid.r, N.grid[1], 0.45)
+      ? curve(edge.inv.l, invAttachY('left', 1), edge.grid.r, N.grid[1], 0.45)
       : straight(edge.inv.l, N.inv[1], edge.grid.r, N.grid[1]);
     const invToHome = layout === 'left_right'
-      ? curve(N.inv[0], edge.inv.b, edge.home.l, N.home[1], 0.45)
+      ? curve(edge.inv.r, invAttachY('right', 1), edge.home.l, N.home[1], 0.45)
       : straight(edge.inv.r, N.inv[1], edge.home.l, N.home[1]);
     const battToInv = layout === 'left_right'
-      ? curve(edge.batt.l, N.batt[1], N.inv[0], edge.inv.t, 0.45)
+      ? curve(edge.batt.l, N.batt[1], edge.inv.r, invAttachY('right', -1), 0.45)
       : straight(N.batt[0], edge.batt.t, N.inv[0], edge.inv.b);
     const invToBatt = layout === 'left_right'
-      ? curve(N.inv[0], edge.inv.t, edge.batt.l, N.batt[1], 0.45)
+      ? curve(edge.inv.r, invAttachY('right', -1), edge.batt.l, N.batt[1], 0.45)
       : straight(N.inv[0], edge.inv.b, N.batt[0], edge.batt.t);
 
     const flows = [];
@@ -6402,7 +6403,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
           </div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;">${summaryChips}</div>
           <div class="pf-diagram" style="width:100%;aspect-ratio:${W} / ${H};margin-top:14px;border-radius:20px;overflow:hidden;border:1px solid rgba(118,166,190,.18);background:linear-gradient(180deg,rgba(255,255,255,.025),rgba(255,255,255,.008));position:relative;">
-            <div class="pf-periods" style="position:absolute;top:12px;right:12px;z-index:2;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100% - 24px);">${periodBtns}</div>
+            <div class="pf-periods" style="position:absolute;top:12px;${layout === 'left_right' ? 'left:50%;transform:translateX(-50%);justify-content:center;' : 'right:12px;justify-content:flex-end;'}z-index:2;display:flex;gap:6px;flex-wrap:wrap;max-width:calc(100% - 24px);">${periodBtns}</div>
             <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMin meet" style="width:100%;height:100%;display:block;">
               <defs>
                 <linearGradient id="pf-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="rgba(77,163,255,.10)"/><stop offset="100%" stop-color="rgba(126,226,45,.04)"/></linearGradient>
@@ -6446,7 +6447,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.1.03",
+  description: "Deye Energy 0.8.1.04",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

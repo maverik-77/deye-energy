@@ -464,8 +464,18 @@ const frameAt = h2.indexOf('class="pf-diagram" style="width:100%;aspect-ratio:12
 const frameEndAt = h2.indexOf('</div>', h2.indexOf('</svg>', frameAt));
 check(periodAt > h2.indexOf('min-width:220px'), "period selector should render below the summary chips");
 check(periodAt > frameAt && periodAt < frameEndAt, "period selector should render inside the power flow display outline");
-check(h2.includes('position:absolute;top:12px;right:12px;z-index:2;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100% - 24px);'), "period selector should be pinned to the top-right of the display");
+check(h2.includes('position:absolute;top:12px;right:12px;justify-content:flex-end;z-index:2;display:flex;gap:6px;flex-wrap:wrap;max-width:calc(100% - 24px);'), "period selector should be pinned to the top-right of the display");
 check(!h2.includes('gap:6px;flex-wrap:wrap;margin-top:10px'), "period selector should not be a separate row outside the display");
+const lrPeriodCard = new sandbox.PowerFlowCard();
+lrPeriodCard.setConfig({ entities: { pv:'sensor.pv', grid:'sensor.grid', battery:'sensor.batt', battery_soc:'sensor.soc', load:'sensor.load', inverter:'sensor.inv' } });
+lrPeriodCard.hass = { states: {
+  "sensor.pv": { state: "1000" }, "sensor.grid": { state: "200" }, "sensor.batt": { state: "0" },
+  "sensor.soc": { state: "50" }, "sensor.load": { state: "1200" }, "sensor.inv": { state: "1000" },
+  "sensor.ac": { state: "500" }, "sensor.uni": { state: "50" },
+  "sensor.garage_deye_energy_ai_state": { state: "ready", attributes: { power_flow_display: { layout: "left_right", entities: {} } } },
+} };
+const lrPeriodHtml = lrPeriodCard.innerHTML;
+check(lrPeriodHtml.includes('position:absolute;top:12px;left:50%;transform:translateX(-50%);justify-content:center;z-index:2;display:flex;gap:6px;flex-wrap:wrap;max-width:calc(100% - 24px);'), "left_right layout should center period selector");
 // On narrow screens the pills flow above the SVG inside the same frame, so they cannot cover PV
 check(/class="pf-diagram" style="width:100%;aspect-ratio:1200 \/ \d+/.test(h2), "diagram frame should carry the mobile layout class");
 check(h2.includes('class="pf-periods" style="position:absolute;top:12px;right:12px'), "period selector should carry the mobile layout class");

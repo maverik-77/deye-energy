@@ -334,6 +334,9 @@ def _document() -> dict[str, Any]:
     power_flow = override.get("power_flow")
     if isinstance(power_flow, dict):
         target = merged.setdefault("power_flow", {})
+        layout_name = power_flow.get("layout")
+        if isinstance(layout_name, str) and layout_name.strip().lower() in {"cross", "left_right"}:
+            target["layout"] = layout_name.strip().lower()
         entities = power_flow.get("entities")
         if isinstance(entities, dict) and isinstance(target.get("entities"), dict):
             target["entities"].update(entities)
