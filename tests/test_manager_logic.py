@@ -142,7 +142,7 @@ const = _load_module(f"{package.__name__}.const", PACKAGE / "const.py")
 manager = _load_module(f"{package.__name__}.manager", PACKAGE / "manager.py")
 manager.ha_now = lambda: datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
 import _hour_alias  # noqa: E402
-_hour_alias.install(manager, _load_module(f"{package.__name__}.const", PACKAGE / "const.py") if False else sys.modules[f"{package.__name__}.const"])
+_hour_alias.install(manager, const)
 number = _load_module(f"{package.__name__}.number", PACKAGE / "number.py")
 select_module = _load_module(f"{package.__name__}.select", PACKAGE / "select.py")
 switch_module = _load_module(f"{package.__name__}.switch", PACKAGE / "switch.py")

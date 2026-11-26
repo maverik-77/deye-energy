@@ -20,23 +20,6 @@ function check(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-const card = new sandbox.Card();
-card._historyFilters = { from: "", to: "", type: "all" };
-card.historyData = () => ({
-  analyses: [],
-  monthly: [],
-  solcast: [],
-  daily: [{
-    date: "2026-08-29",
-    forecast_kwh: 33.10,
-    actual_kwh: 31.10,
-    accuracy_percent: null,
-    realization_today_pct: 94.0,
-  }],
-});
-const history = card.renderHistoryTab();
-check(history.includes("In progress (94.0% complete)"), "history must render canonical realization");
-check(!history.includes("78.8%"), "history must not retain the mismatched denominator result");
 check(
   source.includes("solcastAccuracyAttrs.realization_today_pct"),
   "main Solcast card must read canonical realization_today_pct",

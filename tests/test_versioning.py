@@ -32,6 +32,11 @@ class ReleaseVersionTests(unittest.TestCase):
     def test_frontend_revision_matches_manifest(self):
         self.assertEqual(self._frontend_revision(), self._manifest_version())
 
+    def test_manager_diagnostics_version_matches_manifest(self):
+        manager = _read(PKG / "manager.py")
+        version = self._manifest_version()
+        self.assertIn(f'"integration_version": "{version}"', manager)
+
     def test_frontend_copies_and_versions_are_consistent(self):
         paths = (
             PKG / "www" / "deye-energy-card.js",
@@ -43,7 +48,7 @@ class ReleaseVersionTests(unittest.TestCase):
         self.assertTrue(source.startswith(f"// Resource revision: v={revision}\n"))
         self.assertIn('version: "0.8.0"', source)
         self.assertIn('integration_version || "0.8.0"', source)
-        self.assertIn("Deye Energy 0.8.0", source)
+        self.assertIn(f"Deye Energy {revision}", source)
         self.assertIn(f"(resource revision v={revision})", source)
 
     def test_docs_reference_canonical_resource_path(self):

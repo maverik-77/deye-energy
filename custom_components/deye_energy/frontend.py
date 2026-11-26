@@ -14,7 +14,7 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 CARD_FILENAME = "deye-energy-card.js"
-CARD_RESOURCE_REVISION = "0.8.0.88"
+CARD_RESOURCE_REVISION = "0.8.1.0"
 CARD_STATIC_ROOT = f"/{DOMAIN}"
 CARD_RESOURCE_PATH = f"{CARD_STATIC_ROOT}/{CARD_FILENAME}"
 CARD_RESOURCE_URL = f"{CARD_RESOURCE_PATH}?v={CARD_RESOURCE_REVISION}"
@@ -24,6 +24,15 @@ LOVELACE_DATA_KEY = "lovelace"
 HOMEASSISTANT_STARTED_EVENT = "homeassistant_started"
 
 _MISSING = object()
+
+
+def _hass_is_running(hass: Any) -> bool:
+    """Return True when HA already reports running, without importing HA enums."""
+    state = getattr(hass, "state", None)
+    if state is None:
+        return False
+    value = getattr(state, "value", state)
+    return str(value).lower() == "running"
 
 
 def _frontend_state(hass: Any) -> dict[str, Any]:
@@ -212,6 +221,14 @@ async def _async_reconcile_collection(collection: Any) -> dict[str, Any]:
 
 def _schedule_started_followup(hass: Any, state: dict[str, Any]) -> bool:
     """Schedule at most one lifecycle-based follow-up without polling or sleeps."""
+    if _hass_is_running(hass):
+        # homeassistant_started may have fired before Lovelace became ready;
+        # leave the state retryable instead of waiting for an event that never comes.
+        unsubscribe = state.pop("resource_unsubscribe", None)
+        if callable(unsubscribe):
+            unsubscribe()
+        state["resource_deferred"] = False
+        return False
     if state["resource_deferred"]:
         return True
     bus = getattr(hass, "bus", None)
@@ -283,6 +300,9 @@ async def async_reconcile_lovelace_resource(
 
             result = {"status": mode, "changed": False}
             state["resource_result"] = result
+            if mode == "not_ready":
+                # Transient readiness must stay retryable on a later setup call.
+                return dict(result)
             state["resource_complete"] = True
             state["resource_target"] = CARD_RESOURCE_URL
             if mode == "yaml_mode":

@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.88
+// Resource revision: v=0.8.1.0
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -7,11 +7,6 @@ class DeyeEnergyCard extends HTMLElement {
     this._lastScheduleSignature = "";
     this._scheduleEntityIds = [];
     this._dialog = null;
-    this._chargeProfileDraft = {};
-    this._chargeProfileGridDraft = null;
-    this._chargeProfilePending = null;
-    this._normalProfileDraft = {};
-    this._normalProfilePending = null;
     this._lastTouDiagnosticsSignature = "";
     this._mappingDraft = null;
     this._mappingEditing = false;
@@ -25,11 +20,9 @@ class DeyeEnergyCard extends HTMLElement {
     this._slotSaveMessage = "";
     this._slotDiscardPrompt = false;
     this._slotAwaitingRefresh = null;
-    this._defaultSettingsDraft = {};
     this._inverterConfig = null;
     this._inverterConfigLoading = false;
     this._inverterConfigLoaded = false;
-    this._inverterConfigLoadAttempted = false;
     this._inverterConfigError = "";
     this._inverterConfigDrafts = {};
     this._inverterConfigSaving = {};
@@ -63,15 +56,13 @@ class DeyeEnergyCard extends HTMLElement {
     this._bulkEditDraft = null;
     this._bulkEditFields = null;
     this._bulkApplying = false;
-    this._settingsTab = "defaults";
+    this._settingsTab = "tariff";
     this._scheduleTab = "manual";
-    this._historyFilters = { from: "", to: "", type: "all" };
     this._updateFrame = null;
     this._lastSlowSignature = "";
     this._tariffDraft = null;
     this._tariffSaveStatus = "";
     this._manualScheduleDraft = null;
-    this._manualScheduleOriginal = null;
     this._manualScheduleSaving = false;
     this._manualScheduleStatus = "";
     this._manualScheduleError = "";
@@ -96,8 +87,6 @@ class DeyeEnergyCard extends HTMLElement {
       layout_mode: "auto",
       dashboard_width: 1280,
       phase_count: 1,
-      max_scale: 1,
-      min_scale: 0.2,
       center_dashboard: true,
       fit_to_width: false,
       allow_horizontal_scroll: false,
@@ -121,9 +110,6 @@ class DeyeEnergyCard extends HTMLElement {
       prices_ratio: 0.80,
       buy_prices_ratio: 0.80,
       solcast_ratio: 1.40,
-      energy_tile_width: 300,
-      energy_tile_gap: 28,
-      inverter_scale: 1,
       flow_animation_speed: 6,
     };
     const phaseCount = asNumber(cfg.phase_count, defaults.phase_count, 1, 3);
@@ -140,8 +126,6 @@ class DeyeEnergyCard extends HTMLElement {
       layout_mode: asString(cfg.layout_mode, defaults.layout_mode, ["auto", "full", "section", "single", "grid", "fit"]),
       dashboard_width: asNumber(cfg.dashboard_width, defaults.dashboard_width, 320, 2400),
       phase_count: phaseCount === 3 ? 3 : 1,
-      max_scale: asNumber(cfg.max_scale, defaults.max_scale, 0.2, 3),
-      min_scale: asNumber(cfg.min_scale, defaults.min_scale, 0.1, 1),
       center_dashboard: asBool(cfg.center_dashboard, defaults.center_dashboard),
       fit_to_width: asBool(cfg.fit_to_width, defaults.fit_to_width),
       allow_horizontal_scroll: asBool(cfg.allow_horizontal_scroll, defaults.allow_horizontal_scroll),
@@ -158,9 +142,6 @@ class DeyeEnergyCard extends HTMLElement {
       prices_ratio: asNumber(cfg.prices_ratio, defaults.prices_ratio, 0.1, 5),
       buy_prices_ratio: asNumber(cfg.buy_prices_ratio, defaults.buy_prices_ratio, 0.1, 5),
       solcast_ratio: asNumber(cfg.solcast_ratio, defaults.solcast_ratio, 0.1, 5),
-      energy_tile_width: asNumber(cfg.energy_tile_width, defaults.energy_tile_width, 120, 360),
-      energy_tile_gap: asNumber(cfg.energy_tile_gap, defaults.energy_tile_gap, 0, 100),
-      inverter_scale: asNumber(cfg.inverter_scale, defaults.inverter_scale, 0.5, 2),
       flow_animation_speed: asNumber(cfg.flow_animation_speed, defaults.flow_animation_speed, 1, 20),
     };
   }
@@ -484,8 +465,6 @@ class DeyeEnergyCard extends HTMLElement {
 
   updateDynamicValues() {
     if (!this._hass || !this._isRendered) return;
-    this.checkChargeProfilePending();
-    this.checkNormalProfilePending();
     this.updateControlUi();
     const slots = this.scheduleSlots();
     const statusEntity = this.entity("sensor", "manager_status");
@@ -510,7 +489,6 @@ class DeyeEnergyCard extends HTMLElement {
     const solcastDay7 = this.entity("sensor", "solcast_forecast_day_7");
     const solcastRemaining = this.entity("sensor", "solcast_remaining_today");
     const solcastPeakPower = this.entity("sensor", "solcast_peak_power_today");
-    const solcastPeakTime = this.entity("sensor", "solcast_peak_time_today");
     const dailyPvProduction = this.entity("sensor", "daily_pv_production");
     const solcastAccuracy = this.entity("sensor", "solcast_accuracy");
     const minSellPrice = this.entity("number", "minimum_sell_price");
@@ -679,7 +657,6 @@ class DeyeEnergyCard extends HTMLElement {
       if (salesHourly) this.attachScrollHandlers(salesHourly);
     }
     this.updateToggleButtons();
-    this.syncNormalProfileControls();
   }
 
   updatePriceTable(scrollKey, todayEntity, tomorrowEntity, threshold = 0, highIsGood = true) {
@@ -1408,44 +1385,12 @@ class DeyeEnergyCard extends HTMLElement {
     };
   }
 
-  defaultSettingsStoredValues() {
-    const values = this.managerStatusAttributes()?.default_settings;
-    return values && typeof values === "object" ? values : {};
-  }
-
   normalProfileModeOptions() {
     const rows = this.managerStatusAttributes()?.normal_profile_options;
     if (!Array.isArray(rows)) return [];
     return rows
       .filter((row) => row && row.available === true && row.value && row.label)
       .map((row) => [String(row.value), String(row.label)]);
-  }
-
-  canonicalNormalProfileMode(value) {
-    const raw = value === null || value === undefined ? "" : String(value);
-    const match = this.normalProfileModeOptions().find(([key, label]) => key === raw || label === raw);
-    return match ? match[0] : "";
-  }
-
-  defaultWorkModes() {
-    return ["Normal Operation", "Selling"];
-  }
-
-  defaultSettingsMode() {
-    const draft = this._defaultSettingsDraft.mode;
-    if (draft && this.defaultWorkModes().includes(draft)) return draft;
-    const stored = this.defaultSettingsStoredValues().mode;
-    if (stored && this.defaultWorkModes().includes(stored)) return stored;
-    const state = this.normalizeManagerMode(this.state(this.entity("select", "default_work_mode")));
-    return this.defaultWorkModes().includes(state) ? state : "Normal Operation";
-  }
-
-  defaultPhysicalWorkMode() {
-    const draft = this._defaultSettingsDraft.physical_work_mode;
-    if (draft) return this.canonicalNormalProfileMode(draft);
-    const stored = this.defaultSettingsStoredValues().physical_work_mode;
-    if (stored) return this.canonicalNormalProfileMode(stored);
-    return this.canonicalNormalProfileMode(this.normalProfileStoredValues().physical_work_mode);
   }
 
   scheduleSlotSnapshot(key, label = "") {
@@ -1703,167 +1648,6 @@ class DeyeEnergyCard extends HTMLElement {
     this.renderDialogOnly();
   }
 
-  _numericOrNull(value) {
-    if (value === null || value === undefined) return null;
-    const str = String(value).trim();
-    if (str === "") return null;
-    const lower = str.toLowerCase();
-    if (lower === "unknown" || lower === "unavailable" || lower === "none" || lower === "null") return null;
-    const num = Number(str.replace(",", "."));
-    return Number.isFinite(num) ? num : null;
-  }
-
-  normalProfileNumericValue(entitySuffix, profileKey) {
-    const draft = this._normalProfileDraft[profileKey];
-    if (Object.prototype.hasOwnProperty.call(this._normalProfileDraft, profileKey)) {
-      const draftNum = this._numericOrNull(draft);
-      return draftNum !== null ? String(draftNum) : "";
-    }
-    if (this._normalProfilePending) {
-      const pendingNum = this._numericOrNull(this._normalProfilePending[profileKey]);
-      if (pendingNum !== null) return String(pendingNum);
-    }
-    const stored = this.normalProfileStoredValues()[profileKey];
-    const storedNum = this._numericOrNull(stored);
-    if (storedNum !== null) return String(storedNum);
-    const entityId = this.entity("number", entitySuffix);
-    const state = this.displayState(entityId, "");
-    const known = state && !["unknown", "unavailable", "None", "null"].includes(state);
-    return known ? state : "";
-  }
-
-  chargeProfileStoredValues() {
-    const statusId = this.entity("sensor", "manager_status");
-    const profile = this._hass?.states?.[statusId]?.attributes?.charge_profile;
-    return profile && typeof profile === "object" ? profile : {};
-  }
-
-  chargeProfileNumericValue(entitySuffix, profileKey) {
-    const draft = this._chargeProfileDraft[profileKey];
-    if (Object.prototype.hasOwnProperty.call(this._chargeProfileDraft, profileKey)) {
-      const draftNum = this._numericOrNull(draft);
-      return draftNum !== null ? String(draftNum) : "";
-    }
-    if (this._chargeProfilePending) {
-      const pendingNum = this._numericOrNull(this._chargeProfilePending[profileKey]);
-      if (pendingNum !== null) return String(pendingNum);
-    }
-    const stored = this.chargeProfileStoredValues()[profileKey];
-    const storedNum = this._numericOrNull(stored);
-    if (storedNum !== null) return String(storedNum);
-    const entityId = this.entity("number", entitySuffix);
-    const state = this.displayState(entityId, "");
-    const known = state && !["unknown", "unavailable", "None", "null"].includes(state);
-    return known ? state : "missing";
-  }
-
-  chargeProfileGridEnabled() {
-    if (typeof this._chargeProfileGridDraft === "boolean") return this._chargeProfileGridDraft;
-    if (this._chargeProfilePending) return Boolean(this._chargeProfilePending.grid_charge_enabled);
-    const stored = this.chargeProfileStoredValues().grid_charge_enabled;
-    if (typeof stored === "boolean") return stored;
-    const state = this.displayState(this.entity("switch", "charge_profile_grid_enabled"), "");
-    if (state === "on" || state === "off") return state === "on";
-    return false;
-  }
-
-  chargeProfileValues() {
-    return {
-      targetSoc: this.chargeProfileNumericValue("charge_profile_target_soc", "target_soc"),
-      gridEnabled: this.chargeProfileGridEnabled(),
-    };
-  }
-
-  normalProfileValues() {
-    return {
-      sellPower: this.normalProfileNumericValue("normal_profile_sell_power", "sell_power"),
-      touSoc: this.normalProfileNumericValue("normal_profile_tou_soc", "tou_soc"),
-    };
-  }
-
-  normalProfileMode() {
-    const draft = this._normalProfileDraft.physical_work_mode;
-    if (draft) return this.canonicalNormalProfileMode(draft);
-    const pending = this._normalProfilePending?.physical_work_mode;
-    if (pending) return this.canonicalNormalProfileMode(pending);
-    const stored = this.normalProfileStoredValues().physical_work_mode;
-    if (stored) return this.canonicalNormalProfileMode(stored);
-    const state = this.displayState(this.entity("select", "normal_profile_mode"), "");
-    return state && !["unknown", "unavailable", "None", "null"].includes(state)
-      ? this.canonicalNormalProfileMode(state)
-      : "";
-  }
-
-  _normalProfilePendingMatches(statusProfile) {
-    if (!this._normalProfilePending || !statusProfile || typeof statusProfile !== "object") return false;
-    const keys = ["physical_work_mode", "sell_power", "tou_soc"];
-    for (const key of keys) {
-      const pending = this._normalProfilePending[key];
-      const stored = statusProfile[key];
-      if (key === "physical_work_mode") {
-        if (pending !== stored) return false;
-      } else {
-        const pendingNum = this._numericOrNull(pending);
-        const storedNum = this._numericOrNull(stored);
-        if (pendingNum === null && storedNum === null) continue;
-        if (pendingNum === null || storedNum === null) return false;
-        if (Math.abs(pendingNum - storedNum) > 0.05) return false;
-      }
-    }
-    return true;
-  }
-
-  checkNormalProfilePending() {
-    if (!this._normalProfilePending) return;
-    const statusId = this.entity("sensor", "manager_status");
-    const statusProfile = this._hass?.states?.[statusId]?.attributes?.normal_profile;
-    if (statusProfile && typeof statusProfile === "object" && this._normalProfilePendingMatches(statusProfile)) {
-      this._normalProfilePending = null;
-    }
-  }
-
-  _chargeProfilePendingMatches(statusProfile) {
-    if (!this._chargeProfilePending || !statusProfile || typeof statusProfile !== "object") return false;
-    const keys = ["grid_charge_enabled", "target_soc"];
-    for (const key of keys) {
-      const pending = this._chargeProfilePending[key];
-      const stored = statusProfile[key];
-      if (key === "grid_charge_enabled") {
-        if (Boolean(pending) !== Boolean(stored)) return false;
-      } else {
-        const pendingNum = this._numericOrNull(pending);
-        const storedNum = this._numericOrNull(stored);
-        if (pendingNum === null || storedNum === null) return false;
-        if (Math.abs(pendingNum - storedNum) > 0.05) return false;
-      }
-    }
-    return true;
-  }
-
-  checkChargeProfilePending() {
-    if (!this._chargeProfilePending) return;
-    const statusId = this.entity("sensor", "manager_status");
-    const statusProfile = this._hass?.states?.[statusId]?.attributes?.charge_profile;
-    if (statusProfile && typeof statusProfile === "object" && this._chargeProfilePendingMatches(statusProfile)) {
-      this._chargeProfilePending = null;
-    }
-  }
-
-  syncNormalProfileControls() {
-    if (!this._dialog || this._dialog.type !== "settings") return;
-    const modeSelect = this.querySelector('[data-raw="normal-profile-mode"]');
-    if (modeSelect && !this._normalProfileDraft.physical_work_mode) {
-      const value = this.normalProfileMode();
-      if (value && modeSelect.value !== value) modeSelect.value = value;
-    }
-    this.querySelectorAll("[data-normal-profile-number]").forEach((el) => {
-      const key = el.dataset.normalProfileNumber;
-      if (Object.prototype.hasOwnProperty.call(this._normalProfileDraft, key)) return;
-      const value = this.normalProfileNumericValue(`normal_profile_${key}`, key);
-      if (value !== el.value) el.value = value;
-    });
-  }
-
   callService(domain, service, data = {}) {
     return this._hass.callService(domain, service, data);
   }
@@ -2024,141 +1808,6 @@ class DeyeEnergyCard extends HTMLElement {
     return this.optimisticService(entityId, parsed, "number", "set_value", { entity_id: entityId, value: parsed });
   }
 
-  async saveChargeProfile() {
-    const fields = [...this.querySelectorAll("[data-charge-profile-number]")];
-    const values = {};
-    for (const field of fields) {
-      const value = Number(String(field.value).replace(",", "."));
-      if (!Number.isFinite(value)) {
-        this.failSave("charge_profile", new Error("Enter valid charging profile values"));
-        return false;
-      }
-      values[field.dataset.chargeProfileNumber] = value;
-    }
-    const profileRanges = { target_soc: { min: 0, max: 100 } };
-    for (const [key, { min, max }] of Object.entries(profileRanges)) {
-      if (!(key in values) || values[key] < min || values[key] > max) {
-        this.failSave("charge_profile", new Error(`Value ${key} must be between ${min} and ${max}`));
-        return false;
-      }
-    }
-    values.grid_charge_enabled = typeof this._chargeProfileGridDraft === "boolean"
-      ? this._chargeProfileGridDraft
-      : this.rawValue("charge-profile-grid", "off") === "on";
-    this._chargeProfilePending = { ...values };
-    this.beginSave();
-    try {
-      await this.callService("deye_energy", "save_charge_profile", values);
-      // Helper entities are optional for the template save.  Optimistically
-      // update only the ones that actually exist so the UI feels snappy.
-      const helpers = {
-        target_soc: this.entity("number", "charge_profile_target_soc"),
-        grid_charge_enabled: this.entity("switch", "charge_profile_grid_enabled"),
-      };
-      Object.entries(values).forEach(([key, value]) => {
-        const entityId = helpers[key];
-        if (entityId && this.exists(entityId)) {
-          this._optimisticStates[entityId] = key === "grid_charge_enabled"
-            ? (value ? "on" : "off")
-            : String(value);
-        }
-      });
-      this._chargeProfileDraft = {};
-      this._chargeProfileGridDraft = null;
-      this.finishSave();
-      this.captureScrollPositions();
-      this.render();
-      return true;
-    } catch (error) {
-      this._chargeProfilePending = null;
-      this.failSave("charge_profile", error);
-      return false;
-    }
-  }
-
-  async saveNormalProfile() {
-    const physical_work_mode = this.rawValue("normal-profile-mode", "");
-    if (!physical_work_mode) {
-      this.failSave("normal_profile", new Error("No physical Deye mode selected for Normal Operation"));
-      return false;
-    }
-    const fields = [...this.querySelectorAll("[data-normal-profile-number]")];
-    const values = { physical_work_mode };
-    for (const field of fields) {
-      const raw = String(field.value).trim();
-      if (raw === "") {
-        this.failSave("normal_profile", new Error("Enter valid Normal Operation profile values"));
-        return false;
-      }
-      const value = Number(raw.replace(",", "."));
-      if (!Number.isFinite(value)) {
-        this.failSave("normal_profile", new Error("Enter valid Normal Operation profile values"));
-        return false;
-      }
-      values[field.dataset.normalProfileNumber] = value;
-    }
-    if (values.tou_soc === undefined || values.tou_soc < 0 || values.tou_soc > 100) {
-      this.failSave("normal_profile", new Error("No valid Deye TOU battery SOC value"));
-      return false;
-    }
-    this._normalProfilePending = { ...values };
-    this.beginSave();
-    try {
-      await this.callService("deye_energy", "save_normal_profile", values);
-      this._normalProfileDraft = {};
-      this.finishSave();
-      this.captureScrollPositions();
-      this.render();
-      return true;
-    } catch (error) {
-      this._normalProfilePending = null;
-      this.failSave("normal_profile", error);
-      return false;
-    }
-  }
-
-  async reloadNormalProfileSlot(slotKey) {
-    if (!slotKey) return false;
-    this.beginSave();
-    try {
-      await this.callService("deye_energy", "apply_schedule_patch", {
-        data: JSON.stringify([{
-          slot_key: slotKey,
-          mode: "Normal Operation",
-          force_copy_normal_profile: true,
-        }]),
-      });
-      this.finishSave();
-      this.captureScrollPositions();
-      this.render();
-      return true;
-    } catch (error) {
-      this.failSave("schedule_patch", error);
-      return false;
-    }
-  }
-
-  async reloadChargeProfileSlot(slotKey) {
-    if (!slotKey) return false;
-    this.beginSave();
-    try {
-      await this.callService("deye_energy", "apply_schedule_patch", {
-        data: JSON.stringify([{
-          slot_key: slotKey,
-          mode: "Charging",
-          force_copy_charge_profile: true,
-        }]),
-      });
-      this.finishSave();
-      this.captureScrollPositions();
-      this.render();
-      return true;
-    } catch (error) {
-      this.failSave("schedule_patch", error);
-      return false;
-    }
-  }
-
   setSelect(entityId, option) {
     if (!this.exists(entityId)) return Promise.resolve(false);
     // The mode never implies permission to charge from the grid.  That
@@ -2207,12 +1856,15 @@ class DeyeEnergyCard extends HTMLElement {
     this.captureScrollPositions();
     this.turnSwitch(entityId, turnOn);
     this.render();
-    window.setTimeout(() => {
+    const timer = window.setTimeout(() => {
+      this._optimisticClearTimers.delete(timer);
+      if (this.isConnected === false) return;
       if (this._optimisticStates?.[entityId] === target) {
         delete this._optimisticStates[entityId];
         this.updateToggleButtons();
       }
     }, 12000);
+    this._optimisticClearTimers.add(timer);
   }
 
   async toggleControl() {
@@ -2260,94 +1912,6 @@ class DeyeEnergyCard extends HTMLElement {
     return `<button class="pill ${cls}" data-toggle="${entityId}" ${this.exists(entityId) ? "" : "disabled"}>${label}</button>`;
   }
 
-  chargeProfileInput(name, entityId, unit = "") {
-    const entity = this._hass.states[entityId];
-    const profile = this.chargeProfileValues();
-    const profileKeys = { target_soc: "targetSoc" };
-    const fallback = { min: 0, max: 100, step: 1 };
-    const current = entity && !["unknown", "unavailable", ""].includes(entity.state) ? entity.state : profile[profileKeys[name]];
-    const value = Object.prototype.hasOwnProperty.call(this._chargeProfileDraft, name) ? this._chargeProfileDraft[name] : current;
-    const rawMin = Number(entity?.attributes?.min);
-    const rawMax = Number(entity?.attributes?.max);
-    const rawStep = Number(entity?.attributes?.step);
-    const min = Number.isFinite(rawMin) ? rawMin : fallback.min;
-    const max = Number.isFinite(rawMax) ? rawMax : fallback.max;
-    const step = Number.isFinite(rawStep) && rawStep > 0 ? rawStep : fallback.step;
-    return `<label class="field">
-      <input data-charge-profile-number="${this.escapeHtml(name)}" type="number" inputmode="decimal" value="${this.escapeHtml(value ?? "")}" min="${min}" max="${max}" step="${step}">
-      <span>${this.escapeHtml(unit)}</span>
-    </label>`;
-  }
-
-  defaultProfileInput(name, entityId, unit = "") {
-    const entity = this._hass.states[entityId];
-    const current = entity && !["unknown", "unavailable"].includes(entity.state) ? entity.state : "";
-    const value = Object.prototype.hasOwnProperty.call(this._defaultSettingsDraft, name)
-      ? this._defaultSettingsDraft[name] : current;
-    const min = Number(entity?.attributes?.min);
-    const max = Number(entity?.attributes?.max);
-    const step = Number(entity?.attributes?.step);
-    const range = Number.isFinite(min) && Number.isFinite(max) && Number.isFinite(step) && step > 0;
-    return `<label class="field"><input data-default-profile-number="${this.escapeHtml(name)}" type="number" inputmode="decimal" value="${this.escapeHtml(value)}" ${range ? `min="${min}" max="${max}" step="${step}"` : ""} ${this.exists(entityId) && current !== "" && range ? "" : "disabled"}><span>${this.escapeHtml(unit)}</span></label>`;
-  }
-
-  normalProfileInput(name, entityId, unit = "") {
-    const profile = this.normalProfileValues();
-    const profileKeys = {
-      sell_power: "sellPower",
-      tou_soc: "touSoc",
-    };
-    const fallback = {
-      sell_power: { min: 0, max: this.effectiveInverterMaxPowerW(), step: 1 },
-      tou_soc: { min: 0, max: 100, step: 1 },
-    };
-    const current = profile[profileKeys[name]];
-    const value = Object.prototype.hasOwnProperty.call(this._normalProfileDraft, name)
-      ? this._normalProfileDraft[name] : current;
-    const entity = this._hass.states[entityId];
-    const rawMin = Number(entity?.attributes?.min);
-    const rawMax = Number(entity?.attributes?.max);
-    const rawStep = Number(entity?.attributes?.step);
-    const fb = fallback[name] || { min: 0, max: 100, step: 1 };
-    const min = Number.isFinite(rawMin) ? rawMin : fb.min;
-    const max = Number.isFinite(rawMax) ? rawMax : fb.max;
-    const step = Number.isFinite(rawStep) && rawStep > 0 ? rawStep : fb.step;
-    return `<label class="field"><input data-normal-profile-number="${this.escapeHtml(name)}" type="number" inputmode="decimal" value="${this.escapeHtml(value ?? "")}" min="${min}" max="${max}" step="${step}"><span>${this.escapeHtml(unit)}</span></label>`;
-  }
-
-  async saveDefaultSettings() {
-    const mode = this.rawValue("default-work-mode", "");
-    const physical_work_mode = this.rawValue("default-physical-work-mode", "");
-    if (!this.defaultWorkModes().includes(mode)) {
-      this.failSave("default_settings", new Error("Select a valid default manager mode"));
-      return false;
-    }
-    if (mode === "Normal Operation" && !physical_work_mode) {
-      this.failSave("default_settings", new Error("Select the physical Normal Operation variant"));
-      return false;
-    }
-    const values = { mode };
-    if (physical_work_mode) values.physical_work_mode = physical_work_mode;
-    for (const field of this.querySelectorAll("[data-default-profile-number]")) {
-      const value = Number(String(field.value).replace(",", "."));
-      if (!Number.isFinite(value)) {
-        this.failSave("default_settings", new Error("Enter valid default settings values"));
-        return false;
-      }
-      values[field.dataset.defaultProfileNumber] = value;
-    }
-    this.beginSave();
-    try {
-      await this.callService("deye_energy", "save_default_settings", values);
-      this._defaultSettingsDraft = {};
-      this.finishSave();
-      return true;
-    } catch (error) {
-      this.failSave("default_settings", error);
-      return false;
-    }
-  }
-
   rawSelect(name, options = [], value = "") {
     return `<select data-raw="${name}">
       ${options.map((option) => {
@@ -2365,20 +1929,6 @@ class DeyeEnergyCard extends HTMLElement {
     </label>`;
   }
 
-  rawValue(name, fallback = "") {
-    return this.querySelector(`[data-raw="${name}"]`)?.value ?? fallback;
-  }
-
-  historyData() {
-    const entity = this._hass?.states?.[this.entity("sensor", "ai_state")];
-    const attrs = entity?.attributes || {};
-    return {
-      daily: Array.isArray(attrs.daily_summary) ? attrs.daily_summary : [],
-      monthly: Array.isArray(attrs.monthly_summary) ? attrs.monthly_summary : [],
-      solcast: Array.isArray(attrs.solcast_history) ? attrs.solcast_history : [],
-    };
-  }
-
   escapeHtml(value) {
     return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
   }
@@ -2391,26 +1941,6 @@ class DeyeEnergyCard extends HTMLElement {
     link.download = filename;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-
-  exportHistory(format) {
-    const data = this.historyData();
-    const stamp = new Date().toISOString().slice(0, 10);
-    if (format === "json") {
-      this.downloadHistory(`deye-history-${stamp}.json`, JSON.stringify(data, null, 2), "application/json");
-      return;
-    }
-    const rows = [["type", "date", "pv_kwh", "load_kwh", "import_kwh", "export_kwh", "sold_kwh", "value_gbp", "forecast_kwh", "accuracy_pct"]];
-    data.daily.forEach((item) => rows.push(["day", item.date, item.pv_kwh, item.load_kwh, item.grid_import_kwh, item.grid_export_kwh, item.sold_kwh, item.sold_value, item.forecast_kwh, item.accuracy_percent]));
-    const csv = rows.map((row) => row.map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`).join(";")).join("\n");
-    this.downloadHistory(`deye-history-${stamp}.csv`, csv, "text/csv;charset=utf-8");
-  }
-
-  exportMonthlyReport() {
-    const rows = [["month", "days", "pv_kwh", "load_kwh", "import_kwh", "export_kwh", "sold_kwh", "value_gbp", "forecast_kwh", "production_kwh"]];
-    this.historyData().monthly.forEach((item) => rows.push([item.month, item.days, item.pv_kwh, item.load_kwh, item.grid_import_kwh, item.grid_export_kwh, item.sold_kwh, item.sold_value, item.forecast_kwh, item.actual_kwh]));
-    const csv = rows.map((row) => row.map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`).join(";")).join("\n");
-    this.downloadHistory(`deye-monthly-report-${new Date().toISOString().slice(0, 7)}.csv`, csv, "text/csv;charset=utf-8");
   }
 
   editableConfigEntities() {
@@ -2581,7 +2111,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.88 (resource revision v=0.8.0.88)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.1.0 (resource revision v=0.8.1.0)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -2991,12 +2521,6 @@ class DeyeEnergyCard extends HTMLElement {
 
   diagnosticsAttributes() {
     return this._hass?.states?.[this.entity("sensor", "diagnostics")]?.attributes || {};
-  }
-
-  effectiveInverterMaxPowerW() {
-    const attrs = this.diagnosticsAttributes();
-    const configured = this.asNumber(attrs?.power_limits?.effective_inverter_max_power_w);
-    return Number.isFinite(configured) && configured > 0 ? configured : 13000;
   }
 
   fullTouCapability() {
@@ -3480,7 +3004,6 @@ class DeyeEnergyCard extends HTMLElement {
     const source = state && typeof state === "object" ? state : {};
     const rows = Array.isArray(source.rows) ? source.rows : [];
     this._manualScheduleDraft = rows.map((row) => this.normalizeManualScheduleRow(row));
-    this._manualScheduleOriginal = JSON.stringify(this._manualScheduleDraft);
     this._manualScheduleActive = Boolean(source.active);
   }
 
@@ -3852,10 +3375,6 @@ class DeyeEnergyCard extends HTMLElement {
       const entityId = this.mappingEntityId(slot, field);
       const options = this._hass?.states?.[entityId]?.attributes?.options;
       return Array.isArray(options) && options.length ? options.map((value) => String(value)) : fallback;
-    };
-    const fmtValue = (value, suffix = "") => {
-      if (value === null || value === undefined || value === "") return "Unavailable";
-      return `${this.escapeHtml(String(value))}${suffix}`;
     };
     const selectCell = (slot, field, value, fallback, labelFor = (v) => v) => {
       if (!editing || !this.mappingFieldWritable(slot, field)) {
@@ -4341,66 +3860,15 @@ class DeyeEnergyCard extends HTMLElement {
     return `<span class="bad">Incomplete mapping: ${count}/6 Deye ranges</span>`;
   }
 
-  renderHistoryTab() {
-    const data = this.historyData();
-    const filters = this._historyFilters || { from: "", to: "", type: "all" };
-    const inRange = (date) => (!filters.from || date >= filters.from) && (!filters.to || date <= filters.to);
-    const daily = data.daily.filter((item) => inRange(String(item.date || "")));
-    const monthly = data.monthly.filter((item) => inRange(`${item.month || ""}-01`));
-    const dailyRows = daily.length ? daily.map((item) => {
-      const currentRealization = this.asNumber(item.realization_today_pct ?? item.forecast_progress_percent);
-      const accuracy = item.accuracy_percent === null || item.accuracy_percent === undefined
-        ? (currentRealization === null ? "In progress (no data)" : `In progress (${this.formatNumber(currentRealization, 1)}% complete)`)
-        : `${this.formatNumber(item.accuracy_percent, 1)}%`;
-      return `<tr><td>${item.date}</td><td>${this.formatNumber(item.forecast_kwh, 2)}</td><td>${this.formatNumber(item.actual_kwh ?? item.pv_kwh, 2)}</td><td>${accuracy}</td><td>${this.formatNumber(item.load_kwh, 2)}</td><td>${this.formatNumber(item.battery_charge_kwh, 2)} / ${this.formatNumber(item.battery_discharge_kwh, 2)}</td><td>${this.formatNumber(item.sold_kwh, 2)} / ${this.formatNumber(item.sold_value, 2)} GBP</td></tr>`;
-    }).join("") : `<tr><td colspan="7">No daily summaries</td></tr>`;
-    const monthlyRows = monthly.length ? monthly.map((item) => `<tr><td>${item.month}</td><td>${item.days}</td><td>${this.formatNumber(item.pv_kwh, 1)}</td><td>${this.formatNumber(item.load_kwh, 1)}</td><td>${this.formatNumber(item.grid_import_kwh, 1)} / ${this.formatNumber(item.grid_export_kwh, 1)}</td><td>${this.formatNumber(item.sold_kwh, 1)} / ${this.formatNumber(item.sold_value, 2)} GBP</td></tr>`).join("") : `<tr><td colspan="6">No monthly summaries</td></tr>`;
-    return `<div class="history-toolbar">
-      <label>From<input type="date" data-history-filter="from" value="${filters.from || ""}"></label>
-      <label>To<input type="date" data-history-filter="to" value="${filters.to || ""}"></label>
-      <button data-export-history="csv">Export CSV</button><button data-export-history="json">Export JSON</button><button data-export-monthly="1">Monthly report</button>
-    </div>
-    <section class="history-section"><h3>Forecast and actual production</h3><div class="history-scroll"><table class="settings-table"><thead><tr><th>Date</th><th>Forecast kWh</th><th>Production kWh</th><th>Accuracy / state</th><th>House kWh</th><th>Chg./Disch. kWh</th><th>Selling</th></tr></thead><tbody>${dailyRows}</tbody></table></div></section>
-    <section class="history-section"><h3>Monthly summaries</h3><div class="history-scroll"><table class="settings-table"><thead><tr><th>Month</th><th>Days</th><th>PV kWh</th><th>House kWh</th><th>Import / export</th><th>Selling</th></tr></thead><tbody>${monthlyRows}</tbody></table></div></section>`;
-  }
-
   renderDialog(slots, touStarts) {
     if (!this._dialog) return "";
 
     if (this._dialog.type === "settings") {
-      const tab = this._settingsTab || "defaults";
+      const tab = this._settingsTab || "tariff";
       const tabButton = (key, label) => `<button class="${tab === key ? "active" : ""}" data-settings-tab="${key}">${label}</button>`;
       let body = "";
-      if (tab === "defaults") {
-        body = `
-          <h3>Default settings for the inverter</h3>
-          <div class="hint">These values are applied automatically after Stop Sell, an emergency stop or a control error. Set a configuration here that is safe for your installation.</div>
-          ${this.row("Default Manager mode", this.rawSelect("default-work-mode", this.defaultWorkModes(), this.defaultSettingsMode()))}
-          ${this.row("Physical Normal Operation variant", this.rawSelect("default-physical-work-mode", [["", "-- select --"], ...this.normalProfileModeOptions()], this.defaultPhysicalWorkMode()))}
-          ${this.row("Default maximum sell power", this.defaultProfileInput("sell_power", this.entity("number", "default_sell_power"), "W"))}
-          <div class="hint">Fallback state: ${this.escapeHtml(this.state(this.entity("select", "default_work_mode")))} · ${this.escapeHtml(this.state(this.entity("number", "default_sell_power")))} W</div>
-          <div class="hint">Battery current limits are not part of this fallback. Set them in the <strong>Inverter configuration</strong> card.</div>
-          <button class="wide-action" data-save-default-settings="1">Save default settings</button>
-          <button class="wide-action" data-action="apply-defaults" data-default-action="1" data-default-label="Apply default settings now" ${this._defaultsApplying ? "disabled" : ""}>${this._defaultsApplying ? "Applying default settings…" : "Apply default settings now"}</button>
-          <h3>Charging settings</h3>
-          <div class="hint">This is a template copied into a slot when <strong>Charging</strong> mode is selected. Later manual changes in that slot take precedence and are not overwritten by saving the template again.</div>
-          ${this.row("Charging mode", "Charging")}
-          ${this.row("Grid charging", this.rawSelect("charge-profile-grid", [["on", "YES"], ["off", "NO"]], this.chargeProfileGridEnabled() ? "on" : "off"))}
-          ${this.row("Target SOC", this.chargeProfileInput("target_soc", this.entity("number", "charge_profile_target_soc"), "%"))}
-          <div class="hint">Grid charging: NO — the battery may charge from PV. Grid charging: YES — allowed only within Charging mode ranges.</div>
-          <button class="wide-action" data-save-charge-profile="1">Save charging settings</button>
-          <h3>Normal operation settings</h3>
-          <div class="hint">This template is copied into a slot only when <strong>Normal Operation</strong> mode is selected. Later manual changes in that slot take precedence and are not overwritten by template changes.</div>
-          ${this.row("Normal Operation mode", this.rawSelect("normal-profile-mode", [["", "-- select --"], ...this.normalProfileModeOptions()], this.normalProfileMode()))}
-          ${this.row("Maximum selling power", this.normalProfileInput("sell_power", this.entity("number", "normal_profile_sell_power"), "W"))}
-          ${this.row("Deye battery SOC (TOU)", this.normalProfileInput("tou_soc", this.entity("number", "normal_profile_tou_soc"), "%"))}
-          <div class="hint">The physical SOC written to Deye Time Of Use for Normal Operation slots. This is not the minimum selling SOC.</div>
-          <button class="wide-action" data-save-normal-profile="1">Save Normal Operation settings</button>
-          <div class="hint defaults-status ${this._defaultsStatus}" data-defaults-status ${this._defaultsMessage ? "" : "hidden"}>${this.escapeHtml(this._defaultsMessage)}</div>`;
-      } else if (tab === "tariff") {
+      if (tab === "tariff") {
         body = this.renderTariffTab();
-      } else if (tab === "history") {
-        body = this.renderHistoryTab();
       } else if (tab === "system") {
         body = this.renderDiagnostics(slots);
       }
@@ -4410,9 +3878,7 @@ class DeyeEnergyCard extends HTMLElement {
           <div class="dialog-head"><strong>Settings and diagnostics</strong><button type="button" data-close-dialog="1">${this.iconSvg("close")}</button></div>
           <div class="settings-layout">
             <nav class="settings-nav">
-              ${tabButton("defaults", "Mode settings")}
               ${tabButton("tariff", "Tariff and distribution")}
-              ${tabButton("history", "History and data")}
               ${tabButton("system", "System and diagnostics")}
             </nav>
             <div class="settings-content">${body}</div>
@@ -4495,19 +3961,6 @@ class DeyeEnergyCard extends HTMLElement {
     this.captureScrollPositions();
 
     const slots = this.scheduleSlots();
-    const activeSlot = this.state(this.entity("sensor", "active_slot"));
-    const activeSlotLabel = (slots.find(([key]) => key === activeSlot)?.[1] || activeSlot);
-    const [modeText, modeClass] = this.readMode(this.state(this.entity("sensor", "manager_status")));
-    const currentInverterMode = this.state(this.entity("sensor", "current_work_mode"));
-    const targetInverterMode = this.state(this.entity("sensor", "target_mode"));
-    const decisionText = this.state(this.entity("sensor", "decision_reason"));
-    const control = this.controlState();
-    const masterControl = control.entity_id;
-    const masterControlOn = control.enabled;
-    const controlStatus = control.status;
-    const batterySoc = this.entity("sensor", "battery_soc");
-    const soldEnergyToday = this.entity("sensor", "sold_energy_today");
-    const soldValueToday = this.entity("sensor", "sold_value_today");
     const sellPriceToday = this.entity("sensor", ["sell_price_today", "energy_price"]);
     const sellPriceTomorrow = this.entity("sensor", "sell_price_tomorrow");
     const buyPriceToday = this.entity("sensor", "buy_price_today");
@@ -4520,9 +3973,7 @@ class DeyeEnergyCard extends HTMLElement {
     const solcastDay5 = this.entity("sensor", "solcast_forecast_day_5");
     const solcastDay6 = this.entity("sensor", "solcast_forecast_day_6");
     const solcastDay7 = this.entity("sensor", "solcast_forecast_day_7");
-    const solcastRemaining = this.entity("sensor", "solcast_remaining_today");
     const solcastPeakPower = this.entity("sensor", "solcast_peak_power_today");
-    const dailyPvProduction = this.entity("sensor", "daily_pv_production");
     const solcastAccuracy = this.entity("sensor", "solcast_accuracy");
     const minSellPrice = this.entity("number", "minimum_sell_price");
     const priceThreshold = this.asNumber(this.numberState(minSellPrice, 0)) || 0;
@@ -4543,71 +3994,6 @@ class DeyeEnergyCard extends HTMLElement {
       const raw = diagnostic?.actual_start || "00:00:00";
       return String(raw).length >= 5 ? String(raw).slice(0, 5) : String(raw);
     });
-
-    const selectedCount = this.selectedSlotList(slots).length;
-    const bulk = { ...this.bulkValues(slots), ...(this._bulkEditDraft || {}) };
-    const bulkFieldChecked = (name) => this._bulkEditFields?.[name] !== false;
-    const scheduleRows = slots.map(([key, label]) => {
-      const entities = this.slotEntities(key, label);
-      const enabled = this.displayState(entities.sellEnabled) === "on";
-      const mode = this.normalizeManagerMode(this.displayState(entities.mode, "Normal Operation"));
-      const gridChargeState = this.displayState(entities.chargeEnabled, "");
-      const gridCharge = gridChargeState === "on";
-      const isChargeMode = mode === "Charging";
-      const gridChargeLabel = isChargeMode ? (gridCharge ? "yes" : "no") : "not applicable";
-      const gridChargeClass = isChargeMode ? (gridCharge ? "on" : "off") : "missing";
-      // Physical Deye TOU SOC is always the user-owned tou_soc, also for Selling.
-      const touSoc = this.numberState(entities.touSoc, "requires confirmation");
-      const selected = this._selectedSlots?.has(key);
-      const meta = this.modeMeta(mode, enabled);
-      const rowClass = [
-        activeSlot === key ? "active" : "",
-        selected ? "selected" : "",
-        enabled ? "enabled" : "disabled",
-      ].filter(Boolean).join(" ");
-      return `<tr class="${rowClass}" data-slot-row="${key}">
-        <td class="check-col" data-label=""><label class="slot-check"><input type="checkbox" data-slot-check="${key}" ${selected ? "checked" : ""}><span></span></label></td>
-        <td data-label="Hour" class="time-col">${label}</td>
-        <td data-label="Mode">${this.modePill(mode, enabled)}</td>
-        <td data-label="Sell power" class="metric sell">${enabled ? `${this.iconSvg("sell")} ${this.numberState(entities.sellPower)} W` : "-"}</td>
-        <td data-label="Grid charging" class="metric grid">${enabled ? `<span class="pill ${gridChargeClass}">${gridChargeLabel}</span>` : "-"}</td>
-        <td data-label="SOC" class="metric soc">${enabled ? `◇ ${touSoc}%` : "-"}</td>
-        <td data-label="Price min." class="metric price-limit">${enabled ? `${this.formatPrice(this.numberState(entities.minSellPrice))} GBP` : "-"}</td>
-        <td data-label="Active">${this.pill(entities.sellEnabled, enabled ? "ON" : "OFF")}</td>
-        <td data-label="Action"><button class="icon-only" data-open-slot="sell:${key}" title="Edit">${this.iconSvg("edit")}</button></td>
-      </tr>`;
-    }).join("");
-
-    const selectedInfo = this._selectionMode ? `<aside class="bulk-panel">
-      <h3>Edit selected hours</h3>
-      <div class="range-box">
-        <strong>Range: ${this.selectedRangeText(slots)}</strong>
-        <span>Number of hours: ${selectedCount}</span>
-        <small>${this.mapWarning(slots)}</small>
-      </div>
-      <label class="apply-row"><input type="checkbox" data-apply-field="active" ${bulkFieldChecked("active") ? "checked" : ""}><span>Active</span>${this.rawSelect("multi-active", [["on", "Yes"], ["off", "No"]], bulk.active)}</label>
-        <label class="apply-row"><input type="checkbox" data-apply-field="mode" ${bulkFieldChecked("mode") ? "checked" : ""}><span>Operation mode</span>${this.rawSelect("multi-mode", this.slotModeOptions(), bulk.mode)}</label>
-      <label class="apply-row"><input type="checkbox" data-apply-field="sellPower" ${bulkFieldChecked("sellPower") ? "checked" : ""}><span>Sell power</span>${this.rawNumber("multi-sell-power", bulk.sellPower, "W")}</label>
-      <label class="apply-row"><input type="checkbox" data-apply-field="minSoc" ${bulkFieldChecked("minSoc") ? "checked" : ""}><span>Minimum sell SOC</span>${this.rawNumber("multi-min-soc", bulk.minSoc ?? bulk.minimumSellSoc, "%")}</label>
-      <label class="apply-row"><input type="checkbox" data-apply-field="minSellPrice" ${bulkFieldChecked("minSellPrice") ? "checked" : ""}><span>Sell from price</span>${this.rawNumber("multi-min-sell-price", bulk.minSellPrice, "GBP")}</label>
-      <div class="preview-box"><strong>Preview changes</strong><br>The selected fields are written only to the selected hours. Fields without a checkmark stay unchanged.</div>
-      <div class="bulk-actions"><button data-schedule-clear="1">${this.iconSvg("close")} Cancel</button><button class="primary" data-apply-multi="1" ${selectedCount && !this._bulkApplying ? "" : "disabled"}>${this.iconSvg("check")} ${this._bulkApplying ? "Saving…" : "Apply changes"}</button></div>
-    </aside>` : "";
-
-    const touRows = [1, 2, 3, 4, 5, 6].map((idx) => {
-      const physical = physicalTou.find((row) => Number(row.range) === idx) || {};
-      const end = physical.actual_end ? String(physical.actual_end).slice(0, 5) : "—";
-      const start = physical.actual_start ? String(physical.actual_start).slice(0, 5) : "—";
-      const soc = physical.actual_soc ?? "—";
-      const grid = physical.actual_grid_charge ?? "—";
-      return `<tr>
-        <td data-label="Slot">${idx}</td>
-        <td data-label="From">${this.escapeHtml(start)}</td>
-        <td data-label="Do">${this.escapeHtml(end)}</td>
-        <td data-label="SOC Deye">${this.escapeHtml(String(soc))}${soc === "—" ? "" : " %"}</td>
-        <td data-label="Grid charging">${this.escapeHtml(this.touGridLabel(grid))}</td>
-      </tr>`;
-    }).join("");
 
     const layout = this.effectiveLayout();
     const dashStyle = [];
@@ -4701,7 +4087,7 @@ class DeyeEnergyCard extends HTMLElement {
            svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
           button{font:inherit}
            .panel,.schedule-shell,.table-wrap{box-sizing:border-box;border:1px solid rgba(107,157,182,.34);border-radius:10px;background:radial-gradient(circle at 12% 8%,rgba(20,85,130,.16),transparent 32%),linear-gradient(180deg,rgba(5,16,26,.98),rgba(7,21,32,.98));box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 12px 28px rgba(0,0,0,.18)}
-          .panel-title,.table-title{margin:0;padding:12px 14px;background:linear-gradient(180deg,rgba(16,45,61,.92),rgba(6,20,31,.86));border-bottom:1px solid rgba(107,157,182,.24);font-size:18px;font-weight:800;color:#fff}
+          .panel-title{margin:0;padding:12px 14px;background:linear-gradient(180deg,rgba(16,45,61,.92),rgba(6,20,31,.86));border-bottom:1px solid rgba(107,157,182,.24);font-size:18px;font-weight:800;color:#fff}
           .stat{border:1px solid rgba(111,154,178,.45);border-radius:7px;background:rgba(7,18,28,.74);padding:10px;min-width:0}
           .stat span{display:block;color:#a9c1d0;font-size:12px}.stat strong{display:block;margin-top:4px;color:#fff;font-size:18px;line-height:1.2}.stat.good strong,.good{color:#2dff95!important}.stat.warn strong,.warn{color:#ffd95c!important}.bad{color:#ff6b7a!important}
            .info-grid{display:grid;grid-template-columns:0.85fr 0.85fr 1.30fr;gap:14px;align-items:stretch;width:100%;box-sizing:border-box}.info-grid>.panel{height:auto;min-height:470px;display:flex;flex-direction:column;min-width:0}
@@ -4712,17 +4098,15 @@ class DeyeEnergyCard extends HTMLElement {
           .defaults-status{margin-top:10px}.defaults-status.saving{color:#ffd166}.defaults-status.saved{color:var(--green)}.defaults-status.error{color:#ff8b98}button[data-default-action]:disabled{opacity:.55;cursor:wait}
            .schedule-shell{width:100%;max-width:100%;min-width:0;box-sizing:border-box;overflow:hidden;padding:10px;background:radial-gradient(circle at 12% 8%,rgba(20,85,130,.22),transparent 30%),linear-gradient(180deg,rgba(5,16,26,.98),rgba(7,21,32,.98))}
           .schedule-tabs{display:flex;gap:8px;padding:10px;border-bottom:1px solid var(--line);overflow-x:auto}.schedule-tabs button{border:1px solid var(--line2);border-radius:7px;background:rgba(255,255,255,.03);color:#dfeef6;padding:8px 12px;white-space:nowrap;cursor:pointer}.schedule-tabs button.active{border-color:var(--blue);color:#fff;background:rgba(21,155,255,.22)}.schedule-tab-panel[hidden]{display:none}.manual-save-actions{justify-content:flex-end;margin-top:10px}
-          .schedule-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:8px}.schedule-title h2{margin:0;display:flex;align-items:center;gap:8px;font-size:22px;font-weight:850}.schedule-title p{margin:3px 0 0;color:#c1d4df;font-size:13px}.title-icon{width:28px;height:28px;border-radius:999px;border:1px solid rgba(142,181,202,.42);background:rgba(255,255,255,.03);color:#d9ecf6;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}.title-icon:hover{border-color:var(--blue);color:#fff}.save-indicator{display:none;border-radius:999px;padding:4px 9px;font-size:11px;font-weight:800;line-height:1.2}.save-indicator.saving{display:inline-flex;color:#ffd166;background:rgba(246,166,25,.16)}.save-indicator.saved{display:inline-flex;color:var(--green);background:rgba(53,214,111,.14)}.save-indicator.error{display:inline-flex;max-width:360px;color:#ff8b98;background:rgba(255,77,99,.15);white-space:normal}
-          .schedule-tools{display:flex;gap:9px;align-items:center;flex-wrap:wrap;justify-content:flex-end}.tool-btn,.gear-btn,.bulk-actions button,.set-btn,.icon-only{border:1px solid rgba(100,145,170,.42);border-radius:8px;background:rgba(7,17,27,.72);color:#eaf7ff;min-height:38px;padding:0 13px;display:inline-flex;align-items:center;gap:9px;cursor:pointer}.tool-btn.active{border-color:var(--blue);color:#2ea7ff;background:rgba(8,53,92,.55)}.gear-btn{width:48px;justify-content:center;padding:0}.gear-btn:hover,.tool-btn:hover,.set-btn:hover,.icon-only:hover{border-color:var(--blue);box-shadow:0 0 0 1px rgba(21,155,255,.25) inset}.icon-only{width:32px;min-height:28px;padding:0;justify-content:center}.set-btn{min-height:29px;padding:0 12px;font-weight:800}
-          .mode-legend{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin:4px 0 8px}.mode-tile{display:flex;align-items:center;gap:8px;min-width:0}.mode-icon{width:32px;height:32px;border-radius:11px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}.mode-tile.selling .mode-icon{background:rgba(126,226,45,.16);color:var(--green)}.mode-tile.zero .mode-icon{background:rgba(21,155,255,.16);color:var(--blue)}.mode-tile.ct .mode-icon{background:rgba(188,99,255,.18);color:var(--purple)}.mode-tile.charge .mode-icon{background:rgba(246,166,25,.18);color:var(--gold)}.mode-tile.disabled .mode-icon{background:rgba(155,178,193,.12);color:#b9c9d4}.mode-tile.normal .mode-icon{background:rgba(77,171,247,.16);color:#4dabf7}.mode-tile strong{display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mode-tile.selling strong{color:var(--green)}.mode-tile.zero strong{color:var(--blue)}.mode-tile.ct strong{color:var(--purple)}.mode-tile.charge strong{color:var(--gold)}.mode-tile.normal strong{color:#4dabf7}.mode-tile span{display:block;color:#c2d4de;margin-top:1px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-           .schedule-main{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}.schedule-main.selecting{grid-template-columns:minmax(0,1fr) 340px}.schedule-left{min-width:0}.schedule-table-card{width:100%;max-width:100%;min-width:0;box-sizing:border-box;border:1px solid rgba(107,157,182,.28);border-radius:8px;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;background:rgba(6,19,29,.62)}.schedule-table{width:100%;border-collapse:collapse;table-layout:auto}.schedule-table th,.schedule-table td{padding:1px 4px;border-top:1px solid var(--line);text-align:left;vertical-align:middle}.schedule-table th{background:rgba(19,41,56,.86);color:#d9ecf6;font-size:10px;font-weight:800}.schedule-table td{font-size:11px}.schedule-table tr{height:24px}.schedule-table tr.active{background:rgba(37,105,151,.32);animation:schedule-current-row 1.6s ease-in-out infinite}.schedule-table tr.active td{animation:schedule-current-cell 1.6s ease-in-out infinite}.schedule-table tr.active .time-col{color:#fff;font-weight:800;text-shadow:0 0 8px rgba(87,185,255,.9)}@keyframes schedule-current-row{0%,100%{background:rgba(37,105,151,.26)}50%{background:rgba(37,105,151,.58)}}@keyframes schedule-current-cell{0%,100%{box-shadow:inset 0 0 0 1px rgba(87,185,255,.32),inset 0 0 8px rgba(87,185,255,.10)}50%{box-shadow:inset 0 0 0 1px rgba(87,185,255,.95),inset 0 0 16px rgba(87,185,255,.38)}}.schedule-table tr.selected{background:rgba(0,122,255,.14);box-shadow:inset 0 0 0 1px var(--blue)}.check-col{width:30px}.time-col{width:56px;min-width:56px;max-width:56px;text-align:left;white-space:nowrap}.schedule-table .metric,.schedule-table .mode-pill{white-space:nowrap}.schedule-table col.col-check{width:30px}.schedule-table col.col-time{width:58px}.schedule-table col.col-mode{width:118px}.schedule-table col.col-power{width:76px}.schedule-table col.col-current{width:78px}.schedule-table col.col-grid{width:54px}.schedule-table col.col-grid-current{width:72px}.schedule-table col.col-soc{width:56px}.schedule-table col.col-price{width:70px}.schedule-table col.col-active{width:56px}.schedule-table col.col-action{width:42px}.slot-check{display:inline-flex;align-items:center;justify-content:center}.slot-check input{display:none}.slot-check span{width:18px;height:18px;border:1px solid rgba(159,190,207,.55);border-radius:5px;background:rgba(255,255,255,.02)}.slot-check input:checked+span{background:var(--blue);border-color:var(--blue);box-shadow:inset 0 0 0 3px rgba(0,0,0,.18)}.slot-check input:checked+span::after{content:"";display:block;width:8px;height:5px;border-left:2px solid #00131f;border-bottom:2px solid #00131f;transform:rotate(-45deg);margin:5px 0 0 5px}
+          .schedule-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:8px}.schedule-title h2{margin:0;display:flex;align-items:center;gap:8px;font-size:22px;font-weight:850}.schedule-title p{margin:3px 0 0;color:#c1d4df;font-size:13px}.save-indicator{display:none;border-radius:999px;padding:4px 9px;font-size:11px;font-weight:800;line-height:1.2}.save-indicator.saving{display:inline-flex;color:#ffd166;background:rgba(246,166,25,.16)}.save-indicator.saved{display:inline-flex;color:var(--green);background:rgba(53,214,111,.14)}.save-indicator.error{display:inline-flex;max-width:360px;color:#ff8b98;background:rgba(255,77,99,.15);white-space:normal}
+          .schedule-tools{display:flex;gap:9px;align-items:center;flex-wrap:wrap;justify-content:flex-end}.tool-btn,.gear-btn,.bulk-actions button,.icon-only{border:1px solid rgba(100,145,170,.42);border-radius:8px;background:rgba(7,17,27,.72);color:#eaf7ff;min-height:38px;padding:0 13px;display:inline-flex;align-items:center;gap:9px;cursor:pointer}.tool-btn.active{border-color:var(--blue);color:#2ea7ff;background:rgba(8,53,92,.55)}.gear-btn{width:48px;justify-content:center;padding:0}.gear-btn:hover,.tool-btn:hover,.icon-only:hover{border-color:var(--blue);box-shadow:0 0 0 1px rgba(21,155,255,.25) inset}.icon-only{width:32px;min-height:28px;padding:0;justify-content:center}
+           .schedule-table-card{width:100%;max-width:100%;min-width:0;box-sizing:border-box;border:1px solid rgba(107,157,182,.28);border-radius:8px;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;background:rgba(6,19,29,.62)}.schedule-table{width:100%;border-collapse:collapse;table-layout:auto}.schedule-table th,.schedule-table td{padding:1px 4px;border-top:1px solid var(--line);text-align:left;vertical-align:middle}.schedule-table th{background:rgba(19,41,56,.86);color:#d9ecf6;font-size:10px;font-weight:800}.schedule-table td{font-size:11px}.schedule-table tr{height:24px}.schedule-table tr.active{background:rgba(37,105,151,.32);animation:schedule-current-row 1.6s ease-in-out infinite}.schedule-table tr.active td{animation:schedule-current-cell 1.6s ease-in-out infinite}.schedule-table tr.active .time-col{color:#fff;font-weight:800;text-shadow:0 0 8px rgba(87,185,255,.9)}@keyframes schedule-current-row{0%,100%{background:rgba(37,105,151,.26)}50%{background:rgba(37,105,151,.58)}}@keyframes schedule-current-cell{0%,100%{box-shadow:inset 0 0 0 1px rgba(87,185,255,.32),inset 0 0 8px rgba(87,185,255,.10)}50%{box-shadow:inset 0 0 0 1px rgba(87,185,255,.95),inset 0 0 16px rgba(87,185,255,.38)}}.schedule-table tr.selected{background:rgba(0,122,255,.14);box-shadow:inset 0 0 0 1px var(--blue)}.time-col{width:56px;min-width:56px;max-width:56px;text-align:left;white-space:nowrap}.schedule-table .metric,.schedule-table .mode-pill{white-space:nowrap}.schedule-table col.col-time{width:58px}.schedule-table col.col-mode{width:118px}.schedule-table col.col-power{width:76px}.schedule-table col.col-grid{width:54px}.schedule-table col.col-soc{width:56px}.schedule-table col.col-active{width:56px}.schedule-table col.col-action{width:42px}.slot-check{display:inline-flex;align-items:center;justify-content:center}.slot-check input{display:none}.slot-check span{width:18px;height:18px;border:1px solid rgba(159,190,207,.55);border-radius:5px;background:rgba(255,255,255,.02)}.slot-check input:checked+span{background:var(--blue);border-color:var(--blue);box-shadow:inset 0 0 0 3px rgba(0,0,0,.18)}.slot-check input:checked+span::after{content:"";display:block;width:8px;height:5px;border-left:2px solid #00131f;border-bottom:2px solid #00131f;transform:rotate(-45deg);margin:5px 0 0 5px}
           .mode-pill{display:inline-flex;align-items:center;border-radius:6px;padding:3px 7px;font-weight:800;background:#223241;color:#d7e7ef;white-space:nowrap}.mode-pill.selling{background:rgba(72,154,38,.24);color:var(--green)}.mode-pill.zero{background:rgba(21,155,255,.18);color:#55baff}.mode-pill.ct{background:rgba(188,99,255,.18);color:#ce8cff}.mode-pill.charge{background:rgba(246,166,25,.18);color:#ffc65a}.mode-pill.disabled{background:rgba(142,160,172,.16);color:#d6e1e8}.mode-pill.normal{background:rgba(77,171,247,.18);color:#4dabf7}
           .metric{white-space:nowrap}.metric svg{width:16px;height:16px;vertical-align:-3px}.metric.sell{color:#8cef3b}.metric.discharge{color:#ff4848}.metric.charge{color:#20a9ff}.metric.grid,.metric.grid-current{color:#ffc65a}.metric.soc{color:#d279ff}.metric.price-limit{color:#2dff95}
           .pill{border:0;border-radius:999px;min-width:42px;padding:3px 9px;font-weight:900;cursor:pointer;background:#233849;color:#d9edf5}.pill.on{background:linear-gradient(90deg,#0a68d7,#159bff);color:#fff}.pill.off{background:#263e51;color:#d9edf5}.pill.missing{opacity:.62}
-          .schedule-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--line);padding:7px 12px}.schedule-foot strong{color:#2ea7ff}.foot-actions{display:flex;gap:9px;flex-wrap:wrap}.foot-actions button{border:1px solid rgba(100,145,170,.42);border-radius:8px;background:rgba(7,17,27,.72);color:#eaf7ff;min-height:32px;padding:0 12px;display:inline-flex;align-items:center;gap:8px;cursor:pointer}.foot-actions .primary{background:linear-gradient(180deg,#0b7eee,#075bc0);border-color:#159bff}
+          .foot-actions{display:flex;gap:9px;flex-wrap:wrap}.foot-actions button{border:1px solid rgba(100,145,170,.42);border-radius:8px;background:rgba(7,17,27,.72);color:#eaf7ff;min-height:32px;padding:0 12px;display:inline-flex;align-items:center;gap:8px;cursor:pointer}.foot-actions .primary{background:linear-gradient(180deg,#0b7eee,#075bc0);border-color:#159bff}
           .bulk-panel{border:1px solid rgba(107,157,182,.28);border-radius:8px;background:linear-gradient(180deg,rgba(10,29,45,.95),rgba(7,21,33,.96));padding:20px}.bulk-panel h3{margin:0 0 16px;font-size:20px}.range-box{border:1px solid rgba(21,155,255,.35);border-radius:8px;background:rgba(0,81,145,.18);padding:14px;margin-bottom:16px;color:#2ea7ff}.range-box span,.range-box small{display:block;margin-top:5px}.apply-row{display:grid;grid-template-columns:24px 1fr 1.25fr;gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}.apply-row input[type="checkbox"]{width:20px;height:20px;accent-color:var(--blue)}.preview-box{margin-top:12px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03);padding:12px;color:#cbdce5}.bulk-actions{display:flex;justify-content:space-between;gap:10px;margin-top:16px}.bulk-actions .primary{background:linear-gradient(180deg,#72d13b,#41a91d);border-color:#75e247;color:#041007}
-          input,select{width:100%;min-width:0;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:8px}option,select option{background:#fff!important;color:#111!important}.field{position:relative;display:block}.field input{padding-right:42px}.field span{position:absolute;right:10px;top:50%;transform:translateY(-50%);font-weight:800;color:#d8ecf7}.row{min-height:38px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border-top:1px solid var(--line)}.row strong{text-align:right}.settings-row{min-height:40px;display:grid;grid-template-columns:1fr 260px;gap:12px;align-items:center;padding:9px 12px;border-top:1px solid var(--line)}.settings-row>input[type="checkbox"]{justify-self:end;width:20px;height:20px;accent-color:var(--blue)}.settings-row select,.settings-row .compact-field{max-width:260px;justify-self:end}.tou-reverse-sync{display:grid;gap:5px}.hint{padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03);color:#c7d9e2;margin-bottom:12px}.wide-action{width:100%;min-height:38px;border:1px solid rgba(100,145,170,.45);border-radius:8px;background:#173a57;color:#fff;font-weight:800;cursor:pointer}.wide-action:disabled{opacity:.45;cursor:not-allowed}.settings-table{width:100%;border-collapse:collapse}.settings-table th,.settings-table td{padding:8px;border-top:1px solid var(--line);text-align:left}.settings-tabs{display:flex;gap:8px;padding:10px;border-bottom:1px solid var(--line);overflow-x:auto}.settings-tabs button{border:1px solid var(--line2);border-radius:7px;background:rgba(255,255,255,.03);color:#dfeef6;padding:8px 10px;white-space:nowrap}.settings-tabs button.active{border-color:var(--blue);color:#fff;background:rgba(21,155,255,.22)}.overlay{position:fixed;inset:0;background:rgba(0,0,0,.68);display:flex;align-items:center;justify-content:center;z-index:20;padding:16px}.dialog{width:min(760px,100%);max-height:92vh;overflow:auto;border:1px solid rgba(107,157,182,.45);border-radius:12px;background:radial-gradient(circle at 16% 0%,rgba(22,91,139,.2),transparent 36%),linear-gradient(180deg,#071b2a,#061420);box-shadow:0 25px 70px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.04)}.settings-dialog{width:min(880px,100%)}.dialog-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;background:linear-gradient(180deg,rgba(14,50,70,.9),rgba(10,30,44,.86));border-bottom:1px solid rgba(107,157,182,.28)}.dialog-head strong{font-size:19px}.dialog-head button{border:0;background:transparent;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center}.dialog-head button svg{pointer-events:none}.dialog-body{padding:14px}.dialog-actions{display:flex;justify-content:flex-end;gap:10px;padding:0 14px 14px}.dialog-actions button{border:1px solid var(--line2);border-radius:8px;background:#173a57;color:#fff;min-height:38px;padding:0 16px}.dialog-actions button:disabled{opacity:.45;cursor:not-allowed}
-           .history-toolbar{display:grid;grid-template-columns:repeat(3,minmax(130px,1fr)) repeat(3,auto);gap:8px;align-items:end;margin-bottom:12px}.history-toolbar label{display:grid;gap:4px;color:#a9c1d0;font-size:11px}.history-toolbar button,.danger-action{min-height:38px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 12px;cursor:pointer}.history-section{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);margin-bottom:12px;overflow:hidden}.history-section h3{margin:0;padding:10px 12px;color:var(--green);background:rgba(18,42,59,.74)}.history-scroll{max-height:270px;overflow:auto;overscroll-behavior:contain}.history-scroll .settings-table{min-width:780px}.history-scroll details summary{cursor:pointer;color:var(--blue)}.history-scroll pre{max-width:520px;max-height:220px;overflow:auto;white-space:pre-wrap;color:#cfe1ea}.danger-action{background:rgba(138,24,42,.28);border-color:rgba(255,77,99,.55);color:#ff9cab}
+          input,select{width:100%;min-width:0;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:8px}option,select option{background:#fff!important;color:#111!important}.field{position:relative;display:block}.field input{padding-right:42px}.field span{position:absolute;right:10px;top:50%;transform:translateY(-50%);font-weight:800;color:#d8ecf7}.row{min-height:38px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border-top:1px solid var(--line)}.row strong{text-align:right}.settings-row{min-height:40px;display:grid;grid-template-columns:1fr 260px;gap:12px;align-items:center;padding:9px 12px;border-top:1px solid var(--line)}.settings-row>input[type="checkbox"]{justify-self:end;width:20px;height:20px;accent-color:var(--blue)}.settings-row select{max-width:260px;justify-self:end}.tou-reverse-sync{display:grid;gap:5px}.hint{padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03);color:#c7d9e2;margin-bottom:12px}.wide-action{width:100%;min-height:38px;border:1px solid rgba(100,145,170,.45);border-radius:8px;background:#173a57;color:#fff;font-weight:800;cursor:pointer}.wide-action:disabled{opacity:.45;cursor:not-allowed}.settings-table{width:100%;border-collapse:collapse}.settings-table th,.settings-table td{padding:8px;border-top:1px solid var(--line);text-align:left}.overlay{position:fixed;inset:0;background:rgba(0,0,0,.68);display:flex;align-items:center;justify-content:center;z-index:20;padding:16px}.dialog{width:min(760px,100%);max-height:92vh;overflow:auto;border:1px solid rgba(107,157,182,.45);border-radius:12px;background:radial-gradient(circle at 16% 0%,rgba(22,91,139,.2),transparent 36%),linear-gradient(180deg,#071b2a,#061420);box-shadow:0 25px 70px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.04)}.settings-dialog{width:min(880px,100%)}.dialog-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;background:linear-gradient(180deg,rgba(14,50,70,.9),rgba(10,30,44,.86));border-bottom:1px solid rgba(107,157,182,.28)}.dialog-head strong{font-size:19px}.dialog-head button{border:0;background:transparent;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center}.dialog-head button svg{pointer-events:none}.dialog-body{padding:14px}.dialog-actions{display:flex;justify-content:flex-end;gap:10px;padding:0 14px 14px}.dialog-actions button{border:1px solid var(--line2);border-radius:8px;background:#173a57;color:#fff;min-height:38px;padding:0 16px}.dialog-actions button:disabled{opacity:.45;cursor:not-allowed}
            .settings-dialog{width:min(1180px,96vw)!important;height:min(820px,92vh);max-height:92vh!important;overflow:hidden!important;display:grid;grid-template-rows:auto minmax(0,1fr)}.settings-layout{min-height:0;display:grid;grid-template-columns:220px minmax(0,1fr)}.settings-nav{padding:12px;border-right:1px solid var(--line);background:rgba(4,15,24,.58);display:flex;flex-direction:column;gap:7px;overflow-y:auto}.settings-nav button{width:100%;min-height:42px;border:1px solid var(--line2);border-radius:7px;background:rgba(255,255,255,.025);color:#dfeef6;padding:8px 10px;text-align:left;cursor:pointer}.settings-nav button.active{border-color:var(--blue);color:#fff;background:rgba(21,155,255,.22)}.settings-content{min-width:0;overflow:auto;overscroll-behavior:contain;padding:14px}.diagnostic-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-bottom:12px}.diagnostic-summary>div{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03);padding:11px}.diagnostic-summary span{display:block;color:#9db7c6;font-size:11px}.diagnostic-summary strong{display:block;margin-top:5px;overflow-wrap:anywhere}.diagnostic-section{border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:12px;background:rgba(255,255,255,.025)}.diagnostic-section h3{margin:0;padding:10px 12px;background:rgba(18,42,59,.78);color:#dff4ff}.diagnostic-entities{max-height:260px;overflow:auto}.diag-badge{display:inline-flex;border-radius:999px;padding:3px 9px;font-weight:800}.diag-badge.ok{color:var(--green);background:rgba(53,214,111,.12)}.diag-badge.error{color:#ff8b98;background:rgba(255,77,99,.13)}.diagnostic-actions{display:flex;flex-wrap:wrap;gap:8px;padding:12px}.diagnostic-actions button{min-height:38px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 13px;cursor:pointer}.diagnostic-actions button.danger{background:rgba(138,24,42,.28);border-color:rgba(255,77,99,.55);color:#ff9cab}.diagnostic-actions button.resume{background:rgba(38,112,64,.55);border-color:rgba(103,229,100,.65)}.tou-diagnostics{padding:12px;display:flex;gap:10px;align-items:center;overflow-wrap:anywhere}.schedule-attempt{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;padding:12px}.schedule-attempt>div{border:1px solid var(--line);border-radius:7px;padding:9px;overflow-wrap:anywhere}.schedule-attempt .schedule-attempt-message{grid-column:span 3}.schedule-attempt span{display:block;font-size:11px;color:#9db7c6}.schedule-attempt strong{display:block;margin-top:4px}.schedule-attempt ul{margin:6px 0 0;padding:0;list-style:none}.schedule-attempt li{display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:2px 0}.schedule-attempt.failed{background:rgba(145,28,48,.08)}
            .sales-summary{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:10px}.sales-chart{height:130px;display:grid;grid-template-columns:repeat(24,1fr);gap:4px;align-items:end;padding:10px;border-top:1px solid var(--line)}.sales-bar{height:112px;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:4px;min-width:0}.sales-bar span{display:block;width:100%;min-height:4px;border-radius:4px 4px 0 0;background:#35d66f}.sales-bar.now span{background:#ffd166}.sales-bar em{font-style:normal;font-size:10px;color:#8aa8b8;writing-mode:vertical-rl;transform:rotate(180deg)}.sales-tables{display:grid;grid-template-columns:1fr .8fr 1fr;gap:10px;padding:0 10px 10px}.section-label{padding:8px 10px;color:#d9f7ff;background:#1b3445;font-size:12px;font-weight:900;text-transform:uppercase}.sales-scroll{max-height:170px;overflow:auto;overscroll-behavior:contain}.mini-table{width:100%;border-collapse:collapse}.mini-table td{padding:5px 8px;border-top:1px solid var(--line);font-size:12px}
           .sales-panel{background:radial-gradient(circle at 12% 0%,rgba(20,85,130,.22),transparent 30%),linear-gradient(180deg,rgba(5,16,26,.99),rgba(7,21,32,.99));border-color:rgba(107,157,182,.3)}
@@ -4733,16 +4117,16 @@ class DeyeEnergyCard extends HTMLElement {
           .sales-chart{height:118px;margin:0 12px 12px;padding:10px 8px 7px;border:1px solid rgba(107,157,182,.25);border-radius:8px;background:rgba(4,15,24,.7)}.sales-bar{height:98px}.sales-bar span{background:linear-gradient(180deg,#74ea4b,#28b963);box-shadow:0 0 10px rgba(53,214,111,.12)}.sales-bar.now span{background:linear-gradient(180deg,#ffe08a,#f5b942)}
           .sales-tables{gap:12px;padding:0 12px 12px}.sales-tables>div{overflow:hidden;border:1px solid rgba(107,157,182,.25);border-radius:8px;background:rgba(4,15,24,.62)}.section-label{padding:9px 11px;background:rgba(18,42,59,.86);color:#d8edf8;font-size:11px;letter-spacing:0;text-transform:uppercase}.mini-table td{padding:6px 9px;border-top:1px solid rgba(118,166,190,.16);font-size:11px}.mini-table tr:hover td{background:rgba(21,155,255,.05)}
            .dialog-head{position:sticky;top:0;z-index:5;background:linear-gradient(180deg,rgba(14,50,70,.98),rgba(10,30,44,.98))}.dialog-actions{position:sticky;bottom:0;z-index:4;padding:12px 14px;background:rgba(6,20,32,.98);border-top:1px solid var(--line)}
-           @media(max-width:1500px){.info-grid{grid-template-columns:1fr 1fr}.info-grid>.panel:nth-child(3){grid-column:1/-1}.schedule-main.selecting{grid-template-columns:1fr}.bulk-panel{max-width:none}.mode-legend{grid-template-columns:repeat(3,minmax(0,1fr))}}
-           @media(max-width:980px){.dem-v073{padding:10px}.info-grid{grid-template-columns:1fr}.sales-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.info-grid>.panel{height:auto;min-height:340px}.schedule-head{display:grid}.schedule-tools{justify-content:stretch}.tool-btn{flex:1}.mode-legend{grid-template-columns:1fr 1fr}.schedule-table{min-width:1160px}.schedule-table-card{overflow-x:auto}.sales-tables{grid-template-columns:1fr}.sales-chart{overflow-x:auto;grid-template-columns:repeat(24,24px)}.price-scroll{height:260px;overflow:auto;scrollbar-gutter:stable}.solcast-days{grid-template-columns:repeat(2,1fr)}.settings-layout{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.settings-nav{flex-direction:row;overflow-x:auto;overflow-y:hidden;border-right:0;border-bottom:1px solid var(--line)}.settings-nav button{width:auto;min-width:max-content;text-align:center}.diagnostic-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
+           @media(max-width:1500px){.info-grid{grid-template-columns:1fr 1fr}.info-grid>.panel:nth-child(3){grid-column:1/-1}.bulk-panel{max-width:none}}
+           @media(max-width:980px){.dem-v073{padding:10px}.info-grid{grid-template-columns:1fr}.sales-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.info-grid>.panel{height:auto;min-height:340px}.schedule-head{display:grid}.schedule-tools{justify-content:stretch}.tool-btn{flex:1}.schedule-table{min-width:1160px}.schedule-table-card{overflow-x:auto}.sales-tables{grid-template-columns:1fr}.sales-chart{overflow-x:auto;grid-template-columns:repeat(24,24px)}.price-scroll{height:260px;overflow:auto;scrollbar-gutter:stable}.solcast-days{grid-template-columns:repeat(2,1fr)}.settings-layout{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.settings-nav{flex-direction:row;overflow-x:auto;overflow-y:hidden;border-right:0;border-bottom:1px solid var(--line)}.settings-nav button{width:auto;min-width:max-content;text-align:center}.diagnostic-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
            @media(max-width:620px){
              .dem-v073{padding:4px;gap:8px}.panel,.schedule-shell,.table-wrap{border-radius:7px}.panel-title{padding:10px 12px;font-size:18px}
              .sales-summary{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px!important;padding:7px!important}.sales-summary .stat{min-height:52px;padding:7px 8px;gap:7px}.stat-icon{width:29px;height:29px}.stat-icon svg{width:17px;height:17px}.sales-summary .stat span{font-size:10px}.sales-summary .stat strong{font-size:13px;line-height:1.25;white-space:normal;overflow-wrap:anywhere}
              .info-grid{gap:8px}.info-grid>.panel{min-height:0;height:auto}.price-summary{grid-template-columns:1fr}.price-scroll{height:230px}.price-table th,.price-table td{padding:4px 7px;font-size:11px}
               .solcast-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.solcast-days{display:flex;max-width:100%;gap:6px;overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x proximity;padding-bottom:5px}.solcast-day{min-width:132px;scroll-snap-align:start}.solcast-chart{height:162px;padding-left:5px;padding-right:5px}.solcast-bars{height:138px;min-width:0;width:100%;max-width:100%;grid-template-columns:repeat(24,minmax(0,1fr))}.solcast-performance{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;padding:7px}
-             .schedule-shell{padding:7px}.schedule-head{gap:8px}.schedule-title h2{font-size:19px}.schedule-title p{font-size:11px;line-height:1.35}.schedule-tools{display:grid;grid-template-columns:1fr 1fr;gap:6px}.tool-btn{min-height:36px;padding:0 8px;justify-content:center;font-size:12px}.gear-btn{width:100%;min-height:36px}.mode-legend{display:flex;gap:10px;overflow-x:auto;padding:3px 1px 7px;scroll-snap-type:x proximity}.mode-tile{min-width:150px;scroll-snap-align:start}.mode-icon{width:30px;height:30px}.mode-tile strong{font-size:12px}.mode-tile span{font-size:10px}.schedule-table{min-width:880px}.schedule-table th,.schedule-table td{padding:2px 3px}.schedule-table td{font-size:10px}.schedule-foot{padding:7px;align-items:flex-start;flex-direction:column}.foot-actions{width:100%;display:grid;grid-template-columns:1fr 1fr}.foot-actions button{justify-content:center;padding:0 7px;font-size:11px}
-             .sales-summary{padding:8px}.sales-chart{min-height:150px}.sales-tables{gap:8px}.sales-table-card h3{font-size:14px;padding:9px}.sales-table-card th,.sales-table-card td{font-size:11px;padding:6px 8px}
-              .overlay{padding:0;align-items:stretch}.dialog,.settings-dialog{width:100%!important;height:100dvh!important;max-height:100dvh!important;border-radius:0}.dialog-head{padding-top:max(14px,env(safe-area-inset-top))}.dialog-actions{padding-bottom:max(12px,env(safe-area-inset-bottom))}.apply-row{grid-template-columns:24px 1fr}.apply-row .field,.apply-row select{grid-column:2}.history-toolbar{grid-template-columns:1fr 1fr}.history-toolbar button{width:100%}.settings-content{padding:9px}.diagnostic-summary{grid-template-columns:1fr}.diagnostic-actions{display:grid}.diagnostic-actions button{width:100%}
+             .schedule-shell{padding:7px}.schedule-head{gap:8px}.schedule-title h2{font-size:19px}.schedule-title p{font-size:11px;line-height:1.35}.schedule-tools{display:grid;grid-template-columns:1fr 1fr;gap:6px}.tool-btn{min-height:36px;padding:0 8px;justify-content:center;font-size:12px}.gear-btn{width:100%;min-height:36px}.schedule-table{min-width:880px}.schedule-table th,.schedule-table td{padding:2px 3px}.schedule-table td{font-size:10px}.foot-actions{width:100%;display:grid;grid-template-columns:1fr 1fr}.foot-actions button{justify-content:center;padding:0 7px;font-size:11px}
+             .sales-summary{padding:8px}.sales-chart{min-height:150px}.sales-tables{gap:8px}
+              .overlay{padding:0;align-items:stretch}.dialog,.settings-dialog{width:100%!important;height:100dvh!important;max-height:100dvh!important;border-radius:0}.dialog-head{padding-top:max(14px,env(safe-area-inset-top))}.dialog-actions{padding-bottom:max(12px,env(safe-area-inset-bottom))}.apply-row{grid-template-columns:24px 1fr}.apply-row .field,.apply-row select{grid-column:2}.settings-content{padding:9px}.diagnostic-summary{grid-template-columns:1fr}.diagnostic-actions{display:grid}.diagnostic-actions button{width:100%}
            }
            .manual-schedule-table{min-width:820px}.manual-schedule-table .time-col{white-space:nowrap}.manual-schedule-table tr.editing{background:rgba(21,155,255,.09)}.manual-schedule-table tr.disabled{opacity:.72}.manual-schedule-table tr.editing td{border-top-color:rgba(21,155,255,.38)}.manual-schedule-table input,.manual-schedule-table select{width:100%;min-width:90px;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:5px 6px}.manual-schedule-table input[type=checkbox]{width:auto;min-width:0;accent-color:var(--blue)}.manual-action-cell{display:flex;gap:6px;align-items:center}.manual-schedule-table .icon-only.active{border-color:var(--blue);color:#2ea7ff;background:rgba(8,53,92,.55)}.manual-schedule-table .icon-only.remove:hover{border-color:rgba(255,77,99,.7);color:#ff9cab}.manual-schedule-table .icon-only:disabled{opacity:.35;cursor:not-allowed}.manual-row-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.manual-row-actions button{min-height:36px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 12px;cursor:pointer}.manual-row-actions button:disabled{opacity:.45;cursor:not-allowed}.manual-schedule-table tr.time-current td{background:transparent;box-shadow:none;color:#fff8ea}.manual-schedule-table tr.time-current td,.manual-schedule-table tr.time-current td *{text-shadow:0 0 0 rgba(255,166,45,0);animation:manual-time-current-text-glow 2.4s ease-in-out infinite}.manual-schedule-table tr.time-current td svg,.manual-schedule-table tr.time-current td .icon-only{animation:manual-time-current-icon-glow 2.4s ease-in-out infinite}@keyframes manual-time-current-text-glow{0%,100%{text-shadow:0 0 0 rgba(255,166,45,0);color:inherit}50%{text-shadow:0 0 4px rgba(255,244,214,.95),0 0 10px rgba(255,176,58,.95),0 0 18px rgba(255,140,0,.55);color:#fffaf0}}@keyframes manual-time-current-icon-glow{0%,100%{filter:drop-shadow(0 0 0 rgba(255,166,45,0))}50%{filter:drop-shadow(0 0 3px rgba(255,244,214,.95)) drop-shadow(0 0 8px rgba(255,166,45,.85))}}
            </style>
@@ -4842,7 +4226,7 @@ class DeyeEnergyCard extends HTMLElement {
       event.preventDefault();
       this.captureScrollPositions();
       const tab = el.dataset.openSettings;
-      this._settingsTab = tab && tab !== "1" ? tab : "defaults";
+      this._settingsTab = tab && tab !== "1" ? tab : "tariff";
       this._dialog = { type: "settings" };
       this.render();
     }));
@@ -5014,44 +4398,6 @@ class DeyeEnergyCard extends HTMLElement {
     }));
     root.querySelectorAll("[data-apply-multi]").forEach((el) => el.addEventListener("click", () => this.applyMultiEdit(slots)));
     root.querySelectorAll("[data-action='apply-defaults']").forEach((el) => el.addEventListener("click", () => this.restoreDefaults()));
-    root.querySelectorAll("[data-save-charge-profile]").forEach((el) => el.addEventListener("click", () => this.saveChargeProfile()));
-    root.querySelectorAll("[data-save-normal-profile]").forEach((el) => el.addEventListener("click", () => this.saveNormalProfile()));
-    root.querySelectorAll("[data-reload-normal-profile]").forEach((el) => el.addEventListener("click", () => {
-      this.reloadNormalProfileSlot(el.dataset.reloadNormalProfile);
-      this.renderDialogOnly();
-    }));
-    root.querySelectorAll("[data-reload-charge-profile]").forEach((el) => el.addEventListener("click", () => {
-      this.reloadChargeProfileSlot(el.dataset.reloadChargeProfile);
-      this.renderDialogOnly();
-    }));
-    root.querySelectorAll("[data-save-default-settings]").forEach((el) => el.addEventListener("click", () => this.saveDefaultSettings()));
-    root.querySelectorAll("[data-charge-profile-number]").forEach((el) => {
-      const saveDraft = () => { this._chargeProfileDraft[el.dataset.chargeProfileNumber] = el.value; };
-      el.addEventListener("input", saveDraft);
-      el.addEventListener("change", saveDraft);
-    });
-    root.querySelectorAll('[data-raw="charge-profile-grid"]').forEach((el) => {
-      el.addEventListener("change", () => { this._chargeProfileGridDraft = el.value === "on"; });
-    });
-    root.querySelectorAll("[data-normal-profile-number]").forEach((el) => {
-      const saveDraft = () => { this._normalProfileDraft[el.dataset.normalProfileNumber] = el.value; };
-      el.addEventListener("input", saveDraft);
-      el.addEventListener("change", saveDraft);
-    });
-    root.querySelectorAll('[data-raw="normal-profile-mode"]').forEach((el) => {
-      el.addEventListener("change", () => { this._normalProfileDraft.physical_work_mode = el.value; });
-    });
-    root.querySelectorAll('[data-raw="default-work-mode"]').forEach((el) => {
-      el.addEventListener("change", () => { this._defaultSettingsDraft.mode = el.value; });
-    });
-    root.querySelectorAll('[data-raw="default-physical-work-mode"]').forEach((el) => {
-      el.addEventListener("change", () => { this._defaultSettingsDraft.physical_work_mode = el.value; });
-    });
-    root.querySelectorAll("[data-default-profile-number]").forEach((el) => {
-      const saveDraft = () => { this._defaultSettingsDraft[el.dataset.defaultProfileNumber] = el.value; };
-      el.addEventListener("input", saveDraft);
-      el.addEventListener("change", saveDraft);
-    });
     root.querySelectorAll("[data-action='select-all']").forEach((el) => el.addEventListener("click", () => {
       slots.forEach(([key]) => this._selectedSlots.add(key));
       this._selectionMode = true;
@@ -5061,12 +4407,6 @@ class DeyeEnergyCard extends HTMLElement {
       this._selectedSlots.clear();
       this.renderDialogOnly();
     }));
-    root.querySelectorAll("[data-history-filter]").forEach((el) => el.addEventListener("change", () => {
-      this._historyFilters = { ...(this._historyFilters || {}), [el.dataset.historyFilter]: el.value };
-      this.renderDialogOnly();
-    }));
-    root.querySelectorAll("[data-export-history]").forEach((el) => el.addEventListener("click", () => this.exportHistory(el.dataset.exportHistory)));
-    root.querySelectorAll("[data-export-monthly]").forEach((el) => el.addEventListener("click", () => this.exportMonthlyReport()));
     root.querySelectorAll("[data-resume-manager]").forEach((el) => el.addEventListener("click", () => {
       if (window.confirm("Enable the Manager and schedule? This will not enable a grid-charge schedule.")) this.resumeManager();
     }));
@@ -6006,6 +5346,10 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
       this.innerHTML = `<ha-card><div style="padding:16px">Loading…</div></ha-card>`;
       return;
     }
+    const focused = typeof document !== "undefined" ? document.activeElement : null;
+    if (focused && focused !== document.body && typeof this.contains === "function" && this.contains(focused) && /^(INPUT|SELECT|TEXTAREA)$/.test(focused.tagName)) {
+      return;
+    }
     const subTabs = this.inverterConfigSubTabDefs();
     const active = subTabs.some((tab) => tab.key === this._inverterConfigSubTab) ? this._inverterConfigSubTab : "inverter";
     this._inverterConfigSubTab = active;
@@ -6130,9 +5474,9 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
           .ic-btn:disabled, .ic-action:disabled { opacity: .55; cursor: default; }
           .ic-btn-primary { background: color-mix(in srgb, var(--ic-accent) 22%, transparent); border-color: color-mix(in srgb, var(--ic-accent) 55%, var(--ic-line)); }
           .ic-btn-secondary { background: transparent; }
-          .ic-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
-          .ic-tab { border: 1px solid var(--ic-line); background: transparent; color: var(--ic-muted); border-radius: 999px; padding: 8px 12px; font: inherit; cursor: pointer; }
-          .ic-tab.active { color: var(--ic-text); background: color-mix(in srgb, var(--ic-accent) 18%, transparent); border-color: color-mix(in srgb, var(--ic-accent) 55%, var(--ic-line)); }
+          .ic-tabs { display: flex; flex-wrap: wrap; gap: 2px; border-bottom: 1px solid var(--ic-line); }
+          .ic-tab { border: 1px solid transparent; border-bottom: 2px solid transparent; background: transparent; color: var(--ic-muted); border-radius: 6px 6px 0 0; padding: 8px 14px; font: inherit; cursor: pointer; margin-bottom: -2px; }
+          .ic-tab.active { color: var(--ic-text); background: color-mix(in srgb, var(--ic-accent) 12%, transparent); border-color: var(--ic-line); border-bottom-color: var(--ic-accent); }
           .ic-section { border: 1px solid var(--ic-line); border-radius: 14px; background: var(--ic-surface); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
           .ic-section h4 { margin: 0; font-size: 1rem; }
           .ic-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
@@ -6208,6 +5552,9 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
   }
 
   _bind() {
+    this.querySelectorAll("input, select, textarea").forEach((el) => el.addEventListener("focusout", () => {
+      setTimeout(() => { if (this.isConnected === false) return; this._render(); }, 0);
+    }));
     this.querySelectorAll("[data-inverter-config-subtab]").forEach((el) => el.addEventListener("click", () => {
       this._inverterConfigSubTab = el.dataset.inverterConfigSubtab || "inverter";
       this._render();
@@ -6950,7 +6297,7 @@ class DeyeEnergyGraphsCard extends HTMLElement {
 
     const ranges = this._ranges().map(([k, label]) => {
       const active = !this._customRange && this._range === k;
-      return `<button class="rg" data-range="${k}" style="padding:5px 12px;border-radius:999px;border:1px solid ${active ? 'rgba(77,163,255,.7)' : 'rgba(118,166,190,.28)'};background:${active ? 'rgba(77,163,255,.18)' : 'rgba(255,255,255,.03)'};color:#eef7ff;cursor:pointer;font-size:12px;">${label}</button>`;
+      return `<button class="rg" data-range="${k}" style="padding:6px 12px;border-radius:6px 6px 0 0;border:1px solid ${active ? 'rgba(118,166,190,.28)' : 'transparent'};border-bottom:2px solid ${active ? 'rgba(77,163,255,.9)' : 'transparent'};background:${active ? 'rgba(77,163,255,.14)' : 'transparent'};color:#eef7ff;cursor:pointer;font-size:12px;margin-bottom:-2px;">${label}</button>`;
     }).join('');
     const customControls = `
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px;">
@@ -6960,7 +6307,7 @@ class DeyeEnergyGraphsCard extends HTMLElement {
       </div>`;
     const groupTabs = groups.map(g => {
       const active = g.key === this._group;
-      return `<button class="gg" data-group="${g.key}" style="padding:7px 14px;border-radius:999px;border:1px solid ${active ? 'rgba(126,226,45,.65)' : 'rgba(118,166,190,.28)'};background:${active ? 'rgba(126,226,45,.14)' : 'rgba(255,255,255,.03)'};color:#eef7ff;cursor:pointer;font-size:13px;font-weight:${active ? '600' : '500'};">${this._esc(g.title)}</button>`;
+      return `<button class="gg" data-group="${g.key}" style="padding:8px 14px;border-radius:6px 6px 0 0;border:1px solid ${active ? 'rgba(118,166,190,.28)' : 'transparent'};border-bottom:2px solid ${active ? 'rgba(126,226,45,.85)' : 'transparent'};background:${active ? 'rgba(126,226,45,.12)' : 'transparent'};color:#eef7ff;cursor:pointer;font-size:13px;font-weight:${active ? '600' : '500'};margin-bottom:-2px;">${this._esc(g.title)}</button>`;
     }).join('');
 
     const charts = (activeGroup?.charts || []).map(c => `
@@ -6980,10 +6327,10 @@ class DeyeEnergyGraphsCard extends HTMLElement {
               <div style="font-size:20px;font-weight:700;color:#eef7ff;">${this._esc(this._config.title || 'Deye Energy Graphs')}</div>
               <div style="color:#9eb8c8;font-size:12px;margin-top:4px;">History graphs for ${this._esc(activeGroup?.title || 'selected')} metrics. ${loading}</div>
             </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">${ranges}</div>
+            <div style="display:flex;gap:2px;flex-wrap:wrap;align-items:center;border-bottom:1px solid rgba(118,166,190,.22);">${ranges}</div>
           </div>
           ${customControls}
-          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;">${groupTabs}</div>
+          <div style="display:flex;gap:2px;flex-wrap:wrap;margin-top:14px;border-bottom:1px solid rgba(118,166,190,.22);">${groupTabs}</div>
           ${err}
           <section style="margin-top:14px;">
             <div style="display:grid;grid-template-columns:1fr;gap:12px;">${charts}</div>
@@ -7036,6 +6383,15 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     this._statsKey = '';
     this._statsToken = 0;
     this._clickHandler = null;
+    this._flowMotion = new Map();
+    this._flowEls = new Map();
+    this._flowRaf = null;
+    this._flowLastTs = 0;
+    this.connectedCallback();
+  }
+
+  connectedCallback() {
+    if (this._clickHandler) return;
     if (typeof this.addEventListener === 'function') {
       this._clickHandler = (e) => {
         const t = e?.target?.closest ? e.target.closest('.pf-value-click[data-entity], .pf-node-click[data-entity], .pf-consumer-click[data-entity]') : null;
@@ -7056,6 +6412,9 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     this._statsLoading = false;
     this._pfDisplaySource = null;
     this._pfDisplayCache = null;
+    if (this._flowRaf != null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this._flowRaf);
+    this._flowRaf = null;
+    this._flowEls.clear();
   }
 
   static getStubConfig() {
@@ -7103,8 +6462,57 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
   _flowTiming() {
     const cfg = Number(this._config?.flow_animation_speed ?? 6);
     const speed = Number.isFinite(cfg) ? Math.min(20, Math.max(1, cfg)) : 6;
-    const duration = Math.max(0.5, 18 / speed).toFixed(2);
-    return { duration, offset: Math.round(220 * Number(duration) / 3) };
+    const duration = Number(Math.max(0.5, 18 / speed).toFixed(2));
+    return { speed, duration };
+  }
+  _flowDuration(power) {
+    const watts = Math.abs(Number(power) || 0);
+    const factor = Math.min(3, Math.max(0.4, Math.sqrt(watts / 1000)));
+    return Number(Math.max(0.35, Math.min(8, this._flowTiming().duration / factor)).toFixed(2));
+  }
+  _flowNow() {
+    return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+  }
+  _flowTransition(state) {
+    if (!state.transitionStart || !state.prevDir || !state.dir || state.prevDir === state.dir) return null;
+    const p = Math.min(1, (this._flowNow() - state.transitionStart) / 1600);
+    if (p >= 1) {
+      state.transitionStart = 0;
+      state.prevDir = 0;
+      return null;
+    }
+    let intensity, oldArrow, newArrow, moving;
+    if (p < 0.30) {
+      const q = p / 0.30;
+      intensity = 1 - 0.9 * q;
+      oldArrow = 1 - q;
+      newArrow = 0;
+      moving = false;
+    } else if (p < 0.60) {
+      const q = (p - 0.30) / 0.30;
+      intensity = 0.1;
+      oldArrow = 1 - q;
+      newArrow = q;
+      moving = false;
+    } else if (p < 0.85) {
+      const q = (p - 0.60) / 0.25;
+      intensity = 0.1 + 0.9 * q;
+      oldArrow = 0;
+      newArrow = 1;
+      moving = false;
+    } else {
+      intensity = 1;
+      oldArrow = 0;
+      newArrow = 1;
+      moving = true;
+    }
+    return { p, intensity, oldArrow, newArrow, moving };
+  }
+  _flowGeometry(d) {
+    const points = String(d).match(/^M\s+([-\d.]+)\s+([-\d.]+)\s+L\s+([-\d.]+)\s+([-\d.]+)$/);
+    if (!points) return null;
+    const x1 = Number(points[1]), y1 = Number(points[2]), x2 = Number(points[3]), y2 = Number(points[4]);
+    return { x1, y1, x2, y2, length: Math.hypot(x2 - x1, y2 - y1) };
   }
   _fmtW(v) { if (v == null || !Number.isFinite(v)) return '—'; const abs = Math.abs(v); if (abs >= 10000) return `${(v / 1000).toFixed(1)} kW`; return `${Math.round(v)} W`; }
   _fmtKwh(v) { return v == null || !Number.isFinite(v) ? '—' : `${v.toFixed(2)} kWh`; }
@@ -7262,16 +6670,132 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     return null;
   }
 
-  _flow(id, d, color, power) {
-    const active = Math.abs(power) > 10;
-    const marker = active ? `url(#pf-arrow-${id})` : '';
-    // Direction is carried by the path itself: the caller supplies either the
-    // forward or the reversed path, so the arrowhead and the scrolling dashes
-    // always agree and move from one end of the link to the other.
+  _syncFlowState(id, power, dir, geometry) {
+    const now = this._flowNow();
+    let state = this._flowMotion.get(id);
+    if (!state) {
+      state = { dir: 0, prevDir: 0, phase: 0, transitionStart: 0, duration: 3, active: false, power: 0 };
+      this._flowMotion.set(id, state);
+    }
+    if (dir !== state.dir) {
+      const reversed = state.dir !== 0 && dir !== 0 && state.dir === -dir;
+      if (reversed && geometry && geometry.length) state.phase = (geometry.length - state.phase) % geometry.length;
+      state.prevDir = reversed ? state.dir : 0;
+      state.dir = dir;
+      state.transitionStart = reversed ? now : 0;
+    }
+    state.power = Math.abs(Number(power) || 0);
+    state.active = state.power > 10;
+    if (!state.active) {
+      state.transitionStart = 0;
+      state.prevDir = 0;
+    }
+    state.duration = this._flowDuration(state.power);
+    state.geometry = geometry;
+    state.gap = 30;
+    state.count = geometry ? Math.max(1, Math.min(10, Math.floor(geometry.length / state.gap) + 1)) : 1;
+    return state;
+  }
+  _ballPoint(state, index) {
+    const g = state.geometry;
+    if (!g || !g.length) return { x: 0, y: 0 };
+    const offset = (state.phase + index * state.gap) % g.length;
+    return {
+      x: Number((g.x1 + (g.x2 - g.x1) * offset / g.length).toFixed(2)),
+      y: Number((g.y1 + (g.y2 - g.y1) * offset / g.length).toFixed(2)),
+    };
+  }
+  _flow(id, d, color, power, dir = 0) {
+    const geometry = this._flowGeometry(d);
+    const state = this._syncFlowState(id, power, dir, geometry);
+    const active = state.active;
+    const transition = active ? this._flowTransition(state) : null;
+    const intensity = transition ? transition.intensity : 1;
+    const coreOpacity = Number((0.98 * intensity).toFixed(2));
+    const haloOpacity = Number((0.14 * intensity).toFixed(2));
+    const arrowOpacity = transition ? Number(transition.newArrow.toFixed(2)) : 0.95;
+    const oldArrowOpacity = transition ? Number(transition.oldArrow.toFixed(2)) : 0;
+    const markerAttrs = active ? `${transition ? `marker-start="url(#pf-arrow-${id}-old)" ` : ''}marker-end="url(#pf-arrow-${id})"` : '';
+    const oldMarker = transition ? `<marker id="pf-arrow-${id}-old" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M 0 0 L 10 5 L 0 10 L 2.5 5 Z" fill="${color}" opacity="${oldArrowOpacity}"/></marker>` : '';
+    let balls = '';
+    if (active && geometry) {
+      for (let i = 0; i < state.count; i += 1) {
+        const point = this._ballPoint(state, i);
+        balls += `<circle class="pf-ball-halo" cx="${point.x}" cy="${point.y}" r="7.2" fill="${color}" opacity="${haloOpacity}"/>`;
+        balls += `<circle class="pf-ball-core" cx="${point.x}" cy="${point.y}" r="4.2" fill="${color}" opacity="${coreOpacity}" filter="url(#pf-glow)"/>`;
+      }
+    }
     return `
-      <defs><marker id="pf-arrow-${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto" markerUnits="strokeWidth"><path d="M 0 0 L 10 5 L 0 10 L 2.5 5 Z" fill="${color}" opacity="0.95"/></marker></defs>
+      <defs>
+        ${oldMarker}
+        <marker id="pf-arrow-${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto" markerUnits="strokeWidth"><path d="M 0 0 L 10 5 L 0 10 L 2.5 5 Z" fill="${color}" opacity="${arrowOpacity}"/></marker>
+      </defs>
       <path class="pf-flow-line-bg" d="${d}" stroke="${color}" fill="none"/>
-      <path id="${id}" class="pf-flow-line${active ? ' pf-flow-active' : ''}" d="${d}" stroke="${active ? color : 'rgba(158,184,200,.18)'}" stroke-width="4" stroke-opacity="${active ? 0.96 : 0.18}" fill="none" ${marker ? `marker-end="${marker}"` : ''}/>`;
+      <path id="${id}" class="pf-flow-line${active ? ' pf-flow-active' : ''}" data-flow-duration="${state.duration}" data-flow-direction="${dir}" d="${d}" stroke="${active ? color : 'rgba(158,184,200,.18)'}" stroke-width="4" stroke-opacity="${active ? 0.96 : 0.18}" fill="none" ${markerAttrs}/>
+      ${balls ? `<g class="pf-balls" data-flow-balls="${id}">${balls}</g>` : ''}`;
+  }
+  _bindFlowAnimation() {
+    this._flowEls.clear();
+    if (typeof this.querySelector !== 'function' || typeof this.querySelectorAll !== 'function') return;
+    for (const [id] of this._flowMotion) {
+      const line = this.querySelector(`#${id}`) || null;
+      const arrow = this.querySelector(`#pf-arrow-${id} path`) || null;
+      const oldArrow = this.querySelector(`#pf-arrow-${id}-old path`) || null;
+      const ballsNode = this.querySelector(`[data-flow-balls="${id}"]`) || null;
+      const halos = ballsNode ? Array.from(ballsNode.querySelectorAll('.pf-ball-halo')) : [];
+      const cores = ballsNode ? Array.from(ballsNode.querySelectorAll('.pf-ball-core')) : [];
+      if (line || arrow || oldArrow || halos.length) this._flowEls.set(id, { line, arrow, oldArrow, halos, cores });
+    }
+  }
+  _startFlowAnimation() {
+    if (typeof requestAnimationFrame !== 'function' || this._flowRaf != null || this.isConnected === false) return;
+    this._flowLastTs = this._flowNow();
+    const tick = () => {
+      this._flowRaf = null;
+      const now = this._flowNow();
+      const dt = Math.min(0.1, Math.max(0, (now - this._flowLastTs) / 1000));
+      this._flowLastTs = now;
+      let keepRunning = this.isConnected !== false;
+      for (const [id, state] of this._flowMotion) {
+        const transition = this._flowTransition(state);
+        const els = this._flowEls.get(id);
+        if (!state.active && !transition) {
+          if (els && els.oldArrow) els.oldArrow.setAttribute('opacity', '0');
+          continue;
+        }
+        if (this.isConnected !== false) keepRunning = true;
+        const intensity = transition ? transition.intensity : 1;
+        const coreOpacity = Number((0.98 * intensity).toFixed(2));
+        const haloOpacity = Number((0.14 * intensity).toFixed(2));
+        if (state.active && (!transition || transition.moving) && state.geometry && state.geometry.length) {
+          state.phase = (state.phase + state.geometry.length * dt / state.duration) % state.geometry.length;
+        }
+        if (els && els.line) {
+          els.line.setAttribute('stroke-opacity', state.active ? '0.96' : '0.18');
+          els.line.setAttribute('data-flow-duration', state.duration);
+        }
+        if (els && els.arrow) els.arrow.setAttribute('opacity', transition ? transition.newArrow.toFixed(2) : '0.95');
+        if (els && els.oldArrow) els.oldArrow.setAttribute('opacity', transition ? transition.oldArrow.toFixed(2) : '0');
+        if (els) {
+          els.halos.forEach((el, i) => {
+            const point = this._ballPoint(state, i);
+            if (els.halos[i]) {
+              els.halos[i].setAttribute('opacity', haloOpacity);
+              els.halos[i].setAttribute('cx', point.x);
+              els.halos[i].setAttribute('cy', point.y);
+            }
+          });
+          els.cores.forEach((el, i) => {
+            const point = this._ballPoint(state, i);
+            el.setAttribute('opacity', coreOpacity);
+            el.setAttribute('cx', point.x);
+            el.setAttribute('cy', point.y);
+          });
+        }
+      }
+      if (keepRunning && this.isConnected !== false) this._flowRaf = requestAnimationFrame(tick);
+    };
+    this._flowRaf = requestAnimationFrame(tick);
   }
 
   _entityValue(value, entityId, style='') {
@@ -7356,8 +6880,6 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const periods = this._periods();
     const period = periods.includes(this._period) ? this._period : 'power';
     this._period = period;
-    const { duration: pfDuration, offset: pfOffset } = this._flowTiming();
-
     const pvP = this._num(e.pv); const gridP = this._num(e.grid); const battP = this._num(e.battery);
     const soc = this._num(e.battery_soc); const loadP = this._num(e.load); const invP = this._num(e.inverter);
     const pvDaily = this._num(e.daily_pv_production);
@@ -7365,7 +6887,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const battChargeDaily = this._num(e.daily_battery_charge); const battDischargeDaily = this._num(e.daily_battery_discharge);
     const loadDaily = this._num(e.daily_load_consumption);
     const battV = this._num(e.battery_voltage); const battA = this._num(e.battery_current); const battT = this._num(e.battery_temperature);
-    const gridFreq = this._num(e.grid_frequency); const invT = this._num(e.inverter_temperature); const gridV = this._num(e.grid_l1_voltage);
+    const invT = this._num(e.inverter_temperature); const gridV = this._num(e.grid_l1_voltage);
 
     const pvE = this._energyVal('pv');
     const gridImportE = this._energyVal('grid_import');
@@ -7376,7 +6898,6 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
 
     const fmtVal = (w, kwh) => isPower ? this._fmtW(w) : this._fmtKwh(kwh);
     const pvVal = isPower ? Math.max(0, pvP || 0) : Math.max(0, pvE || 0);
-    const gridRaw = isPower ? gridP : (gridImportE != null || gridExportE != null ? (Number(gridImportE||0) - Number(gridExportE||0)) : null);
     const gridImport = isPower ? Math.max(0, gridP || 0) : Math.max(0, gridImportE || 0);
     const gridExport = isPower ? Math.max(0, -(gridP || 0)) : Math.max(0, gridExportE || 0);
     const battRaw = isPower ? battP : (battChargeE != null || battDischargeE != null ? (Number(battChargeE||0) - Number(battDischargeE||0)) : null);
@@ -7400,17 +6921,49 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const displayConsumers = namedConsumers.concat(showRest ? [{...restDef, name: restDef.name || 'Rest', icon: restDef.icon || 'mdi:cloud-question', power: restPower, abs: restPower, active: restPower >= (restDef.min_w||0) && restPower > 1, entity: ''}] : []);
 
     const W = 1200, PF_MARGIN = 44;
-    const PF_BOUNDS = { left: 127, right: 1073, top: 106.5, bottom: 951.5 };
+    const HALO_PAD = 16, HALO_SW = 8, RING_R = 121, RING_SW = 9;
+    const DETAIL_ROW_H = 20;
+    const DEFAULT_DETAIL_ROWS = { pv: 1, grid: 3, home: 2, batt: 6 };
+    const display = this._powerFlowDisplay();
+    const statMap = this._statEntityMap();
+
+    const pvDetails = this._nodeDetailRows('pv', {
+      pv_energy: () => this._detailLine(isPower?'Today':this._periodLabel(period), this._fmtKwh(isPower?pvDaily:pvE),'#f6c945',statMap.pv),
+    }, ['pv_energy']);
+    const gridDetails = this._nodeDetailRows('grid', {
+      grid_import: () => this._detailLine('Import '+(isPower?'today':period), this._fmtKwh(isPower?gridBought:gridImportE),'#5bc0ff',statMap.grid_import),
+      grid_export: () => this._detailLine('Export '+(isPower?'today':period), this._fmtKwh(isPower?gridSold:gridExportE),'#7ee22d',statMap.grid_export),
+      grid_voltage: () => this._detailLine('Voltage', this._fmtNum(gridV,1,' V'),'#9eb8c8',e.grid_l1_voltage),
+    }, ['grid_import', 'grid_export', 'grid_voltage']);
+    const homeDetails = this._nodeDetailRows('home', {
+      home_energy: () => this._detailLine(isPower?'Today':this._periodLabel(period), this._fmtKwh(isPower?loadDaily:loadE),'#ff8a4c',statMap.load),
+      home_consumers: () => this._detailLine('Consumers', String(displayConsumers.length)),
+    }, ['home_energy', 'home_consumers']);
+    const battDetails = this._nodeDetailRows('battery', {
+      batt_soc: () => this._detailLine('SOC', soc!=null?`${Math.round(soc)} %`:'—','#7ee22d',e.battery_soc),
+      batt_voltage: () => this._detailLine('Voltage', this._fmtNum(battV,1,' V'),'#9eb8c8',e.battery_voltage),
+      batt_current: () => this._detailLine('Current', this._fmtNum(battA,1,' A'),'#9eb8c8',e.battery_current),
+      batt_temperature: () => this._detailLine('Temp', this._fmtNum(battT,1,' °C'),'#9eb8c8',e.battery_temperature),
+      batt_charged: () => this._detailLine('Charged '+(isPower?'today':period), this._fmtKwh(isPower?battChargeDaily:battChargeE),'#7ee22d',statMap.batt_charge),
+      batt_discharged: () => this._detailLine('Discharged '+(isPower?'today':period), this._fmtKwh(isPower?battDischargeDaily:battDischargeE),'#ff8a4c',statMap.batt_discharge),
+    }, ['batt_soc', 'batt_voltage', 'batt_current', 'batt_temperature', 'batt_charged', 'batt_discharged']);
+
+    const dynamicNodeH = (key, base, rows) => Math.max(96, base + (rows.length - DEFAULT_DETAIL_ROWS[key]) * DETAIL_ROW_H);
+    const SZ = {
+      pv:   { w:174, h:dynamicNodeH('pv',132,pvDetails) },
+      grid: { w:174, h:dynamicNodeH('grid',154,gridDetails) },
+      inv:  { w:248, h:220 },
+      home: { w:174, h:dynamicNodeH('home',165,homeDetails) },
+      batt: { w:223, h:dynamicNodeH('batt',220,battDetails) },
+    };
+    const N = { pv:[600,188.5], grid:[254.5,470], inv:[600,470], home:[945.5,470], batt:[600,825.5] };
+    const PF_BOUNDS = { left:127, right:1073, top:N.pv[1]-SZ.pv.h/2-HALO_PAD, bottom:N.batt[1]+SZ.batt.h/2+HALO_PAD };
     const PF_SCALE = (W - PF_MARGIN * 2) / (PF_BOUNDS.right - PF_BOUNDS.left);
     const PF_TX = PF_MARGIN - PF_BOUNDS.left * PF_SCALE;
     const PF_TY = PF_MARGIN - PF_BOUNDS.top * PF_SCALE;
     const H = Math.round(PF_MARGIN * 2 + (PF_BOUNDS.bottom - PF_BOUNDS.top) * PF_SCALE);
-    const N = { pv:[600,188.5], grid:[254.5,470], inv:[600,470], home:[945.5,470], batt:[600,825.5] };
     const pos = N;
-    // Per-node card sizes. Links meet the outer edge of each halo.
-    const HALO_PAD = 16, HALO_SW = 8, RING_R = 121, RING_SW = 9;
-    const SZ = { pv:{w:174,h:132}, grid:{w:174,h:154}, inv:{w:248,h:220}, home:{w:174,h:132}, batt:{w:223,h:220} };
-    // Entity surrounds share Battery's width; node cards keep their own sizes.
+    // Links meet the outer edge of each halo. Entity surrounds share Battery's width.
     const SURROUND_W = SZ.batt.w + HALO_PAD * 2;
     // Entity cards start at Battery's inset from the left edge of the surround.
     const entityNodeX = (key) => N[key][0] - SURROUND_W / 2 + HALO_PAD;
@@ -7439,14 +6992,14 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const invToBatt = straight(N.inv[0], edge.inv.b, N.batt[0], edge.batt.t);
 
     const flows = [];
-    flows.push(this._flow('pf-pv-inv', pvToInv, '#f6c945', isPower ? pvVal : (pvVal>0.01?1000:0)));
-    if (gridImport > 0) flows.push(this._flow('pf-grid-inv', gridToInv, '#5bc0ff', 1000));
-    else if (gridExport > 0) flows.push(this._flow('pf-grid-inv', invToGrid, '#5bc0ff', 1000));
-    else flows.push(this._flow('pf-grid-inv', gridToInv, '#5bc0ff', 0));
-    flows.push(this._flow('pf-inv-home', invToHome, '#ff8a4c', isPower?loadVal:(loadVal>0.01?1000:0)));
-    if (battDischarge > (isPower?10:0.01)) flows.push(this._flow('pf-batt-inv', battToInv, '#7ee22d', isPower?battDischarge:1000));
-    else if (battCharge > (isPower?10:0.01)) flows.push(this._flow('pf-batt-inv', invToBatt, '#7ee22d', isPower?battCharge:1000));
-    else flows.push(this._flow('pf-batt-inv', battToInv, '#7ee22d', 0));
+    flows.push(this._flow('pf-pv-inv', pvToInv, '#f6c945', isPower ? pvVal : (pvVal>0.01?1000:0), 1));
+    if (gridImport > 0) flows.push(this._flow('pf-grid-inv', gridToInv, '#5bc0ff', isPower ? Math.max(gridImport, 10.01) : 1000, 1));
+    else if (gridExport > 0) flows.push(this._flow('pf-grid-inv', invToGrid, '#5bc0ff', isPower ? Math.max(gridExport, 10.01) : 1000, -1));
+    else flows.push(this._flow('pf-grid-inv', gridToInv, '#5bc0ff', 0, 0));
+    flows.push(this._flow('pf-inv-home', invToHome, '#ff8a4c', isPower?loadVal:(loadVal>0.01?1000:0), 1));
+    if (battDischarge > (isPower?10:0.01)) flows.push(this._flow('pf-batt-inv', battToInv, '#7ee22d', isPower?battDischarge:1000, 1));
+    else if (battCharge > (isPower?10:0.01)) flows.push(this._flow('pf-batt-inv', invToBatt, '#7ee22d', isPower?battCharge:1000, -1));
+    else flows.push(this._flow('pf-batt-inv', battToInv, '#7ee22d', 0, 0));
 
     const gridLabel = gridImport > 0 ? 'Importing' : gridExport > 0 ? 'Exporting' : 'Idle';
     const battLabel = battDischarge > (isPower?10:0.01) ? 'Discharging' : battCharge > (isPower?10:0.01) ? 'Charging' : 'Idle';
@@ -7458,9 +7011,6 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       const active = p === period;
       return `<button class="pf-period" data-period="${this._esc(p)}" style="cursor:pointer;padding:7px 12px;border-radius:999px;border:1px solid ${active?'rgba(126,226,45,.55)':'rgba(118,166,190,.20)'};background:${active?'rgba(126,226,45,.14)':'rgba(255,255,255,.03)'};color:${active?'#d9ffb0':'#9eb8c8'};font-size:12px;font-weight:700;">${this._esc(this._periodLabel(p))}</button>`;
     }).join('');
-
-    const display = this._powerFlowDisplay();
-    const statMap = this._statEntityMap();
 
     const summaryChips = [
       ['Overall grid', [
@@ -7495,30 +7045,14 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
         </div>
       </div>`).join('');
 
-    const pvNode = this._node(pos.pv[0],pos.pv[1],this._nodeIcon('solar-pv'),'PV',fmtVal(pvVal,pvE), isPower?(pvVal>10?'Generating':'Idle'):this._periodLabel(period),'#f6c945',(isPower?pvVal>10:pvVal>0.01),e.pv,this._nodeDetailRows('pv', {
-      pv_energy: () => this._detailLine(isPower?'Today':this._periodLabel(period), this._fmtKwh(isPower?pvDaily:pvE),'#f6c945',statMap.pv),
-    }, ['pv_energy']), { nodeW: SZ.pv.w, nodeH: SZ.pv.h, nodeX: entityNodeX('pv') });
-    const gridNode = this._node(pos.grid[0],pos.grid[1],this._nodeIcon('grid'),'Grid', isPower?this._fmtW(gridP):(gridImportE!=null||gridExportE!=null?`${this._fmtKwh(gridImportE)} in`:'—'), gridLabel,'#5bc0ff',(gridImport>0||gridExport>0),e.grid,this._nodeDetailRows('grid', {
-      grid_import: () => this._detailLine('Import '+(isPower?'today':period), this._fmtKwh(isPower?gridBought:gridImportE),'#5bc0ff',statMap.grid_import),
-      grid_export: () => this._detailLine('Export '+(isPower?'today':period), this._fmtKwh(isPower?gridSold:gridExportE),'#7ee22d',statMap.grid_export),
-      grid_voltage: () => this._detailLine('Voltage', this._fmtNum(gridV,1,' V'),'#9eb8c8',e.grid_l1_voltage),
-    }, ['grid_import', 'grid_export', 'grid_voltage']), { nodeW: SZ.grid.w, nodeH: SZ.grid.h, nodeX: entityNodeX('grid') });
+    const pvNode = this._node(pos.pv[0],pos.pv[1],this._nodeIcon('solar-pv'),'PV',fmtVal(pvVal,pvE), isPower?(pvVal>10?'Generating':'Idle'):this._periodLabel(period),'#f6c945',(isPower?pvVal>10:pvVal>0.01),e.pv,pvDetails, { nodeW: SZ.pv.w, nodeH: SZ.pv.h, nodeX: entityNodeX('pv') });
+    const gridNode = this._node(pos.grid[0],pos.grid[1],this._nodeIcon('grid'),'Grid', isPower?this._fmtW(gridP):(gridImportE!=null||gridExportE!=null?`${this._fmtKwh(gridImportE)} in`:'—'), gridLabel,'#5bc0ff',(gridImport>0||gridExport>0),e.grid,gridDetails, { nodeW: SZ.grid.w, nodeH: SZ.grid.h, nodeX: entityNodeX('grid') });
     const invNode = this._node(pos.inv[0],pos.inv[1],this._nodeIcon('inverter'),'Inverter',fmtVal(invVal,invVal), invP!=null||!isPower?'Active':'Unavailable','#bc63ff',(isPower?invP!=null&&Math.abs(invP)>10:invVal!=null&&invVal>0.01),e.inverter,this._nodeDetailRows('inverter', {
       inv_temperature: () => this._detailLine('Temperature', this._fmtNum(invT,1,' °C'),'#bc63ff',e.inverter_temperature),
       inv_status: () => this._detailLine('Status', invP!=null||!isPower?'Online':'—'),
     }, ['inv_temperature', 'inv_status']), { centerIcon: true, centerDetails: true });
-    const homeNode = this._node(pos.home[0],pos.home[1],this._nodeIcon('home'),'Home',fmtVal(loadVal,loadE), isPower?(loadVal>10?'Consuming':'Idle'):this._periodLabel(period),'#ff8a4c',(isPower?loadVal>10:loadVal>0.01),e.load,this._nodeDetailRows('home', {
-      home_energy: () => this._detailLine(isPower?'Today':this._periodLabel(period), this._fmtKwh(isPower?loadDaily:loadE),'#ff8a4c',statMap.load),
-      home_consumers: () => this._detailLine('Consumers', String(displayConsumers.length)),
-    }, ['home_energy', 'home_consumers']), { nodeW: SZ.home.w, nodeH: SZ.home.h, nodeX: entityNodeX('home') });
-    const battNode = this._node(pos.batt[0],pos.batt[1],this._batteryNodeIcon(soc),'Battery',fmtVal(isPower?(battP!=null?-battP:null):battRaw, isPower?null:null), [battLabel,socText].filter(Boolean).join(' · '),'#7ee22d',(battCharge>(isPower?10:0.01)||battDischarge>(isPower?10:0.01)),e.battery,this._nodeDetailRows('battery', {
-      batt_soc: () => this._detailLine('SOC', soc!=null?`${Math.round(soc)} %`:'—','#7ee22d',e.battery_soc),
-      batt_voltage: () => this._detailLine('Voltage', this._fmtNum(battV,1,' V'),'#9eb8c8',e.battery_voltage),
-      batt_current: () => this._detailLine('Current', this._fmtNum(battA,1,' A'),'#9eb8c8',e.battery_current),
-      batt_temperature: () => this._detailLine('Temp', this._fmtNum(battT,1,' °C'),'#9eb8c8',e.battery_temperature),
-      batt_charged: () => this._detailLine('Charged '+(isPower?'today':period), this._fmtKwh(isPower?battChargeDaily:battChargeE),'#7ee22d',statMap.batt_charge),
-      batt_discharged: () => this._detailLine('Discharged '+(isPower?'today':period), this._fmtKwh(isPower?battDischargeDaily:battDischargeE),'#ff8a4c',statMap.batt_discharge),
-    }, ['batt_soc', 'batt_voltage', 'batt_current', 'batt_temperature', 'batt_charged', 'batt_discharged']), { nodeW: SZ.batt.w, nodeH: SZ.batt.h, nodeX: entityNodeX('batt') });
+    const homeNode = this._node(pos.home[0],pos.home[1],this._nodeIcon('home'),'Home',fmtVal(loadVal,loadE), isPower?(loadVal>10?'Consuming':'Idle'):this._periodLabel(period),'#ff8a4c',(isPower?loadVal>10:loadVal>0.01),e.load,homeDetails, { nodeW: SZ.home.w, nodeH: SZ.home.h, nodeX: entityNodeX('home') });
+    const battNode = this._node(pos.batt[0],pos.batt[1],this._batteryNodeIcon(soc),'Battery',fmtVal(isPower?(battP!=null?-battP:null):battRaw, isPower?null:null), [battLabel,socText].filter(Boolean).join(' · '),'#7ee22d',(battCharge>(isPower?10:0.01)||battDischarge>(isPower?10:0.01)),e.battery,battDetails, { nodeW: SZ.batt.w, nodeH: SZ.batt.h, nodeX: entityNodeX('batt') });
 
     const consumerHtml = displayConsumers.length ? `
       <div style="margin-top:14px;padding:14px;border-radius:18px;border:1px solid rgba(118,166,190,.18);background:rgba(255,255,255,.02);">
@@ -7553,12 +7087,11 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
           @keyframes pfPulse{0%,100%{opacity:.35;transform:scale(1)}50%{opacity:.05;transform:scale(1.08)}}
           .pf-flow-line{fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;filter:url(#pf-line-glow)}
           .pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34;filter:url(#pf-line-glow)}
-          .pf-flow-active{stroke-dasharray:1 22;stroke-width:7!important;animation:pfFlowDash ${pfDuration}s linear infinite}
+          .pf-flow-active{stroke-width:4!important}
+          .pf-balls{pointer-events:none}
           .pf-value-click{cursor:pointer;text-decoration:underline dotted rgba(158,184,200,.45);text-underline-offset:3px}
           .pf-value-click:hover{text-decoration-color:currentColor}
-          @keyframes pfFlowDash{to{stroke-dashoffset:-${pfOffset}}}
-          @keyframes pfFlowDashMobile{to{stroke-dashoffset:-${Math.round(pfOffset * 18 / 22)}}}
-          @media (max-width:640px){.pf-flow-active{stroke-dasharray:1 18;animation-name:pfFlowDashMobile}
+          @media (max-width:640px){
             .pf-periods{position:static!important;margin:0 0 10px!important;max-width:none!important;justify-content:flex-start!important}
             .pf-diagram{aspect-ratio:auto!important}
             .pf-diagram svg{height:auto!important;aspect-ratio:${W} / ${H}}}
@@ -7604,6 +7137,8 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
           ${warn}
         </div>
       </ha-card>`;
+    this._bindFlowAnimation();
+    this._startFlowAnimation();
   }
 }
 
@@ -7616,7 +7151,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.0.88",
+  description: "Deye Energy 0.8.1.0",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

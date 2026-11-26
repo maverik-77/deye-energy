@@ -159,7 +159,8 @@ def test_t6_history_uses_the_same_canonical_current_day_value(monkeypatch):
     assert row["forecast_progress_percent"] == metrics["realization_today_pct"]
     card_source = CARD.read_text(encoding="utf-8")
     assert "solcastAccuracyAttrs.realization_today_pct" in card_source
-    assert "item.realization_today_pct ?? item.forecast_progress_percent" in card_source
+    assert "item.realization_today_pct ?? item.forecast_progress_percent" not in card_source
+    assert "renderHistoryTab" not in card_source
 
 
 

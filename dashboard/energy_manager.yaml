@@ -49,10 +49,7 @@ views:
             grid_columns: 1
             mobile_breakpoint: 768
 
-          # Flow sizing options
-          energy_tile_width: 300
-          energy_tile_gap: 28
-          inverter_scale: 1
+          # Flow animation
           flow_animation_speed: 6
 
           # Relative chart heights

@@ -114,7 +114,6 @@ function makeCard(options = {}) {
     ["Zero Export To Load", "Zero Export To Load"],
     ["Zero Export To CT", "Zero Export To CT"],
   ];
-  card.defaultPhysicalWorkMode = () => "Zero Export To Load";
   card.querySelector = () => null;
   card.querySelectorAll = () => [];
   card.render = () => {};
@@ -135,11 +134,7 @@ function test_manual_backend_state_populates_draft() {
   assertEqual(rows.length, 2, "backend rows must populate the draft");
   assertEqual(rows[0].to, "12:00", "first row end must be kept");
   assertEqual(rows[1].mode, "Selling", "row mode must be kept");
-  assertEqual(
-    JSON.stringify(rows),
-    card._manualScheduleOriginal,
-    "fresh draft must not be dirty",
-  );
+  assertEqual(card._manualScheduleOriginal, undefined, "removed dirty-tracking field must not reappear");
 }
 
 function test_manual_empty_backend_starts_with_no_rows() {

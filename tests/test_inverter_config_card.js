@@ -467,6 +467,22 @@ function testPowerFlowDetailReorderAndRemove() {
   assert.deepEqual(card.powerFlowDraft().node_detail_layout.pv, [{ builtin: "pv_energy" }]);
 }
 
+function testRenderKeepsFocusedTextField() {
+  const card = makeCard();
+  withPowerFlowState(card);
+  card._inverterConfigSubTab = "power_flow";
+  const before = renderHtml(card);
+  const focused = { tagName: "INPUT" };
+  const previousActive = global.document.activeElement;
+  global.document.activeElement = focused;
+  card.contains = (node) => node === focused;
+  card._render();
+  assert.equal(card.innerHTML, before, "render must not rebuild while a field is focused");
+  global.document.activeElement = previousActive;
+  card.powerFlowDraft().entities.pv = "sensor.changed";
+  assert.notEqual(renderHtml(card), before, "render should resume after focus leaves");
+}
+
 module.exports = async function run() {
   testStandaloneCardRegistered();
   testSchedulePageHasNoWorkScheduleTable();
@@ -482,7 +498,8 @@ module.exports = async function run() {
   testPowerFlowTabRendersGroupsAndControls();
   await testPowerFlowSaveSendsDraftPayload();
   testPowerFlowDetailReorderAndRemove();
-  console.log("inverter config card: 14 checks passed");
+  testRenderKeepsFocusedTextField();
+  console.log("inverter config card: 15 checks passed");
 };
 
 if (require.main === module) module.exports().catch((err) => {

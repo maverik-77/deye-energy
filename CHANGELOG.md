@@ -4,6 +4,61 @@ All notable changes to Deye Energy. Versions before 0.8.0 are the history of the
 upstream Deye Energy Manager project and are not repeated here. Attribution is
 recorded at the bottom of README.md.
 
+## [0.8.1.0] - 2026-11-26
+
+### Removed
+
+- **Settings overlay contents**: removed the unreachable Charge profile, Normal
+  profile, Default settings, Mode settings and history UI from both card copies,
+  including their card-side save, draft and history methods. The gear now opens
+  **Settings and diagnostics** directly on **Tariff and distribution**; the only
+  other tab is **System and diagnostics**.
+- **Inert layout options**: removed `energy_tile_width`, `energy_tile_gap` and
+  `inverter_scale` from the sample dashboard and the card. Stale CSS selectors
+  left behind by earlier UI removals were deleted too.
+- **Obsolete tests**: removed the charge-profile and normal-profile card tests
+  that exercised the deleted UI, and renamed the remaining stale test cases.
+
+### Changed
+
+- **Power flow animation**: active links now carry discrete SVG glow balls
+  instead of the dotted stream. Travel time is `18 / flow_animation_speed`
+  seconds, divided by `clamp(sqrt(abs(power) / 1000), 0.4, 3)` and clamped to
+  0.35–8 seconds, so stronger links move faster. A reversal dims the current
+  glow and old arrow, cross-fades the arrowhead to the other end, re-brightens
+  the glow and then resumes movement; idle links show no arrow or balls.
+- **Power flow lifecycle**: the delegated click listener is now installed
+  idempotently, removed on disconnect and restored on reconnect. Animation
+  frames stop while the card is detached, and the one-shot timers used by the
+  main card's toggle and inverter focus-out handling are tracked and cleared.
+- **Lovelace resource follow-up**: when Home Assistant is already running, the
+  deferred `homeassistant_started` listener is cancelled instead of waiting for
+  an event that will not fire, and a `not_ready` result stays retryable rather
+  than being cached as complete.
+- **Diagnostics**: the reported integration version is now `0.8.1.0`, and the
+  manual-schedule guard says "schedule slots" instead of "work schedule".
+- **Docs and sample dashboard**: README and INSTALL describe the current cards,
+  flat tabs, gear overlay and power-flow behaviour; the sample dashboard keeps
+  only the live `flow_animation_speed` option.
+- **Tests**: added lifecycle, deferral and version-consistency coverage and
+  updated the remaining assertions to match the removed UI.
+- **Maintenance**: bumped the integration version and card resource revision to
+  `0.8.1.0` in the manifest, frontend, manager, both byte-identical card copies
+  and the documentation.
+
+### Fixed
+
+- **Audit findings**: removed dead fields and locals, cleared ignored generated
+  caches from the working tree and aligned stale documentation with the code.
+
+### Preserved
+
+- The backend services `deye_energy.save_charge_profile`,
+  `deye_energy.save_normal_profile` and `deye_energy.save_default_settings`, and
+  the external-facing `deye_energy.apply_settings` and
+  `deye_energy.get_power_flow_display` behaviour, are unchanged.
+- `sensor.ai_state` remains available with a neutral payload.
+
 ## [0.8.0.88] - 2026-11-26
 
 ### Removed
@@ -15,7 +70,6 @@ recorded at the bottom of README.md.
 
 ### Changed
 
-- **Audit/lifecycle/cache**: fixed audit, lifecycle and resource-cache issues.
 - **Tests**: updated card and backend tests for the removed Energy status layout
   and current helper names.
 - **Maintenance**: bumped the integration version and card resource revision to

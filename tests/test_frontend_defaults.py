@@ -196,9 +196,6 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
             "sections:",
             "dashboard_width:",
             "mobile:",
-            "energy_tile_width:",
-            "energy_tile_gap:",
-            "inverter_scale:",
             "flow_animation_speed:",
             "prices_ratio:",
             "buy_prices_ratio:",
@@ -256,9 +253,10 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         source = self.sources[0]
         number_state = extract_method(source, "numberState(entityId, fallback = \"0\")")
         self.assertIn('value === "unknown" || value === "unavailable" ? fallback : value', number_state)
-        render = extract_method(source, "renderV073()")
-        self.assertIn('const touSoc = this.numberState(entities.touSoc, "requires confirmation");', render)
-        self.assertIn('<td data-label="SOC" class="metric soc">${enabled ? `◇ ${touSoc}%` : "-"}</td>', render)
+        segments = extract_method(source, "  scheduleSegments(slots) {")
+        self.assertIn('this.numberState(entities.touSoc, "")', segments)
+        self.assertNotIn('this.numberState(entities.touSoc, 0)', segments)
+        self.assertNotIn('◇ ${touSoc}%', source)
         dialog = extract_method(source, "renderDialog(slots, touStarts)")
         self.assertIn('this.slotDraftInput("tou_soc", "%")', dialog)
         self.assertNotIn("this.numberInput(entities.touSoc", dialog)
@@ -280,176 +278,25 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertNotIn('>Grid charging<', tou)
         self.assertNotIn("<th>Function</th>", dialog)
 
-    def test_charge_profile_save_uses_one_backend_service_only(self):
-        method = extract_method(self.sources[0], "async saveChargeProfile()")
-        self.assertEqual(method.count("this.callService("), 1)
-        self.assertIn(
-            'this.callService("deye_energy", "save_charge_profile", values)',
-            method,
-        )
-        for forbidden in (
-            "number.set_value",
-            "switch.turn_on",
-            "switch.turn_off",
-            "select.select_option",
-            "setNumber(",
-            "turnSwitch(",
-            "setSelect(",
-        ):
-            self.assertNotIn(forbidden, method)
-        # The save must not block when helper entities are missing; it uses a
-        # pending state that is confirmed by manager_status.
-        self.assertNotIn("Brak encji profilu", method)
-        self.assertIn("this._chargeProfilePending", method)
-        self.assertIn("this._chargeProfileDraft = {}", method)
-        self.assertIn("this._chargeProfileGridDraft = null", method)
-
-    def test_charge_current_input_keeps_draft_and_physical_range_without_zero_fallback(self):
-        method = extract_method(self.sources[0], "chargeProfileInput(name, entityId, unit = \"\")")
-        for required in (
-            "this._chargeProfileDraft",
-            '["unknown", "unavailable", ""]',
-            "entity?.attributes?.min",
-            "entity?.attributes?.max",
-            "entity?.attributes?.step",
-            'type="number"',
-            'data-charge-profile-number=',
-            "fallback.min",
-            "fallback.max",
-        ):
-            self.assertIn(required, method)
-        for forbidden in ("?? 0", "|| 0", 'value="0"'):
-            self.assertNotIn(forbidden, method)
-
-    def test_charge_profile_draft_survives_input_change_and_rerender(self):
-        source = self.sources[0]
-        self.assertIn(
-            "this._chargeProfileDraft[el.dataset.chargeProfileNumber] = el.value",
-            source,
-        )
-        self.assertIn('el.addEventListener("input", saveDraft)', source)
-        self.assertIn('el.addEventListener("change", saveDraft)', source)
-        self.assertIn(
-            'this.chargeProfileInput("target_soc", this.entity("number", "charge_profile_target_soc"), "%")',
-            source,
-        )
-        self.assertNotIn("charge_profile_charge_current", source)
-
-    def test_charge_profile_form_falls_back_to_persisted_manager_status(self):
-        source = self.sources[0]
-        self.assertIn('this.entity("sensor", "manager_status")', source)
-        self.assertIn("attributes?.charge_profile", source)
-        self.assertIn("this.chargeProfileStoredValues()[profileKey]", source)
-        self.assertIn(
-            "this.chargeProfileStoredValues().grid_charge_enabled",
-            source,
-        )
-
-    def test_normal_profile_form_uses_dedicated_backend_service(self):
-        method = extract_method(self.sources[0], "async saveNormalProfile()")
-        self.assertEqual(method.count("this.callService("), 1)
-        self.assertIn(
-            'this.callService("deye_energy", "save_normal_profile", values)',
-            method,
-        )
-        self.assertIn("physical_work_mode", method)
-        self.assertIn("tou_soc", method)
-
-    def test_normal_profile_form_falls_back_to_persisted_manager_status(self):
-        source = self.sources[0]
-        self.assertIn('this.entity("sensor", "manager_status")', source)
-        self.assertIn("attributes?.normal_profile", source)
-        self.assertIn("this.normalProfileStoredValues()[profileKey]", source)
-
-    def test_normal_profile_input_never_disabled_and_uses_fallback_ranges(self):
-        method = extract_method(self.sources[0], "normalProfileInput(name, entityId, unit = \"\")")
-        self.assertNotIn("disabled", method)
-        self.assertIn("fallback", method)
-        self.assertIn("min", method)
-        self.assertIn("max", method)
-        self.assertIn("step", method)
-
-    def test_normal_profile_mode_prefers_draft_then_stored_then_entity(self):
-        method = extract_method(self.sources[0], "normalProfileMode()")
-        self.assertIn("this._normalProfileDraft.physical_work_mode", method)
-        self.assertIn("this.normalProfileStoredValues().physical_work_mode", method)
-        self.assertIn('this.entity("select", "normal_profile_mode")', method)
-
-    def test_normal_profile_mode_select_has_placeholder(self):
+    def test_settings_menu_has_only_tariff_and_system_tabs(self):
         source = self.sources[0]
         dialog = extract_method(source, "renderDialog(slots, touStarts)")
-        self.assertIn("this.normalProfileMode()", dialog)
-        self.assertIn('["", "-- select --"]', dialog)
-        self.assertIn("...this.normalProfileModeOptions()", dialog)
-
-    def test_normal_profile_save_rejects_empty_values(self):
-        method = extract_method(self.sources[0], "async saveNormalProfile()")
-        self.assertIn('raw === ""', method)
-        self.assertIn('this.failSave("normal_profile"', method)
-
-    def test_normal_profile_reload_button_calls_apply_schedule_patch_with_force_flag(self):
-        source = self.sources[0]
-        method = extract_method(source, "async reloadNormalProfileSlot(slotKey)")
-        self.assertIn('"apply_schedule_patch"', method)
-        self.assertIn('force_copy_normal_profile: true', method)
-        self.assertIn('"Normal Operation"', method)
-        self.assertIn(
-            'this.reloadNormalProfileSlot(el.dataset.reloadNormalProfile)',
-            source,
-        )
-
-    def test_charge_profile_reload_button_calls_apply_schedule_patch_with_force_flag(self):
-        source = self.sources[0]
-        method = extract_method(source, "async reloadChargeProfileSlot(slotKey)")
-        self.assertIn('"apply_schedule_patch"', method)
-        self.assertIn('force_copy_charge_profile: true', method)
-        self.assertIn('"Charging"', method)
-        self.assertNotIn('mode: "Charge"', method)
-        self.assertIn('data-reload-charge-profile', source)
-        self.assertIn(
-            'this.reloadChargeProfileSlot(el.dataset.reloadChargeProfile)',
-            source,
-        )
-
-    def test_charge_profile_save_uses_pending_until_manager_status_confirms(self):
-        method = extract_method(self.sources[0], "async saveChargeProfile()")
-        self.assertIn("this._chargeProfilePending = { ...values }", method)
-        self.assertIn("checkChargeProfilePending()", self.sources[0])
-        self.assertIn("_chargeProfilePendingMatches", self.sources[0])
-
-    def test_normal_profile_numeric_prefers_stored_over_entity(self):
-        method = extract_method(self.sources[0], "normalProfileNumericValue(entitySuffix, profileKey)")
-        # Draft -> pending -> stored -> entity, per the specification.
-        self.assertIn("this.normalProfileStoredValues()[profileKey]", method)
-        stored_index = method.index("this.normalProfileStoredValues()[profileKey]")
-        entity_index = method.index('this.entity("number", entitySuffix)')
-        self.assertLess(stored_index, entity_index)
-
-    def test_charge_profile_numeric_prefers_stored_over_entity(self):
-        method = extract_method(self.sources[0], "chargeProfileNumericValue(entitySuffix, profileKey)")
-        self.assertIn("this.chargeProfileStoredValues()[profileKey]", method)
-        stored_index = method.index("this.chargeProfileStoredValues()[profileKey]")
-        entity_index = method.index('this.entity("number", entitySuffix)')
-        self.assertLess(stored_index, entity_index)
-
-    def test_settings_menu_and_forms_follow_the_approved_layout(self):
-        source = self.sources[0]
-        dialog = extract_method(source, "renderDialog(slots, touStarts)")
-        self.assertIn('tabButton("defaults", "Mode settings', dialog)
-        self.assertNotIn('tabButton("charge"', dialog)
-        defaults_heading = dialog.index("Default settings for the inverter")
-        charge_heading = dialog.index("Charging settings", defaults_heading + 1)
-        self.assertGreater(charge_heading, defaults_heading)
-        self.assertIn("data-save-default-settings", dialog)
-        self.assertIn("data-save-charge-profile", dialog)
-
-    def test_default_and_charge_forms_have_independent_backend_calls(self):
-        default_method = extract_method(self.sources[0], "async saveDefaultSettings()")
-        charge_method = extract_method(self.sources[0], "async saveChargeProfile()")
-        self.assertIn('"save_default_settings"', default_method)
-        self.assertNotIn('"save_charge_profile"', default_method)
-        self.assertIn('"save_charge_profile"', charge_method)
-        self.assertNotIn('"save_default_settings"', charge_method)
+        self.assertIn('tabButton("tariff", "Tariff and distribution")', dialog)
+        self.assertIn('tabButton("system", "System and diagnostics")', dialog)
+        for removed in (
+            'tabButton("defaults"',
+            'tabButton("history"',
+            "Mode settings",
+            "History and data",
+            "data-save-default-settings",
+            "data-save-charge-profile",
+            "data-save-normal-profile",
+            "renderHistoryTab()",
+        ):
+            self.assertNotIn(removed, dialog)
+        self.assertIn('const tab = this._settingsTab || "tariff";', dialog)
+        self.assertIn('this._settingsTab = "tariff";', source)
+        self.assertIn('tab && tab !== "1" ? tab : "tariff"', source)
 
     def test_charge_slot_is_editable_and_profile_is_only_a_template(self):
         source = self.sources[0]
@@ -518,11 +365,13 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
             rollback = extract_method(source, "async rollbackTouTable()")
             self.assertIn('"Restored all rows from the inverter."', rollback)
 
-    def test_card_uses_backend_normal_profile_labels(self):
+    def test_card_uses_backend_normal_profile_labels_in_slot_editor(self):
         source = self.sources[0]
         dialog = extract_method(source, "renderDialog(slots, touStarts)")
-        self.assertIn('this.rawSelect("normal-profile-mode",', dialog)
-        self.assertIn("...this.normalProfileModeOptions()", dialog)
+        self.assertIn(
+            'this.slotDraftSelect("physical_work_mode", this.normalProfileModeOptions())',
+            dialog,
+        )
         self.assertNotIn('["Zero Export To Load", "Export disabled — Load measurement"]', dialog)
         self.assertNotIn('["Zero Export To CT", "Export disabled — CT measurement"]', dialog)
 
@@ -547,16 +396,15 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertIn('slotDraftSelect("mode", this.slotModeOptions())', dialog)
         self.assertNotIn("Disabled", dialog)
 
-    def test_schedule_table_always_displays_stored_grid_permission_and_current(self):
+    def test_schedule_table_displays_stored_grid_permission(self):
         source = self.sources[0]
-        self.assertIn('const gridChargeLabel = isChargeMode ? (gridCharge ? "yes" : "no") : "not applicable"', source)
-        self.assertIn('class="pill ${gridChargeClass}"', source)
-        self.assertNotIn("this.pill(null, gridChargeLabel)", source)
-        self.assertNotIn("${gridChargeCurrent} A", source)
-        self.assertNotIn(
-            'isCharge ? (slot.chargeEnabled === "on" ? "yes" : "no") : "not applicable"',
-            source,
-        )
+        row = extract_method(source, "renderManualScheduleRow(row, index, rows, modeOptions)")
+        self.assertIn('data-label="Grid charging" class="metric grid"', row)
+        self.assertIn('selectControl("charge_enabled", [["false", "No"], ["true", "Yes"]])', row)
+        self.assertIn('row.charge_enabled ? "yes" : "no"', row)
+        self.assertNotIn("gridChargeLabel", source)
+        self.assertNotIn("gridChargeCurrent", source)
+        self.assertNotIn("not applicable", source)
 
     def test_settings_dialog_scrolls_on_desktop_tablet_and_phone(self):
         source = self.sources[0]
@@ -594,9 +442,6 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
             "prices_ratio: 0.80",
             "buy_prices_ratio: 0.80",
             "solcast_ratio: 1.40",
-            "energy_tile_width: 300",
-            "energy_tile_gap: 28",
-            "inverter_scale: 1",
             "flow_animation_speed: 6",
             'mobile: {',
             'mode: "auto"',

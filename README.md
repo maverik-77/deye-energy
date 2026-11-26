@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.0.88-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.1.0-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -10,8 +10,8 @@
 Deye Energy is a custom Home Assistant integration for planning and safely
 controlling a Deye hybrid inverter. It combines a 24-hour schedule, the physical
 Deye Time Of Use (TOU) slots, energy prices, Solcast forecasts and statistics in
-a single Lovelace card. It is adapted to a Deye inverter exposed through MQTT
-(the Sunsynk / Deye add-on profile) and to a UK-style tariff.
+a family of Lovelace cards. It is adapted to a Deye inverter exposed through
+MQTT (the Sunsynk / Deye add-on profile) and to a UK-style tariff.
 
 ## Key features
 
@@ -44,10 +44,12 @@ a single Lovelace card. It is adapted to a Deye inverter exposed through MQTT
   status. Full-height layout with sticky header, scrollable content, 20-entry
   pagination, time filters and 30-day retention; addable to any dashboard.
 - **Graphs** card (`custom:deye-energy-graphs-card`) with 1h/6h/24h/7d/30d/1y
-  history graphs and a custom From/To date+time range, in sub-tabs for Power
-  flow, Inverter, Grid, Load, and Battery. Charts render full-width within the
-  selected tab; default entity mappings are overridable in card config; addable
-  to any dashboard.
+  history graphs and a custom From/To date+time range, in flat metric-group tabs
+  with a bottom accent for Power flow, Inverter, Grid, Load, and Battery. The
+  time-range buttons stay flat and **Apply range** commits a custom range.
+  Charts render full-width within the selected group; default entity mappings
+  are overridable in card config (including `entities.ac_output_voltage`);
+  addable to any dashboard.
 - **Power flow** card (`custom:deye-energy-power-flow-card`) showing live
   animated power flow between PV, Grid, Inverter, Battery, and Home, with straight
   glowing links, directional arrows, glowing node widgets, richer per-node
@@ -64,12 +66,18 @@ a single Lovelace card. It is adapted to a Deye inverter exposed through MQTT
   and income today), with both values in each widget sharing the same font
   format. The period selector is pinned to the top-right corner inside the
   diagram outline; the header shows only the title and live timestamp. Energy
-  period values keep the kWh unit on the same row. Flow links use a fixed
-  1px-dot/22px-gap stream that scrolls along the whole link at a speed
-  set by the `flow_animation_speed` config option (default 6), with a tighter
-  `1 18` variant on small screens. The direction is taken from the flow itself
-  so the arrowhead and dot movement always agree, and both disappear at idle
-  while the link remains. The PV and Home cards are sized 70% × 60% and the Grid
+  period values keep the kWh unit on the same row. Active links carry discrete
+  SVG glow balls: the base duration is `18 / flow_animation_speed` seconds
+  (`flow_animation_speed` defaults to 6, clamped to 1–20), divided by
+  `clamp(sqrt(abs(power) / 1000), 0.4, 3)` and clamped to 0.35–8 seconds, so a
+  higher link power means faster travel. Direction comes from the signed flow,
+  so the arrowhead and ball travel always agree. A reversal runs a 1.6 s staged
+  transition: dim the current glow and old arrow, cross-fade the arrowhead to
+  the other end, re-brighten the glow, then resume movement. At idle the arrow
+  and balls disappear while the plain link remains. The delegated click listener
+  is installed on connect, removed on disconnect and restored on reconnect;
+  animation frames stop while the card is detached.
+  The PV and Home cards are sized 70% × 60% and the Grid
   card 70% × 70% of the original node card; the Battery card is 90% of the
   original width (223 × 220). PV, Grid and Home outer surrounds are now the
   same 255 px width as Battery, while their inner cards stay 174 px wide and
@@ -108,9 +116,9 @@ MQTT discovery names (`select.deye_load_limit`, `number.deye_max_sell_power`,
 `sensor.deye_battery_soc`, `sensor.deye_grid_power` and so on). TOU time
 options are exposed as `H:MM` (for example `0:00`, `23:30`) and the integration
 accepts that format. Physical battery current number entities can be mapped in
-the configuration wizard; the **Inverter configuration** settings tab validates
-each value against the live entity's own range. Anything that does not match can
-be re-mapped in the configuration wizard.
+the configuration wizard; the standalone **Inverter configuration** card
+validates each value against the live entity's own range. Anything that does not
+match can be re-mapped in the configuration wizard.
 
 The wizard performs a **read-only capability test** before anything is saved
 and lists which features (selling, charging and full TOU) are available for the
@@ -135,13 +143,13 @@ is a standalone card, separate from the main Energy Manager settings. The
 `deye-energy` dashboard includes it on its own **Inverter config** tab; you can
 also add it manually to any dashboard.
 
-The card groups inverter configuration in sub-tabs/groups: Inverter, Grid,
-Battery settings in inverter, Battery settings, Mode & control, Specification,
-Voltages, Power, Battery, and Energy. Live values are loaded from
-the inverter every time the page is accessed (and can be refreshed manually). A
-field whose entity is missing, unavailable or has no usable metadata is shown as
-**Not mapped** or **Unavailable** and stays read-only; the backend refuses to
-write it.
+The card groups inverter configuration in flat tabs with a bottom accent:
+Inverter, Grid, Battery settings in inverter, Battery settings, Mode & control,
+Specification, Voltages, Power, Battery, Energy, and Power flow. Live values are
+loaded from the inverter every time the page is accessed and can be refreshed
+manually. A field whose entity is missing, unavailable or has no usable metadata
+is shown as **Not mapped** or **Unavailable** and stays read-only; the backend
+refuses to write it.
 
 Each editable group has its own **Apply** button. All values in the group are
 prevalidated against the live entity's own `min`, `max`, `step` or `options`
@@ -183,7 +191,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.88
+    - url: /deye_energy/deye-energy-card.js?v=0.8.1.0
       type: module
 ```
 
@@ -207,12 +215,15 @@ schedule. When activated:
 - disabling manual mode returns the scheduler to the stored schedule slots.
 
 The manual table columns are **From**, **To**, **Mode**, **Sell power**,
-**Grid charging**, **Stop selling at SOC**, **Active** and **Action**. Rows are
-read-only by default; use the edit icon to change a row, and **Save** to leave
-edit mode. Enable/Disable saves internally without clearing edit mode, new rows
-start read-only, and removing a row asks for confirmation. The row covering the
-current time has a slow blue pulse so the active window is easy to spot. The
+**Grid charging**, **Battery charge**, **Stop selling at SOC**, **Active** and
+**Action**. Rows are read-only by default; use the edit icon to change a row, and
+**Save** to leave edit mode. Enable/Disable saves internally without clearing
+edit mode; new rows start read-only, and removing a row asks for confirmation.
+The row covering the current time has a slow blue pulse so the active window is
+easy to spot. The
 manual header also contains the shared Settings gear and Deye control button.
+The gear opens **Settings and diagnostics** on its **Tariff and distribution**
+tab by default; the only other tab is **System and diagnostics**.
 
 Manual rows no longer carry a separate `tou_soc` value. **Stop selling at SOC**
 is the `minimum_sell_soc` field and is unchanged; any legacy `tou_soc` value is
@@ -236,6 +247,24 @@ and last To are fixed at `00:00`, and each To follows the next row's From.
   Rollback is disabled while a save is pending.
 - The tab keeps the operation status and schedule-synchronisation summary, so
   confirmed writes and reverse-sync changes remain visible.
+
+## Settings and diagnostics
+
+The shared Settings gear opens a single overlay with two tabs:
+
+- **Tariff and distribution** (the default tab) for the tariff provider, plan
+  and manual rates;
+- **System and diagnostics** for connection status, required entities, mapping,
+  physical TOU read-back, capabilities, last apply attempt and backup/restore
+  controls.
+
+There is no separate Mode settings, profile-form or history overlay. Slot values
+are edited in place through the hour editor, and inverter current limits are
+edited in the standalone **Inverter configuration** card. The backend services
+`deye_energy.save_charge_profile`, `deye_energy.save_normal_profile` and
+`deye_energy.save_default_settings` remain available to automations and API
+calls; the external-facing `deye_energy.apply_settings` and
+`deye_energy.get_power_flow_display` behaviour is unchanged.
 
 ## Octopus Energy, tariff and currency
 
@@ -261,7 +290,7 @@ The **Octopus Energy** price adapter understands two kinds of entity:
 The bundled `tariff_catalog.json` lists Octopus Energy products. Intelligent
 Octopus Go carries your account's rates; Agile needs the rates events, and
 Flexible needs your own unit rate (enter it in manual mode). Change the plan or
-enter your own values in the card under **Settings → Tariff and distribution**.
+enter your own values under the gear's **Tariff and distribution** tab.
 
 ### Known limitations of the tariff engine
 

@@ -285,6 +285,32 @@ def test_collection_not_ready_defers_once_then_reconciles_after_started():
     asyncio.run(scenario())
 
 
+def test_already_running_retries_without_stale_deferred_listener():
+    async def scenario():
+        hass = FakeHass()
+
+        first = await frontend.async_setup_frontend(hass)
+        assert first["resource_result"]["status"] == "deferred_until_started"
+        assert len(hass.bus.listeners) == 1
+
+        hass.state = "running"
+        retry = await frontend.async_setup_frontend(hass)
+        state = hass.data[frontend.FRONTEND_DATA_KEY]
+
+        assert retry["resource_result"]["status"] == "not_ready"
+        assert hass.bus.listeners[0][2] is False
+        assert state["resource_deferred"] is False
+        assert state["resource_complete"] is False
+
+        collection = FakeCollection()
+        hass.data["lovelace"] = SimpleNamespace(resources=collection)
+        final = await frontend.async_setup_frontend(hass)
+        assert final["resource_result"]["status"] == "created"
+        assert len(collection.items) == 1
+
+    asyncio.run(scenario())
+
+
 def test_unrelated_resources_remain_semantically_unchanged():
     async def scenario():
         unrelated = [

@@ -3,9 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import importlib.util
-import json
 from pathlib import Path
-import subprocess
 import sys
 import types
 import unittest
@@ -555,18 +553,21 @@ class ServiceJsonValidationTests(unittest.TestCase):
         self.assertIn("sync_inverter_datetime:", text)
         self.assertNotIn("max: 320", text)
 
-    def test_default_settings_card_to_schema_to_runtime(self):
-        """Use the real card payload, service schema and runtime validation."""
+    def test_default_settings_payload_to_schema_to_runtime(self):
+        """Use the canonical payloads, service schema and runtime validation."""
         manager.ha_now = lambda: datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc)
-        completed = subprocess.run(
-            ["node", str(ROOT / "tests" / "test_default_settings_card.js"), "--emit-payloads"],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
-        payloads = json.loads(completed.stdout)
+        payloads = [
+            {
+                "mode": "Normal Operation",
+                "physical_work_mode": "Zero Export To Load",
+                "sell_power": 3000,
+            },
+            {
+                "mode": "Selling",
+                "physical_work_mode": "Zero Export To CT",
+                "sell_power": 3000,
+            },
+        ]
         self.assertEqual([item["mode"] for item in payloads], ["Normal Operation", "Selling"])
         for payload in payloads:
             for key in payload:
