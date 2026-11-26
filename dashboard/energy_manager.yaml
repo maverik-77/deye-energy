@@ -14,18 +14,17 @@ views:
           #   auto   - full dashboard on desktop, auto-adjusted on mobile
           #   full   - dashboard always stretches to the card width
           #   section - show a single selected section (see `section` below)
-          #   single - show only the energy-flow panel
+          #   single - show one selected section
           #   grid   - dashboard as a 2-column grid of sections
           #   fit    - full dashboard scaled to fit the card width
           layout_mode: auto
 
           # Section to show when layout_mode: section
-          # allowed: status_energy, prices, solcast, schedule, sales_stats, ai, settings
-          # section: status_energy
+          # allowed: prices, solcast, schedule, sales_stats, settings
+          # section: schedule
 
           # Section visibility toggles (sections not listed are hidden)
           sections:
-            status_energy: true
             prices: true
             solcast: true
             schedule: true
@@ -34,7 +33,7 @@ views:
           # Dashboard width used in auto/fit/section modes (px)
           dashboard_width: 1280
 
-          # Inverter phase count for the Energy status phase rows:
+          # Inverter phase count for the phase rows:
           #   1 - single phase (default): one L1 row, using the grid_power /
           #       load_power total when the L1 sensor is 0 or unset
           #   3 - three phase: separate L1, L2 and L3 rows
@@ -50,7 +49,7 @@ views:
             grid_columns: 1
             mobile_breakpoint: 768
 
-          # Energy-flow panel sizing
+          # Flow sizing options
           energy_tile_width: 300
           energy_tile_gap: 28
           inverter_scale: 1

@@ -44,7 +44,7 @@ integration registers the bundled card resource by itself; nothing to add.
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.81
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.88
       type: module
 ```
 
@@ -55,25 +55,26 @@ type: custom:deye-energy-card
 ```
 
 A sample dashboard is in `dashboard/energy_manager.yaml` (card revision
-`v=0.8.0.81`). After an upgrade, hard-refresh the browser (or clear the app
+`v=0.8.0.88`). After an upgrade, hard-refresh the browser (or clear the app
 cache) so that the new card revision is loaded.
 
 ## 5. First-run checklist
 
 1. Open the card and check that **Deye control** is **off** until you have
    reviewed the schedule.
-2. Check the mapped physical TOU ranges in **Settings → Deye mapping**.
+2. Check the mapped physical TOU ranges in the Deye Energy integration
+   configuration under **Settings → Devices & services**.
 3. Check that the tariff under **Tariff and distribution** is **Octopus Energy →
    Intelligent Octopus Go** (or enter your own rates).
-4. Switch **Deye control** on and watch the first slot change confirm in the
-   status panel.
+4. Switch **Deye control** on and watch the first slot change in the schedule
+   panel.
 
 ## 6. Upgrade
 
 1. Back up Home Assistant.
 2. Update through HACS (or replace the folder) and restart.
 3. Hard-refresh the browser. The resource revision is updated automatically in
-   UI/storage mode; in YAML mode change `v=` to `0.8.0.81`.
+   UI/storage mode; in YAML mode change `v=` to `0.8.0.88`.
 
 ## 7. Uninstall
 

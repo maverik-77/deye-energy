@@ -81,8 +81,11 @@ class DirectCurrentLimitTests(unittest.IsolatedAsyncioTestCase):
         source = (PACKAGE / "__init__.py").read_text(encoding="utf-8")
         self.assertIn('"get_inverter_configuration"', source)
         self.assertIn('"apply_inverter_configuration_group"', source)
-        self.assertIn("return runtime.read_inverter_configuration()", source)
-        self.assertIn("return await runtime.async_apply_inverter_configuration_group(", source)
+        self.assertIn("return _active_runtime().read_inverter_configuration()", source)
+        self.assertIn(
+            "return await _active_runtime().async_apply_inverter_configuration_group(",
+            source,
+        )
 
     async def test_read_uses_live_number_range_for_direct_current_fields(self):
         runtime = make_runtime()

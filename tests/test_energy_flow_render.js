@@ -74,6 +74,8 @@ global.HTMLElement = class {
 
   addEventListener() {}
   removeEventListener() {}
+  setText() {}
+  setClass() {}
 };
 global.customElements = { define() {} };
 
@@ -95,6 +97,7 @@ function makeHass(managerStatus = "present", scheduleSource = null) {
     "sensor.deye_energy_battery_power": makeState("1050"),
     "sensor.deye_energy_battery_soc": makeState("67"),
     "sensor.deye_energy_active_slot": makeState("2130_2200"),
+    "sensor.deye_energy_decision_reason": makeState("Plan testowy"),
   };
 
   if (managerStatus === "present") {
@@ -104,8 +107,6 @@ function makeHass(managerStatus = "present", scheduleSource = null) {
         enabled: true,
         status: "Active",
       },
-      planned_manager_action: "Plan testowy",
-      executed_manager_action: "Executed test",
     };
     if (scheduleSource !== null) {
       attributes.schedule_source = scheduleSource;
@@ -119,6 +120,7 @@ function makeHass(managerStatus = "present", scheduleSource = null) {
   }
 
   return {
+    config: { time_zone: "Europe/London" },
     states,
     services: {},
     locale: { language: "pl" },
@@ -133,12 +135,34 @@ function makeCard(managerStatus = "present", scheduleSource = null) {
   return card;
 }
 
-function test_energy_flow_panel_renders_without_reference_error() {
-  const card = makeCard();
-  const html = card.energyFlowPanel();
-  assert.match(html, /class="energy-flow-panel"/);
-  assert.match(html, /Plan testowy/);
-  assert.match(html, /Executed test/);
+function readDynamic(card) {
+  const text = {};
+  card.setText = (selector, value) => {
+    text[selector] = String(value);
+  };
+  card.setHtml = () => {};
+  card.setClass = () => {};
+  card.querySelectorAll = () => [];
+  card._isRendered = true;
+  card.updateDynamicValues();
+  return text;
+}
+
+function test_dynamic_status_values_render_without_reference_error() {
+  const text = readDynamic(makeCard());
+  assert.strictEqual(text["[data-live='decision-reason']"], "Plan testowy");
+  assert.strictEqual(text["[data-live='manager-schedule-source']"], "Schedule slots");
+  assert.strictEqual(text["[data-live='active-slot']"], "21:30-22:00");
+  assert.strictEqual(text["[data-live='manager-mode']"], "Aktywny");
+  for (const removed of [
+    /energyFlowPanel\(\)/,
+    /planned_manager_action/,
+    /executed_manager_action/,
+    /Planned decision/,
+    /Executed decision/,
+  ]) {
+    assert.doesNotMatch(source, removed);
+  }
 }
 
 function test_card_full_render_with_manager_status_control_contract() {
@@ -146,9 +170,8 @@ function test_card_full_render_with_manager_status_control_contract() {
   card.setConfig({});
   card.hass = makeHass();
   assert.match(card.innerHTML, /class="dem-v073"/);
-  assert.match(card.innerHTML, /class="energy-flow-panel"/);
-  assert.match(card.innerHTML, /Plan testowy/);
-  assert.match(card.innerHTML, /Executed test/);
+  assert.match(card.innerHTML, /class="dialog-host"/);
+  assert.doesNotMatch(card.innerHTML, /class="energy-flow-panel"/);
   assert.match(card.innerHTML, /Deye control/);
   assert.match(card.innerHTML, /Active/);
   assert.strictEqual(
@@ -161,53 +184,60 @@ function test_card_render_survives_missing_manager_status_entity() {
   const card = new global.DeyeEnergyCard();
   card.setConfig({});
   card.hass = makeHass("missing");
-  assert.match(card.innerHTML, /class="energy-flow-panel"/);
+  assert.match(card.innerHTML, /class="dem-v073"/);
+  const text = readDynamic(card);
+  assert.strictEqual(text["[data-live='manager-mode']"], "No data");
+  assert.strictEqual(text["[data-live='manager-schedule-source']"], "Schedule slots");
 }
 
 function test_card_render_survives_unavailable_manager_status_entity() {
   const card = new global.DeyeEnergyCard();
   card.setConfig({});
   card.hass = makeHass("unavailable");
-  assert.match(card.innerHTML, /class="energy-flow-panel"/);
+  assert.match(card.innerHTML, /class="dem-v073"/);
+  const text = readDynamic(card);
+  assert.strictEqual(text["[data-live='manager-mode']"], "unavailable");
 }
 
-function test_energy_flow_panel_shows_manual_schedule_source_captions() {
-  const html = makeCard("present", "manual").energyFlowPanel();
-  assert.match(html, /data-live="executed-schedule-source">Manual schedule</);
-  assert.match(html, /data-live="manager-schedule-source">Manual schedule</);
+function test_dynamic_schedule_source_captions_are_live() {
+  const manual = readDynamic(makeCard("present", "manual"));
+  assert.strictEqual(
+    manual["[data-live='executed-schedule-source']"],
+    "Manual schedule",
+  );
+  assert.strictEqual(
+    manual["[data-live='manager-schedule-source']"],
+    "Manual schedule",
+  );
+
+  const slots = readDynamic(makeCard("present", "work"));
+  assert.strictEqual(
+    slots["[data-live='executed-schedule-source']"],
+    "Schedule slots",
+  );
+  assert.strictEqual(
+    slots["[data-live='manager-schedule-source']"],
+    "Schedule slots",
+  );
+
+  const missing = readDynamic(makeCard());
+  assert.strictEqual(
+    missing["[data-live='executed-schedule-source']"],
+    "Schedule slots",
+  );
+  assert.strictEqual(
+    missing["[data-live='manager-schedule-source']"],
+    "Schedule slots",
+  );
 }
 
-function test_energy_flow_panel_shows_stored_schedule_slots_source_captions() {
-  const html = makeCard("present", "work").energyFlowPanel();
-  assert.match(html, /data-live="executed-schedule-source">Schedule slots</);
-  assert.match(html, /data-live="manager-schedule-source">Schedule slots</);
-}
-
-function test_energy_flow_panel_defaults_missing_schedule_source_to_stored_slots() {
-  const html = makeCard().energyFlowPanel();
-  assert.match(html, /data-live="executed-schedule-source">Schedule slots</);
-  assert.match(html, /data-live="manager-schedule-source">Schedule slots</);
-}
-
-function test_energy_flow_panel_sold_today_uses_pound_icon() {
+function test_removed_energy_status_tile_markers_are_absent() {
+  assert.doesNotMatch(source, /class="energy-flow-panel"/);
+  assert.doesNotMatch(source, /flow-sold-icon|flow-sold-copy|flow-sold-value/);
   const card = makeCard();
-  const html = card.energyFlowPanel();
-  const iconStart = html.indexOf('<div class="flow-sold-icon"');
-  assert.ok(iconStart >= 0);
-  const iconEnd = html.indexOf("</div>", iconStart);
-  const icon = html.slice(iconStart, iconEnd);
-  assert.notStrictEqual(card.iconSvg("pound"), card.iconSvg("money"));
-  assert.ok(icon.includes(card.iconSvg("pound")));
-  assert.ok(!icon.includes(card.iconSvg("money")));
-  assert.ok(card.iconSvg("pound").includes('stroke="none">£</text>'));
-}
-
-function test_energy_flow_panel_sold_today_value_stays_on_one_line() {
-  const html = makeCard().energyFlowPanel();
-  assert.ok(html.includes(".flow-sold-copy>span:first-child{display:block"));
-  assert.ok(!html.includes(".flow-sold-copy span{display:block"));
-  assert.ok(html.includes(".flow-sold-value span{display:inline}"));
-  assert.match(html, /\.flow-sold-tile\{[^}]*min-width:300px/);
+  card.hass = makeHass();
+  assert.doesNotMatch(card.innerHTML, /class="energy-flow-panel"/);
+  assert.doesNotMatch(card.innerHTML, /flow-sold-icon/);
 }
 
 function setManualRows(card, rows) {
@@ -250,22 +280,27 @@ function test_active_slot_time_label_falls_back_without_manual_rows() {
   );
 }
 
-function test_energy_flow_panel_slot_uses_manual_row_range() {
+function test_dynamic_active_slot_uses_manual_row_range() {
   const card = makeCard("present", "manual");
   setManualRows(card, [
     { from: "00:00", to: "12:00" },
     { from: "12:00", to: "00:00" },
   ]);
-  const html = card.energyFlowPanel();
-  assert.match(html, /data-live="active-slot">(00:00-12:00|12:00-00:00)</);
-  assert.doesNotMatch(html, /data-live="active-slot">21:30-22:00/);
+  const label = readDynamic(card)["[data-live='active-slot']"];
+  assert.ok(
+    label === "00:00-12:00" || label === "12:00-00:00",
+    `manual active-slot label must come from a manual row, got ${label}`,
+  );
+  assert.notStrictEqual(label, "21:30-22:00");
 }
 
-function test_energy_flow_panel_slot_uses_work_slot_when_work_active() {
+function test_dynamic_active_slot_uses_work_slot_when_work_active() {
   const card = makeCard("present", "work");
   setManualRows(card, [{ from: "00:00", to: "00:00" }]);
-  const html = card.energyFlowPanel();
-  assert.match(html, /data-live="active-slot">21:30-22:00</);
+  assert.strictEqual(
+    readDynamic(card)["[data-live='active-slot']"],
+    "21:30-22:00",
+  );
 }
 
 function test_energy_status_power_switches_to_kw_at_10000_watts() {
@@ -278,19 +313,16 @@ function test_energy_status_power_switches_to_kw_at_10000_watts() {
   assert.strictEqual(card.formatEnergyStatusPower(null), "—");
 }
 
-test_energy_flow_panel_renders_without_reference_error();
+test_dynamic_status_values_render_without_reference_error();
 test_card_full_render_with_manager_status_control_contract();
 test_card_render_survives_missing_manager_status_entity();
 test_card_render_survives_unavailable_manager_status_entity();
-test_energy_flow_panel_shows_manual_schedule_source_captions();
-test_energy_flow_panel_shows_stored_schedule_slots_source_captions();
-test_energy_flow_panel_defaults_missing_schedule_source_to_stored_slots();
-test_energy_flow_panel_sold_today_uses_pound_icon();
-test_energy_flow_panel_sold_today_value_stays_on_one_line();
+test_dynamic_schedule_source_captions_are_live();
+test_removed_energy_status_tile_markers_are_absent();
 test_active_slot_time_label_uses_manual_row_when_manual_active();
 test_active_slot_time_label_uses_work_slot_when_work_active();
 test_active_slot_time_label_falls_back_without_manual_rows();
-test_energy_flow_panel_slot_uses_manual_row_range();
-test_energy_flow_panel_slot_uses_work_slot_when_work_active();
+test_dynamic_active_slot_uses_manual_row_range();
+test_dynamic_active_slot_uses_work_slot_when_work_active();
 test_energy_status_power_switches_to_kw_at_10000_watts();
 console.log("energy flow render tests passed");

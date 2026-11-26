@@ -385,6 +385,8 @@ function testPowerFlowTabRendersGroupsAndControls() {
   assert.match(html, /data-pf-move-detail="pv:0:down"/);
   assert.match(html, /data-pf-remove-detail="pv:0"/);
   assert.match(html, /class="pf-entity-input"/);
+  assert.ok(CARD.includes(`.ic-field input, .ic-select, .pf-group .pf-entity-input, .pf-edit input[type="text"] { background:`));
+  assert.ok(CARD.includes(`.pf-group .pf-entity-input, .pf-edit .pf-detail-entity-input, .pf-edit input[data-pf-summary$=":entity"] { min-width: 480px; width: 480px;`));
   assert.doesNotMatch(html, /Top chips — main row/);
   assert.doesNotMatch(html, /data-pf-add-chip="main"/);
   assert.doesNotMatch(html, /data-pf-chip="main:/);

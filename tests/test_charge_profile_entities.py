@@ -39,7 +39,7 @@ class ChargeProfileEntityContractTests(unittest.TestCase):
         for required in (
             'vol.Required("target_soc")',
             'vol.Required("grid_charge_enabled")',
-            "await runtime.async_save_charge_profile(dict(call.data))",
+            "await _active_runtime().async_save_charge_profile(dict(call.data))",
         ):
             self.assertIn(required, INIT_SOURCE)
         for forbidden in (

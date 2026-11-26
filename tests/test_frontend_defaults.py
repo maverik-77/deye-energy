@@ -116,10 +116,11 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertIn("data-default-action", self.sources[0])
         self.assertIn("button.disabled = this._defaultsApplying", self.sources[0])
 
-    def test_stop_manager_reuses_the_same_backend_path(self):
-        method = extract_method(self.sources[0], "async stopManager()")
+    def test_restore_defaults_reuses_the_same_backend_path(self):
+        method = extract_method(self.sources[0], "async restoreDefaults()")
         self.assertIn("return this.applyDefaultValues()", method)
         self.assertNotIn("callService", method)
+        self.assertIn('data-default-label="Stop Manager and apply defaults"', self.sources[0])
 
 
     def test_resume_manager_uses_dedicated_backend_service(self):
@@ -149,273 +150,9 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         ):
             self.assertNotIn(marker, source)
 
-    def test_energy_flow_panel_keeps_desktop_layout_without_media_queries(self):
-        method = extract_method(self.sources[0], "energyFlowPanel()")
-        self.assertNotIn("@media", method)
-        self.assertNotIn("flow-svg{display:none", method)
-        self.assertIn(".flow-tile-pv{grid-column:1;grid-row:1", method)
-        self.assertIn(".flow-tile-grid{grid-column:1;grid-row:1", method)
-        self.assertIn(".flow-tile-battery{grid-column:3;grid-row:1", method)
-        self.assertIn(".flow-tile-home{grid-column:3;grid-row:1", method)
-        self.assertIn(".flow-inverter{grid-column:2;grid-row:1", method)
-        self.assertIn(".flow-wrapper{", self.sources[0])
-        self.assertIn(".flow-scaler{", self.sources[0])
-        self.assertIn("scaleFlowPanel()", self.sources[0])
-        self.assertIn(".dialog-host{", self.sources[0])
-
-    def test_dashboard_has_common_scaling_logic(self):
-        method = extract_method(self.sources[0], "scaleFlowPanel() {")
-        self.assertIn('const isMobile = !!this.querySelector(".mobile-status-panel");', method)
-        self.assertIn('this.querySelector(isMobile ? ".ms-flow-wrapper" : ".flow-wrapper")', method)
-        self.assertIn('this.querySelector(isMobile ? ".ms-flow-scaler" : ".flow-scaler")', method)
-        self.assertIn(
-            "const baseWidth = parseFloat(scaler.dataset.baseWidth) || (isMobile ? 422 : 1328)",
-            method,
-        )
-        self.assertIn(
-            "const baseHeight = parseFloat(scaler.dataset.baseHeight) || (isMobile ? 320 : 768)",
-            method,
-        )
-        self.assertIn("Math.min(1, Math.max(available / baseWidth, 0.2))", method)
-        self.assertIn("scaler.style.transform", method)
-        self.assertIn("wrapper.style.height", method)
-
-    def test_flow_resize_observer_is_local_to_the_flow_wrapper(self):
-        connected = extract_method(self.sources[0], "connectedCallback()")
-        disconnected = extract_method(self.sources[0], "disconnectedCallback()")
-        scale = extract_method(self.sources[0], "scaleFlowPanel() {")
-        self.assertIn('typeof ResizeObserver !== "undefined"', connected)
-        self.assertIn("this._flowResizeObserver = new ResizeObserver", connected)
-        self.assertIn("this.scaleFlowPanel();", connected)
-        self.assertIn("this._flowResizeObserver.observe(wrapper)", scale)
-        self.assertIn("this._flowObservedWrapper !== wrapper", scale)
-        self.assertIn("this._flowResizeObserver?.disconnect()", disconnected)
-        self.assertNotIn("updateFlowLines()", connected)
-
-    def test_update_flow_lines_uses_dynamic_geometry(self):
-        method = extract_method(self.sources[0], "updateFlowLines() {")
-        self.assertIn('const pvEnabled = this.pvGenerationEnabled();', method)
-        self.assertIn('updateSvg(this.querySelector(".flow-svg"), this.querySelector(".flow-scaler"), "flow");', method)
-        self.assertIn('updateSvg(this.querySelector(".ms-flow-svg"), this.querySelector(".ms-flow-scaler"), "mf");', method)
-        self.assertIn('parseFloat(scaler.dataset.tileWidth) || 300', method)
-        self.assertIn('parseFloat(scaler.dataset.tileGap) || 0', method)
-        self.assertIn('parseFloat(scaler.dataset.inverterColumnWidth) || 640', method)
-        self.assertIn('parseFloat(scaler.dataset.inverterVisualWidth) || 190', method)
-        self.assertIn('parseFloat(scaler.dataset.boardHeight) || 600', method)
-        self.assertIn('this.flowGeometry({ tileWidth, tileGap, inverterColumnWidth, inverterVisualWidth, boardHeight, pvEnabled })', method)
-        self.assertIn('svg.setAttribute("viewBox", `0 0 ${geometry.boardWidth} ${geometry.boardHeight}`)', method)
-        self.assertIn('path[data-flow-line-bg="${key}"]', method)
-        self.assertIn('background.setAttribute("d", d)', method)
-        self.assertIn('path.setAttribute("d", d)', method)
-        self.assertIn('path.setAttribute("marker-end", `url(#${markerPrefix}-arrow-${key})`)', method)
-        self.assertIn('setPath("pv", pvEnabled ? geometry.paths.pvToInverter : "", "#fbbf24", active.pv);', method)
-
-    def test_flow_geometry_uses_tile_edges_and_four_inverter_ports(self):
-        method = extract_between(self.sources[0], "flowGeometry({", "\n  energyFlowPanel()")
-        for required in (
-            "boardHeight = 600,",
-            "pvEnabled = true,",
-            "const hasPv = pvEnabled !== false;",
-            "const tileTopY = Math.round(boardHeight * (145 / 600))",
-            "const tileBottomY = boardHeight - tileTopY",
-            "const gridTileY = tileBottomY;",
-            "pvTile: hasPv ? { x: tileWidth, y: tileTopY } : null,",
-            "gridTile: { x: tileWidth, y: gridTileY }",
-            "batteryTile: { x: boardWidth - tileWidth, y: tileTopY }",
-            "homeTile: { x: boardWidth - tileWidth, y: tileBottomY }",
-            "pvPort: hasPv ? { x: inverterCenterX - inverterVisualWidth / 2, y: inverterCenterY - inverterPortOffsetY } : null,",
-            "y: inverterCenterY + inverterPortOffsetY,",
-            "batteryPort: { x: inverterCenterX + inverterVisualWidth / 2, y: inverterCenterY - inverterPortOffsetY }",
-            "homePort: { x: inverterCenterX + inverterVisualWidth / 2, y: inverterCenterY + inverterPortOffsetY }",
-            'pvToInverter: hasPv ? curve(points.pvTile, points.pvPort) : ""',
-            "gridToInverter: curve(points.gridTile, points.gridPort)",
-            "inverterToGrid: curve(points.gridPort, points.gridTile)",
-        ):
-            self.assertIn(required, method)
-        self.assertIn("inverterCenterY - inverterPortOffsetY", method)
-        self.assertIn("inverterCenterY + inverterPortOffsetY", method)
-        self.assertNotIn("getBoundingClientRect", method)
-        self.assertNotIn("clientWidth", method)
-        self.assertNotIn("transform", method)
-
-    def test_flow_bezier_controls_are_proportional_and_symmetric(self):
-        method = extract_between(self.sources[0], "flowGeometry({", "\n  energyFlowPanel()")
-        self.assertIn("const controlOffset = (end.x - start.x) * 0.45;", method)
-        self.assertNotIn("+ 120", method)
-        self.assertNotIn("- 120", method)
-        self.assertNotIn("- 25", method)
-        self.assertNotIn("+ 25", method)
-
-        for tile_width, tile_gap, inverter_scale in (
-            (120, 0, 0.5),
-            (180, 28, 0.75),
-            (230, 28, 1.0),
-            (260, 20, 1.1),
-            (360, 100, 2.0),
-        ):
-            column_width = round(640 * inverter_scale)
-            visual_width = round(190 * inverter_scale)
-            board_width = tile_width * 2 + column_width + tile_gap * 2
-            inverter_center = tile_width + tile_gap + column_width / 2
-            points = {
-                "pv_tile": tile_width,
-                "battery_tile": board_width - tile_width,
-                "pv_port": inverter_center - visual_width / 2,
-                "battery_port": inverter_center + visual_width / 2,
-            }
-            self.assertEqual(points["pv_tile"] + points["battery_tile"], board_width)
-            self.assertEqual(points["pv_port"] + points["battery_port"], board_width)
-            self.assertLess(points["pv_tile"], points["pv_port"])
-            self.assertLess(points["battery_port"], points["battery_tile"])
-
-    def test_flow_viewbox_follows_board_width_and_dashboard_scaling_is_independent(self):
-        panel = extract_method(self.sources[0], "energyFlowPanel()")
-        scale = extract_method(self.sources[0], "scaleFlowPanel() {")
-        self.assertIn('viewBox="0 0 ${boardWidth} ${geometry.boardHeight}"', panel)
-        self.assertIn("data-inverter-column-width", panel)
-        self.assertIn("data-inverter-visual-width", panel)
-        self.assertIn("data-base-height", panel)
-        self.assertIn("width:${inverterVisualWidth}px", panel)
-        self.assertNotIn('viewBox="0 0 1100 420"', panel)
-        self.assertNotIn("dashboard_width", extract_between(self.sources[0], "flowGeometry({", "\n  energyFlowPanel()"))
-        for dashboard_width in (320, 768, 1300, 1400, 1600, 2400):
-            base_width = 1328
-            expected_scale = min(1, max(dashboard_width / base_width, 0.2))
-            self.assertGreaterEqual(expected_scale, 0.2)
-            self.assertLessEqual(expected_scale, 1)
-        self.assertIn("Math.min(1, Math.max(available / baseWidth, 0.2))", scale)
-
-    def test_energy_flow_panel_matches_reference_2(self):
-        method = extract_method(self.sources[0], "energyFlowPanel()")
-        # Compact directional arrows plus neon moving dots
-        self.assertIn("marker-end", method)
-        self.assertIn('markerWidth="3.4"', method)
-        self.assertIn("flow-arrow-pv", method)
-        self.assertIn("flow-arrow-grid", method)
-        self.assertIn("flow-arrow-battery", method)
-        self.assertIn("flow-arrow-home", method)
-        self.assertIn("@keyframes flowDash", method)
-        self.assertIn("stroke-dasharray:1 22", method)
-        self.assertIn("flowGlow23", method)
-        # Energy panel uses configurable layout
-        self.assertIn("const layout = this.effectiveLayout();", method)
-        self.assertIn("const tileWidth = layout.energy_tile_width;", method)
-        self.assertIn("const inverterColumnWidth = Math.round(640 * inverterScale);", method)
-        self.assertIn("const inverterVisualWidth = Math.round(190 * inverterScale);", method)
-        self.assertIn("const geometry = this.flowGeometry(", method)
-        self.assertIn("animation:flowDash ${flowDuration}s linear infinite", method)
-        self.assertIn("grid-template-columns:${tileWidth}px ${inverterColumnWidth}px ${tileWidth}px", method)
-        self.assertIn("width:${tileWidth}px;height:290px", method)
-        # Power values stay in the tiles; no duplicated floating labels over the paths.
-        self.assertNotIn("flow-line-value", method)
-        self.assertNotIn("flow-value-pv", method)
-        self.assertNotIn("flow-value-bat", method)
-        self.assertNotIn("flow-value-grid", method)
-        self.assertNotIn("flow-value-home", method)
-        self.assertNotIn('data-live="pv-line-value"', method)
-        self.assertNotIn('data-live="battery-line-value"', method)
-        self.assertNotIn('data-live="grid-line-value"', method)
-        self.assertNotIn('data-live="load-line-value"', method)
-        # No duplicated total row in PV tile
-        self.assertNotIn("Total:", method)
-        # Sold-today tile under inverter, single line kWh / GBP, no legend
-        self.assertIn("Sold today", method)
-        self.assertIn("flow-sold-tile", method)
-        self.assertIn('data-live="sold-today-line"', method)
-        self.assertNotIn("flow-legend", method)
-        self.assertIn("Deye inverter", method)
-        self.assertIn('viewBox="0 0 190 250"', method)
-        # Centered layout with tiles in correct corners
-        self.assertIn(".flow-tile-pv{grid-column:1;grid-row:1", method)
-        self.assertIn(".flow-tile-grid{grid-column:1;grid-row:1", method)
-        self.assertIn(".flow-tile-battery{grid-column:3;grid-row:1", method)
-        self.assertIn(".flow-tile-home{grid-column:3;grid-row:1", method)
-        self.assertIn(".flow-inverter{grid-column:2;grid-row:1", method)
-        # New SVG icons
-        self.assertIn('this.iconSvg("pv2")', method)
-        self.assertIn('this.iconSvg("grid2")', method)
-        self.assertIn("this.batteryLevelSvg(batterySoc)", method)
-        self.assertIn('this.iconSvg("home2")', method)
-        # Bottom bar separators and 4 sections
-        self.assertIn(".flow-status-tile{", method)
-        self.assertIn("border-right", method)
-        self.assertIn("grid-template-columns:repeat(4,1fr)", method)
-        # Mode colors aligned with schedule
-        self.assertIn("mode-selling", method)
-        self.assertIn("mode-normal", method)
-        self.assertIn("mode-charge", method)
-        self.assertIn("mode-disabled", method)
-        self.assertIn('data-live="manager-deye-mode"', method)
-        # External container is centered and capped
-        self.assertIn(".dem-v073{", self.sources[0])
-        self.assertIn("max-width:1280px", self.sources[0])
-        self.assertIn("margin:0 auto", self.sources[0])
-
-    def test_pv_and_home_daily_energy_follow_the_detail_rows(self):
-        method = extract_method(self.sources[0], "energyFlowPanel()")
-        self.assertIn("flow-daily-summary flow-daily-pv", method)
-        self.assertIn("Produced today:", method)
-        self.assertIn("flow-daily-summary flow-daily-home", method)
-        self.assertIn("Consumption today:", method)
-        self.assertGreater(method.index('data-live="pv-daily"'), method.index('data-live="pv2-amps"'))
-        self.assertGreater(method.index('data-live="load-daily"'), method.index('data-live="load-${phaseKey(label)}-power"'))
-        self.assertIn(".flow-daily-summary{display:flex", method)
-
-    def test_status_v23_contains_richer_svg_icons_and_inverter(self):
-        source = self.sources[0]
-        icons = extract_method(source, "iconSvg(type)")
-        panel = extract_method(source, "energyFlowPanel()")
-        for icon_name in ("pv2", "grid2", "battery2", "home2"):
-            self.assertIn(f"{icon_name}: '<svg viewBox=\"0 0 64 64\">", icons)
-        for required in (
-            'aria-label="Deye inverter"',
-            'viewBox="0 0 190 250"',
-            "invBody23",
-            "invScreen23",
-            "flow-inverter-name",
-            "flow-sold-tile",
-            ".flow-tile-icon svg{width:${tileIconSize}px",
-            ".flow-status-icon svg{width:${statusIconSize - 5}px",
-        ):
-            self.assertIn(required, panel)
-
-    def test_sold_today_icon_uses_pound_instead_of_money(self):
-        source = self.sources[0]
-        icons = extract_method(source, "iconSvg(type)")
-        panel = extract_method(source, "energyFlowPanel()")
-        self.assertIn('pound: \'<svg viewBox="0 0 24 24">', icons)
-        self.assertIn(
-            '<text x="12" y="17" text-anchor="middle" font-family="Arial, sans-serif" '
-            'font-size="15" font-weight="700" fill="currentColor" stroke="none">£</text>',
-            icons,
-        )
-        self.assertIn(
-            'flow-sold-icon" style="color:#7ee22d">${this.iconSvg("pound")}',
-            panel,
-        )
-        self.assertNotIn('this.iconSvg("money")', panel)
-
-    def test_sold_today_value_stays_on_one_line(self):
-        panel = extract_method(self.sources[0], "energyFlowPanel()")
-        self.assertIn(".flow-sold-copy>span:first-child{display:block", panel)
-        self.assertNotIn(".flow-sold-copy span{display:block", panel)
-        self.assertIn(".flow-sold-value span{display:inline}", panel)
-        self.assertIn("min-width:300px", panel)
-
-    def test_status_v23_is_frontend_only_and_preserves_local_scaling(self):
-        source = self.sources[0]
-        panel = extract_method(source, "energyFlowPanel()")
-        scale = extract_method(source, "scaleFlowPanel() {")
-        self.assertNotIn("callService(", panel)
-        self.assertNotIn("renderDialogOnly", panel)
-        self.assertIn('data-base-height="${panelHeight}"', panel)
-        self.assertIn("const compactStatus = boardWidth < 900", panel)
-        self.assertIn("const tilePadding = tileWidth < 150", panel)
-        self.assertIn("wrapper.style.overflow = \"hidden\"", scale)
-
     def test_deye_mode_shows_raw_system_work_mode(self):
         source = self.sources[0]
-        method = extract_method(source, "energyFlowPanel()")
+        update = extract_method(source, "updateDynamicValues() {")
         entity_lookup = extract_method(source, "deyeWorkModeEntity()")
         state_lookup = extract_method(source, "deyeWorkModeState() {")
         # Must read the physical Deye select (or its configured mapping), not the manager selector.
@@ -426,56 +163,11 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertIn('"unknown"', state_lookup)
         self.assertIn('"enabled"', state_lookup)
         self.assertIn('"disabled"', state_lookup)
-        self.assertIn('data-live="deye-mode"', method)
-        self.assertIn("this.deyeWorkModeState()", method)
-        self.assertNotIn('this.entity("select", "work_mode_select")', method)
-        self.assertNotIn('${this.slotModeLabel(currentMode)}', method)
-        update = extract_method(source, "updateDynamicValues() {")
+        self.assertIn("const currentModeValue = this.deyeWorkModeState()", update)
         self.assertIn("data-live='deye-mode'", update)
-        self.assertIn("currentModeValue", update)
-        self.assertIn("this.deyeWorkModeState()", update)
+        self.assertIn('currentModeValue || "—"', update)
         self.assertNotIn("slotModeLabel(currentModeValue)", update)
-        self.assertIn('currentMode || "—"', method)
-
-    def test_energy_flow_panel_updates_all_detailed_fields(self):
-        source = self.sources[0]
-        self.assertIn("data-live='pv1-power'", source)
-        self.assertIn("data-live='pv1-volts'", source)
-        self.assertIn("data-live='pv1-amps'", source)
-        self.assertIn("data-live='pv2-power'", source)
-        self.assertIn("data-live='pv2-volts'", source)
-        self.assertIn("data-live='pv2-amps'", source)
-        self.assertIn("data-live='grid-l1-power'", source)
-        self.assertIn("data-live='grid-l1-volt'", source)
-        self.assertIn("data-live='grid-l2-power'", source)
-        self.assertIn("data-live='grid-l2-volt'", source)
-        self.assertIn("data-live='grid-l3-power'", source)
-        self.assertIn("data-live='grid-l3-volt'", source)
-        self.assertIn("data-live='grid-bought'", source)
-        self.assertIn("data-live='grid-sold'", source)
-        self.assertIn("data-live='grid-frequency'", source)
-        self.assertIn("data-live='battery-voltage'", source)
-        self.assertIn("data-live='battery-current'", source)
-        self.assertIn("data-live='battery-temp'", source)
-        self.assertIn("data-live='battery-charge-daily'", source)
-        self.assertIn("data-live='battery-discharge-daily'", source)
-        self.assertIn("data-live='load-l1-power'", source)
-        self.assertIn("data-live='load-l2-power'", source)
-        self.assertIn("data-live='load-l3-power'", source)
-        self.assertIn("data-live='inverter-temp'", source)
-        self.assertIn("data-live='pv-daily'", source)
-        self.assertIn("data-live='load-daily'", source)
-        update = extract_method(source, "updateDynamicValues() {")
-        for key in [
-            "pv1-power", "pv1-volts", "pv1-amps", "pv2-power", "pv2-volts", "pv2-amps",
-            "grid-l1-power", "grid-l1-volt", "grid-l2-power", "grid-l2-volt",
-            "grid-l3-power", "grid-l3-volt", "grid-bought", "grid-sold", "grid-frequency",
-            "battery-voltage", "battery-current", "battery-temp",
-            "battery-charge-daily", "battery-discharge-daily",
-            "load-l1-power", "load-l2-power", "load-l3-power",
-            "inverter-temp", "pv-daily", "load-daily", "sold-today-kwh", "sold-today-gbp",
-        ]:
-            self.assertIn(f"data-live='{key}'", update)
+        self.assertNotIn("energyFlowPanel()", source)
 
     def test_documentation_uses_card_cache_revision(self):
         for name in ("README.md", "INSTALL.md"):
@@ -562,8 +254,11 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
 
     def test_unconfirmed_logical_tou_soc_never_renders_as_zero(self):
         source = self.sources[0]
-        self.assertIn("touSocInput(entityId)", source)
-        self.assertIn('placeholder="requires confirmation"', source)
+        number_state = extract_method(source, "numberState(entityId, fallback = \"0\")")
+        self.assertIn('value === "unknown" || value === "unavailable" ? fallback : value', number_state)
+        render = extract_method(source, "renderV073()")
+        self.assertIn('const touSoc = this.numberState(entities.touSoc, "requires confirmation");', render)
+        self.assertIn('<td data-label="SOC" class="metric soc">${enabled ? `◇ ${touSoc}%` : "-"}</td>', render)
         dialog = extract_method(source, "renderDialog(slots, touStarts)")
         self.assertIn('this.slotDraftInput("tou_soc", "%")', dialog)
         self.assertNotIn("this.numberInput(entities.touSoc", dialog)
@@ -803,7 +498,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         source = self.sources[0]
         self.assertIn("slotModeLabel(mode)", source)
         self.assertIn("slotModeOptions()", source)
-        self.assertIn("this.slotModeLabel(option))", source)
+        self.assertIn("this.slotWorkModes().map((mode) => [mode, this.slotModeLabel(mode)])", source)
         self.assertIn("this.slotModeOptions(), bulk.mode)", source)
         self.assertNotIn('this.rawSelect("multi-mode", this.slotWorkModes(), bulk.mode)', source)
 
@@ -929,11 +624,13 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertIn('layout.is_mobile ? "grid-template-columns:minmax(0,1fr)"', render)
         self.assertIn(r"grid-template-columns:${layout.prices_ratio}fr ${layout.buy_prices_ratio}fr ${layout.solcast_ratio}fr", render)
         self.assertIn('if (layout.layout_mode === "grid" && layout.grid_columns)', render)
-        self.assertIn("const showStatus = isSingle ? layout.section === \"status_energy\" : layout.sections.status_energy;", render)
+        self.assertIn("const showPrices = isSingle ? layout.section === \"prices\" : layout.sections.prices;", render)
+        self.assertIn("const showSolcast = isSingle ? layout.section === \"solcast\" : layout.sections.solcast;", render)
         self.assertIn("if (isSingle && [\"settings\"].includes(layout.section) && !this._dialog)", render)
         self.assertIn('<div class="dem-v073" style="${demStyle}">', render)
-        self.assertIn("${statusSection}", render)
         self.assertIn("${infoGridSection}", render)
+        self.assertNotIn("status_energy", render)
+        self.assertNotIn("${statusSection}", render)
         # Mobile-safe min-width/max-width reset
         self.assertIn(".dem-v073>*,.info-grid>*,.panel,.schedule-shell,.sales-panel{min-width:0;max-width:100%;box-sizing:border-box}", render)
         self.assertIn(".dem-v073{padding:18px;display:grid;gap:16px;margin:0 auto;max-width:1280px;min-width:0;box-sizing:border-box", render)
@@ -1101,29 +798,25 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         render = extract_method(source, "renderV073()")
         self.assertIn('grid-template-columns:repeat(${layout.grid_columns},minmax(0,1fr))', render)
 
-    def test_sections_view_uses_verified_full_width_grid_options(self):
-        source = self.sources[0]
-        method = extract_method(source, "getGridOptions() {")
-        self.assertIn('columns: "full"', method)
-        self.assertIn("min_columns: 3", method)
-        self.assertNotIn("rows:", method)
-
     def test_control_master_is_shown_in_schedule_header_and_status_panel(self):
         source = self.sources[0]
         render = extract_method(source, "renderManualScheduleTab() {")
-        flow = extract_method(source, "energyFlowPanel()")
         binding = extract_method(source, "bindDashboardControls(slots)")
+        update = extract_method(source, "updateDynamicValues() {")
         self.assertIn('data-control-toggle="1"', render)
         self.assertIn("Deye control — ${this.escapeHtml(control.status)}", render)
-        self.assertIn("const control = this.controlState()", flow)
-        self.assertIn("const controlOn = control.enabled", flow)
-        self.assertIn("const controlStatus = control.status", flow)
-        self.assertIn('this.entity("sensor", "planned_manager_action")', flow)
-        self.assertIn('this.entity("sensor", "executed_manager_action")', flow)
-        self.assertIn("Planned decision", flow)
-        self.assertIn("Executed decision", flow)
-        self.assertIn('[data-control-toggle]', binding)
+        self.assertIn("const control = this.controlState()", render)
+        self.assertIn("[data-control-toggle]", binding)
         self.assertIn("this.toggleControl()", binding)
+        self.assertIn("data-live='decision-reason'", update)
+        self.assertIn('this.entity("sensor", "decision_reason")', update)
+        for removed in (
+            "planned_manager_action",
+            "executed_manager_action",
+            "Planned decision",
+            "Executed decision",
+        ):
+            self.assertNotIn(removed, source)
 
     def test_manual_schedule_header_shares_settings_and_control_buttons(self):
         source = self.sources[0]
@@ -1177,13 +870,11 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertIn("schedule_source", helper)
         self.assertIn('"Manual schedule"', helper)
         self.assertIn('"Schedule slots"', helper)
-        flow = extract_method(source, "energyFlowPanel()")
-        self.assertIn("const scheduleSourceLabel = this.scheduleSourceLabel();", flow)
-        self.assertEqual(flow.count('data-live="executed-schedule-source"'), 2)
-        self.assertEqual(flow.count('data-live="manager-schedule-source"'), 2)
         dynamic = extract_method(source, "updateDynamicValues() {")
-        self.assertIn("[data-live='executed-schedule-source']", dynamic)
-        self.assertIn("[data-live='manager-schedule-source']", dynamic)
+        self.assertIn("const scheduleSourceLabel = this.scheduleSourceLabel();", dynamic)
+        self.assertEqual(dynamic.count("[data-live='executed-schedule-source']"), 1)
+        self.assertEqual(dynamic.count("[data-live='manager-schedule-source']"), 1)
+        self.assertNotIn("energyFlowPanel()", source)
 
     def test_manager_mode_slot_follows_the_active_schedule_source(self):
         source = self.sources[0]
@@ -1197,12 +888,10 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         minutes = extract_method(source, "localMinuteOfDay(value = new Date()) {")
         self.assertIn('minute: "2-digit"', minutes)
         self.assertIn("hour === 24 ? 0 : hour", minutes)
-        flow = extract_method(source, "energyFlowPanel()")
-        self.assertIn("const activeSlotLabel = this.activeSlotTimeLabel();", flow)
-        self.assertEqual(flow.count('data-live="active-slot">${activeSlotLabel}</b>'), 2)
         dynamic = extract_method(source, "updateDynamicValues() {")
         self.assertIn("const activeSlotLabel = this.activeSlotTimeLabel();", dynamic)
         self.assertIn('this.setText("[data-live=\'active-slot\']", activeSlotLabel);', dynamic)
+        self.assertNotIn("energyFlowPanel()", source)
 
     def test_disabled_schedule_save_has_explicit_english_monitoring_message(self):
         method = extract_method(self.sources[0], "async applySchedulePatch(updates, options = null)")
@@ -1230,10 +919,11 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         source = self.sources[0]
         render = extract_method(source, "renderV073()")
         self.assertIn('</div>\n          <div class="dialog-host">${this.renderDialog(slots, touStarts)}</div>', render)
-        self.assertIn("${statusSection}", render)
         self.assertIn("${infoGridSection}", render)
         self.assertIn("${scheduleSection}", render)
         self.assertIn("${salesSection}", render)
+        self.assertNotIn("${statusSection}", render)
+        self.assertNotIn("status_energy", render)
 
 
 if __name__ == "__main__":

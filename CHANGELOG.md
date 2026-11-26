@@ -4,6 +4,23 @@ All notable changes to Deye Energy. Versions before 0.8.0 are the history of the
 upstream Deye Energy Manager project and are not repeated here. Attribution is
 recorded at the bottom of README.md.
 
+## [0.8.0.88] - 2026-11-26
+
+### Removed
+
+- **Energy status**: removed the Energy status UI, its backend support and its
+  service from both card copies and the integration.
+- **PV disable toggle**: the PV enable/disable control was removed; PV is now
+  always enabled.
+
+### Changed
+
+- **Audit/lifecycle/cache**: fixed audit, lifecycle and resource-cache issues.
+- **Tests**: updated card and backend tests for the removed Energy status layout
+  and current helper names.
+- **Maintenance**: bumped the integration version and card resource revision to
+  0.8.0.88, with test, docs and CI cleanup.
+
 ## [0.8.0.87] - 2026-11-25
 
 ### Removed

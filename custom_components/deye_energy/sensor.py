@@ -26,7 +26,6 @@ class DeyeManagerSensor(DeyeEnergyEntity, SensorEntity):
         unit=None,
         device_class=None,
         attrs_fn=None,
-        unrecorded_attributes=None,
         source_fn=None,
     ):
         super().__init__(runtime, key, name)
@@ -101,11 +100,6 @@ def sales_stats_attrs(runtime):
         "sold_value_month": round(sum(row["value"] for row in month), 4),
         "energy_reconciliation": runtime.data_quality.get("sales_today", {}),
     }
-
-
-def build_ai_state_snapshot(runtime):
-    """Build the heavy AI publication payload outside entity getters."""
-    return runtime.build_ai_state_snapshot()
 
 
 def ai_state_attrs(runtime):
@@ -216,7 +210,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 "System diagnostics",
                 lambda r: "connected" if r.data_available else "problem",
                 attrs_fn=diagnostics_attrs,
-                unrecorded_attributes={"entities"},
             ),
             DeyeManagerSensor(
                 runtime,
@@ -224,7 +217,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 "Trigger logs",
                 lambda r: len(getattr(r, "trigger_log", []) or []),
                 attrs_fn=trigger_log_attrs,
-                unrecorded_attributes={"entries"},
             ),
             DeyeManagerSensor(runtime, "active_slot", "Active slot", lambda r: r.active_slot_key()),
             DeyeManagerSensor(runtime, "target_mode", "Target mode", lambda r: r.target_mode),
@@ -243,7 +235,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 "kWh",
                 SensorDeviceClass.ENERGY,
                 attrs_fn=sales_stats_attrs,
-                unrecorded_attributes={"hourly_today", "week", "month"},
             ),
             DeyeManagerSensor(runtime, "sold_value_today", "Sold value today", lambda r: round(r.sold_value_today, 2), "GBP"),
             DeyeManagerSensor(runtime, "sold_energy_current_hour", "Sold energy current hour", lambda r: round(r.sold_energy_current_hour, 3), "kWh", SensorDeviceClass.ENERGY),
@@ -272,19 +263,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 "AI state",
                 lambda r: "ready",
                 attrs_fn=ai_state_attrs,
-                unrecorded_attributes={
-                    "manual_schedule",
-                    "energy_status_display",
-                    "power_flow_display",
-                    "weather",
-                    "tariff",
-                    "daily_summary",
-                    "monthly_summary",
-                    "solcast_history",
-                    "energy_samples",
-                    "current_hour_partial",
-                    "live_state",
-                },
             ),
             DeyeManagerSensor(runtime, "daily_pv_production", "Daily PV production", lambda r: r.daily_energy_value(r.daily_pv_production_sensor), "kWh", SensorDeviceClass.ENERGY, attrs_fn=source_sensor_attrs(lambda r: r.daily_pv_production_sensor), source_fn=lambda r: r.daily_pv_production_sensor),
             DeyeManagerSensor(runtime, "weather_forecast", "Weather forecast support", lambda r: r.weather_context().get("condition"), attrs_fn=weather_attrs, source_fn=lambda r: r.weather_entity),

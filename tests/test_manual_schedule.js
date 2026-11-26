@@ -135,7 +135,11 @@ function test_manual_backend_state_populates_draft() {
   assertEqual(rows.length, 2, "backend rows must populate the draft");
   assertEqual(rows[0].to, "12:00", "first row end must be kept");
   assertEqual(rows[1].mode, "Selling", "row mode must be kept");
-  assertTrue(!card.manualScheduleDirty(), "fresh draft must not be dirty");
+  assertEqual(
+    JSON.stringify(rows),
+    card._manualScheduleOriginal,
+    "fresh draft must not be dirty",
+  );
 }
 
 function test_manual_empty_backend_starts_with_no_rows() {

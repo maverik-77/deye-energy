@@ -120,46 +120,6 @@ CONF_LOAD_L2_POWER_SENSOR = "load_l2_power_sensor"
 CONF_LOAD_L3_POWER_SENSOR = "load_l3_power_sensor"
 CONF_INVERTER_AC_TEMPERATURE_SENSOR = "inverter_ac_temperature_sensor"
 
-# Sensor roles rendered by the card's Energy status page.  The backend owns the
-# catalog so the card can render its mapping/visibility editor without
-# duplicating role definitions.  Only per-entry overrides are persisted.
-ENERGY_STATUS_ROLES: tuple[tuple[str, str, str], ...] = (
-    ("pv_power", "PV power", "PV"),
-    ("daily_pv_production", "PV produced today", "PV"),
-    ("pv1_power", "PV1 power", "PV"),
-    ("pv1_voltage", "PV1 voltage", "PV"),
-    ("pv1_current", "PV1 current", "PV"),
-    ("pv2_power", "PV2 power", "PV"),
-    ("pv2_voltage", "PV2 voltage", "PV"),
-    ("pv2_current", "PV2 current", "PV"),
-    ("grid_power", "Grid power", "Grid"),
-    ("grid_l1_power", "Grid L1 power", "Grid"),
-    ("grid_l1_voltage", "Grid L1 voltage", "Grid"),
-    ("grid_l2_power", "Grid L2 power", "Grid"),
-    ("grid_l2_voltage", "Grid L2 voltage", "Grid"),
-    ("grid_l3_power", "Grid L3 power", "Grid"),
-    ("grid_l3_voltage", "Grid L3 voltage", "Grid"),
-    ("daily_energy_bought", "Energy bought today", "Grid"),
-    ("daily_energy_sold", "Energy sold today", "Grid"),
-    ("load_frequency", "Grid frequency", "Grid"),
-    ("battery_power", "Battery power", "Battery"),
-    ("battery_soc", "Battery SOC", "Battery"),
-    ("battery_bms_voltage", "Battery voltage", "Battery"),
-    ("battery_current", "Battery current", "Battery"),
-    ("battery_temperature", "Battery temperature", "Battery"),
-    ("daily_battery_charge", "Battery charged today", "Battery"),
-    ("daily_battery_discharge", "Battery discharged today", "Battery"),
-    ("daily_load_consumption", "Load consumed today", "Home"),
-    ("load_l1_power", "Load L1 power", "Home"),
-    ("load_l2_power", "Load L2 power", "Home"),
-    ("load_l3_power", "Load L3 power", "Home"),
-    ("inverter_ac_temperature", "Inverter temperature", "Inverter"),
-    ("sold_energy_today", "Exported today", "Values"),
-    ("sold_value_today", "Export value today", "Values"),
-)
-ENERGY_STATUS_ROLE_KEYS = frozenset(role for role, _, _ in ENERGY_STATUS_ROLES)
-ENERGY_STATUS_DISPLAY_SCHEMA_VERSION = 1
-
 DEFAULT_WORK_MODE_SELECT = entity_map.entity_default("work_mode_select")
 DEFAULT_MAX_SELL_POWER = entity_map.entity_default("max_sell_power_number")
 DEFAULT_INVERTER_DATETIME_ENTITY = entity_map.special_entity("inverter_datetime")
@@ -188,7 +148,6 @@ DEFAULT_SOLCAST_PEAK_POWER_TODAY_SENSOR = entity_map.entity_default("solcast_pea
 DEFAULT_SOLCAST_PEAK_TIME_TODAY_SENSOR = entity_map.entity_default("solcast_peak_time_today_sensor")
 DEFAULT_DAILY_PV_PRODUCTION_SENSOR = entity_map.entity_default("daily_pv_production_sensor")
 DEFAULT_WEATHER_ENTITY = entity_map.entity_default("weather_entity")
-DEFAULT_PRICE_SOURCE = "octopus_energy"
 DEFAULT_DSO_PROVIDER = "octopus"
 DEFAULT_TARIFF_PLAN = "intelligent_go"
 DEFAULT_DISTRIBUTION_PEAK_RATE = 0.3281
@@ -239,10 +198,6 @@ DEFAULT_LOAD_L1_POWER_SENSOR = entity_map.entity_default("load_l1_power_sensor")
 DEFAULT_LOAD_L2_POWER_SENSOR = entity_map.entity_default("load_l2_power_sensor")
 DEFAULT_LOAD_L3_POWER_SENSOR = entity_map.entity_default("load_l3_power_sensor")
 DEFAULT_INVERTER_AC_TEMPERATURE_SENSOR = entity_map.entity_default("inverter_ac_temperature_sensor")
-
-PRICE_SOURCES = ["octopus_energy", "other", "none"]
-DSO_PROVIDERS = ["octopus", "other"]
-TARIFF_PLANS = ["intelligent_go", "agile", "flexible", "custom"]
 
 MODE_SELLING_FIRST = "Selling"
 MODE_ZERO_EXPORT = "Zero Export To Load"

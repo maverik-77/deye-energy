@@ -130,7 +130,7 @@ check(html.includes('viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" marke
 check(html.includes('M 0 0 L 10 5 L 0 10 L 2.5 5 Z'), "arrow marker should use a complete arrow shape");
 check(!html.includes('markerWidth="3.5" markerHeight="3.5"'), "clipped arrow marker should be gone");
 check(!html.includes('width="84" height="30" rx="15"'), "on-arrow power label should not be rendered");
-check(html.includes('.pf-flow-active{stroke-dasharray:1 22;stroke-width:7!important') && html.includes('.pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34'), "flow links should use Energy Status style dashes");
+check(html.includes('.pf-flow-active{stroke-dasharray:1 22;stroke-width:7!important') && html.includes('.pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34'), "flow links should use the compact dash stream");
 check(!html.includes('stroke-width="14"'), "oversized link glow should be gone");
 check(html.includes('d="M 600 274.5 L 600 344.5"'), "PV link should run from the halo edge to the smaller inverter ring");
 check(html.includes('d="M 725.5 470 L 814 470"'), "inverter-to-home link should run from the ring to the halo edge");
@@ -154,7 +154,7 @@ check(html.includes('<foreignObject x="488.5" y="122.5" width="174" height="132"
 check(html.includes('<foreignObject x="143" y="393" width="174" height="154"'), "Grid card should start at Battery's left inset");
 check(html.includes('<foreignObject x="834" y="404" width="174" height="132"'), "Home card should start at Battery's left inset");
 check(html.includes('<foreignObject x="488.5" y="715.5" width="223" height="220"'), "Battery card should keep its left inset");
-// Energy Status style dots: CSS dash stream, fixed spacing, config-driven speed
+// Dash-stream dots: CSS dash stream, fixed spacing, config-driven speed
 const flowPath = (markup, id) => (markup.match(new RegExp(`<path id="${id}"[^>]*>`)) || [''])[0];
 check(flowPath(html, 'pf-grid-inv').includes('stroke-width="4"'), "flow paths should keep an explicit stroke width for idle links");
 check(!html.includes('<animateMotion') && !html.includes('<mpath') && !html.includes('keyPoints='), "SVG ball animation should be gone");
@@ -163,7 +163,7 @@ check(html.includes('.pf-flow-active{stroke-dasharray:1 22;stroke-width:7!import
 check(html.includes('filter id="pf-line-glow" filterUnits="userSpaceOnUse" x="0" y="0" width="1200" height="1081"'), "line glow filter should use a user-space region");
 check(html.includes('.pf-flow-line{fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;filter:url(#pf-line-glow)}') && html.includes('.pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34;filter:url(#pf-line-glow)}'), "flow paths should use the user-space glow filter");
 check(!html.includes('stroke-dasharray:none;filter:url(#pf-glow)'), "straight links should not use the bounding-box glow filter");
-check(html.includes('@keyframes pfFlowDash{to{stroke-dashoffset:-220}}'), "dot stream should use the fixed Energy Status offset formula");
+check(html.includes('@keyframes pfFlowDash{to{stroke-dashoffset:-220}}'), "dot stream should use the fixed offset formula");
 check(html.includes('@media (max-width:640px){.pf-flow-active{stroke-dasharray:1 18;animation-name:pfFlowDashMobile}'), "mobile dot variant should be present");
 check(html.includes('class="pf-flow-line pf-flow-active"'), "active links should carry the scrolling-dot class");
 check((html.match(/class="pf-flow-line-bg"/g) || []).length === 4, "each link should have a persistent background path");

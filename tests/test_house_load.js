@@ -83,6 +83,7 @@ function makeState(state, attributes = {}) {
 
 function makeHass() {
   return {
+    config: { time_zone: "Europe/London" },
     states: {
       "sensor.deye_energy_pv_power": makeState("4000"),
       "sensor.deye_energy_grid_power": makeState("-1500"),
@@ -111,6 +112,19 @@ function makeCard(width, config) {
   return card;
 }
 
+function readDynamic(card) {
+  const written = {};
+  card.setText = (selector, value) => {
+    written[selector] = String(value);
+  };
+  card.setHtml = () => {};
+  card.setClass = () => {};
+  card.querySelectorAll = () => [];
+  card._isRendered = true;
+  card.updateDynamicValues();
+  return written;
+}
+
 // 1. The formula uses PV plus imports/discharges minus exports/charges.
 {
   const card = makeCard(390);
@@ -126,39 +140,30 @@ function makeCard(width, config) {
   assert.strictEqual(calc(null, undefined, Number.NaN), 0, "missing values count as zero");
 }
 
-// 2. Both rendered House tiles use the calculated value, not the raw load sensor.
+// 2. The live main tile uses the calculated value, not the raw load sensor.
 {
-  const card = makeCard(390);
-  const mobile = card.energyFlowPanel();
-  assert.match(mobile, /data-live="load-main">1500 W/, "mobile tile uses calculated load");
-  assert.doesNotMatch(mobile, /data-live="load-main">9999 W/, "raw load sensor is ignored");
+  const mobile = readDynamic(makeCard(390));
+  assert.strictEqual(mobile["[data-live='load-main']"], "1500 W", "mobile tile uses calculated load");
+  assert.notStrictEqual(mobile["[data-live='load-main']"], "9999 W", "raw load sensor is ignored");
 
-  const desktopCard = makeCard(1366);
-  const desktop = desktopCard.energyFlowPanel();
-  assert.match(desktop, /data-live="load-main">1500 W/, "desktop tile uses calculated load");
+  const desktop = readDynamic(makeCard(1366));
+  assert.strictEqual(desktop["[data-live='load-main']"], "1500 W", "desktop tile uses calculated load");
 }
 
-// 3. Single-phase shows only the grid AC voltage and the inverter output AC voltage.
+// 3. Single-phase live updates publish only the two AC voltages; L1 is dynamic-only.
 {
-  const card = makeCard(390);
-  const html = card.energyFlowPanel();
-  assert.match(html, /data-live="grid-ac-voltage">230\.0<\/span> V/);
-  assert.match(html, /data-live="inverter-ac-voltage">231\.0<\/span> V/);
-  assert.doesNotMatch(html, /data-live="grid-l1-power"/);
-  assert.doesNotMatch(html, /data-live="load-l1-power"/);
-  assert.doesNotMatch(html, /L1/);
+  const written = readDynamic(makeCard(390));
+  assert.strictEqual(written["[data-live='grid-ac-voltage']"], "230.0");
+  assert.strictEqual(written["[data-live='inverter-ac-voltage']"], "231.0");
+  assert.strictEqual(written["[data-live='grid-l1-power']"], "-1500 W");
+  assert.strictEqual(written["[data-live='load-l1-power']"], "1500 W");
+  assert.doesNotMatch(source, /data-live="grid-l1-power">/);
+  assert.doesNotMatch(source, /data-live="load-l1-power">/);
 }
 
-// 4. Live updates publish the calculated value to the main tile and the L1 fallback.
+// 4. Live updates publish the calculated value and both AC voltages.
 {
-  const card = makeCard(390);
-  const written = {};
-  card.setText = (selector, value) => {
-    written[selector] = value;
-  };
-  card.querySelectorAll = () => [];
-  card._isRendered = true;
-  card.updateDynamicValues();
+  const written = readDynamic(makeCard(390));
   assert.strictEqual(written["[data-live='load-main']"], "1500 W");
   assert.strictEqual(written["[data-live='grid-ac-voltage']"], "230.0");
   assert.strictEqual(written["[data-live='inverter-ac-voltage']"], "231.0");

@@ -170,8 +170,8 @@ class ProfileHelperEntityContractTests(unittest.TestCase):
         self.assertIn("await self.runtime.async_save_charge_profile({", NUMBER_SOURCE)
 
     def test_services_use_dedicated_profile_savers(self):
-        self.assertIn("await runtime.async_save_charge_profile(dict(call.data))", INIT_SOURCE)
-        self.assertIn("await runtime.async_save_normal_profile(dict(call.data))", INIT_SOURCE)
+        self.assertIn("await _active_runtime().async_save_charge_profile(dict(call.data))", INIT_SOURCE)
+        self.assertIn("await _active_runtime().async_save_normal_profile(dict(call.data))", INIT_SOURCE)
 
     def test_card_js_copy_matches_www_root(self):
         """The Lovelace card must be byte-identical in both delivery locations."""

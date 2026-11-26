@@ -294,16 +294,6 @@ PROVIDER_LABELS = {
     PROVIDER_CUSTOM: "Custom mapping",
 }
 
-CUSTOM_OPTION_FIELDS = (
-    CONF_WORK_MODE_SELL_OPTION,
-    CONF_WORK_MODE_ZERO_LOAD_OPTION,
-    CONF_WORK_MODE_ZERO_CT_OPTION,
-    CONF_TOU_GRID_ENABLE_OPTION,
-    CONF_TOU_GRID_DISABLE_OPTION,
-    CONF_TOU_GRID_GENERATOR_OPTION,
-    CONF_TOU_GRID_BOTH_OPTION,
-)
-
 # Provider-specific discovery tokens are defined in mqtt_entity_map.json.
 # This mapping is derived from that catalogue for code/tests that inspect it
 # directly; ``entity_map.match_tokens`` is the runtime accessor.

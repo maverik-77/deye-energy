@@ -384,10 +384,6 @@ def default_profile() -> str:
     return str(_document().get("default_profile", "sunsynk"))
 
 
-def profile_names() -> tuple[str, ...]:
-    return tuple(_document().get("profiles", {}))
-
-
 def _profile(profile: str | None) -> dict[str, Any]:
     document = _document()
     name = profile or document.get("default_profile")

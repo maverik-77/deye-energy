@@ -96,9 +96,6 @@ TOU_SLOT_SCHEMA = vol.Schema(
 MANUAL_SCHEDULE_DATA_SCHEMA = vol.Schema(
     {vol.Required("data"): vol.All(cv.string, vol.Length(max=100000))}
 )
-ENERGY_STATUS_DISPLAY_DATA_SCHEMA = vol.Schema(
-    {vol.Required("data"): vol.All(cv.string, vol.Length(max=50000))}
-)
 POWER_FLOW_DISPLAY_DATA_SCHEMA = vol.Schema(
     {vol.Required("data"): vol.All(cv.string, vol.Length(max=50000))}
 )
@@ -129,7 +126,6 @@ SERVICE_NAMES = (
     "init_manual_schedule_from_tou",
     "activate_manual_schedule",
     "deactivate_manual_schedule",
-    "save_energy_status_display",
     "get_inverter_configuration",
     "apply_inverter_configuration_group",
     "sync_inverter_datetime",
@@ -383,81 +379,98 @@ def _parse_json_payload(value: str, expected_type: type | tuple[type, ...]) -> A
     return parsed
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    data, options, changed = _fill_missing_sunsynk_fallbacks(hass, entry)
-    if changed:
-        update_entry = getattr(hass.config_entries, "async_update_entry", None)
-        if callable(update_entry):
-            update_entry(entry, data=data, options=options)
-    runtime = DeyeEnergyRuntime(
-        hass=hass,
-        entry_id=entry.entry_id,
-        data={**data, **options},
-    )
-    runtime._platform_setup_in_progress = True
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = runtime
-    await runtime.async_start()
-    await async_setup_frontend(hass)
-    try:
-        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    except Exception:
-        runtime._platform_setup_in_progress = False
-        raise
-    else:
-        runtime.finish_platform_setup()
+_SERVICE_RUNTIME: DeyeEnergyRuntime | None = None
+
+
+def _active_runtime() -> DeyeEnergyRuntime:
+    """Return the runtime currently serving domain services."""
+    runtime = _SERVICE_RUNTIME
+    if runtime is None:
+        raise RuntimeError("Deye Energy runtime is not available")
+    return runtime
+
+
+def _refresh_service_runtime(hass: HomeAssistant) -> None:
+    """Point domain services at a live runtime after setup or unload."""
+    global _SERVICE_RUNTIME
+    runtimes = [
+        runtime
+        for runtime in hass.data.get(DOMAIN, {}).values()
+        if isinstance(runtime, DeyeEnergyRuntime)
+    ]
+    _SERVICE_RUNTIME = runtimes[-1] if runtimes else None
+
+
+async def _async_entry_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Rebind source entities when a config entry changes."""
+    runtime = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if not isinstance(runtime, DeyeEnergyRuntime):
+        return
+    await runtime.async_rebind_source_entities({**entry.data, **entry.options})
+
+
+def _register_services(hass: HomeAssistant) -> None:
+    """Register the Deye Energy domain services once per HA instance."""
+    if hass.services.has_service(DOMAIN, "apply_settings"):
+        return
 
     async def handle_apply_settings(call: ServiceCall) -> None:
+        runtime = _active_runtime()
         sell_power = call.data["sell_power"]
         runtime.validate_manual_sell_power_w("apply_settings", sell_power)
         await runtime.async_apply_settings(call.data["mode"], sell_power)
 
     async def handle_manual_sell(call: ServiceCall) -> None:
+        runtime = _active_runtime()
         sell_power = call.data["sell_power"]
         runtime.validate_manual_sell_power_w("manual_sell", sell_power)
         runtime.manual_sell_power = sell_power
         await runtime.async_manual_sell()
 
     async def handle_charge_now(call: ServiceCall) -> None:
-        await runtime.async_charge_now()
+        await _active_runtime().async_charge_now()
 
     async def handle_stop_selling(call: ServiceCall) -> None:
-        await runtime.async_request_stop()
+        await _active_runtime().async_request_stop()
 
     async def handle_restore_defaults(call: ServiceCall) -> None:
-        await runtime.async_restore_defaults()
+        await _active_runtime().async_restore_defaults()
 
     async def handle_resume_manager(call: ServiceCall) -> None:
-        await runtime.async_resume_manager()
+        await _active_runtime().async_resume_manager()
 
     async def handle_emergency_stop(call: ServiceCall) -> None:
-        await runtime.async_emergency_stop()
+        await _active_runtime().async_emergency_stop()
 
     async def handle_apply_schedule_patch(call: ServiceCall) -> None:
         payload = _parse_json_payload(call.data["data"], list)
-        await runtime.async_apply_schedule_patch(payload)
+        await _active_runtime().async_apply_schedule_patch(payload)
 
     async def handle_save_tariff_settings(call: ServiceCall) -> None:
+        runtime = _active_runtime()
         settings = _parse_json_payload(call.data["data"], dict)
         normalized = await runtime.async_update_tariff_settings(settings)
-        hass.config_entries.async_update_entry(
-            entry,
-            options={**entry.options, **normalized},
-        )
+        entry = hass.config_entries.async_get_entry(runtime.entry_id)
+        if entry is not None:
+            hass.config_entries.async_update_entry(
+                entry,
+                options={**entry.options, **normalized},
+            )
 
     async def handle_save_charge_profile(call: ServiceCall) -> None:
-        await runtime.async_save_charge_profile(dict(call.data))
+        await _active_runtime().async_save_charge_profile(dict(call.data))
 
     async def handle_save_normal_profile(call: ServiceCall) -> None:
-        await runtime.async_save_normal_profile(dict(call.data))
+        await _active_runtime().async_save_normal_profile(dict(call.data))
 
     async def handle_save_default_settings(call: ServiceCall) -> None:
-        await runtime.async_save_default_settings(dict(call.data))
+        await _active_runtime().async_save_default_settings(dict(call.data))
 
     async def handle_refresh_tariff_catalog(call: ServiceCall) -> None:
-        await runtime.async_refresh_tariff_catalog()
+        await _active_runtime().async_refresh_tariff_catalog()
 
     async def handle_set_tou_slot(call: ServiceCall) -> None:
-        await runtime.async_set_physical_tou_slot(
+        await _active_runtime().async_set_physical_tou_slot(
             call.data["slot"],
             start=call.data.get("start"),
             end=call.data.get("end"),
@@ -481,31 +494,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "Unsupported manual schedule fields: " + ", ".join(sorted(unknown))
                 )
             rows = payload.get("rows")
-        return await runtime.async_save_manual_schedule(rows)
+        return await _active_runtime().async_save_manual_schedule(rows)
 
     async def handle_init_manual_schedule_from_tou(call: ServiceCall) -> dict[str, Any]:
-        return await runtime.async_init_manual_schedule_from_tou()
+        return await _active_runtime().async_init_manual_schedule_from_tou()
 
     async def handle_activate_manual_schedule(call: ServiceCall) -> dict[str, Any]:
-        return await runtime.async_activate_manual_schedule()
+        return await _active_runtime().async_activate_manual_schedule()
 
     async def handle_deactivate_manual_schedule(call: ServiceCall) -> dict[str, Any]:
-        return await runtime.async_deactivate_manual_schedule()
-
-    async def handle_save_energy_status_display(call: ServiceCall) -> dict[str, Any]:
-        payload = _parse_json_payload(call.data["data"], dict)
-        return await runtime.async_save_energy_status_display(payload)
+        return await _active_runtime().async_deactivate_manual_schedule()
 
     async def handle_get_inverter_configuration(call: ServiceCall) -> dict[str, Any]:
-        return runtime.read_inverter_configuration()
+        return _active_runtime().read_inverter_configuration()
 
     async def handle_apply_inverter_configuration_group(call: ServiceCall) -> dict[str, Any]:
-        return await runtime.async_apply_inverter_configuration_group(
+        return await _active_runtime().async_apply_inverter_configuration_group(
             call.data["group"], call.data["values"]
         )
 
     async def handle_sync_inverter_datetime(call: ServiceCall) -> dict[str, Any]:
-        return await runtime.async_sync_inverter_datetime(reason="manual_service")
+        return await _active_runtime().async_sync_inverter_datetime(
+            reason="manual_service"
+        )
 
     async def handle_get_power_flow_display(call: ServiceCall) -> dict[str, Any]:
         return entity_map.power_flow_display()
@@ -515,6 +526,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         result = await hass.async_add_executor_job(
             entity_map.save_power_flow_display, payload
         )
+        runtime = _active_runtime()
         runtime.request_sensor_snapshot_refresh({"ai_state"})
         runtime.notify_update()
         return result
@@ -594,13 +606,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     hass.services.async_register(
         DOMAIN,
-        "save_energy_status_display",
-        handle_save_energy_status_display,
-        schema=ENERGY_STATUS_DISPLAY_DATA_SCHEMA,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
         "get_inverter_configuration",
         handle_get_inverter_configuration,
         schema=INVERTER_CONFIG_SCHEMA,
@@ -634,6 +639,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         schema=POWER_FLOW_DISPLAY_DATA_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    data, options, changed = _fill_missing_sunsynk_fallbacks(hass, entry)
+    if changed:
+        update_entry = getattr(hass.config_entries, "async_update_entry", None)
+        if callable(update_entry):
+            update_entry(entry, data=data, options=options)
+    runtime = DeyeEnergyRuntime(
+        hass=hass,
+        entry_id=entry.entry_id,
+        data={**data, **options},
+    )
+    runtime._platform_setup_in_progress = True
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = runtime
+    await runtime.async_start()
+    await async_setup_frontend(hass)
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except Exception:
+        runtime._platform_setup_in_progress = False
+        raise
+    else:
+        runtime.finish_platform_setup()
+
+    _refresh_service_runtime(hass)
+    _register_services(hass)
+    entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
     return True
 
 
@@ -642,6 +675,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     runtime = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     if runtime:
         await runtime.async_unload()
+    if _SERVICE_RUNTIME is runtime:
+        _refresh_service_runtime(hass)
     if unload_ok and DOMAIN in hass.data and not hass.data[DOMAIN]:
         cancel_frontend_followup(hass)
         hass.data.pop(DOMAIN)

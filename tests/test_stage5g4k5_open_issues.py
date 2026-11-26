@@ -145,7 +145,6 @@ def test_issue_8_solcast_missing_date_self_heals_and_preserves_snapshots(monkeyp
     snapshot = {"timestamp": "2026-08-29T11:00:00+00:00", "forecast_kwh": 11.0}
     runtime.solcast_tracking = {"forecast_snapshots": [snapshot]}
     runtime.energy_samples = [{"timestamp": "preserve-energy"}]
-    runtime.ai_history = [{"event": "preserve-ai"}]
     _set_solcast_inputs(runtime, forecast=12, actual=5)
 
     asyncio.run(runtime.async_update_solcast_history())
@@ -156,7 +155,6 @@ def test_issue_8_solcast_missing_date_self_heals_and_preserves_snapshots(monkeyp
     assert snapshot in runtime.solcast_tracking["forecast_snapshots"]
     assert runtime.solcast_history == []
     assert runtime.energy_samples == [{"timestamp": "preserve-energy"}]
-    assert runtime.ai_history == [{"event": "preserve-ai"}]
 
 
 def test_issue_8_solcast_same_day_restart_keeps_initial_and_updates_latest(monkeypatch):

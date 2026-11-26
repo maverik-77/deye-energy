@@ -32,7 +32,6 @@ def _capture_input_listener(runtime):
 
     manager.async_track_state_change_event = track_state
     manager.async_track_point_in_time = track_point
-    runtime.schedule_ai_api_analysis = lambda: None
 
     def restore():
         manager.async_track_state_change_event = original_state
@@ -57,7 +56,7 @@ def _capture_input_listener(runtime):
 
 
 
-def test_ai_recalc_does_not_write_all_manager_entities():
+def test_snapshot_refresh_does_not_write_all_manager_entities():
     async def scenario():
         runtime = task_runtime()
 
@@ -72,8 +71,8 @@ def test_ai_recalc_does_not_write_all_manager_entities():
 
         entities = [Entity("ai_state"), Entity("diagnostics"), Entity("manager_status"), Entity("target_mode")]
         runtime.entities = entities
-        runtime.build_ai_state_snapshot = lambda: {"planner_48h": {"plan_id": "one"}}
-        runtime.diagnostics = lambda: {"connected": True, "optimizer_runtime": {}}
+        runtime.build_ai_state_snapshot = lambda: {"schema_version": 1}
+        runtime.diagnostics = lambda: {"connected": True}
         await runtime.request_sensor_snapshot_refresh()
         assert [entity.writes for entity in entities] == [1, 1, 0, 0]
         await runtime.request_sensor_snapshot_refresh()
@@ -82,7 +81,7 @@ def test_ai_recalc_does_not_write_all_manager_entities():
     asyncio.run(scenario())
 
 
-def test_reload_does_not_duplicate_optimizer_listeners():
+def test_reload_does_not_duplicate_schedule_listeners():
     runtime = task_runtime()
     captured, restore = _capture_input_listener(runtime)
     try:

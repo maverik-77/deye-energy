@@ -30,6 +30,11 @@ jobs:
           node --check custom_components/deye_energy/www/deye-energy-card.js
       - name: Verify bundled card copy
         run: cmp www/deye-energy-card.js custom_components/deye_energy/www/deye-energy-card.js
+      - name: Card regression tests
+        run: |
+          for f in tests/*.js; do
+            node "$f"
+          done
       - name: Validate JSON
         run: |
           python - <<'PY'

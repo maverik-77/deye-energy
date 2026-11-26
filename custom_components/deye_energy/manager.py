@@ -45,9 +45,6 @@ from homeassistant.util.dt import now as ha_now
 
 from . import entity_map
 from .const import (
-    ENERGY_STATUS_DISPLAY_SCHEMA_VERSION,
-    ENERGY_STATUS_ROLES,
-    ENERGY_STATUS_ROLE_KEYS,
     CONF_BATTERY_BMS_VOLTAGE_SENSOR,
     CONF_BATTERY_CURRENT_SENSOR,
     CONF_BATTERY_SOH_SENSOR,
@@ -286,12 +283,44 @@ _CONTROL_TRANSACTION_ID: contextvars.ContextVar[str | None] = contextvars.Contex
     "control_transaction_id", default=None
 )
 
-FUTURE_PLAN_INTENT_SCHEMA_VERSION = 2
-FUTURE_PLAN_LIFECYCLE_SCHEMA_VERSION = 1
+_PRICE_RESOLUTION_CACHE_LIMIT = 256
+_PRICE_ADAPTER_CACHE_LIMIT = 256
+_SOC_OBSERVATION_MAX_AGE_SECONDS = 24 * 60 * 60
 
 
 class ControlDisabledError(Exception):
     """Raised when a physical write is attempted while control is disabled."""
+
+
+_SOURCE_ENTITY_DOMAINS = frozenset((
+    "sensor", "binary_sensor", "number", "select", "switch", "input_number",
+    "input_select", "input_boolean", "datetime", "time", "weather",
+))
+
+
+def _entity_mapping_value(value: Any) -> str | dict[str, str] | None:
+    """Return only values that actually identify a Home Assistant source entity."""
+    if isinstance(value, str):
+        domain, separator, _object_id = value.strip().partition(".")
+        return value.strip() if separator and domain in _SOURCE_ENTITY_DOMAINS else None
+    if isinstance(value, dict):
+        nested: dict[str, str] = {}
+        for key, item in value.items():
+            mapped = _entity_mapping_value(item)
+            if isinstance(mapped, str):
+                nested[str(key)] = mapped
+        return nested or None
+    return None
+
+
+def _source_mapping_snapshot(config: dict[str, Any]) -> dict[str, Any]:
+    """Return the source-entity portion of an entry's merged configuration."""
+    snapshot: dict[str, Any] = {}
+    for key, value in config.items():
+        mapped = _entity_mapping_value(value)
+        if mapped is not None:
+            snapshot[str(key)] = mapped
+    return snapshot
 
 
 
@@ -360,6 +389,7 @@ class DeyeEnergyRuntime:
     hass: HomeAssistant
     entry_id: str
     data: dict[str, Any]
+    _source_mapping_signature: dict[str, Any] = field(default_factory=dict)
     scheduler_enabled: bool = False
     soc_guard_enabled: bool = True
     price_guard_enabled: bool = False
@@ -383,12 +413,10 @@ class DeyeEnergyRuntime:
     _normal_profile_loaded_from_store: bool = False
     schedule_schema_version: int = 0
     # UI-only manual schedule: variable time rows kept separate from the
-    # 48-slot work schedule.  Activation selects these rows as the scheduler's
-    # trigger source without copying them into, or restoring, the work schedule.
+    # 48-slot Schedule slots model.  Activation selects these rows as the
+    # scheduler's trigger source without copying them into, or restoring, the
+    # Schedule slots.
     manual_schedule: dict[str, Any] = field(default_factory=dict)
-    # Card-controlled mapping/visibility overrides for the Energy status page.
-    # Empty means "use the card's existing mapping, show every reading".
-    energy_status_display: dict[str, Any] = field(default_factory=dict)
     # Cached per-slot overlay built from the active manual rows.  Work-slot
     # values are read live, so non-manual fields can never go stale.
     _manual_effective_rows: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -532,7 +560,7 @@ class DeyeEnergyRuntime:
     tou_reconciliation_status: str = "waiting_readback"
     tou_last_reconciliation_error: str = ""
     # Manual 24 h mapping saved via set_tou_slot is authoritative and independent
-    # of the 48-slot work schedule; schedule-driven writes must not overwrite it.
+    # of the 48-slot Schedule slots; schedule-driven writes must not overwrite it.
     _manual_tou_mapping: TouMapping | None = None
     # Tracks whether the latest TOU operation crossed the preflight boundary
     # and issued at least one physical Deye service call.  Validation failures
@@ -554,6 +582,7 @@ class DeyeEnergyRuntime:
     _schedule_reconcile_task: Any = None
     _schedule_reconcile_requested: bool = False
     _rollback_task: Any = None
+    _control_tasks: set[Any] = field(default_factory=set)
 
     # Master control switch state (persistent) and runtime status.
     control_enabled: bool = True
@@ -587,6 +616,7 @@ class DeyeEnergyRuntime:
     def __post_init__(self) -> None:
         self.slots = {key: SlotSettings(key=key, label=label) for key, label, *_ in SLOTS}
         self.manual_schedule = self._default_manual_schedule()
+        self._source_mapping_signature = _source_mapping_snapshot(self.data)
 
     def _control_is_active(self) -> bool:
         """Return whether new physical inverter writes may start."""
@@ -1169,6 +1199,17 @@ class DeyeEnergyRuntime:
         })
         return binding
 
+    @staticmethod
+    def _cache_bounded(
+        cache: dict[str, Any], key: str, value: Any, limit: int
+    ) -> None:
+        """Store one cache entry without letting long-lived runtimes grow freely."""
+        if key not in cache and len(cache) >= limit:
+            oldest = next(iter(cache), None)
+            if oldest is not None:
+                del cache[oldest]
+        cache[key] = value
+
     def resolve_price_binding(
         self,
         mapped_entity: str | None,
@@ -1200,7 +1241,12 @@ class DeyeEnergyRuntime:
                 )
             ):
                 result = (mapped, "mapped_entity", "")
-                self._price_resolution_cache[cache_key] = {"resolved": result[0], "status": result[1], "reason": result[2]}
+                self._cache_bounded(
+                    self._price_resolution_cache,
+                    cache_key,
+                    {"resolved": result[0], "status": result[1], "reason": result[2]},
+                    _PRICE_RESOLUTION_CACHE_LIMIT,
+                )
                 return result
         candidates: list[Any] = []
         try:
@@ -1227,7 +1273,12 @@ class DeyeEnergyRuntime:
             if resolved:
                 status = "renamed_resolved" if resolved != mapped else "mapped_entity"
                 reason = "resolved_by_stable_identity" if status == "renamed_resolved" else ""
-                self._price_resolution_cache[cache_key] = {"resolved": resolved, "status": status, "reason": reason}
+                self._cache_bounded(
+                    self._price_resolution_cache,
+                    cache_key,
+                    {"resolved": resolved, "status": status, "reason": reason},
+                    _PRICE_RESOLUTION_CACHE_LIMIT,
+                )
                 return resolved, status, reason
         reason = "ambiguous_stable_identity" if len(candidates) > 1 else "mapped_entity_missing"
         return mapped, "mapped_entity_missing", reason
@@ -1285,7 +1336,9 @@ class DeyeEnergyRuntime:
             "config_entry_domain": config_entry_domain,
             "device_metadata": device_metadata,
         }
-        self._price_adapter_cache[key] = metadata
+        self._cache_bounded(
+            self._price_adapter_cache, key, metadata, _PRICE_ADAPTER_CACHE_LIMIT
+        )
         return metadata
 
     def price_contract(self, direction: str) -> dict[str, Any]:
@@ -2471,15 +2524,12 @@ class DeyeEnergyRuntime:
         """Build the retained ai_state publication payload outside entity getters."""
         return {
             "manual_schedule": self.manual_schedule_state(),
-            "energy_status_display": self.energy_status_display_state(),
             "power_flow_display": entity_map.power_flow_display(),
             "weather": self.weather_context(),
             "tariff": self.tariff_context(),
             "daily_summary": self.history_daily_summary(),
             "monthly_summary": self.history_monthly_summary(),
-            "solcast_history": (
-                self.solcast_history if self.pv_generation_enabled else []
-            ),
+            "solcast_history": self.solcast_history,
             "energy_samples": (
                 self._energy_recent_details[-288:]
                 if self._energy_recent_details
@@ -2569,10 +2619,10 @@ class DeyeEnergyRuntime:
     def effective_slot_for_key(self, slot_key: str) -> SlotSettings:
         """Return the slot that currently drives the scheduler.
 
-        Work Schedule and Manual Schedule are independent sources.  While the
+        Schedule slots and Manual Schedule are independent sources.  While the
         manual source is active its rows supply the logical trigger fields;
-        fields a manual row does not carry are inherited from the work slot.
-        The work schedule itself is never modified.
+        fields a manual row does not carry are inherited from the schedule slot.
+        The stored Schedule slots are never modified.
         """
         work_slot = self.slots[slot_key]
         overlay = self._manual_effective_rows.get(slot_key)
@@ -2711,6 +2761,14 @@ class DeyeEnergyRuntime:
             })
         return max(candidates, key=lambda item: item["at"]) if candidates else None
 
+    def _prune_soc_source_observations(self) -> None:
+        """Drop observations for unmapped or long-stale SOC sibling entities."""
+        allowed = self._soc_sibling_entity_ids()
+        for entity_id, moment in list(self._soc_source_observed_at.items()):
+            age = self._timestamp_age_seconds(moment)
+            if entity_id not in allowed or age is None or age > _SOC_OBSERVATION_MAX_AGE_SECONDS:
+                self._soc_source_observed_at.pop(entity_id, None)
+
     def _observe_soc_sibling_event(self, event: Any) -> bool:
         """Record one verified sibling report and detect a SOC quality transition."""
         event_data = getattr(event, "data", event if isinstance(event, dict) else {})
@@ -2723,6 +2781,7 @@ class DeyeEnergyRuntime:
             moment = getattr(event, "time_fired", None)
         if not isinstance(moment, datetime):
             moment = ha_now()
+        self._prune_soc_source_observations()
         self._soc_source_observed_at[entity_id] = moment
         return self._refresh_soc_quality_signature()
 
@@ -3147,17 +3206,7 @@ class DeyeEnergyRuntime:
         }
 
     def _pv_generation_reading(self) -> dict[str, Any]:
-        """Return PV power reading, or a zeroed reading when PV is disabled."""
-        if not self.pv_generation_enabled:
-            return {
-                "entity_id": self.pv_power_sensor,
-                "value": 0.0,
-                "unit": "W",
-                "last_updated": None,
-                "status": "disabled",
-                "quality": "good",
-                "source": "disabled",
-            }
+        """Return the live PV power reading."""
         return self._measurement(self.pv_power_sensor)
 
     def _telemetry_readings(self) -> dict[str, dict[str, Any]]:
@@ -3183,7 +3232,7 @@ class DeyeEnergyRuntime:
         readings: dict[str, dict[str, Any]] | None = None,
         moment: datetime | None = None,
     ) -> dict[str, Any]:
-        """Build the current measured state consumed by Optimizer Core."""
+        """Build the current measured state consumed by the Deye Energy runtime."""
         current = moment or ha_now()
         values = readings or self._telemetry_readings()
 
@@ -4168,9 +4217,6 @@ class DeyeEnergyRuntime:
             if restored is not None:
                 self._manual_tou_mapping = restored
         self.manual_schedule = self._load_manual_schedule_state(data.get("manual_schedule"))
-        self.energy_status_display = self._normalize_energy_status_display(
-            data.get("energy_status_display")
-        )
         self._manual_effective_rows = {}
         if self.manual_schedule_active:
             try:
@@ -4194,9 +4240,6 @@ class DeyeEnergyRuntime:
             "schedule_slot_ownership": self.schedule_slot_ownership,
             "manual_tou_mapping": self._serialize_manual_tou_mapping(),
             "manual_schedule": deepcopy(self._ensure_manual_schedule()),
-            "energy_status_display": self._normalize_energy_status_display(
-                self.energy_status_display
-            ),
             "last_saved_at": self.last_saved_at,
             "schedule_schema_version": self.schedule_schema_version,
             "control_enabled": self.control_enabled,
@@ -4230,9 +4273,6 @@ class DeyeEnergyRuntime:
             "schedule_slot_ownership": self.schedule_slot_ownership,
             "manual_tou_mapping": self._serialize_manual_tou_mapping(),
             "manual_schedule": deepcopy(self._ensure_manual_schedule()),
-            "energy_status_display": self._normalize_energy_status_display(
-                self.energy_status_display
-            ),
             "last_saved_at": self.last_saved_at,
             "schedule_schema_version": self.schedule_schema_version,
             "control_enabled": self.control_enabled,
@@ -4404,14 +4444,9 @@ class DeyeEnergyRuntime:
     async def async_update_solcast_history(self) -> None:
         now = ha_now()
         today = now.date().isoformat()
-        if self.pv_generation_enabled:
-            forecast_reading = self.solcast_forecast_today_reading()
-            forecast = max(0, self.safe_float(forecast_reading.get("value"), 0))
-            actual = max(0, self.state_float(self.daily_pv_production_sensor, 0))
-        else:
-            forecast_reading = {"status": "disabled", "value": 0}
-            forecast = 0.0
-            actual = 0.0
+        forecast_reading = self.solcast_forecast_today_reading()
+        forecast = max(0, self.safe_float(forecast_reading.get("value"), 0))
+        actual = max(0, self.state_float(self.daily_pv_production_sensor, 0))
         tracked_day = str(self.solcast_tracking.get("date") or "")
         try:
             valid_tracked_day = (
@@ -4931,30 +4966,29 @@ class DeyeEnergyRuntime:
             item = grouped.setdefault(day, {"date": day})
             item["sold_kwh"] = self.safe_float(values.get("kwh"), 0)
             item["sold_value"] = self.safe_float(values.get("value"), 0)
-        if self.pv_generation_enabled:
-            for row in self.solcast_history:
-                day = str(row.get("date") or "")
-                item = grouped.setdefault(day, {"date": day})
-                item.update({
-                    "forecast_kwh": self.safe_float(row.get("forecast_kwh"), 0),
-                    "actual_kwh": self.safe_float(row.get("actual_kwh"), 0),
-                    "accuracy_percent": self.safe_float(row.get("accuracy_percent"), 0),
-                })
-            tracking_day = str(self.solcast_tracking.get("date") or "")
-            if tracking_day:
-                metrics = self.solcast_current_day_metrics()
-                forecast = metrics.get("forecast_today_kwh")
-                actual = metrics.get("production_today_kwh")
-                grouped.setdefault(tracking_day, {"date": tracking_day}).update({
-                    "forecast_kwh": forecast,
-                    "actual_kwh": actual,
-                    "accuracy_percent": None,
-                    "realization_today_pct": metrics.get("realization_today_pct"),
-                    "forecast_progress_percent": metrics.get("realization_today_pct"),
-                    "forecast_difference_today_kwh": metrics.get("forecast_difference_today_kwh"),
-                    "solcast_data_status": metrics.get("data_status"),
-                    "day_complete": False,
-                })
+        for row in self.solcast_history:
+            day = str(row.get("date") or "")
+            item = grouped.setdefault(day, {"date": day})
+            item.update({
+                "forecast_kwh": self.safe_float(row.get("forecast_kwh"), 0),
+                "actual_kwh": self.safe_float(row.get("actual_kwh"), 0),
+                "accuracy_percent": self.safe_float(row.get("accuracy_percent"), 0),
+            })
+        tracking_day = str(self.solcast_tracking.get("date") or "")
+        if tracking_day:
+            metrics = self.solcast_current_day_metrics()
+            forecast = metrics.get("forecast_today_kwh")
+            actual = metrics.get("production_today_kwh")
+            grouped.setdefault(tracking_day, {"date": tracking_day}).update({
+                "forecast_kwh": forecast,
+                "actual_kwh": actual,
+                "accuracy_percent": None,
+                "realization_today_pct": metrics.get("realization_today_pct"),
+                "forecast_progress_percent": metrics.get("realization_today_pct"),
+                "forecast_difference_today_kwh": metrics.get("forecast_difference_today_kwh"),
+                "solcast_data_status": metrics.get("data_status"),
+                "day_complete": False,
+            })
         for row in self.daily_archive:
             day = str(row.get("date") or "")
             if day:
@@ -4989,16 +5023,6 @@ class DeyeEnergyRuntime:
 
     def solcast_forecast_today_reading(self) -> dict[str, Any]:
         """Resolve today's full forecast with source and freshness metadata."""
-        if not self.pv_generation_enabled:
-            return {
-                "entity_id": self.solcast_forecast_today_sensor,
-                "value": 0.0,
-                "unit": "kWh",
-                "last_updated": None,
-                "status": "disabled",
-                "quality": "unavailable",
-                "source": "disabled",
-            }
         configured = self._measurement(
             self.solcast_forecast_today_sensor,
             kind="energy",
@@ -5074,27 +5098,6 @@ class DeyeEnergyRuntime:
         tracking = self.solcast_tracking if isinstance(self.solcast_tracking, dict) else {}
         tracking_day = str(tracking.get("date") or "")
         updated_at = tracking.get("updated_at")
-        if not self.pv_generation_enabled:
-            def rounded(value: Any, digits: int = 3) -> float | None:
-                number = finite_float(value)
-                return round(number, digits) if number is not None else None
-
-            return {
-                "local_day": today,
-                "tracking_day": tracking_day or None,
-                "forecast_today_kwh": None,
-                "production_today_kwh": None,
-                "remaining_forecast_kwh": None,
-                "realization_today_pct": None,
-                "historical_accuracy_pct": rounded(historical_accuracy_pct, 1),
-                "forecast_difference_today_kwh": None,
-                "forecast_tomorrow_kwh": None,
-                "data_status": "disabled",
-                "forecast_source": tracking.get("forecast_source") or self.solcast_forecast_today_sensor,
-                "forecast_source_status": "disabled",
-                "tracking_updated_at": updated_at,
-                "initial_forecast_kwh": None,
-            }
         forecast = finite_float(
             tracking.get("latest_forecast_kwh", tracking.get("forecast"))
         )
@@ -6067,12 +6070,38 @@ class DeyeEnergyRuntime:
             self.hass, entities, _on_input_change
         )
 
+    async def async_rebind_source_entities(self, config: dict[str, Any]) -> None:
+        """Apply changed source mappings from an entry update without a restart."""
+        if self._unloading:
+            return
+        snapshot = _source_mapping_snapshot(config)
+        if snapshot == self._source_mapping_signature:
+            return
+        async with self._operation_lock:
+            self.data.update(config)
+            self._source_mapping_signature = snapshot
+            self._price_resolution_cache.clear()
+            self._price_adapter_cache.clear()
+            self._prune_soc_source_observations()
+            if self.unsub_input_listener:
+                self.unsub_input_listener()
+                self.unsub_input_listener = None
+            self._start_schedule_input_listener()
+            self.request_sensor_snapshot_refresh({"ai_state", "diagnostics"})
+            self.notify_update()
+
     @staticmethod
     def _is_own_output_entity_id(entity_id: str | None) -> bool:
         """Reject every Deye Manager output even if selected as a Core source."""
         if not entity_id or "." not in entity_id:
             return False
         return entity_id.split(".", 1)[1].startswith("deye_energy_")
+
+    def _spawn_control_task(self, coroutine: Any) -> None:
+        """Track confirmation/recheck work so unload can cancel it."""
+        task = self.hass.async_create_task(coroutine)
+        self._control_tasks.add(task)
+        task.add_done_callback(self._control_tasks.discard)
 
     def _schedule_pending_control_poll(self, delay: float | None = None) -> None:
         """Read pending writes quickly without ever sending them again."""
@@ -6088,7 +6117,7 @@ class DeyeEnergyRuntime:
         @callback
         def _on_poll(_now: datetime) -> None:
             self.unsub_confirmation_poll = None
-            self.hass.async_create_task(self._async_recheck_pending_control())
+            self._spawn_control_task(self._async_recheck_pending_control())
 
         self.unsub_confirmation_poll = async_track_point_in_time(
             self.hass,
@@ -6104,7 +6133,7 @@ class DeyeEnergyRuntime:
             @callback
             def _on_state_change(_event: Any) -> None:
                 if self._pending_control_transaction:
-                    self.hass.async_create_task(self._async_recheck_pending_control())
+                    self._spawn_control_task(self._async_recheck_pending_control())
 
             self.unsub_confirmation_listener = async_track_state_change_event(
                 self.hass, entities, _on_state_change
@@ -6120,7 +6149,7 @@ class DeyeEnergyRuntime:
         @callback
         def _on_timeout(_now: datetime) -> None:
             self.unsub_confirmation_timer = None
-            self.hass.async_create_task(self._async_finish_pending_control_confirmation())
+            self._spawn_control_task(self._async_finish_pending_control_confirmation())
 
         self.unsub_confirmation_timer = async_track_point_in_time(
             self.hass,
@@ -6226,7 +6255,7 @@ class DeyeEnergyRuntime:
         capped_sell_power = min(self.default_sell_power, self.effective_inverter_max_power_w)
         cap_message = ""
         if capped_sell_power < self.default_sell_power:
-            cap_message = f"Default sell power capped from {self.default_sell_power} W do {capped_sell_power} W"
+            cap_message = f"Default sell power capped from {self.default_sell_power} W to {capped_sell_power} W"
             _LOGGER.warning("%s (effective limit %s W)", cap_message, self.effective_inverter_max_power_w)
         failures: list[str] = []
         try:
@@ -7300,7 +7329,7 @@ class DeyeEnergyRuntime:
         return patch
 
     def _serialize_manual_tou_mapping(self) -> dict[str, Any] | None:
-        """Persist a manually saved 24 h TOU map, independent of the work schedule."""
+        """Persist a manually saved 24 h TOU map, independent of Schedule slots."""
         mapping = getattr(self, "_manual_tou_mapping", None)
         if mapping is None or len(mapping.slots) != 6:
             return None
@@ -7510,7 +7539,7 @@ class DeyeEnergyRuntime:
             self.tou_reconciliation_in_sync = False
             self.tou_mismatched_fields = []
             self.tou_reconciliation_status = "error"
-            self.tou_last_reconciliation_error = str(err)
+            self.tou_last_reconciliation_error = f"{type(err).__name__}: {err}"
             return False
 
         try:
@@ -7533,7 +7562,8 @@ class DeyeEnergyRuntime:
                 "read_only" if not profile.native_tou else "waiting_readback"
             )
             self.tou_last_reconciliation_error = (
-                "Cannot confirm the physical Deye Time Of Use: " + str(err)
+                f"Cannot confirm the physical Deye Time Of Use "
+                f"({type(err).__name__}): {err}"
             )
             return False
 
@@ -7828,7 +7858,7 @@ class DeyeEnergyRuntime:
             round_trip_ok = self._tou_mappings_match(confirmed_mapping, round_trip)
             if not round_trip_ok:
                 # A manual 24 h mapping is authoritative and may use arbitrary
-                # minute boundaries that the 48-slot work schedule cannot express.
+                # minute boundaries that the Schedule slots cannot express.
                 # Keep the confirmed physical map and avoid rolling back a
                 # verified inverter write.
                 self._manual_tou_mapping = confirmed_mapping
@@ -8112,7 +8142,7 @@ class DeyeEnergyRuntime:
         return bool(await self.async_tick())
 
     # ------------------------------------------------------------------
-    # Manual schedule (UI/service-only, separate from work schedule)
+    # Manual schedule (UI/service-only, separate from Schedule slots)
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -8253,100 +8283,6 @@ class DeyeEnergyRuntime:
         if previous_end != 24 * 60:
             raise ValueError("Manual schedule must cover the full 24 hours without gaps")
         return normalized
-
-    @staticmethod
-    def _normalize_energy_status_display(raw: Any) -> dict[str, Any]:
-        """Coerce stored or submitted Energy status display data into shape."""
-        source = raw if isinstance(raw, dict) else {}
-        mappings_in = source.get("mappings")
-        visibility_in = source.get("visibility")
-        mappings: dict[str, str] = {}
-        visibility: dict[str, bool] = {}
-        if isinstance(mappings_in, dict):
-            for key, value in mappings_in.items():
-                if key not in ENERGY_STATUS_ROLE_KEYS:
-                    continue
-                entity_id = str(value or "").strip()
-                if entity_id:
-                    mappings[str(key)] = entity_id
-        if isinstance(visibility_in, dict):
-            for key, value in visibility_in.items():
-                if key not in ENERGY_STATUS_ROLE_KEYS:
-                    continue
-                visibility[str(key)] = bool(value)
-        pv_enabled = source.get("pv_enabled")
-        return {
-            "schema_version": ENERGY_STATUS_DISPLAY_SCHEMA_VERSION,
-            "pv_enabled": True if pv_enabled is None else bool(pv_enabled),
-            "mappings": mappings,
-            "visibility": visibility,
-        }
-
-    @staticmethod
-    def _validate_energy_status_display_payload(payload: Any) -> dict[str, Any]:
-        """Strictly validate a service submission, rejecting unknown roles."""
-        if not isinstance(payload, dict):
-            raise ValueError("Energy status display must be an object")
-        unknown = set(payload) - {"schema_version", "mappings", "visibility", "pv_enabled"}
-        if unknown:
-            raise ValueError("Unsupported energy status fields: " + ", ".join(sorted(unknown)))
-        normalized: dict[str, Any] = {}
-        for field_name in ("mappings", "visibility"):
-            value = payload.get(field_name)
-            if value is not None and not isinstance(value, dict):
-                raise ValueError(f"Energy status {field_name} must be an object")
-            normalized[field_name] = value or {}
-        for field_name, value in normalized.items():
-            for key in value:
-                if key not in ENERGY_STATUS_ROLE_KEYS:
-                    raise ValueError(f"Unknown energy status sensor role: {key}")
-        mappings: dict[str, str] = {}
-        for key, value in normalized["mappings"].items():
-            entity_id = str(value or "").strip()
-            if not entity_id:
-                continue
-            domain, _, object_id = entity_id.partition(".")
-            if not domain or not object_id:
-                raise ValueError(f"Invalid entity id for {key}: {entity_id}")
-            mappings[str(key)] = entity_id
-        visibility = {
-            str(key): bool(value)
-            for key, value in normalized["visibility"].items()
-        }
-        pv_enabled = payload.get("pv_enabled")
-        return {
-            "schema_version": ENERGY_STATUS_DISPLAY_SCHEMA_VERSION,
-            "pv_enabled": True if pv_enabled is None else bool(pv_enabled),
-            "mappings": mappings,
-            "visibility": visibility,
-        }
-
-    @property
-    def pv_generation_enabled(self) -> bool:
-        """Return whether PV generation is enabled for display and planning."""
-        return bool(
-            self._normalize_energy_status_display(self.energy_status_display).get(
-                "pv_enabled", True
-            )
-        )
-
-    def energy_status_display_state(self) -> dict[str, Any]:
-        """Public view consumed by the card, including the role catalog."""
-        return {
-            **self._normalize_energy_status_display(self.energy_status_display),
-            "roles": [
-                {"key": key, "label": label, "group": group}
-                for key, label, group in ENERGY_STATUS_ROLES
-            ],
-        }
-
-    async def async_save_energy_status_display(self, payload: Any) -> dict[str, Any]:
-        """Persist card Energy status mapping/visibility overrides."""
-        self.energy_status_display = self._validate_energy_status_display_payload(payload)
-        self.mark_config_saved()
-        await self.async_save_ai_data()
-        self.notify_update()
-        return self.energy_status_display_state()
 
     @staticmethod
     def _inverter_config_float(value: Any) -> float | None:
@@ -8589,7 +8525,9 @@ class DeyeEnergyRuntime:
                 blocking=True,
             )
         except Exception as err:  # noqa: BLE001 - surface service failures
-            self._inverter_datetime_last_error = str(err)
+            self._inverter_datetime_last_error = (
+                f"Inverter datetime sync failed ({type(err).__name__}): {err}"
+            )
             self._notify_update_for("inverter_datetime_sync")
             return {
                 "status": "failed",
@@ -8820,7 +8758,7 @@ class DeyeEnergyRuntime:
             row = self._manual_row_for_slot_start(rows, int(start))
             # Only the fields still present on a manual row are written.  The
             # physical Deye mode, discharge/charge currents and sell-from price
-            # stay at their work-schedule values.
+            # stay at their values from the Schedule slots.
             update = {
                 "slot_key": slot_key,
                 "enabled": bool(row.get("enabled", True)),
@@ -10145,15 +10083,17 @@ class DeyeEnergyRuntime:
         return result
 
     async def async_tick(self, *_args: Any) -> None:
-        if self._tariff_catalog_manager is not None and self._tariff_catalog_manager.refresh_due():
-            await self._tariff_catalog_manager.async_refresh()
-            self._notify_update_for("tariff")
-        try:
-            await self.async_check_inverter_datetime_sync()
-        except Exception as err:  # noqa: BLE001 - datetime sync must not break tick
-            self._inverter_datetime_last_error = str(err)
-        self._migrate_selling_tou_soc()
         async with self._operation_lock:
+            if self._tariff_catalog_manager is not None and self._tariff_catalog_manager.refresh_due():
+                await self._tariff_catalog_manager.async_refresh()
+                self._notify_update_for("tariff")
+            try:
+                await self.async_check_inverter_datetime_sync()
+            except Exception as err:  # noqa: BLE001 - datetime sync must not break tick
+                self._inverter_datetime_last_error = (
+                    f"Inverter datetime sync failed ({type(err).__name__}): {err}"
+                )
+            self._migrate_selling_tou_soc()
             try:
                 await self._async_tick_impl(*_args)
             except ControlDisabledError as err:
@@ -10164,14 +10104,6 @@ class DeyeEnergyRuntime:
             except Exception as err:
                 await self.async_apply_safe_defaults(f"Control transaction failed: {type(err).__name__}: {err}")
                 raise
-
-    @callback
-    def _performance_lag_tick(self, *_args: Any) -> None:
-        self._performance.record_lag_tick()
-
-    @callback
-    def _performance_report_tick(self, *_args: Any) -> None:
-        self._performance.emit_report(self)
 
     def _start_performance_instrumentation(self) -> None:
         """Keep the Stage 5G.3C profiler dormant in production.
@@ -10296,10 +10228,7 @@ class DeyeEnergyRuntime:
         self._stop_tou_confirmation_listener()
         self.tou_write_pending = False
         self._clear_pending_control_transaction()
-        if self._schedule_reconcile_task is not None and not self._schedule_reconcile_task.done():
-            self._schedule_reconcile_task.cancel()
-        self._schedule_reconcile_task = None
-        self._schedule_reconcile_requested = False
+        control_tasks = tuple(self._control_tasks)
         background_tasks = [
             task
             for task in (
@@ -10307,6 +10236,9 @@ class DeyeEnergyRuntime:
                 self._ai_save_task,
                 self._energy_save_task,
                 self._tariff_refresh_task,
+                self._schedule_reconcile_task,
+                self._rollback_task,
+                *control_tasks,
             )
             if task is not None and not task.done()
         ]
@@ -10329,6 +10261,10 @@ class DeyeEnergyRuntime:
         self._ai_save_task = None
         self._energy_save_task = None
         self._tariff_refresh_task = None
+        self._schedule_reconcile_task = None
+        self._schedule_reconcile_requested = False
+        self._rollback_task = None
+        self._control_tasks.clear()
         await self.async_save_ai_data(force=True)
         if self._energy_revision != self._energy_saved_revision:
             await self.async_save_energy_history(force=True)

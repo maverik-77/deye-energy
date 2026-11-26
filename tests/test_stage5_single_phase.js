@@ -109,8 +109,6 @@ function makeHass() {
           enabled: true,
           status: "Active",
         },
-        planned_manager_action: "Plan testowy",
-        executed_manager_action: "Executed test",
       }),
     },
     services: {},
@@ -128,12 +126,22 @@ function makeCard(width, config) {
   return card;
 }
 
-function panel(width, config) {
-  return makeCard(width, config).energyFlowPanel();
-}
-
-function countOccurrences(text, needle) {
-  return text.split(needle).length - 1;
+function readDynamic(card) {
+  const text = {};
+  const html = {};
+  const batteryIcon = { innerHTML: "" };
+  card.setText = (selector, value) => {
+    text[selector] = String(value);
+  };
+  card.setHtml = (selector, value) => {
+    html[selector] = String(value);
+  };
+  card.querySelectorAll = (selector) => (
+    selector === "[data-live-html='battery-icon']" ? [batteryIcon] : []
+  );
+  card._isRendered = true;
+  card.updateDynamicValues();
+  return { text, html, batteryIcon };
 }
 
 function test_phase_count_defaults_to_single_phase() {
@@ -151,41 +159,37 @@ function test_single_phase_value_uses_total_when_phase_missing_or_zero() {
   assert.strictEqual(card.singlePhaseValue(1200, 3500), 1200);
 }
 
-function test_mobile_single_phase_shows_ac_voltages_without_l1() {
-  const html = panel(390);
-  assert.match(html, /class="ms-detail-grid"/);
-  assert.match(html, /class="ms-flow-board"/);
-  assert.match(html, /data-live="grid-ac-voltage">230\.0<\/span> V/);
-  assert.match(html, /data-live="inverter-ac-voltage">231\.0<\/span> V/);
-  assert.doesNotMatch(html, /data-live="grid-l1-power"/);
-  assert.doesNotMatch(html, /data-live="load-l1-power"/);
-  assert.doesNotMatch(html, /data-live="grid-l2-power"/);
-  assert.doesNotMatch(html, /data-live="grid-l3-power"/);
-  assert.doesNotMatch(html, /data-live="load-l2-power"/);
-  assert.doesNotMatch(html, /data-live="load-l3-power"/);
-  assert.strictEqual(countOccurrences(html, "<span>L1"), 0);
-  assert.strictEqual(countOccurrences(html, "<span>L2"), 0);
-  assert.strictEqual(countOccurrences(html, "<span>L3"), 0);
+function test_single_phase_shows_ac_voltages_and_totals_on_l1() {
+  const { text } = readDynamic(makeCard(390));
+  assert.strictEqual(text["[data-live='grid-ac-voltage']"], "230.0");
+  assert.strictEqual(text["[data-live='inverter-ac-voltage']"], "231.0");
+  assert.strictEqual(text["[data-live='grid-l1-power']"], "3500 W");
+  assert.strictEqual(text["[data-live='load-l1-power']"], "8750 W");
+  assert.strictEqual(text["[data-live='grid-l2-power']"], "0 W");
+  assert.strictEqual(text["[data-live='grid-l3-power']"], "0 W");
+  assert.strictEqual(text["[data-live='load-l2-power']"], "0 W");
+  assert.strictEqual(text["[data-live='load-l3-power']"], "0 W");
 }
 
-function test_desktop_single_phase_uses_one_column() {
-  const html = panel(1366);
-  assert.strictEqual(countOccurrences(html, 'class="flow-detail-row one-col"'), 2);
-  assert.strictEqual(countOccurrences(html, 'class="flow-detail-row three-cols"'), 1);
-  assert.match(html, /data-live="grid-ac-voltage">230\.0<\/span> V/);
-  assert.match(html, /data-live="inverter-ac-voltage">231\.0<\/span> V/);
-  assert.doesNotMatch(html, /data-live="grid-l1-power"/);
-  assert.doesNotMatch(html, /data-live="load-l1-power"/);
-  assert.doesNotMatch(html, /data-live="grid-l2-power"/);
-  assert.doesNotMatch(html, /data-live="grid-l3-power"/);
-  assert.doesNotMatch(html, /data-live="load-l2-power"/);
-  assert.doesNotMatch(html, /data-live="load-l3-power"/);
+function test_single_phase_dynamic_values_are_width_independent() {
+  assert.strictEqual(makeCard(1366).layoutConfig().phase_count, 1);
+  const mobile = readDynamic(makeCard(390)).text;
+  const desktop = readDynamic(makeCard(1366)).text;
+  for (const key of [
+    "grid-ac-voltage",
+    "inverter-ac-voltage",
+    "grid-l1-power",
+    "load-l1-power",
+  ]) {
+    const selector = `[data-live='${key}']`;
+    assert.strictEqual(desktop[selector], mobile[selector], `${key} must not depend on width`);
+  }
 }
 
-function test_three_phase_opt_in_still_renders_all_phases() {
-  const config = { layout: { phase_count: 3 } };
-  const mobileHtml = panel(390, config);
-  assert.match(mobileHtml, /class="ms-detail-grid"/);
+function test_three_phase_opt_in_uses_all_phase_values() {
+  const card = makeCard(390, { layout: { phase_count: 3 } });
+  assert.strictEqual(card.layoutConfig().phase_count, 3);
+  const { text } = readDynamic(card);
   for (const key of [
     "grid-l1-power",
     "grid-l2-power",
@@ -194,15 +198,10 @@ function test_three_phase_opt_in_still_renders_all_phases() {
     "load-l2-power",
     "load-l3-power",
   ]) {
-    assert.ok(mobileHtml.includes(`data-live="${key}"`), `${key} must render in three-phase mode`);
+    assert.strictEqual(text[`[data-live='${key}']`], "0 W", `${key} must use its phase sensor`);
   }
-  assert.strictEqual(countOccurrences(mobileHtml, "<span>L1"), 2);
-  assert.strictEqual(countOccurrences(mobileHtml, "<span>L2"), 2);
-  assert.strictEqual(countOccurrences(mobileHtml, "<span>L3"), 2);
-
-  const desktopHtml = panel(1366, config);
-  assert.strictEqual(countOccurrences(desktopHtml, 'class="flow-detail-row three-cols"'), 3);
-  assert.strictEqual(countOccurrences(desktopHtml, 'class="flow-detail-row one-col"'), 0);
+  assert.strictEqual(text["[data-live='grid-ac-voltage']"], "230.0");
+  assert.strictEqual(text["[data-live='inverter-ac-voltage']"], "231.0");
 }
 
 function test_calculated_house_load_and_voltage_in_single_phase() {
@@ -217,33 +216,32 @@ function test_calculated_house_load_and_voltage_in_single_phase() {
   card._hass.states["sensor.deye_energy_pv_power"] = makeState("0");
   card._hass.states["sensor.deye_energy_grid_power"] = makeState("-1250");
   card._hass.states["sensor.deye_energy_battery_power"] = makeState("0");
-  const html = card.energyFlowPanel();
-  assert.match(html, /data-live="load-main">-1250 W/);
-  assert.match(html, /data-live="inverter-ac-voltage">231\.0<\/span> V/);
-  assert.doesNotMatch(html, /data-live="load-main">8750 W/);
-  assert.doesNotMatch(html, /data-live="load-l1-power"/);
+  const { text } = readDynamic(card);
+  assert.strictEqual(text["[data-live='load-main']"], "-1250 W");
+  assert.strictEqual(text["[data-live='inverter-ac-voltage']"], "231.0");
+  assert.strictEqual(text["[data-live='load-l1-power']"], "-1250 W");
+  assert.notStrictEqual(text["[data-live='load-main']"], "8750 W");
 }
 
 function test_battery_icon_shows_soc_level_and_color() {
   const card = makeCard(390);
   card._hass.states["sensor.deye_energy_battery_soc"] = makeState("15");
-  const low = card.energyFlowPanel();
-  assert.match(low, /data-live-html="battery-icon"/);
-  assert.match(low, /aria-label="Battery 15 percent"/);
-  assert.match(low, /hsl\(0, 85%, 55%\)/);
+  assert.match(readDynamic(card).batteryIcon.innerHTML, /aria-label="Battery 15 percent"/);
+  assert.match(readDynamic(card).batteryIcon.innerHTML, /hsl\(0, 85%, 55%\)/);
+
   card._hass.states["sensor.deye_energy_battery_soc"] = makeState("90");
-  const high = card.energyFlowPanel();
-  assert.match(high, /aria-label="Battery 90 percent"/);
-  assert.match(high, /hsl\(120, 85%, 55%\)/);
+  assert.match(readDynamic(card).batteryIcon.innerHTML, /aria-label="Battery 90 percent"/);
+  assert.match(readDynamic(card).batteryIcon.innerHTML, /hsl\(120, 85%, 55%\)/);
+
   card._hass.states["sensor.deye_energy_battery_soc"] = makeState("40");
-  assert.match(card.energyFlowPanel(), /hsl\(60, 85%, 55%\)/);
+  assert.match(readDynamic(card).batteryIcon.innerHTML, /hsl\(60, 85%, 55%\)/);
 }
 
 test_phase_count_defaults_to_single_phase();
 test_single_phase_value_uses_total_when_phase_missing_or_zero();
-test_mobile_single_phase_shows_ac_voltages_without_l1();
-test_desktop_single_phase_uses_one_column();
-test_three_phase_opt_in_still_renders_all_phases();
+test_single_phase_shows_ac_voltages_and_totals_on_l1();
+test_single_phase_dynamic_values_are_width_independent();
+test_three_phase_opt_in_uses_all_phase_values();
 test_calculated_house_load_and_voltage_in_single_phase();
 test_battery_icon_shows_soc_level_and_color();
 console.log("single phase status tests passed");

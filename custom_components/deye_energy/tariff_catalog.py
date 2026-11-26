@@ -10,15 +10,11 @@ from typing import Any
 
 from homeassistant.helpers.storage import Store
 
-from .const import DOMAIN
+from .const import DEFAULT_TARIFF_CATALOG_URL, DOMAIN
 from .tariffs import load_bundled_catalog, validate_catalog
 
 _LOGGER = logging.getLogger(__name__)
 
-DEFAULT_CATALOG_URL = (
-    "https://raw.githubusercontent.com/maverik-77/deye-energy/"
-    "main/custom_components/deye_energy/tariff_catalog.json"
-)
 MAX_CATALOG_BYTES = 1_000_000
 REFRESH_INTERVAL = timedelta(days=90)
 
@@ -28,7 +24,7 @@ class TariffCatalogManager:
 
     def __init__(self, hass, entry_id: str, url: str | None = None) -> None:
         self.hass = hass
-        self.url = str(url or DEFAULT_CATALOG_URL)
+        self.url = str(url or DEFAULT_TARIFF_CATALOG_URL)
         self.store = Store(hass, 1, f"{DOMAIN}_{entry_id}_tariff_catalog")
         self.catalog: dict[str, Any] = {}
         self.source = "bundled"

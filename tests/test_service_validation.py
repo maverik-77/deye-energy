@@ -409,7 +409,6 @@ class ServiceJsonValidationTests(unittest.TestCase):
     def test_shared_persistence_schemas_are_length_limited(self):
         for schema, limit in (
             (init.MANUAL_SCHEDULE_DATA_SCHEMA, 100000),
-            (init.ENERGY_STATUS_DISPLAY_DATA_SCHEMA, 50000),
             (init.POWER_FLOW_DISPLAY_DATA_SCHEMA, 50000),
         ):
             self.assertEqual(schema({"data": "{}"})["data"], "{}")
@@ -430,6 +429,7 @@ class ServiceJsonValidationTests(unittest.TestCase):
             "save_future_plan",
             "cancel_future_plan",
             "get_plan_execution",
+            "save_energy_status_display",
         )
         for name in removed:
             self.assertNotIn(name, init.SERVICE_NAMES)
@@ -487,15 +487,16 @@ class ServiceJsonValidationTests(unittest.TestCase):
         self.assertIn('"get_inverter_configuration"', source)
         self.assertIn('"apply_inverter_configuration_group"', source)
         self.assertIn('"sync_inverter_datetime"', source)
-        self.assertIn("return runtime.read_inverter_configuration()", source)
+        self.assertIn("return _active_runtime().read_inverter_configuration()", source)
         self.assertIn(
-            "return await runtime.async_apply_inverter_configuration_group(",
+            "return await _active_runtime().async_apply_inverter_configuration_group(",
             source,
         )
         self.assertIn(
-            "return await runtime.async_sync_inverter_datetime(",
+            "return await _active_runtime().async_sync_inverter_datetime(",
             source,
         )
+        self.assertIn("supports_response=SupportsResponse.ONLY", source)
         self.assertIn("get_inverter_configuration", init.SERVICE_NAMES)
         self.assertIn("apply_inverter_configuration_group", init.SERVICE_NAMES)
         self.assertIn("sync_inverter_datetime", init.SERVICE_NAMES)

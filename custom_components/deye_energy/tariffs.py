@@ -236,19 +236,6 @@ def validate_catalog(catalog: Any) -> dict[str, Any]:
     return catalog
 
 
-def catalog_labels(catalog: dict[str, Any] | None = None) -> tuple[dict[str, str], dict[str, str]]:
-    source = catalog or load_bundled_catalog()
-    providers = {
-        key: str(value.get("name") or key)
-        for key, value in source.get("providers", {}).items()
-    }
-    tariffs: dict[str, str] = {"custom": "Custom profile"}
-    for provider in source.get("providers", {}).values():
-        for key, value in provider.get("tariffs", {}).items():
-            tariffs.setdefault(key, str(value.get("name") or key.upper()))
-    return providers, tariffs
-
-
 _BUNDLED: dict[str, Any] | None = None
 # Labels are resolved from the asynchronously loaded runtime catalog.  Keeping
 # import-time constants empty avoids opening tariff_catalog.json on HA's event

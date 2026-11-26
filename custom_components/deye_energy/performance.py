@@ -149,7 +149,7 @@ class RuntimePerformanceMonitor:
         lowered = key.lower()
         if lowered.startswith("proxy_"):
             return "proxy"
-        if lowered in {"ai_state", "ai_plan_48h", "ai_suggestion", "ai_status"}:
+        if lowered == "ai_state":
             return "ai_state"
         if "diagnostic" in lowered:
             return "diagnostics"
@@ -273,9 +273,9 @@ class RuntimePerformanceMonitor:
             f"ge500={int(get('event_loop_lag_ge_500ms', 0))} "
             f"ge1000={int(get('event_loop_lag_ge_1000ms', 0))}",
             "snapshots "
-            f"ai_builds={int(get('ai_snapshot_build_count', 0))} "
-            f"ai_total_ms={get('ai_snapshot_build_total_ms', 0):.2f} "
-            f"ai_max_ms={get('ai_snapshot_build_max_ms', 0):.2f} "
+            f"state_builds={int(get('ai_snapshot_build_count', 0))} "
+            f"state_total_ms={get('ai_snapshot_build_total_ms', 0):.2f} "
+            f"state_max_ms={get('ai_snapshot_build_max_ms', 0):.2f} "
             f"diagnostics_builds={int(get('diagnostics_build_count', 0))} "
             f"diagnostics_total_ms={get('diagnostics_build_total_ms', 0):.2f} "
             f"diagnostics_max_ms={get('diagnostics_build_max_ms', 0):.2f}",
@@ -298,8 +298,8 @@ class RuntimePerformanceMonitor:
             f"collect_max_ms={get('energy_collect_max_ms', 0):.2f} "
             f"sample_count={int(get('energy_sample_count', 0))}",
             "stores "
-            f"schedule_saves={int(get('ai_store_save_count', 0))}/{get('ai_store_save_total_ms', 0):.2f}ms "
-            f"schedule_prep={int(get('ai_store_prepare_count', 0))}/{get('ai_store_prepare_total_ms', 0):.2f}ms "
+            f"state_saves={int(get('ai_store_save_count', 0))}/{get('ai_store_save_total_ms', 0):.2f}ms "
+            f"state_prep={int(get('ai_store_prepare_count', 0))}/{get('ai_store_prepare_total_ms', 0):.2f}ms "
             f"energy_saves={int(get('energy_store_save_count', 0))}/{get('energy_store_save_total_ms', 0):.2f}ms "
             f"energy_prep={int(get('energy_store_prepare_count', 0))}/{get('energy_store_prepare_total_ms', 0):.2f}ms",
             "control "
@@ -313,7 +313,7 @@ class RuntimePerformanceMonitor:
             f"rollback={int(get('inverter_rollback', 0))} "
             f"tou_executed={int(get('tou_write_executed', 0))}",
             "payload_bytes "
-            f"ai={int(get('ai_state_payload_bytes', 0))} "
+            f"state={int(get('ai_state_payload_bytes', 0))} "
             f"diagnostics={int(get('diagnostics_payload_bytes', 0))} "
             f"solcast={int(get('historical_solcast_attrs_bytes', 0))} "
             f"energy_store={int(get('energy_store_payload_bytes', 0))} "

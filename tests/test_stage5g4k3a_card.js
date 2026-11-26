@@ -59,7 +59,7 @@ const canonical = {
 const card = new sandbox.Card();
 card._config = {};
 card._hass = { states: {
-  "sensor.deye_energy_ai_state": { attributes: { planner_48h: { canonical_prices: canonical } } },
+  "sensor.deye_energy_tariff_status": { attributes: { price_diagnostics: canonical } },
 } };
 
 const buy = card.canonicalPriceMaps("buy");

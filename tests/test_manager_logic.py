@@ -7154,7 +7154,7 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.effective_slot_for_key("0000_0030").sell_power, 0)
 
         # Manual rows remain editable while the manual source is active, and
-        # only the effective view changes: the work schedule stays untouched.
+        # only the effective view changes: the stored schedule stays untouched.
         await runtime.async_save_manual_schedule([
             manual_row(to="00:00", sell_power=1234)
         ])

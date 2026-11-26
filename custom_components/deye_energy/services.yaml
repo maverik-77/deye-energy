@@ -226,23 +226,11 @@ init_manual_schedule_from_tou:
 
 activate_manual_schedule:
   name: Activate manual schedule
-  description: Map the manual schedule rows onto the 48 work schedule slots and make them final until deactivated.
+  description: Map the manual schedule rows onto the 48 regular schedule slots and make them final until deactivated.
 
 deactivate_manual_schedule:
   name: Deactivate manual schedule
-  description: Restore the work schedule that was saved before the manual schedule was activated.
-
-save_energy_status_display:
-  name: Save Energy status sensor display
-  description: Save the card's Energy status sensor source-entity overrides, visibility choices, and PV generation toggle (pv_enabled). Unknown sensor roles are rejected.
-  fields:
-    data:
-      name: Display configuration JSON
-      description: JSON object with optional "pv_enabled" (boolean, default true), "mappings" (role to entity id), and "visibility" (role to boolean) objects.
-      required: true
-      selector:
-        text:
-          multiline: true
+  description: Restore the regular schedule that was saved before the manual schedule was activated.
 
 get_inverter_configuration:
   name: Get inverter configuration

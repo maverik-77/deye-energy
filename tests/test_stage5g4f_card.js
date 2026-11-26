@@ -61,11 +61,24 @@ function makeCard(value, present = true) {
   return card;
 }
 
+function dynamicSoc(card) {
+  const written = {};
+  card.setText = (selector, value) => {
+    written[selector] = String(value);
+  };
+  card.querySelectorAll = () => [];
+  card._isRendered = true;
+  card.updateDynamicValues();
+  const selector = "[data-live='battery-soc-value']";
+  assert.ok(
+    Object.prototype.hasOwnProperty.call(written, selector),
+    "live SOC output must be written",
+  );
+  return written[selector];
+}
+
 function renderedSoc(value, present = true) {
-  const html = makeCard(value, present).energyFlowPanel();
-  const match = html.match(/data-live="battery-soc-value">([^<]*)</);
-  assert.ok(match, "energy-flow SOC output must exist");
-  return match[1];
+  return dynamicSoc(makeCard(value, present));
 }
 
 const parser = makeCard("80");
@@ -95,7 +108,7 @@ staleCard._hass.states["sensor.deye_energy_ai_state"] = {
   },
 };
 assert.strictEqual(
-  staleCard.energyFlowPanel().match(/data-live="battery-soc-value">([^<]*)</)[1],
+  dynamicSoc(staleCard),
   "—",
   "stale diagnostics must never become a false 0%",
 );

@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.0.87-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.0.88-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -27,14 +27,10 @@ a single Lovelace card. It is adapted to a Deye inverter exposed through MQTT
 - **Six physical Deye TOU ranges** mapped from the full-day schedule, with
   boundaries on `:00` or `:30`, editable inline in the **Deye Time Of Use**
   table. Save validates the whole day; Rollback restores the inverter values.
-- **Energy status** with a backend-owned role catalog: each reading can use a
-  source-entity override and can be hidden independently in both the desktop
-  flow panel and the compact mobile panel.
-- **Single-phase inverters** are supported by default; Grid and House tiles show
-  one L1 row, falling back to the total power sensor when L1 is missing or zero.
-  Set `layout.phase_count: 3` to restore L1/L2/L3 rows.
+- **Single-phase inverters** are supported by default; set
+  `layout.phase_count: 3` where separate L1/L2/L3 readings are needed.
 - **Power readouts** in watts below 10 kW and kilowatts at or above it. Card
-  tiles use two decimal places for kW; backend decision text uses one.
+  readouts use two decimal places for kW; backend decision text uses one.
 - **Prices** from Octopus Energy or any mapped entity, an Octopus tariff
   catalogue and a fully manual tariff mode.
 - **Solcast forecast analysis** with history.
@@ -60,7 +56,7 @@ a single Lovelace card. It is adapted to a Deye inverter exposed through MQTT
   (`power/today/24h/week/month`), battery sign convention in power mode
   (positive = discharging, negative = charging; display flipped), W/kW
   formatting (`<10000 W` in watts, `>=10000 W` in kW), power-mode home load
-  calculated like Energy Status “House (Loads)”, theme-aware node images with
+  calculated from PV, grid and battery power, theme-aware node images with
   coloured active glow, an SOC bar on the Battery node coloured by charge level,
   and per-node click to open Home Assistant more-info. A summary row above the
   four main nodes shows Overall grid (import/export power), Electricity (import
@@ -68,9 +64,8 @@ a single Lovelace card. It is adapted to a Deye inverter exposed through MQTT
   and income today), with both values in each widget sharing the same font
   format. The period selector is pinned to the top-right corner inside the
   diagram outline; the header shows only the title and live timestamp. Energy
-  period values keep the kWh unit on the same row. Flow links use the same
-  Energy Status
-  card: a fixed 1px-dot/22px-gap stream scrolls along the whole link at a speed
+  period values keep the kWh unit on the same row. Flow links use a fixed
+  1px-dot/22px-gap stream that scrolls along the whole link at a speed
   set by the `flow_animation_speed` config option (default 6), with a tighter
   `1 18` variant on small screens. The direction is taken from the flow itself
   so the arrowhead and dot movement always agree, and both disappear at idle
@@ -159,9 +154,8 @@ response-only services expose the same behaviour:
 `deye_energy.apply_inverter_configuration_group` (fields `group` and `values`).
 
 The three battery/grid current limits live in **Battery settings in inverter**
-and are the only direct write path for those entities. Work Schedule, profiles,
-defaults, manual sell/charge, optimizer plans and automatic reconciliation never
-write them.
+and are the only direct write path for those entities. Schedule slots, profiles,
+defaults, manual sell/charge and automatic reconciliation never write them.
 
 **Inverter time sync**: The Inverter configuration card shows inverter and Home
 Assistant time. Use **Sync now** to write the current Home Assistant time to the
@@ -189,47 +183,11 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.0.87
+    - url: /deye_energy/deye-energy-card.js?v=0.8.0.88
       type: module
 ```
 
 See [INSTALL.md](INSTALL.md) for the full procedure.
-
-## Energy status
-
-The Energy status page has a desktop flow panel and a compact mobile panel.
-Both are driven by the same backend-owned role catalog, grouped as PV, Grid,
-Battery, Home, Inverter and Values.
-
-Open **Settings → Energy status sensors** to change how readings are sourced
-and displayed:
-
-- use **Enable PV generation** (`pv_enabled`, default on) to include or exclude
-  PV from the system. When disabled, PV is removed from the Energy status
-  desktop/mobile layout and treated as unavailable/zero in Energy status flows,
-  telemetry, forecasts and energy state.
-  When enabled, behavior and layout are unchanged.
-- enter a source entity for a role to override its automatic mapping; leave it
-  blank to keep the current entity;
-- untick **Visible** to hide that reading from the Energy status page. PV sensor
-  mappings/visibility rows remain configurable but are ignored while PV
-  generation is disabled;
-- select **Save PV** in the PV generation row to persist only the PV generation
-  setting, or **Save sensor display** to persist the full choices through the
-  `deye_energy.save_energy_status_display` service (`pv_enabled`, `mappings`,
-  `visibility`). Unknown roles are rejected. The updated integration must be
-  installed and Home Assistant restarted before this editor is available.
-
-Additional presentation details:
-
-- power values are shown in **W** below 10 kW and in **kW** at or above it;
-- the executed and manager status panels show `Source: Schedule slots` or
-  `Source: Manual schedule`, so it is always clear which schedule produced the
-  current decision;
-- the active slot indicator follows the same active source, including the
-  minute-level handling around midnight;
-- the **Sold today** tile under **Deye inverter** uses a pound (£) icon, and its
-  energy and value remain available as separate `kWh` and `GBP` readings.
 
 ## Stored slots and manual schedules
 
@@ -262,7 +220,7 @@ ignored when older data is loaded or saved.
 
 ## Deye Time Of Use
 
-The **Deye Time Of Use** tab on the Settings and diagnostics page maps the full
+The **Deye Time Of Use** tab on the schedule page maps the full
 day onto six physical Deye ranges. All six rows are edited directly in the
 table — there is no separate overlay or second mapping tab. From and To times,
 Mode, Charge, Sell, Power, Voltage and SOC are inline controls; the first From
@@ -308,10 +266,10 @@ enter your own values in the card under **Settings → Tariff and distribution**
 ### Known limitations of the tariff engine
 
 - the daily **standing charge** (56.61 p/day) is not modelled;
-- the schedule and the physical TOU ranges use half-hour slots, but the optimizer,
-  the price rows and the manual tariff engine still work in whole hours, so the
-  23:30 and 05:30 edges of the off-peak window are priced as 23:00–05:00 (the TOU
-  ranges themselves can start at 23:30 and 05:30);
+- the schedule and the physical TOU ranges use half-hour slots, but the price
+  rows and the manual tariff engine still work in whole hours, so the 23:30 and
+  05:30 edges of the off-peak window are priced as 23:00–05:00 (the TOU ranges
+  themselves can start at 23:30 and 05:30);
 - there is no manual flat export rate (for example a fixed 12 p/kWh): export
   value comes from the export price entity you map;
 - Intelligent Octopus Go dispatch slots are not used for pricing.

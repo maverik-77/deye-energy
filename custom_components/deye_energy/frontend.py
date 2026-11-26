@@ -14,7 +14,7 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 CARD_FILENAME = "deye-energy-card.js"
-CARD_RESOURCE_REVISION = "0.8.0.87"
+CARD_RESOURCE_REVISION = "0.8.0.88"
 CARD_STATIC_ROOT = f"/{DOMAIN}"
 CARD_RESOURCE_PATH = f"{CARD_STATIC_ROOT}/{CARD_FILENAME}"
 CARD_RESOURCE_URL = f"{CARD_RESOURCE_PATH}?v={CARD_RESOURCE_REVISION}"
@@ -225,12 +225,19 @@ def _schedule_started_followup(hass: Any, state: dict[str, Any]) -> bool:
     def _started(_event: Any) -> None:
         state["resource_deferred"] = False
         state.pop("resource_unsubscribe", None)
+        existing = state.get("followup_task")
+        if existing is not None and not existing.done():
+            return
         creator = getattr(hass, "async_create_task", None)
         coroutine = _followup()
-        if callable(creator):
-            creator(coroutine)
-        else:
-            asyncio.create_task(coroutine)
+        task = creator(coroutine) if callable(creator) else asyncio.create_task(coroutine)
+        state["followup_task"] = task
+
+        def _clear(done: Any) -> None:
+            if state.get("followup_task") is done:
+                state["followup_task"] = None
+
+        task.add_done_callback(_clear)
 
     state["resource_deferred"] = True
     state["resource_unsubscribe"] = listen_once(HOMEASSISTANT_STARTED_EVENT, _started)
@@ -245,6 +252,10 @@ def cancel_frontend_followup(hass: Any) -> None:
     unsubscribe = state.pop("resource_unsubscribe", None)
     if callable(unsubscribe):
         unsubscribe()
+    task = state.pop("followup_task", None)
+    if task is not None and not task.done():
+        task.cancel()
+    state["followup_task"] = None
     state["resource_deferred"] = False
 
 

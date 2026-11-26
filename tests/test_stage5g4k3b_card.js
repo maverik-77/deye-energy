@@ -67,7 +67,7 @@ const canonical = {
   },
 };
 card._hass = { states: {
-  "sensor.deye_energy_ai_state": { attributes: { planner_48h: { canonical_prices: canonical } } },
+  "sensor.deye_energy_tariff_status": { attributes: { price_diagnostics: canonical } },
 } };
 check(card.canonicalPriceMaps("buy")[0].size === 0, "unmapped BUY must have no canonical rows");
 check(card.canonicalPriceMaps("sell")[0].size === 24, "independent Octopus SELL Today must remain available");

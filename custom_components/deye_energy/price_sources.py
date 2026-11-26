@@ -2,7 +2,7 @@
 
 This module is deliberately Home-Assistant independent.  The runtime supplies
 plain state snapshots and receives deterministic, JSON-serialisable rows which
-are shared by Optimizer Core and the frontend.
+are shared by the Deye Energy runtime and the frontend.
 """
 
 from __future__ import annotations

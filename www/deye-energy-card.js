@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.0.87
+// Resource revision: v=0.8.0.88
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -39,6 +39,9 @@ class DeyeEnergyCard extends HTMLElement {
     this._inverterDatetimeMessage = "";
     this._scrollTops = {};
     this._pageScrollTops = [];
+    this._scrollRestoreFrame = null;
+    this._scrollRestoreTimer = null;
+    this._optimisticClearTimers = new Set();
     this._interactionRelease = null;
     this._isRendered = false;
     this._optimisticStates = {};
@@ -61,10 +64,6 @@ class DeyeEnergyCard extends HTMLElement {
     this._bulkEditFields = null;
     this._bulkApplying = false;
     this._settingsTab = "defaults";
-    this._energyStatusDraft = null;
-    this._energyStatusMessage = "";
-    this._energyStatusDisplaySource = null;
-    this._energyStatusDisplayCache = {};
     this._scheduleTab = "manual";
     this._historyFilters = { from: "", to: "", type: "all" };
     this._updateFrame = null;
@@ -106,7 +105,6 @@ class DeyeEnergyCard extends HTMLElement {
       grid_gap: 16,
       section: null,
       sections: {
-        status_energy: true,
         prices: true,
         solcast: true,
         schedule: true,
@@ -149,9 +147,8 @@ class DeyeEnergyCard extends HTMLElement {
       allow_horizontal_scroll: asBool(cfg.allow_horizontal_scroll, defaults.allow_horizontal_scroll),
       grid_columns: cfg.grid_columns === null || cfg.grid_columns === undefined ? defaults.grid_columns : asNumber(cfg.grid_columns, defaults.grid_columns, 1, 6),
       grid_gap: asNumber(cfg.grid_gap, defaults.grid_gap, 0, 64),
-      section: asString(cfg.section, defaults.section, ["status_energy", "prices", "solcast", "schedule", "sales_stats", "settings"]),
+      section: asString(cfg.section, defaults.section, ["prices", "solcast", "schedule", "sales_stats", "settings"]),
       sections: {
-        status_energy: asBool(cfg.sections?.status_energy, defaults.sections.status_energy),
         prices: asBool(cfg.sections?.prices, defaults.sections.prices),
         solcast: asBool(cfg.sections?.solcast, defaults.sections.solcast),
         schedule: asBool(cfg.sections?.schedule, defaults.sections.schedule),
@@ -200,13 +197,6 @@ class DeyeEnergyCard extends HTMLElement {
     return layout;
   }
 
-  getGridOptions() {
-    return {
-      columns: "full",
-      min_columns: 3,
-    };
-  }
-
   connectedCallback() {
     if (!this._dialogCloseHandler) {
       this._dialogCloseHandler = (event) => {
@@ -238,19 +228,6 @@ class DeyeEnergyCard extends HTMLElement {
       this._touchMoveInteractionHandler = () => this.holdInteraction(1300);
       this.addEventListener("touchmove", this._touchMoveInteractionHandler, { passive: true });
     }
-    if (!this._flowResizeHandler) {
-      this._flowResizeHandler = () => this.scaleFlowPanel();
-      window.addEventListener("resize", this._flowResizeHandler);
-      window.setTimeout(() => this.scaleFlowPanel(), 100);
-    }
-    if (!this._flowResizeObserver && typeof ResizeObserver !== "undefined") {
-      this._flowResizeObserver = new ResizeObserver((entries) => {
-        const width = entries[0]?.contentRect?.width || 0;
-        if (!width || Math.abs(width - (this._flowObservedWidth || 0)) < 0.5) return;
-        this._flowObservedWidth = width;
-        this.scaleFlowPanel();
-      });
-    }
     if (!this._focusInInteractionHandler) {
       this._focusInInteractionHandler = () => {
         window.clearTimeout(this._interactionRelease);
@@ -266,14 +243,19 @@ class DeyeEnergyCard extends HTMLElement {
 
   disconnectedCallback() {
     if (this._updateFrame) cancelAnimationFrame(this._updateFrame);
-    if (this._flowResizeHandler) {
-      window.removeEventListener("resize", this._flowResizeHandler);
-      this._flowResizeHandler = null;
-    }
-    this._flowResizeObserver?.disconnect();
-    this._flowResizeObserver = null;
-    this._flowObservedWrapper = null;
-    this._flowObservedWidth = 0;
+    if (this._scrollRestoreFrame) cancelAnimationFrame(this._scrollRestoreFrame);
+    this._scrollRestoreFrame = null;
+    if (this._scrollRestoreTimer) window.clearTimeout(this._scrollRestoreTimer);
+    this._scrollRestoreTimer = null;
+    this._optimisticClearTimers.forEach((timer) => window.clearTimeout(timer));
+    this._optimisticClearTimers.clear();
+    window.clearTimeout(this._saveStatusTimer);
+    this._saveStatusTimer = null;
+    this.querySelectorAll("[data-scroll-key]").forEach((el) => {
+      el._demScrollController?.abort();
+      el._demScrollController = null;
+    });
+    this._pageScrollTops = [];
     if (this._dialogEscapeHandler) {
       this.ownerDocument?.removeEventListener("keydown", this._dialogEscapeHandler);
       this._dialogEscapeHandler = null;
@@ -298,8 +280,11 @@ class DeyeEnergyCard extends HTMLElement {
       this.removeEventListener("focusout", this._focusOutInteractionHandler);
       this._focusOutInteractionHandler = null;
     }
+    if (this._dialogCloseHandler) {
+      this.removeEventListener("click", this._dialogCloseHandler);
+      this._dialogCloseHandler = null;
+    }
     window.clearTimeout(this._interactionRelease);
-    window.clearTimeout(this._saveStatusTimer);
   }
 
   closeDialog() {
@@ -328,13 +313,6 @@ class DeyeEnergyCard extends HTMLElement {
       if (touSignature !== this._lastTouDiagnosticsSignature) {
         this._lastTouDiagnosticsSignature = touSignature;
         if (this._scheduleTab === "tou" && !this._dialog) this.requestScheduleRender();
-      }
-      const energyStatusSignature = JSON.stringify(this.energyStatusDisplay() || {});
-      if (this._lastEnergyStatusSignature === undefined) {
-        this._lastEnergyStatusSignature = energyStatusSignature;
-      } else if (energyStatusSignature !== this._lastEnergyStatusSignature) {
-        this._lastEnergyStatusSignature = energyStatusSignature;
-        if (this.requestScheduleRender()) return;
       }
       const scheduleSignature = this.scheduleStateSignature();
       if (scheduleSignature !== this._lastScheduleSignature) {
@@ -445,8 +423,17 @@ class DeyeEnergyCard extends HTMLElement {
       });
     };
     restore();
-    requestAnimationFrame(restore);
-    window.setTimeout(restore, 0);
+    if (!this.isConnected) return;
+    if (this._scrollRestoreFrame) cancelAnimationFrame(this._scrollRestoreFrame);
+    if (this._scrollRestoreTimer) window.clearTimeout(this._scrollRestoreTimer);
+    this._scrollRestoreFrame = requestAnimationFrame(() => {
+      this._scrollRestoreFrame = null;
+      restore();
+    });
+    this._scrollRestoreTimer = window.setTimeout(() => {
+      this._scrollRestoreTimer = null;
+      restore();
+    }, 0);
   }
 
   restoreScrollPositions() {
@@ -459,17 +446,19 @@ class DeyeEnergyCard extends HTMLElement {
   }
 
   attachScrollHandlers(el) {
-    if (!el || el._demScrollBound) return;
-    el._demScrollBound = true;
+    if (!el || el._demScrollController) return;
+    const controller = new AbortController();
+    const signal = controller.signal;
+    el._demScrollController = controller;
     el.addEventListener("scroll", () => {
       this._scrollTops[el.dataset.scrollKey] = el.scrollTop;
       this.holdInteraction(900);
-    }, { passive: true });
-    el.addEventListener("wheel", () => this.holdInteraction(900), { passive: true });
-    el.addEventListener("touchstart", () => this.holdInteraction(1200), { passive: true });
-    el.addEventListener("touchmove", () => this.holdInteraction(1200), { passive: true });
-    el.addEventListener("pointerenter", () => this.holdInteraction(900));
-    el.addEventListener("pointerleave", () => this.releaseInteraction(350));
+    }, { passive: true, signal });
+    el.addEventListener("wheel", () => this.holdInteraction(900), { passive: true, signal });
+    el.addEventListener("touchstart", () => this.holdInteraction(1200), { passive: true, signal });
+    el.addEventListener("touchmove", () => this.holdInteraction(1200), { passive: true, signal });
+    el.addEventListener("pointerenter", () => this.holdInteraction(900), { signal });
+    el.addEventListener("pointerleave", () => this.releaseInteraction(350), { signal });
   }
 
   setText(selector, value) {
@@ -537,8 +526,7 @@ class DeyeEnergyCard extends HTMLElement {
     const sellActive = schedulerOn && statusUpper.includes("SCHEDULE") && !defaultsActive;
     const stopActive = statusUpper.includes("STOP") || this.state(controlMode) === "Stop Sell" || (!schedulerOn && (statusUpper.includes("IDLE") || lastActionUpper.includes("RESTORED") || lastActionUpper.includes("STOP")));
     const defaultButtonActive = defaultsActive && !stopActive;
-    const pvEnabled = this.pvGenerationEnabled();
-    const pvValue = pvEnabled ? (this.asNumber(this.state(this.energyStatusEntity("pv_power")), 0) || 0) : 0;
+    const pvValue = this.asNumber(this.state(this.energyStatusEntity("pv_power")), 0) || 0;
     const gridValue = this.asNumber(this.state(this.energyStatusEntity("grid_power")), 0) || 0;
     const batteryValue = this.asNumber(this.state(this.energyStatusEntity("battery_power")), 0) || 0;
     const loadValue = this.calculatedHouseLoad(pvValue, gridValue, batteryValue);
@@ -550,12 +538,7 @@ class DeyeEnergyCard extends HTMLElement {
     const batteryDirectionText = batteryValue < -1 ? `Charging ${formatKw(Math.abs(batteryValue))}` : batteryValue > 1 ? `Discharging ${formatKw(batteryValue)}` : `Idle`;
 
     const fmtNum = (v, d = 1) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : v.toFixed(d);
-    const detailed = (key, fallback = null) => {
-      if (!pvEnabled && (key === "pv_power" || key === "daily_pv_production" || key.startsWith("pv1_") || key.startsWith("pv2_"))) {
-        return fallback !== null ? fallback : (key === "pv_power" || key === "daily_pv_production" ? 0 : null);
-      }
-      return this.asNumber(this.state(this.energyStatusEntity(key)), fallback);
-    };
+    const detailed = (key, fallback = null) => this.asNumber(this.state(this.energyStatusEntity(key)), fallback);
     const singlePhase = this.layoutConfig().phase_count === 1;
     const gridL1Live = singlePhase
       ? this.singlePhaseValue(detailed("grid_l1_power"), detailed("grid_power"))
@@ -624,9 +607,6 @@ class DeyeEnergyCard extends HTMLElement {
     this.setClass("[data-live='manager-mode']", safeModeClass(managerModeClass), "", false);
     this.setClass("[data-live='deye-mode']", safeModeClass(currentModeMeta.cls), "", false);
 
-    this.updateFlowLines();
-    this.scaleFlowPanel();
-
     this.querySelector("[data-action='sell']")?.classList.toggle("active", sellActive);
     this.querySelector("[data-action='stop']")?.classList.toggle("active", stopActive);
     this.querySelector("[data-action='defaults']")?.classList.toggle("active", defaultButtonActive);
@@ -659,11 +639,6 @@ class DeyeEnergyCard extends HTMLElement {
     const canonicalSellNow = this.canonicalPriceMaps("sell")[0].get(currentHour);
     this.setText("[data-live='sell-now']", `${this.formatPrice(canonicalSellNow)} GBP/kWh`);
     this.updatePriceTable("sell-prices", sellPriceToday, sellPriceTomorrow, priceThreshold, true);
-
-    this.setText("[data-live='target-mode']", this.state(this.entity("sensor", "target_mode")));
-    this.setText("[data-live='target-sell-power']", `${this.state(this.entity("sensor", "target_sell_power"))} W`);
-    this.setText("[data-live='current-mode']", this.state(this.entity("sensor", "current_work_mode")));
-    this.setText("[data-live='current-sell-power']", `${this.state(this.entity("sensor", "current_sell_power"))} W`);
 
     const canonicalBuyNow = this.canonicalPriceMaps("buy")[0].get(currentHour);
     this.setText("[data-live='buy-now']", `${this.formatPrice(canonicalBuyNow)} GBP/kWh`);
@@ -736,31 +711,8 @@ class DeyeEnergyCard extends HTMLElement {
     return this.entity(domain, fallbackSuffix);
   }
 
-  energyStatusDisplay() {
-    const state = this._hass?.states?.[this.entity("sensor", "ai_state")];
-    const display = state?.attributes?.energy_status_display;
-    if (!display || typeof display !== "object" || Array.isArray(display)) return {};
-    if (this._energyStatusDisplaySource === display) return this._energyStatusDisplayCache;
-    this._energyStatusDisplaySource = display;
-    this._energyStatusDisplayCache = display;
-    return display;
-  }
-
-  energyStatusVisible(role) {
-    const visibility = this.energyStatusDisplay().visibility;
-    if (!visibility || typeof visibility[role] !== "boolean") return true;
-    return visibility[role];
-  }
-
   energyStatusEntity(role) {
-    const mapping = this.energyStatusDisplay().mappings?.[role];
-    if (typeof mapping === "string" && mapping.trim()) return mapping.trim();
     return this.configuredEntity(role, "sensor", role);
-  }
-
-  pvGenerationEnabled() {
-    const display = this.energyStatusDisplay();
-    return !Object.prototype.hasOwnProperty.call(display, "pv_enabled") || Boolean(display.pv_enabled);
   }
 
   firstExistingEntity(...ids) {
@@ -868,12 +820,6 @@ class DeyeEnergyCard extends HTMLElement {
     return number === null ? "missing" : number.toFixed(digits);
   }
 
-  formatSignedMoney(value) {
-    const number = this.asNumber(value);
-    if (number === null) return "no data";
-    return `${number >= 0 ? "+" : ""}${number.toFixed(2)} £`;
-  }
-
   hourLabel(hour) {
     const start = String(hour).padStart(2, "0");
     const end = String((hour + 1) % 24).padStart(2, "0");
@@ -957,133 +903,6 @@ class DeyeEnergyCard extends HTMLElement {
     return this.priceSlotFromValue(value, fallback).hour;
   }
 
-  priceFromObject(item) {
-    if (!item || typeof item !== "object") return null;
-    const keys = [
-      "price", "value", "state", "amount", "total", "net_price", "gross_price",
-      "energy_price", "unit_price", "price_with_tax", "gbp_kwh", "gbp_per_kwh",
-      "sell_price", "buy_price", "gbp", "rate", "rates"
-    ];
-    for (const key of keys) {
-      if (item[key] !== undefined) {
-        const value = this.asNumber(item[key]);
-        if (value !== null) return value;
-      }
-    }
-    return null;
-  }
-
-  timeFromObject(item) {
-    if (!item || typeof item !== "object") return null;
-    const keys = [
-      "hour", "start", "from", "time", "date", "datetime", "timestamp", "period", "label", "name",
-      "start_time", "starts_at", "valid_from", "valid_from_date", "begin", "od"
-    ];
-    for (const key of keys) {
-      if (item[key] !== undefined) return item[key];
-    }
-    return null;
-  }
-
-  addPriceCandidate(candidates, item, fallbackHour = null) {
-    let slot = { date: null, hour: null };
-    let hour = null;
-    let price = null;
-    if (Array.isArray(item)) {
-      slot = this.priceSlotFromValue(item[0], fallbackHour);
-      hour = slot.hour;
-      price = this.asNumber(item[1]);
-    } else if (item && typeof item === "object") {
-      slot = this.priceSlotFromValue(this.timeFromObject(item), fallbackHour);
-      hour = slot.hour;
-      price = this.priceFromObject(item);
-    } else {
-      hour = fallbackHour;
-      price = this.asNumber(item);
-    }
-    if (hour !== null && price !== null) candidates.push({ date: slot.date, hour, price });
-  }
-
-  readPriceCandidates(entityId, allowStateFallback = true) {
-    const entity = this._hass?.states?.[entityId];
-    const candidates = [];
-    if (!entity) return candidates;
-
-    const parseSource = (source) => {
-      if (source === null || source === undefined) return;
-      if (Array.isArray(source)) {
-        source.forEach((item, index) => this.addPriceCandidate(candidates, item, index < 24 ? index : null));
-        return;
-      }
-      if (typeof source === "object") {
-        Object.entries(source).forEach(([key, value], index) => {
-          if (value && typeof value === "object" && !Array.isArray(value)) {
-            this.addPriceCandidate(candidates, { ...value, hour: value.hour ?? key }, index < 24 ? index : null);
-          } else {
-            this.addPriceCandidate(candidates, [key, value], index < 24 ? index : null);
-          }
-        });
-      }
-    };
-
-    const attrs = entity.attributes || {};
-    [
-      attrs.prices, attrs.price, attrs.today, attrs.tomorrow, attrs.hourly, attrs.hours,
-      attrs.data, attrs.values, attrs.items, attrs.entries, attrs.forecast,
-      attrs.raw_today, attrs.raw_tomorrow, attrs.source, attrs.price_list, attrs.hourly_prices,
-      attrs.prices_today, attrs.prices_tomorrow, attrs.today_prices, attrs.tomorrow_prices,
-      attrs.sell_prices, attrs.buy_prices, attrs.ceny, attrs.ceny_godzinowe, attrs.energy_prices
-    ].forEach(parseSource);
-
-    if (candidates.length === 0 && allowStateFallback) {
-      Object.entries(attrs).forEach(([key, value], index) => {
-        if (this.hourFromValue(key) !== null || Array.isArray(value) || (value && typeof value === "object")) {
-          parseSource({ [key]: value });
-        }
-      });
-    }
-
-    if (candidates.length === 0) {
-      const currentHour = this.localDateTimeParts()?.hour ?? new Date().getHours();
-      const stateValue = this.asNumber(entity.state);
-      if (stateValue !== null) candidates.push({ date: null, hour: currentHour, price: stateValue });
-    }
-    return candidates;
-  }
-
-  readPriceMap(entityId, allowStateFallback = true) {
-    const map = new Map();
-    this.readPriceCandidates(entityId, allowStateFallback).forEach(({ hour, price }) => {
-      if (!map.has(hour)) map.set(hour, price);
-    });
-    return map;
-  }
-
-  readPriceMaps(todayEntityId, tomorrowEntityId, reference = new Date()) {
-    const maps = [new Map(), new Map()];
-    const today = this.localDateTimeParts(reference)?.date;
-    const dayOffset = (localDate) => {
-      if (!today || !localDate) return null;
-      const parse = (text) => {
-        const [year, month, day] = text.split("-").map(Number);
-        return Date.UTC(year, month - 1, day);
-      };
-      return Math.round((parse(localDate) - parse(today)) / 86400000);
-    };
-    [
-      [todayEntityId, true],
-      [tomorrowEntityId, false],
-    ].forEach(([entityId, allowFallback], sourceDay) => {
-      this.readPriceCandidates(entityId, allowFallback).forEach(({ date, hour, price }) => {
-        const bucket = date === null ? sourceDay : dayOffset(date);
-        if ((bucket === 0 || bucket === 1) && !maps[bucket].has(hour)) {
-          maps[bucket].set(hour, price);
-        }
-      });
-    });
-    return maps;
-  }
-
   priceCell(value, threshold = 0, highIsGood = true) {
     const number = this.asNumber(value);
     if (number === null) return `<span class="price missing">missing</span>`;
@@ -1128,17 +947,6 @@ class DeyeEnergyCard extends HTMLElement {
     const number = this.asNumber(value);
     if (number === null) return "missing";
     return `${number > 0 ? "+" : ""}${number.toFixed(2)} kWh`;
-  }
-
-  formatTimeShort(value) {
-    const text = String(value ?? "");
-    if (!text || text === "unknown" || text === "unavailable" || text === "missing") return "missing";
-    const date = new Date(text);
-    if (!Number.isNaN(date.getTime())) {
-      return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    }
-    const match = text.match(/(\d{1,2}):(\d{2})/);
-    return match ? `${match[1].padStart(2, "0")}:${match[2]}` : text;
   }
 
   forecastFromObject(item) {
@@ -1836,7 +1644,7 @@ class DeyeEnergyCard extends HTMLElement {
     this._slotDiscardPrompt = false;
     this._dialog = null;
     this._interacting = false;
-    this.render();
+    if (this.isConnected) this.render();
   }
 
   syncSlotEditorAfterHass() {
@@ -1870,11 +1678,11 @@ class DeyeEnergyCard extends HTMLElement {
     if (!success) {
       this._slotSaving = false;
       this._slotSaveError = this._saveMessage || "Could not save the schedule";
-      this.renderDialogOnly();
+      if (this.isConnected) this.renderDialogOnly();
       return false;
     }
     this._slotAwaitingRefresh = { key: this._slotEditDraft.key, patch };
-    if (!this.syncSlotEditorAfterHass()) this.renderDialogOnly();
+    if (!this.syncSlotEditorAfterHass() && this.isConnected) this.renderDialogOnly();
     return true;
   }
 
@@ -2192,12 +2000,15 @@ class DeyeEnergyCard extends HTMLElement {
     const request = this.callService(domain, service, data);
     return Promise.resolve(request).then(() => {
       this.finishSave();
-      window.setTimeout(() => {
+      const timer = window.setTimeout(() => {
+        this._optimisticClearTimers.delete(timer);
+        if (!this.isConnected) return;
         if (Object.prototype.hasOwnProperty.call(this._optimisticStates, entityId)) {
           delete this._optimisticStates[entityId];
           this.updateToggleButtons();
         }
       }, 15000);
+      this._optimisticClearTimers.add(timer);
       return true;
     }).catch((error) => {
       this.failSave(entityId, error);
@@ -2447,34 +2258,6 @@ class DeyeEnergyCard extends HTMLElement {
     const cls = state === "on" ? "on" : state === "off" ? "off" : "missing";
     const label = text || (state === "on" ? "yes" : state === "off" ? "no" : "missing");
     return `<button class="pill ${cls}" data-toggle="${entityId}" ${this.exists(entityId) ? "" : "disabled"}>${label}</button>`;
-  }
-
-  selectInput(entityId, fallbackOptions = []) {
-    const current = this.displayState(entityId, "");
-    const options = this.options(entityId, fallbackOptions);
-    const merged = options.includes(current) || !current ? options : [current, ...options];
-    return `<select data-select="${entityId}" ${this.exists(entityId) ? "" : "disabled"}>
-      ${merged.map((option) => `<option value="${this.escapeHtml(option)}" ${option === current ? "selected" : ""}>${this.escapeHtml(this.slotModeLabel(option))}</option>`).join("")}
-    </select>`;
-  }
-
-  numberInput(entityId, unit = "") {
-    return `<label class="field">
-      <input data-number="${this.escapeHtml(entityId)}" type="text" inputmode="decimal" value="${this.escapeHtml(this.numberState(entityId))}" ${this.exists(entityId) ? "" : "disabled"}>
-      <span>${this.escapeHtml(unit)}</span>
-    </label>`;
-  }
-
-  touSocInput(entityId) {
-    // A missing physical TOU SOC is intentionally not shown as zero.  Zero is
-    // valid only when the user explicitly enters it and the Deye entity allows
-    // it; migration never guesses this physical setting.
-    const state = this.displayState(entityId, "");
-    const known = state && !["unknown", "unavailable", "None", "null"].includes(state);
-    return `<label class="field">
-      <input data-number="${this.escapeHtml(entityId)}" type="text" inputmode="decimal" value="${this.escapeHtml(known ? state : "")}" placeholder="requires confirmation" ${this.exists(entityId) ? "" : "disabled"}>
-      <span>%</span>
-    </label>`;
   }
 
   chargeProfileInput(name, entityId, unit = "") {
@@ -2798,7 +2581,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.87 (resource revision v=0.8.0.87)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.0.88 (resource revision v=0.8.0.88)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -2819,8 +2602,7 @@ class DeyeEnergyCard extends HTMLElement {
 
   canonicalPriceData(planner = null) {
     if (planner?.canonical_prices?.schema_version === 1) return planner.canonical_prices;
-    const aiState = this._hass?.states?.[this.entity("sensor", "ai_state")];
-    const backend = aiState?.attributes?.planner_48h?.canonical_prices;
+    const backend = this.tariffData().price_diagnostics;
     return backend?.schema_version === 1 ? backend : { schema_version: 1, buy: { rows: [] }, sell: { rows: [] } };
   }
 
@@ -2850,13 +2632,6 @@ class DeyeEnergyCard extends HTMLElement {
       recommended: "Recommended import", restriction: "Recommended restriction", normal: "Other hours",
       other: "Other hours", dynamic_unavailable: "No dynamic signal",
     }[zone] || String(zone || "missing");
-  }
-
-  localDateKey(date = new Date()) {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-    return `${year}-${month}-${day}`;
   }
 
   collectTariffDraft() {
@@ -3023,147 +2798,6 @@ class DeyeEnergyCard extends HTMLElement {
       this._tariffSaveStatus = `Save error: ${error?.message || error}`;
     }
     this.render();
-  }
-
-  renderEnergyStatusTab() {
-    const display = this.energyStatusDisplay();
-    const roles = Array.isArray(display.roles) ? display.roles : [];
-    if (!roles.length) {
-      return `<h3>Energy status sensors</h3>
-        <div class="hint">This editor needs the updated Deye Energy integration. Install the update and restart Home Assistant, then reopen Settings.</div>`;
-    }
-    const pvEnabled = !Object.prototype.hasOwnProperty.call(display, "pv_enabled") || Boolean(display.pv_enabled);
-    const draft = this._energyStatusDraft || {
-      pv_enabled: pvEnabled,
-      mappings: display.mappings && typeof display.mappings === "object" ? display.mappings : {},
-      visibility: display.visibility && typeof display.visibility === "object" ? display.visibility : {},
-    };
-    if (!Object.prototype.hasOwnProperty.call(draft, "pv_enabled")) draft.pv_enabled = pvEnabled;
-    const groups = new Map();
-    roles.forEach((role) => {
-      if (!role || typeof role.key !== "string" || !role.key) return;
-      const group = String(role.group || "Other");
-      if (!groups.has(group)) groups.set(group, []);
-      groups.get(group).push(role);
-    });
-    const sections = [...groups.entries()].map(([group, rows]) => `
-      <section class="diagnostic-section">
-        <h3>${this.escapeHtml(group)}</h3>
-        ${rows.map((role) => {
-          const key = role.key;
-          const label = this.escapeHtml(role.label || key);
-          const current = this.configuredEntity(key, "sensor", key);
-          const mapping = Object.prototype.hasOwnProperty.call(draft.mappings, key)
-            ? String(draft.mappings[key] ?? "") : "";
-          const visible = Object.prototype.hasOwnProperty.call(draft.visibility, key)
-            ? Boolean(draft.visibility[key]) : true;
-          return `<div class="energy-status-row">
-            <span class="energy-status-label">${label}</span>
-            <input type="text" data-energy-role-field="mapping" data-energy-role="${this.escapeHtml(key)}" value="${this.escapeHtml(mapping)}" placeholder="${this.escapeHtml(current)}" aria-label="Source entity for ${label}">
-            <label class="energy-status-visible"><input type="checkbox" data-energy-role-field="visible" data-energy-role="${this.escapeHtml(key)}"${visible ? " checked" : ""}> Visible</label>
-          </div>`;
-        }).join("")}
-      </section>`).join("");
-    return `<style>
-.energy-status-row{display:grid;grid-template-columns:minmax(120px,1fr) minmax(180px,2fr) auto;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid rgba(95,148,177,.15)}
-.energy-status-row input[type="text"]{width:100%;box-sizing:border-box}
-.energy-status-visible{white-space:nowrap;display:flex;align-items:center;gap:6px}
-.energy-status-actions{display:flex;align-items:center;gap:12px;margin-top:14px;padding:12px 2px 4px}
-.energy-status-actions button,.energy-status-toggle button{border:1px solid var(--line2);border-radius:8px;background:#173a57;color:#fff;min-height:38px;padding:0 16px;cursor:pointer}
-.energy-status-actions button.primary,.energy-status-toggle button.primary{background:linear-gradient(180deg,#0b7eee,#075bc0);border-color:#159bff;color:#fff}
-.energy-status-general{margin-bottom:12px}
-.energy-status-toggle{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 14px;border:1px solid rgba(95,148,177,.28);border-radius:8px;background:rgba(255,255,255,.02)}
-.energy-status-toggle label{display:flex;align-items:center;gap:10px;cursor:pointer;font-weight:700;color:#eaf4f9}
-.energy-status-toggle input{width:18px;height:18px}
-      </style>
-      <h3>Energy status sensors</h3>
-      <section class="diagnostic-section energy-status-general">
-        <h3>PV generation</h3>
-        <div class="energy-status-toggle">
-          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-            <label><input type="checkbox" data-energy-pv-enabled="1"${draft.pv_enabled ? " checked" : ""}> Enable PV generation</label>
-            <button type="button" class="primary" data-save-energy-pv="1">Save PV</button>
-          </div>
-          <span class="hint" style="margin:0;padding:0;border:0;background:transparent">When disabled, PV is removed from Energy status and excluded from AI/plan calculations.</span>
-        </div>
-      </section>
-      <div class="hint">Leave a source entity blank to keep the current automatic mapping. Uncheck Visible to hide that reading from the Energy status page. PV sensor rows are ignored while PV generation is disabled.</div>
-      ${sections}
-      <div class="energy-status-actions"><button type="button" class="primary" data-save-energy-status="1">Save sensor display</button></div>
-      <div class="hint${this._energyStatusMessage ? " defaults-status saved" : ""}" data-energy-status-status>${this.escapeHtml(this._energyStatusMessage)}</div>`;
-  }
-
-  collectEnergyStatusDraft() {
-    const roles = this.energyStatusDisplay().roles;
-    const mappings = {};
-    const visibility = {};
-    (Array.isArray(roles) ? roles : []).forEach((role) => {
-      if (!role || typeof role.key !== "string" || !role.key) return;
-      const input = this.querySelector(`[data-energy-role-field='mapping'][data-energy-role="${role.key}"]`);
-      const checkbox = this.querySelector(`[data-energy-role-field='visible'][data-energy-role="${role.key}"]`);
-      const value = input ? String(input.value || "").trim() : "";
-      if (value) mappings[role.key] = value;
-      visibility[role.key] = checkbox ? Boolean(checkbox.checked) : true;
-    });
-    const pvField = this.querySelector('[data-energy-pv-enabled="1"]');
-    const pv_enabled = pvField ? pvField.checked : this.pvGenerationEnabled();
-    this._energyStatusDraft = { pv_enabled, mappings, visibility };
-    return this._energyStatusDraft;
-  }
-
-  async saveEnergyStatusDisplay() {
-    if (!this.hasService("deye_energy", "save_energy_status_display")) {
-      this._energyStatusMessage = "The save_energy_status_display service is unavailable. Update and restart the integration.";
-      this.renderDialogOnly();
-      return false;
-    }
-    const draft = this.collectEnergyStatusDraft();
-    this.beginSave();
-    try {
-      await this.callService("deye_energy", "save_energy_status_display", { data: JSON.stringify(draft) });
-      this._energyStatusDraft = null;
-      this._energyStatusMessage = "Energy status sensor display saved.";
-      this.finishSave();
-      this.renderDialogOnly();
-      return true;
-    } catch (error) {
-      this._energyStatusMessage = `Save error: ${error?.message || "could not save sensor display"}`;
-      this.failSave("energy_status_display", error);
-      this.renderDialogOnly();
-      return false;
-    }
-  }
-
-  async saveEnergyPvGeneration() {
-    if (!this.hasService("deye_energy", "save_energy_status_display")) {
-      this._energyStatusMessage = "The save_energy_status_display service is unavailable. Update and restart the integration.";
-      this.renderDialogOnly();
-      return false;
-    }
-    const saved = this.energyStatusDisplay();
-    const pvField = this.querySelector('[data-energy-pv-enabled="1"]');
-    const pv_enabled = pvField ? pvField.checked : this.pvGenerationEnabled();
-    const payload = {
-      pv_enabled,
-      mappings: (saved.mappings && typeof saved.mappings === "object") ? { ...saved.mappings } : {},
-      visibility: (saved.visibility && typeof saved.visibility === "object") ? { ...saved.visibility } : {},
-    };
-    this.beginSave();
-    try {
-      await this.callService("deye_energy", "save_energy_status_display", { data: JSON.stringify(payload) });
-      if (this._energyStatusDraft && typeof this._energyStatusDraft === "object") {
-        this._energyStatusDraft.pv_enabled = pv_enabled;
-      }
-      this._energyStatusMessage = "PV generation setting saved.";
-      this.finishSave();
-      this.renderDialogOnly();
-      return true;
-    } catch (error) {
-      this._energyStatusMessage = `Save error: ${error?.message || "could not save PV generation setting"}`;
-      this.failSave("energy_status_display", error);
-      this.renderDialogOnly();
-      return false;
-    }
   }
 
   renderTariffTab() {
@@ -3856,18 +3490,6 @@ class DeyeEnergyCard extends HTMLElement {
     return this._manualScheduleDraft;
   }
 
-  resetManualScheduleDraft() {
-    this._manualScheduleDraft = null;
-    this._manualScheduleOriginal = null;
-    this._manualScheduleStatus = "";
-    this._manualScheduleError = "";
-    this.ensureManualScheduleDraft();
-  }
-
-  manualScheduleDirty() {
-    return JSON.stringify(this.ensureManualScheduleDraft()) !== this._manualScheduleOriginal;
-  }
-
   updateManualScheduleField(index, field, value) {
     const rows = this.ensureManualScheduleDraft();
     const row = rows[index];
@@ -4359,12 +3981,6 @@ class DeyeEnergyCard extends HTMLElement {
     return true;
   }
 
-  timeInput(entityId) {
-    const raw = this.state(entityId, "00:00:00");
-    const value = raw.length >= 5 ? raw.slice(0, 5) : raw;
-    return `<input class="time-input" data-time="${entityId}" type="time" value="${value}" ${this.exists(entityId) ? "" : "disabled"}>`;
-  }
-
   stat(label, value, cls = "", liveKey = "", icon = "") {
     const liveCard = liveKey ? ` data-live-card="${liveKey}"` : "";
     const liveValue = liveKey ? ` data-live="${liveKey}"` : "";
@@ -4411,852 +4027,6 @@ class DeyeEnergyCard extends HTMLElement {
     return date.toLocaleString("en-GB", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
   }
 
-  readAction(rawAction) {
-    const action = String(rawAction || "");
-    const upper = action.toUpperCase();
-    if (!action || action === "missing" || upper === "IDLE") return "No recent action";
-    if (upper.includes("INACTIVE SLOT")) return "Default settings - slot disabled";
-    if (upper.includes("PRICE GUARD")) return "Default settings - price guard";
-    if (upper.includes("DEFAULTS RESTORED")) return "Default settings restored";
-    if (upper.includes("EMERGENCY")) return "Emergency stop executed";
-    if (upper.includes("BLOCKED BY GUARD")) return "Control blocked by a guard";
-    if (upper.includes("CHARGE BLOCKED")) return "Charging blocked";
-    if (upper.includes("APPLIED SCHEDULE")) return "Applied the current schedule slot";
-    if (upper.includes("APPLIED MANUAL SELL")) return "Applied manual selling";
-    if (upper.includes("APPLIED CHARGE BATTERY")) return "Battery charging applied";
-    return action;
-  }
-
-  gridFlow(value) {
-    const power = this.asNumber(value);
-    if (power === null) return "No data";
-    if (power < -1) return `Export ${Math.abs(power).toFixed(0)} W`;
-    if (power > 1) return `Import ${power.toFixed(0)} W`;
-    return "Balance 0 W";
-  }
-
-  batteryFlow(value) {
-    const power = this.asNumber(value);
-    if (power === null) return "No data";
-    if (power < -1) return `Charging ${Math.abs(power).toFixed(0)} W`;
-    if (power > 1) return `Discharging ${power.toFixed(0)} W`;
-    return "Idle 0 W";
-  }
-
-  flowGeometry({
-    tileWidth = 300,
-    tileGap = 28,
-    inverterColumnWidth = 640,
-    inverterVisualWidth = 190,
-    boardHeight = 600,
-    pvEnabled = true,
-  } = {}) {
-    const boardWidth = tileWidth * 2 + inverterColumnWidth + tileGap * 2;
-    const inverterCenterX = tileWidth + tileGap + inverterColumnWidth / 2;
-    const inverterVisualHeight = inverterVisualWidth * (250 / 190);
-    const inverterCenterY = boardHeight / 2;
-    const inverterPortOffsetY = inverterVisualHeight * 0.22;
-    const tileTopY = Math.round(boardHeight * (145 / 600));
-    const tileBottomY = boardHeight - tileTopY;
-    const hasPv = pvEnabled !== false;
-    const gridTileY = tileBottomY;
-    const points = {
-      pvTile: hasPv ? { x: tileWidth, y: tileTopY } : null,
-      gridTile: { x: tileWidth, y: gridTileY },
-      batteryTile: { x: boardWidth - tileWidth, y: tileTopY },
-      homeTile: { x: boardWidth - tileWidth, y: tileBottomY },
-      pvPort: hasPv ? { x: inverterCenterX - inverterVisualWidth / 2, y: inverterCenterY - inverterPortOffsetY } : null,
-      gridPort: {
-        x: inverterCenterX - inverterVisualWidth / 2,
-        y: inverterCenterY + inverterPortOffsetY,
-      },
-      batteryPort: { x: inverterCenterX + inverterVisualWidth / 2, y: inverterCenterY - inverterPortOffsetY },
-      homePort: { x: inverterCenterX + inverterVisualWidth / 2, y: inverterCenterY + inverterPortOffsetY },
-    };
-    const coordinate = (value) => Number(value.toFixed(2));
-    const curve = (start, end) => {
-      if (!start || !end) return "";
-      const controlOffset = (end.x - start.x) * 0.45;
-      return `M${coordinate(start.x)},${coordinate(start.y)} C${coordinate(start.x + controlOffset)},${coordinate(start.y)} ${coordinate(end.x - controlOffset)},${coordinate(end.y)} ${coordinate(end.x)},${coordinate(end.y)}`;
-    };
-    const paths = {
-      pvToInverter: hasPv ? curve(points.pvTile, points.pvPort) : "",
-      batteryToInverter: curve(points.batteryTile, points.batteryPort),
-      inverterToBattery: curve(points.batteryPort, points.batteryTile),
-      gridToInverter: curve(points.gridTile, points.gridPort),
-      inverterToGrid: curve(points.gridPort, points.gridTile),
-      inverterToHome: curve(points.homePort, points.homeTile),
-    };
-    return { boardWidth, boardHeight, points, paths, pvEnabled: hasPv };
-  }
-
-  energyFlowPanel() {
-    const [modeText, modeClass] = this.readMode(this.state(this.entity("sensor", "manager_status")));
-    const activeSlotLabel = this.activeSlotTimeLabel();
-    const currentMode = this.deyeWorkModeState();
-    const currentModeMeta = currentMode ? this.modeMeta(currentMode, true) : { cls: "disabled" };
-    const managerModeClass = this.modeTextClass(modeText);
-    const control = this.controlState();
-    const controlOn = control.enabled;
-    const controlStatus = control.status;
-    const statusAttrs = this.managerStatusAttributes();
-    const scheduleSourceLabel = this.scheduleSourceLabel();
-    const plannedAction = this.state(this.entity("sensor", "planned_manager_action"), statusAttrs.planned_manager_action || "—");
-    const executedAction = this.state(this.entity("sensor", "executed_manager_action"), statusAttrs.executed_manager_action || "—");
-    const layout = this.effectiveLayout();
-    const pvEnabled = this.pvGenerationEnabled();
-    const tileWidth = layout.energy_tile_width;
-    const tileGap = layout.energy_tile_gap;
-    const inverterScale = layout.inverter_scale;
-    const flowSpeed = layout.flow_animation_speed;
-    const inverterColumnWidth = Math.round(640 * inverterScale);
-    const inverterVisualWidth = Math.round(190 * inverterScale);
-    const geometry = this.flowGeometry({ tileWidth, tileGap, inverterColumnWidth, inverterVisualWidth, pvEnabled });
-    const boardWidth = geometry.boardWidth;
-    const panelWidth = boardWidth + 32;
-    const panelHeight = geometry.boardHeight + 168;
-    const tilePadding = tileWidth < 150 ? 8 : tileWidth < 210 ? 12 : 17;
-    const tileIconSize = tileWidth < 150 ? 34 : tileWidth < 210 ? 46 : 60;
-    const tileContentGap = tileWidth < 150 ? 7 : tileWidth < 210 ? 9 : 13;
-    const compactStatus = boardWidth < 900;
-    const statusIconSize = compactStatus ? 36 : 56;
-    const statusGap = compactStatus ? 8 : 15;
-    const statusPadY = compactStatus ? 10 : 15;
-    const statusPadX = compactStatus ? 9 : 19;
-    const flowDuration = Math.max(0.5, 18 / flowSpeed).toFixed(2);
-    const flowOffset = Math.round(220 * flowDuration / 3);
-
-    const st = (key, fallback = null) => this.asNumber(this.state(this.energyStatusEntity(key)), fallback);
-    const esHidden = (role) => (this.energyStatusVisible(role) ? "" : " es-hidden");
-    const esAllHidden = (...roles) => roles.every((role) => !this.energyStatusVisible(role));
-    const esSpan = (role, html) => `<span${esHidden(role)}>${html}</span>`;
-    const pvPower = pvEnabled ? (st("pv_power", 0) || 0) : 0;
-    const pvDaily = pvEnabled ? (st("daily_pv_production", 0) || 0) : 0;
-    const pv1Power = pvEnabled ? st("pv1_power") : null;
-    const pv1V = pvEnabled ? st("pv1_voltage") : null;
-    const pv1A = pvEnabled ? st("pv1_current") : null;
-    const pv2Power = pvEnabled ? st("pv2_power") : null;
-    const pv2V = pvEnabled ? st("pv2_voltage") : null;
-    const pv2A = pvEnabled ? st("pv2_current") : null;
-
-    const gridPower = st("grid_power", 0) || 0;
-    const gridL1Power = st("grid_l1_power");
-    const gridL1V = st("grid_l1_voltage");
-    const gridL2Power = st("grid_l2_power");
-    const gridL2V = st("grid_l2_voltage");
-    const gridL3Power = st("grid_l3_power");
-    const gridL3V = st("grid_l3_voltage");
-    const gridBought = st("daily_energy_bought");
-    const gridSold = st("daily_energy_sold");
-    const frequency = st("load_frequency");
-
-    const batteryPower = st("battery_power", 0) || 0;
-    const batterySoc = this.optionalSocNumber(
-      this.state(this.energyStatusEntity("battery_soc")),
-    );
-    const batteryVoltage = st("battery_bms_voltage");
-    const batteryCurrent = st("battery_current");
-    const batteryTemp = st("battery_temperature");
-    const batteryChargeDaily = st("daily_battery_charge");
-    const batteryDischargeDaily = st("daily_battery_discharge");
-
-    const loadPower = this.calculatedHouseLoad(pvPower, gridPower, batteryPower);
-    const loadDaily = st("daily_load_consumption");
-    const loadL1Power = st("load_l1_power");
-    const loadL2Power = st("load_l2_power");
-    const loadL3Power = st("load_l3_power");
-    const inverterTemp = st("inverter_ac_temperature");
-    const gridAcVoltage = this.asNumber(this.state(this.acVoltageEntity("grid")));
-    const inverterAcVoltage = this.asNumber(this.state(this.acVoltageEntity("inverter")));
-
-    const singlePhase = layout.phase_count === 1;
-    const phaseLabels = singlePhase ? ["L1"] : ["L1", "L2", "L3"];
-    const phaseKey = (label) => label.toLowerCase();
-    const gridPhasePower = (label) => {
-      if (label === "L2") return gridL2Power;
-      if (label === "L3") return gridL3Power;
-      return singlePhase ? this.singlePhaseValue(gridL1Power, gridPower) : gridL1Power;
-    };
-    const gridPhaseVoltage = (label) => (label === "L2" ? gridL2V : label === "L3" ? gridL3V : gridL1V);
-    const loadPhasePower = (label) => {
-      if (label === "L2") return loadL2Power;
-      if (label === "L3") return loadL3Power;
-      return singlePhase ? this.singlePhaseValue(loadL1Power, loadPower) : loadL1Power;
-    };
-    const soldTodayKwh = this.asNumber(this.state(this.energyStatusEntity("sold_energy_today")), 0) || 0;
-    const soldTodayGbp = this.asNumber(this.state(this.energyStatusEntity("sold_value_today")), 0) || 0;
-
-    const active = {
-      pv: pvEnabled && pvPower > 1,
-      gridImport: gridPower > 1,
-      gridExport: gridPower < -1,
-      batteryDischarge: batteryPower > 1,
-      batteryCharge: batteryPower < -1,
-      load: loadPower > 1,
-    };
-
-    const fmtPower = (v) => this.formatEnergyStatusPower(v);
-    const fmtNumber = (v, digits = 2) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : v.toFixed(digits);
-    const gridVoltageValue = `<span data-live="grid-ac-voltage">${fmtNumber(gridAcVoltage, 1)}</span> V`;
-    const inverterVoltageValue = `<span data-live="inverter-ac-voltage">${fmtNumber(inverterAcVoltage, 1)}</span> V`;
-
-    const gridMain = gridPower < -1 ? `Export ${fmtPower(Math.abs(gridPower))}` : gridPower > 1 ? `Import ${fmtPower(gridPower)}` : `Balance 0 W`;
-    const batteryDirection = batteryPower < -1 ? `Charging ${fmtPower(Math.abs(batteryPower))}` : batteryPower > 1 ? `Discharging ${fmtPower(batteryPower)}` : `Idle`;
-    const socMain = batterySoc === null ? "—" : `${Math.round(batterySoc)}`;
-
-    const phaseRow = (label, power, volt, hidden = false) => `
-      <div class="flow-phase${hidden ? " es-hidden" : ""}">
-        <div class="flow-phase-label">${label}</div>
-        <div class="flow-phase-power">${power}</div>
-        <div class="flow-phase-volt">${volt}</div>
-      </div>`;
-
-    const pvPath = geometry.paths.pvToInverter;
-    const batPath = active.batteryCharge
-      ? geometry.paths.inverterToBattery
-      : geometry.paths.batteryToInverter;
-    const gridPath = active.gridExport
-      ? geometry.paths.inverterToGrid
-      : geometry.paths.gridToInverter;
-    const homePath = geometry.paths.inverterToHome;
-
-    const lineClass = (isActive) => isActive ? "flow-line flow-active" : "flow-line";
-    const flowMarker = (key, isActive) => isActive ? ` marker-end="url(#flow-arrow-${key})"` : "";
-
-    const inverterSvg = `<svg class="flow-inverter-svg" viewBox="0 0 190 250" xmlns="http://www.w3.org/2000/svg" aria-label="Deye inverter">
-      <defs>
-        <linearGradient id="invBody23" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#f8fbff"/>
-          <stop offset="0.52" stop-color="#e5edf7"/>
-          <stop offset="1" stop-color="#b8c7da"/>
-        </linearGradient>
-        <linearGradient id="invEdge23" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#e9f8ff"/>
-          <stop offset="1" stop-color="#93a9c0"/>
-        </linearGradient>
-        <radialGradient id="invScreen23" cx="50%" cy="25%" r="85%">
-          <stop offset="0" stop-color="#16243b"/>
-          <stop offset="1" stop-color="#07101f"/>
-        </radialGradient>
-        <filter id="invShadow23" x="-35%" y="-25%" width="170%" height="175%">
-          <feDropShadow dx="0" dy="8" stdDeviation="9" flood-color="#000" flood-opacity="0.5"/>
-          <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#19b9ff" flood-opacity="0.55"/>
-        </filter>
-      </defs>
-      <rect x="11" y="7" width="168" height="230" rx="23" fill="url(#invBody23)" stroke="#36c4ff" stroke-width="3" filter="url(#invShadow23)"/>
-      <path d="M31 15h128c7 0 12 5 12 12v183c0 9-7 17-16 18H35c-9-1-16-9-16-18V27c0-7 5-12 12-12Z" fill="none" stroke="url(#invEdge23)" stroke-width="2" opacity=".7"/>
-      <rect x="34" y="34" width="122" height="67" rx="7" fill="url(#invScreen23)" stroke="#0b1a2d" stroke-width="2"/>
-      <path d="M43 42h104" stroke="#263a53" stroke-width="1" opacity=".7"/>
-      <circle cx="55" cy="51" r="5" fill="#3cff91" stroke="#d8ffe9" stroke-width="2"/>
-      <circle cx="72" cy="51" r="5" fill="#3cff91" stroke="#d8ffe9" stroke-width="2"/>
-      <circle cx="89" cy="51" r="5" fill="#3cff91" stroke="#d8ffe9" stroke-width="2"/>
-      <circle cx="55" cy="51" r="10" fill="none" stroke="#3cff91" stroke-width="1" opacity=".22"/>
-      <rect x="76" y="184" width="38" height="20" rx="4" fill="#18b8f2" stroke="#e6f8ff" stroke-width="2"/>
-      <path d="M80 187h30" stroke="#62dcff" stroke-width="2" opacity=".85"/>
-      <path d="M59 219h72" stroke="#8da0b5" stroke-width="2" opacity=".55"/>
-    </svg>`;
-
-    if (layout.is_mobile) {
-      const mfTileWidth = 118;
-      const mfTileGap = 10;
-      const mfInverterColumn = 150;
-      const mfInverterVisual = 92;
-      const mfBoardHeight = 232;
-      const mfGeo = this.flowGeometry({
-        tileWidth: mfTileWidth,
-        tileGap: mfTileGap,
-        inverterColumnWidth: mfInverterColumn,
-        inverterVisualWidth: mfInverterVisual,
-        boardHeight: mfBoardHeight,
-        pvEnabled,
-      });
-      const mfBoardWidth = mfGeo.boardWidth;
-      const mfPanelWidth = mfBoardWidth + 16;
-      const mfActive = {
-        pv: pvEnabled && pvPower > 1,
-        gridImport: gridPower > 1,
-        gridExport: gridPower < -1,
-        batteryDischarge: batteryPower > 1,
-        batteryCharge: batteryPower < -1,
-        load: loadPower > 1,
-      };
-      const mfBatPath = mfActive.batteryCharge ? mfGeo.paths.inverterToBattery : mfGeo.paths.batteryToInverter;
-      const mfGridPath = mfActive.gridExport ? mfGeo.paths.inverterToGrid : mfGeo.paths.gridToInverter;
-      const mfFlowMarker = (key, isActive) => isActive ? ` marker-end="url(#mf-arrow-${key})"` : "";
-      const mfDetailRow = (label, value, role) => `<div class="ms-detail-row${role ? esHidden(role) : ""}"><span>${label}</span><strong>${value}</strong></div>`;
-      const msPhase = (label, value, sub = "", hidden = false) => `
-        <div class="ms-phase${hidden ? " es-hidden" : ""}">
-          <div class="ms-phase-label">${label}</div>
-          <div class="ms-phase-value">${value}</div>
-          ${sub ? `<div class="ms-phase-sub">${sub}</div>` : ""}
-        </div>`;
-      const msArrow = `<div class="ms-arrow" aria-hidden="true"><span>↓</span></div>`;
-      return `
-      <section class="panel status-panel mobile-status-panel">
-        <h2 class="panel-title">${this.iconSvg("chart")} Energy status</h2>
-        <style>
-.mobile-status-panel{width:100%;height:auto;box-sizing:border-box;background:radial-gradient(circle at 30% 0%,rgba(13,72,113,.18),transparent 42%),linear-gradient(180deg,#030d17 0%,#061521 100%)!important;border-color:rgba(85,145,177,.48)!important}
-.mobile-status-panel>.panel-title{font-size:18px!important;padding:12px 14px!important;gap:9px!important;letter-spacing:0!important}
-.mobile-status-panel>.panel-title svg{width:19px!important;height:19px!important}
-.ms-body{display:flex;flex-direction:column;gap:0;width:100%;box-sizing:border-box;padding:6px 10px 12px}
-.ms-tile{width:100%;box-sizing:border-box;border:1px solid rgba(86,149,184,.46);border-radius:12px;background:radial-gradient(circle at 18% 0%,rgba(26,100,151,.14),transparent 45%),linear-gradient(180deg,rgba(6,21,34,.98),rgba(4,16,26,.99));padding:12px 13px;box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 8px 18px rgba(0,0,0,.28)}
-.ms-tile-head{display:flex;align-items:center;gap:11px;margin-bottom:10px}
-.ms-tile-icon{width:34px;height:34px;flex:0 0 30px;display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 0 6px currentColor)}
-.ms-tile-icon svg{width:30px;height:30px}
-.ms-tile-heading{min-width:0;flex:1}
-.ms-tile-title{font-size:14px;font-weight:800;color:#f3f8fc;line-height:1.2}
-.ms-tile-main{font-size:24px;font-weight:900;line-height:1.1;margin-top:4px;letter-spacing:-.4px;text-shadow:0 0 9px currentColor;overflow-wrap:anywhere}
-.ms-tile-main .unit{font-size:14px;font-weight:700;color:#c7d7e1;margin-left:3px;text-shadow:none}
-.ms-tile-sub{font-size:13px;color:#b7c9d5;line-height:1.25;margin-top:3px}
-.ms-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px;padding-top:10px;border-top:1px solid rgba(95,148,177,.35)}
-.ms-detail-grid.single-phase{grid-template-columns:1fr}
-.ms-phase{min-width:0;text-align:left}
-.ms-phase-label{font-size:11px;color:#a9c1d0;letter-spacing:.2px;margin-bottom:3px}
-.ms-phase-value{font-size:15px;font-weight:850;color:#f2f8fc;line-height:1.15;overflow-wrap:anywhere}
-.ms-phase-sub{font-size:11px;color:#b7c7d2;margin-top:3px;line-height:1.2}
-.ms-foot{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px 10px;font-size:12px;color:#b4c6d1;padding-top:10px;margin-top:10px;border-top:1px solid rgba(95,148,177,.35)}
-.ms-foot strong{font-size:14px;font-weight:850;white-space:nowrap}
-.ms-arrow{height:26px;display:flex;align-items:center;justify-content:center;color:#5f93ad;font-size:19px;line-height:1}
-.ms-pv .ms-tile-main{color:#fbbf24}
-.ms-grid .ms-tile-main{color:#c084fc}
-.ms-battery .ms-tile-main{color:#4ade80}
-.ms-home .ms-tile-main{color:#38bdf8}
-.ms-pv .phase-accent{color:#fbbf24}
-.ms-grid .phase-accent{color:#c084fc}
-.ms-home .phase-accent{color:#38bdf8}
-.ms-foot .positive{color:#4ade80}
-.ms-foot .bought{color:#c084fc}
-.ms-foot .sold{color:#4ade80}
-.ms-flow-wrapper{position:relative;width:100%;max-width:${mfPanelWidth}px;margin:0 auto;overflow:hidden}
-.ms-flow-scaler{width:${mfPanelWidth}px;transform-origin:top left;transform:scale(1);line-height:1}
-.ms-flow-board{position:relative;display:grid;grid-template-columns:${mfTileWidth}px ${mfInverterColumn}px ${mfTileWidth}px;grid-template-rows:${mfBoardHeight}px;gap:0 ${mfTileGap}px;align-items:center;justify-items:center;width:${mfBoardWidth}px;height:${mfBoardHeight}px}
-.ms-flow-tile{position:relative;z-index:3;width:${mfTileWidth}px;height:108px;box-sizing:border-box;border:1.5px solid rgba(86,149,184,.48);border-radius:12px;background:radial-gradient(circle at 22% 0%,rgba(26,100,151,.13),transparent 38%),linear-gradient(180deg,rgba(6,21,34,.985),rgba(4,16,26,.99));padding:7px 8px;box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 8px 18px rgba(0,0,0,.3);overflow:hidden}
-.ms-flow-pv{grid-column:1;grid-row:1;justify-self:start;align-self:start}
-.ms-flow-grid{grid-column:1;grid-row:1;justify-self:start;align-self:end}
-.ms-flow-battery{grid-column:3;grid-row:1;justify-self:end;align-self:start}
-.ms-flow-home{grid-column:3;grid-row:1;justify-self:end;align-self:end}
-.ms-flow-head{display:flex;align-items:flex-start;gap:6px}
-.ms-flow-icon{width:26px;height:26px;flex:0 0 26px;display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 0 5px currentColor)}
-.ms-flow-icon svg{width:25px;height:25px}
-.ms-flow-heading{min-width:0;flex:1;padding-top:1px}
-.ms-flow-title{font-size:11px;font-weight:800;color:#f3f8fc;line-height:1.1;white-space:normal}
-.ms-flow-main{font-size:17px;font-weight:900;line-height:1;margin-top:2px;letter-spacing:-.3px;text-shadow:0 0 8px currentColor;overflow-wrap:anywhere}
-.ms-flow-main .unit{font-size:10px;font-weight:700;color:#c7d7e1;margin-left:2px;text-shadow:none}
-.ms-flow-sub{font-size:10px;color:#b7c9d5;line-height:1.15;margin-top:2px;overflow-wrap:anywhere}
-.ms-flow-pv .ms-flow-main{color:#fbbf24}
-.ms-flow-grid .ms-flow-main{color:#c084fc}
-.ms-flow-battery .ms-flow-main{color:#4ade80}
-.ms-flow-home .ms-flow-main{color:#38bdf8}
-.ms-flow-inverter{grid-column:2;grid-row:1;align-self:center;justify-self:center;text-align:center;position:relative;z-index:3;width:${mfInverterColumn}px;box-sizing:border-box}
-.ms-flow-inverter .flow-inverter-svg{width:${mfInverterVisual}px;height:auto;display:block;margin:0 auto}
-.ms-flow-inv-name{font-size:11px;font-weight:850;color:#f2f7fb;margin-top:2px;text-shadow:0 2px 5px rgba(0,0,0,.8)}
-.ms-flow-inv-temp{display:flex;align-items:center;justify-content:center;gap:3px;font-size:11px;font-weight:800;color:#23b9ff;margin-top:2px}
-.ms-flow-inv-temp svg{width:12px;height:12px}
-.ms-flow-sold{margin-top:4px;padding:4px 6px;border:1px solid rgba(89,151,181,.4);border-radius:8px;background:linear-gradient(180deg,rgba(7,24,35,.96),rgba(4,15,24,.98))}
-.ms-flow-sold>span{display:block;font-size:9px;color:#8fb0c3;text-transform:uppercase;letter-spacing:.3px}
-.ms-flow-sold strong{display:block;font-size:10px;font-weight:850;color:#eaf4f9;margin-top:2px;overflow-wrap:anywhere}
-.ms-flow-svg{position:absolute;top:0;left:0;width:100%;height:100%;z-index:1;overflow:visible;pointer-events:none}
-.ms-flow-svg .flow-line{fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;filter:url(#mfFlowGlow23)}
-.ms-flow-svg .flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34;filter:url(#mfFlowGlowSoft23)}
-.ms-flow-svg .flow-active{stroke-dasharray:1 22;stroke-width:7!important;animation:mfFlowDash ${flowDuration}s linear infinite}
-@keyframes mfFlowDash{to{stroke-dashoffset:-${flowOffset}}}
-.ms-detail-grid{margin-top:8px}
-.ms-detail-tile{min-width:0;padding:9px 10px;border:1px solid rgba(89,146,174,.4);border-radius:10px;background:linear-gradient(180deg,rgba(6,21,33,.97),rgba(4,15,24,.99))}
-.ms-detail-title{font-size:11px;font-weight:850;color:#9fc4d8;text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px}
-.ms-detail-row{display:flex;align-items:baseline;justify-content:space-between;gap:6px;font-size:11px;color:#aebfca;line-height:1.4}
-.ms-detail-row strong{font-size:12px;font-weight:850;color:#f1f7fb;text-align:right;overflow-wrap:anywhere}
-.ms-detail-row .positive,.ms-detail-row .sold{color:#4ade80}
-.ms-detail-row .bought{color:#c084fc}
-.ms-inverter{display:flex;align-items:center;gap:12px;width:100%;box-sizing:border-box;margin-top:6px;padding:10px 13px;border:1px solid rgba(89,151,181,.4);border-radius:12px;background:linear-gradient(180deg,rgba(7,24,35,.96),rgba(4,15,24,.98))}
-.ms-inverter-icon{width:40px;height:56px;flex:0 0 40px;display:flex;align-items:center;justify-content:center}
-.ms-inverter-icon svg{width:40px;height:auto;display:block}
-.ms-inverter-copy{min-width:0;flex:1;display:grid;gap:3px}
-.ms-inverter-name{font-size:14px;font-weight:850;color:#f2f7fb}
-.ms-inverter-temp{font-size:13px;font-weight:800;color:#23b9ff}
-.ms-inverter-temp svg{width:15px;height:15px;vertical-align:-3px}
-.ms-inverter-sold{font-size:12px;color:#9fb9c8}
-.ms-inverter-sold strong{display:block;font-size:13px;color:#eaf4f9;margin-top:2px;overflow-wrap:anywhere}
-.ms-status-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;box-sizing:border-box;margin-top:10px}
-.ms-status-tile{min-width:0;padding:10px 11px;border:1px solid rgba(89,146,174,.4);border-radius:10px;background:linear-gradient(180deg,rgba(6,21,33,.97),rgba(4,15,24,.99))}
-.ms-status-tile>span{display:block;font-size:11px;color:#9fb9c8;margin-bottom:5px}
-.ms-status-tile>strong{display:block;font-size:14px;font-weight:850;color:#f1f7fb;line-height:1.2;overflow-wrap:anywhere}
-.ms-status-tile .ms-sub{display:block;font-size:11px;color:#aebfca;margin-top:5px;line-height:1.25}
-.ms-status-tile .slot-time{color:#fbbf24}
-.mode-selling{color:#7ee22d}.mode-normal{color:#4ade80}.mode-charge{color:#f6a619}.mode-disabled{color:#b9c9d4}.mode-zero,.mode-ct{color:#38bdf8}
-.ms-footer{text-align:center;width:100%;margin-top:10px;font-size:12px;color:#89a6b7}
-.es-hidden{display:none!important}
-        </style>
-        <div class="ms-body">
-          <div class="ms-flow-wrapper">
-            <div class="ms-flow-scaler" data-base-width="${mfPanelWidth}" data-base-height="${mfBoardHeight}" data-board-height="${mfBoardHeight}" data-tile-width="${mfTileWidth}" data-tile-gap="${mfTileGap}" data-inverter-column-width="${mfInverterColumn}" data-inverter-visual-width="${mfInverterVisual}">
-              <div class="ms-flow-board">
-                ${pvEnabled ? `<div class="ms-flow-tile ms-flow-pv">
-                  <div class="ms-flow-head">
-                    <div class="ms-flow-icon" style="color:#fbbf24">${this.iconSvg("pv2")}</div>
-                    <div class="ms-flow-heading">
-                      <div class="ms-flow-title">PV (Production)</div>
-                      <div class="ms-flow-main${esHidden("pv_power")}" data-live="pv-main">${fmtPower(pvPower)}</div>
-                    </div>
-                  </div>
-                </div>` : ""}
-                <div class="ms-flow-tile ms-flow-grid">
-                  <div class="ms-flow-head">
-                    <div class="ms-flow-icon" style="color:#c084fc">${this.iconSvg("grid2")}</div>
-                    <div class="ms-flow-heading">
-                      <div class="ms-flow-title">Grid</div>
-                      <div class="ms-flow-main${esHidden("grid_power")}" data-live="grid-main">${gridMain}</div>
-                    </div>
-                  </div>
-                </div>
-                <div class="ms-flow-tile ms-flow-battery">
-                  <div class="ms-flow-head">
-                    <div class="ms-flow-icon" data-live-html="battery-icon">${this.batteryLevelSvg(batterySoc)}</div>
-                    <div class="ms-flow-heading">
-                      <div class="ms-flow-title">Battery</div>
-                      <div class="ms-flow-main${esHidden("battery_soc")}"><span data-live="battery-soc-value">${socMain}</span><span class="unit">% SOC</span></div>
-                      <div class="ms-flow-sub${esHidden("battery_power")}" data-live="battery-direction" style="color:#4ade80">${batteryDirection}</div>
-                    </div>
-                  </div>
-                </div>
-                <div class="ms-flow-tile ms-flow-home">
-                  <div class="ms-flow-head">
-                    <div class="ms-flow-icon" style="color:#38bdf8">${this.iconSvg("home2")}</div>
-                    <div class="ms-flow-heading">
-                      <div class="ms-flow-title">House (Loads)</div>
-                      <div class="ms-flow-main" data-live="load-main">${fmtPower(loadPower)}</div>
-                    </div>
-                  </div>
-                </div>
-                <div class="ms-flow-inverter">
-                  ${inverterSvg}
-                  <div class="ms-flow-inv-name">Deye inverter</div>
-                  <div class="ms-flow-inv-temp${esHidden("inverter_ac_temperature")}">${this.iconSvg("thermometer")}<span data-live="inverter-temp">${inverterTemp === null ? "—" : `${Math.round(inverterTemp)}`}</span> °C</div>
-                  <div class="ms-flow-sold${esAllHidden("sold_energy_today", "sold_value_today") ? " es-hidden" : ""}">
-                    <span>Sold today</span>
-                    <strong data-live="sold-today-line">${esSpan("sold_energy_today", `<span data-live="sold-today-kwh">${fmtNumber(soldTodayKwh, 2)} kWh</span>`)} / ${esSpan("sold_value_today", `<span data-live="sold-today-gbp">${fmtNumber(soldTodayGbp, 2)} GBP</span>`)}</strong>
-                  </div>
-                </div>
-                <svg class="ms-flow-svg" viewBox="0 0 ${mfBoardWidth} ${mfBoardHeight}" preserveAspectRatio="xMidYMid meet">
-                  <defs>
-                    <filter id="mfFlowGlow23" x="-35%" y="-35%" width="170%" height="170%">
-                      <feGaussianBlur stdDeviation="2.6" result="blur"/>
-                      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-                    </filter>
-                    <filter id="mfFlowGlowSoft23" x="-25%" y="-25%" width="150%" height="150%">
-                      <feGaussianBlur stdDeviation="2" result="blur"/>
-                      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-                    </filter>
-                    <marker id="mf-arrow-pv" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="3.4" markerHeight="3.4" orient="auto-start-reverse"><path d="M0 0 10 5 0 10 2.7 5Z" fill="#fbbf24" stroke="none"/></marker>
-                    <marker id="mf-arrow-grid" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="3.4" markerHeight="3.4" orient="auto-start-reverse"><path d="M0 0 10 5 0 10 2.7 5Z" fill="#c084fc" stroke="none"/></marker>
-                    <marker id="mf-arrow-battery" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="3.4" markerHeight="3.4" orient="auto-start-reverse"><path d="M0 0 10 5 0 10 2.7 5Z" fill="#4ade80" stroke="none"/></marker>
-                    <marker id="mf-arrow-home" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="3.4" markerHeight="3.4" orient="auto-start-reverse"><path d="M0 0 10 5 0 10 2.7 5Z" fill="#38bdf8" stroke="none"/></marker>
-                  </defs>
-                  ${pvEnabled ? `<path data-flow-line-bg="pv" d="${mfGeo.paths.pvToInverter}" class="flow-line-bg" stroke="#fbbf24" />
-                  <path data-flow-line="pv" d="${mfGeo.paths.pvToInverter}" stroke="#fbbf24" class="${lineClass(mfActive.pv)}" stroke-width="4" stroke-opacity="${mfActive.pv ? 0.96 : 0.18}"${mfFlowMarker("pv", mfActive.pv)} />` : ""}
-                  <path data-flow-line-bg="battery" d="${mfBatPath}" class="flow-line-bg" stroke="#4ade80" />
-                  <path data-flow-line="battery" d="${mfBatPath}" stroke="#4ade80" class="${lineClass(mfActive.batteryDischarge || mfActive.batteryCharge)}" stroke-width="4" stroke-opacity="${mfActive.batteryDischarge || mfActive.batteryCharge ? 0.96 : 0.18}"${mfFlowMarker("battery", mfActive.batteryDischarge || mfActive.batteryCharge)} />
-                  <path data-flow-line-bg="grid" d="${mfGridPath}" class="flow-line-bg" stroke="#c084fc" />
-                  <path data-flow-line="grid" d="${mfGridPath}" stroke="#c084fc" class="${lineClass(mfActive.gridImport || mfActive.gridExport)}" stroke-width="4" stroke-opacity="${mfActive.gridImport || mfActive.gridExport ? 0.96 : 0.18}"${mfFlowMarker("grid", mfActive.gridImport || mfActive.gridExport)} />
-                  <path data-flow-line-bg="home" d="${mfGeo.paths.inverterToHome}" class="flow-line-bg" stroke="#38bdf8" />
-                  <path data-flow-line="home" d="${mfGeo.paths.inverterToHome}" stroke="#38bdf8" class="${lineClass(mfActive.load)}" stroke-width="4" stroke-opacity="${mfActive.load ? 0.96 : 0.18}"${mfFlowMarker("home", mfActive.load)} />
-                </svg>
-              </div>
-            </div>
-          </div>
-          <div class="ms-detail-grid">
-            ${pvEnabled ? `<div class="ms-detail-tile">
-              <div class="ms-detail-title">PV details</div>
-              ${mfDetailRow("PV1 power", esSpan("pv1_power", `<span style="color:#fbbf24" data-live="pv1-power">${fmtPower(pv1Power)}</span>`), null)}
-              ${mfDetailRow("PV2 power", esSpan("pv2_power", `<span style="color:#fbbf24" data-live="pv2-power">${fmtPower(pv2Power)}</span>`), null)}
-              ${mfDetailRow("PV1 V / A", `${esSpan("pv1_voltage", `<span data-live="pv1-volts">${fmtNumber(pv1V, 1)}</span>`)} V / ${esSpan("pv1_current", `<span data-live="pv1-amps">${fmtNumber(pv1A, 1)}</span>`)} A`, null)}
-              ${mfDetailRow("PV2 V / A", `${esSpan("pv2_voltage", `<span data-live="pv2-volts">${fmtNumber(pv2V, 1)}</span>`)} V / ${esSpan("pv2_current", `<span data-live="pv2-amps">${fmtNumber(pv2A, 1)}</span>`)} A`, null)}
-              ${mfDetailRow("Produced today", `<span data-live="pv-daily">${fmtNumber(pvDaily, 2)}</span> kWh`, "daily_pv_production")}
-            </div>` : ""}
-            <div class="ms-detail-tile">
-              <div class="ms-detail-title">Grid details</div>
-              ${singlePhase
-                ? mfDetailRow("AC voltage", `<span data-live="grid-ac-voltage">${fmtNumber(gridAcVoltage, 1)}</span> V`, "grid_l1_voltage")
-                : phaseLabels.map((label) => mfDetailRow(`${label} power / V`, `${esSpan(`grid_${phaseKey(label)}_power`, `<span data-live="grid-${phaseKey(label)}-power">${fmtPower(gridPhasePower(label))}</span>`)} / ${esSpan(`grid_${phaseKey(label)}_voltage`, `<span data-live="grid-${phaseKey(label)}-volt">${fmtNumber(gridPhaseVoltage(label), 1)}</span>`)} V`, null)).join("")}
-              ${mfDetailRow("Imported today", `<span class="bought" data-live="grid-bought">${fmtNumber(gridBought, 2)}</span> kWh`, "daily_energy_bought")}
-              ${mfDetailRow("Exported today", `<span class="sold" data-live="grid-sold">${fmtNumber(gridSold, 2)}</span> kWh`, "daily_energy_sold")}
-              ${mfDetailRow("Frequency", `<span data-live="grid-frequency">${fmtNumber(frequency, 2)}</span> Hz`, "load_frequency")}
-            </div>
-            <div class="ms-detail-tile">
-              <div class="ms-detail-title">Battery details</div>
-              ${mfDetailRow("Voltage", `<span data-live="battery-voltage">${fmtNumber(batteryVoltage, 1)}</span> V`, "battery_bms_voltage")}
-              ${mfDetailRow("Current", `<span data-live="battery-current">${fmtNumber(batteryCurrent, 1)}</span> A`, "battery_current")}
-              ${mfDetailRow("Temp.", `<span data-live="battery-temp">${fmtNumber(batteryTemp, 1)}</span> °C`, "battery_temperature")}
-              ${mfDetailRow("Charge today", `<span class="positive" data-live="battery-charge-daily">${fmtNumber(batteryChargeDaily, 2)}</span> kWh`, "daily_battery_charge")}
-              ${mfDetailRow("Discharge today", `<span class="positive" data-live="battery-discharge-daily">${fmtNumber(batteryDischargeDaily, 2)}</span> kWh`, "daily_battery_discharge")}
-            </div>
-            <div class="ms-detail-tile">
-              <div class="ms-detail-title">House details</div>
-              ${singlePhase
-                ? mfDetailRow("AC voltage", `<span data-live="inverter-ac-voltage">${fmtNumber(inverterAcVoltage, 1)}</span> V`, "inverter_ac_voltage")
-                : phaseLabels.map((label) => mfDetailRow(`${label} power`, esSpan(`load_${phaseKey(label)}_power`, `<span style="color:#38bdf8" data-live="load-${phaseKey(label)}-power">${fmtPower(loadPhasePower(label))}</span>`), null)).join("")}
-              ${mfDetailRow("Consumption today", `<span data-live="load-daily">${fmtNumber(loadDaily, 2)}</span> kWh`, "daily_load_consumption")}
-            </div>
-          </div>
-          <div class="ms-status-grid">
-            <div class="ms-status-tile">
-              <span>Deye control</span>
-              <strong class="mode-${controlOn ? "normal" : "disabled"}" data-live="control-status">${this.escapeHtml(controlStatus)}</strong>
-              <span class="ms-sub">Deye: <b data-live="manager-deye-mode">${currentMode || "—"}</b><b data-live="deye-mode" hidden>${currentMode || "—"}</b></span>
-            </div>
-            <div class="ms-status-tile">
-              <span>Planned decision</span>
-              <strong>${this.escapeHtml(plannedAction)}</strong>
-            </div>
-            <div class="ms-status-tile">
-              <span>Executed decision</span>
-              <strong>${this.escapeHtml(executedAction)}</strong>
-              <span class="ms-sub">Source: <b data-live="executed-schedule-source">${scheduleSourceLabel}</b></span>
-            </div>
-            <div class="ms-status-tile">
-              <span>Manager mode</span>
-              <strong class="mode-${managerModeClass}" data-live="manager-mode">${modeText}</strong>
-              <span class="ms-sub">Slot: <b class="slot-time" data-live="active-slot">${activeSlotLabel}</b></span>
-              <span class="ms-sub">Source: <b data-live="manager-schedule-source">${scheduleSourceLabel}</b></span>
-            </div>
-          </div>
-          <div class="ms-footer">Data updated every 5 s</div>
-        </div>
-      </section>`;
-    }
-
-    return `
-      <section class="panel status-panel">
-        <h2 class="panel-title">${this.iconSvg("chart")} Energy status</h2>
-        <style>
-.status-panel{background:radial-gradient(circle at 50% 42%,rgba(13,72,113,.13),transparent 34%),radial-gradient(circle at 12% 0%,rgba(20,85,130,.2),transparent 31%),linear-gradient(180deg,#030d17 0%,#061521 100%)!important;border-color:rgba(85,145,177,.48)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 16px 38px rgba(0,0,0,.27)!important}
-.status-panel>.panel-title{padding:18px 22px!important;font-size:27px!important;gap:12px!important;letter-spacing:-.35px}
-.status-panel>.panel-title svg{width:27px!important;height:27px!important;filter:drop-shadow(0 0 7px rgba(21,155,255,.55))}
-.flow-wrapper{max-width:${panelWidth}px;margin:0 auto;overflow:hidden;position:relative}
-.flow-scaler{width:${panelWidth}px;transform-origin:top left;transform:scale(1);line-height:1}
-.energy-flow-panel{width:${panelWidth}px;height:${panelHeight}px;padding:16px;box-sizing:border-box;position:relative}
-.flow-board{position:relative;display:grid;grid-template-columns:${tileWidth}px ${inverterColumnWidth}px ${tileWidth}px;grid-template-rows:${geometry.boardHeight}px;gap:0 ${tileGap}px;align-items:center;justify-items:center;width:${boardWidth}px;height:${geometry.boardHeight}px}
-.flow-tile{position:relative;z-index:3;width:${tileWidth}px;height:290px;border:1.5px solid rgba(86,149,184,.48);border-radius:14px;background:radial-gradient(circle at 22% 0%,rgba(26,100,151,.13),transparent 38%),linear-gradient(180deg,rgba(6,21,34,.985),rgba(4,16,26,.99));padding:16px ${tilePadding}px;box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 12px 26px rgba(0,0,0,.3),0 0 18px rgba(16,91,138,.06);box-sizing:border-box;overflow:hidden}
-          .flow-tile-pv{grid-column:1;grid-row:1;justify-self:start;align-self:start}
-          .flow-tile-grid{grid-column:1;grid-row:1;justify-self:start;align-self:end}
-          .flow-tile-battery{grid-column:3;grid-row:1;justify-self:end;align-self:start}
-          .flow-tile-home{grid-column:3;grid-row:1;justify-self:end;align-self:end}
-.flow-inverter{grid-column:2;grid-row:1;align-self:center;justify-self:center;text-align:center;position:relative;z-index:3;min-width:240px}
-.flow-tile-head{display:flex;align-items:flex-start;gap:${tileContentGap}px;margin-bottom:10px}
-.flow-tile-heading{min-width:0;flex:1;padding-top:2px}
-.flow-tile-icon{width:${tileIconSize + 2}px;height:${tileIconSize + 2}px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 0 8px currentColor)}
-.flow-tile-icon svg{width:${tileIconSize}px;height:${tileIconSize}px;overflow:visible}
-.flow-tile-title{font-size:${tileWidth < 150 ? 12 : 15}px;font-weight:800;color:#f3f8fc;white-space:${tileWidth < 190 ? "normal" : "nowrap"};line-height:1.2;text-shadow:0 1px 4px rgba(0,0,0,.65)}
-.flow-tile-main{font-size:${tileWidth < 150 ? 19 : tileWidth < 210 ? 23 : 27}px;font-weight:900;line-height:1.05;margin:8px 0 5px;letter-spacing:-.45px;text-shadow:0 0 10px currentColor;overflow-wrap:anywhere}
-.flow-tile-main .unit{font-size:15px;font-weight:700;color:#c7d7e1;margin-left:4px;text-shadow:none}
-.flow-tile-sub{font-size:13px;color:#b7c9d5;line-height:1.28}
-.flow-tile-divider{border:0;border-top:1px solid rgba(95,148,177,.38);margin:12px 0}
-.flow-detail-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;text-align:center}
-          .flow-detail-row.three-cols{grid-template-columns:repeat(3,1fr)}
-          .flow-detail-row.one-col{grid-template-columns:1fr}
-.flow-phase+.flow-phase{border-left:1px solid rgba(93,145,174,.34)}
-.flow-phase-label{font-size:12px;color:#a9c1d0;letter-spacing:.2px;margin-bottom:7px}
-.flow-phase-power{font-size:15px;font-weight:850;color:#f2f8fc;line-height:1.15}
-.flow-phase-volt{font-size:12px;color:#b7c7d2;margin-top:6px;line-height:1.2;white-space:nowrap}
-          .flow-tile-pv .flow-tile-main{color:#fbbf24}
-          .flow-tile-grid .flow-tile-main{color:#c084fc}
-          .flow-tile-battery .flow-tile-main{color:#4ade80}
-          .flow-tile-home .flow-tile-main{color:#38bdf8}
-          .flow-tile .positive{color:#4ade80}
-          .flow-tile .sold{color:#4ade80}
-          .flow-tile .bought{color:#c084fc}
-.flow-tile-foot{font-size:12px;color:#b4c6d1;line-height:1.65}
-.flow-inverter-svg{width:${inverterVisualWidth}px;height:auto;display:block;margin:0 auto}
-.flow-inverter-name{font-size:17px;font-weight:850;color:#f2f7fb;margin-top:7px;text-shadow:0 2px 6px rgba(0,0,0,.8)}
-.flow-inverter-temp{display:flex;align-items:center;justify-content:center;gap:5px;font-size:16px;font-weight:800;color:#23b9ff;margin-top:7px;text-shadow:0 0 8px rgba(35,185,255,.48)}
-.flow-inverter-temp svg{width:18px;height:18px}
-.flow-sold-tile{display:grid;grid-template-columns:38px 1fr;gap:10px;align-items:center;padding:8px 14px;margin:14px auto 0;border:1px solid rgba(89,151,181,.4);border-radius:11px;background:linear-gradient(180deg,rgba(7,24,35,.96),rgba(4,15,24,.98));min-width:300px;box-shadow:0 8px 18px rgba(0,0,0,.3),inset 0 1px 0 rgba(255,255,255,.025)}
-.flow-sold-icon{width:34px;height:34px;display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 0 6px rgba(126,226,45,.5))}
-.flow-sold-icon svg{width:30px;height:30px}
-          .flow-sold-copy{text-align:left;min-width:0}
-.flow-sold-copy>span:first-child{display:block;font-size:11px;color:#8fb0c3;text-transform:uppercase;letter-spacing:.45px;line-height:1.1}
-.flow-sold-value span{display:inline}
-.flow-sold-value{display:block;font-size:16px;font-weight:850;color:#f2f8fc;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.flow-svg{position:absolute;top:0;left:0;width:100%;height:100%;z-index:1;overflow:visible;pointer-events:none}
-.flow-line{fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;filter:url(#flowGlow23)}
-.flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34;filter:url(#flowGlowSoft23)}
-.flow-active{stroke-dasharray:1 22;stroke-width:7!important;animation:flowDash ${flowDuration}s linear infinite}
-          @keyframes flowDash{to{stroke-dashoffset:-${flowOffset}}}
-.flow-daily-summary{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px 10px;font-size:12px;line-height:1.3}
-.flow-daily-summary>span{color:#b4c6d1}
-.flow-daily-summary strong{font-size:14px;font-weight:850;white-space:nowrap}
-.flow-daily-pv strong{color:#fbbf24}
-.flow-daily-home strong{color:#38bdf8}
-.flow-bottom{display:grid;grid-template-columns:repeat(4,1fr);gap:0;width:${boardWidth}px;margin-top:9px;border:1px solid rgba(84,148,181,.46);border-radius:13px;background:linear-gradient(180deg,rgba(6,21,33,.97),rgba(4,15,24,.99));overflow:hidden;box-shadow:0 12px 26px rgba(0,0,0,.28),inset 0 1px 0 rgba(255,255,255,.03)}
-.flow-status-tile{display:flex;align-items:center;gap:${statusGap}px;padding:${statusPadY}px ${statusPadX}px;min-height:116px;box-sizing:border-box;border-right:1px solid rgba(89,146,174,.35)}
-          .flow-status-tile:last-child{border-right:0}
-.flow-status-icon{width:${statusIconSize}px;height:${statusIconSize}px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 0 8px currentColor)}
-.flow-status-icon svg{width:${statusIconSize - 5}px;height:${statusIconSize - 5}px;stroke-width:1.8}
-          .flow-status-copy{min-width:0;flex:1}
-.flow-status-copy span{display:block;font-size:${compactStatus ? 10 : 14}px;font-weight:800;color:#f1f7fb;letter-spacing:0}
-.flow-status-copy strong{display:block;font-size:${compactStatus ? 12 : 17}px;font-weight:850;margin-top:${compactStatus ? 5 : 8}px;white-space:normal;overflow-wrap:anywhere;line-height:1.18}
-.flow-status-copy .sub{font-size:${compactStatus ? 9 : 13}px;color:#aebfca;margin-top:${compactStatus ? 4 : 6}px;line-height:1.25;text-transform:none}
-.flow-status-copy .slot-time{color:#fbbf24;font-size:${compactStatus ? 14 : 20}px;text-shadow:0 0 9px rgba(251,191,36,.35)}
-          .mode-selling{color:#7ee22d}
-          .mode-normal{color:#4ade80}
-          .mode-charge{color:#f6a619}
-          .mode-disabled{color:#b9c9d4}
-.mode-zero,.mode-ct{color:#38bdf8}
-.flow-footer{text-align:center;width:${boardWidth}px;margin-top:12px;font-size:13px;color:#89a6b7}
-.es-hidden{display:none!important}
-           </style>
-        <div class="flow-wrapper">
-          <div class="flow-scaler" data-base-width="${panelWidth}" data-base-height="${panelHeight}" data-board-height="${geometry.boardHeight}" data-tile-width="${tileWidth}" data-tile-gap="${tileGap}" data-inverter-column-width="${inverterColumnWidth}" data-inverter-visual-width="${inverterVisualWidth}">
-            <div class="energy-flow-panel">
-              <div class="flow-board">
-                ${pvEnabled ? `<div class="flow-tile flow-tile-pv">
-                  <div class="flow-tile-head">
-                    <div class="flow-tile-icon" style="color:#fbbf24">${this.iconSvg("pv2")}</div>
-                    <div class="flow-tile-heading">
-                      <div class="flow-tile-title">PV (Production)</div>
-                      <div class="flow-tile-main${esHidden("pv_power")}" data-live="pv-main">${fmtPower(pvPower)}</div>
-                    </div>
-                  </div>
-                  <hr class="flow-tile-divider">
-                  <div class="flow-detail-row">
-                    ${phaseRow("PV1", esSpan("pv1_power", `<span style="color:#fbbf24" data-live="pv1-power">${fmtPower(pv1Power)}</span>`), `${esSpan("pv1_voltage", `<span data-live="pv1-volts">${fmtNumber(pv1V, 1)}</span>`)} V | ${esSpan("pv1_current", `<span data-live="pv1-amps">${fmtNumber(pv1A, 1)}</span>`)} A`, esAllHidden("pv1_power", "pv1_voltage", "pv1_current"))}
-                    ${phaseRow("PV2", esSpan("pv2_power", `<span style="color:#fbbf24" data-live="pv2-power">${fmtPower(pv2Power)}</span>`), `${esSpan("pv2_voltage", `<span data-live="pv2-volts">${fmtNumber(pv2V, 1)}</span>`)} V | ${esSpan("pv2_current", `<span data-live="pv2-amps">${fmtNumber(pv2A, 1)}</span>`)} A`, esAllHidden("pv2_power", "pv2_voltage", "pv2_current"))}
-                  </div>
-                  <hr class="flow-tile-divider">
-                  <div class="flow-daily-summary flow-daily-pv${esHidden("daily_pv_production")}">
-                    <span>Produced today:</span>
-                    <strong><span data-live="pv-daily">${fmtNumber(pvDaily, 2)}</span> kWh</strong>
-                  </div>
-                </div>` : ""}
-                <div class="flow-tile flow-tile-grid">
-                  <div class="flow-tile-head">
-                    <div class="flow-tile-icon" style="color:#c084fc">${this.iconSvg("grid2")}</div>
-                    <div class="flow-tile-heading">
-                      <div class="flow-tile-title">Grid</div>
-                      <div class="flow-tile-main${esHidden("grid_power")}" data-live="grid-main">${gridMain}</div>
-                    </div>
-                  </div>
-                  <hr class="flow-tile-divider">
-                  <div class="flow-detail-row${singlePhase ? " one-col" : " three-cols"}">
-                    ${singlePhase
-                      ? `<div class="flow-phase${esHidden("grid_l1_voltage")}"><div class="flow-phase-power">${gridVoltageValue}</div></div>`
-                      : phaseLabels.map((label) => phaseRow(label, esSpan(`grid_${phaseKey(label)}_power`, `<span style="color:#c084fc" data-live="grid-${phaseKey(label)}-power">${fmtPower(gridPhasePower(label))}</span>`), `${esSpan(`grid_${phaseKey(label)}_voltage`, `<span data-live="grid-${phaseKey(label)}-volt">${fmtNumber(gridPhaseVoltage(label), 1)}</span>`)} V`, esAllHidden(`grid_${phaseKey(label)}_power`, `grid_${phaseKey(label)}_voltage`))).join("")}
-                  </div>
-                  <hr class="flow-tile-divider">
-                  <div class="flow-tile-foot">
-                    <div${esHidden("daily_energy_bought")}>Today: <span class="bought">imported <span data-live="grid-bought">${fmtNumber(gridBought, 2)}</span> kWh</span></div>
-                    <div${esHidden("daily_energy_sold")}>Today: <span class="sold">exported <span data-live="grid-sold">${fmtNumber(gridSold, 2)}</span> kWh</span></div>
-                    <div${esHidden("load_frequency")}>Frequency: <span data-live="grid-frequency">${fmtNumber(frequency, 2)}</span> Hz</div>
-                  </div>
-                </div>
-                <div class="flow-inverter">
-                  ${inverterSvg}
-                  <div class="flow-inverter-name">Deye inverter</div>
-                  <div class="flow-inverter-temp${esHidden("inverter_ac_temperature")}">${this.iconSvg("thermometer")}<span data-live="inverter-temp">${inverterTemp === null ? "—" : `${Math.round(inverterTemp)}`}</span> °C</div>
-                  <div class="flow-sold-tile${esAllHidden("sold_energy_today", "sold_value_today") ? " es-hidden" : ""}">
-                    <div class="flow-sold-icon" style="color:#7ee22d">${this.iconSvg("pound")}</div>
-                    <div class="flow-sold-copy">
-                      <span>Sold today</span>
-                      <strong class="flow-sold-value" data-live="sold-today-line">${esSpan("sold_energy_today", `<span data-live="sold-today-kwh">${fmtNumber(soldTodayKwh, 2)} kWh</span>`)} / ${esSpan("sold_value_today", `<span data-live="sold-today-gbp">${fmtNumber(soldTodayGbp, 2)} GBP</span>`)}</strong>
-                    </div>
-                  </div>
-                </div>
-                <div class="flow-tile flow-tile-battery">
-                  <div class="flow-tile-head">
-                    <div class="flow-tile-icon" data-live-html="battery-icon">${this.batteryLevelSvg(batterySoc)}</div>
-                    <div class="flow-tile-heading">
-                      <div class="flow-tile-title">Battery</div>
-                      <div class="flow-tile-main${esHidden("battery_soc")}"><span class="soc-value" data-live="battery-soc-value">${socMain}</span><span class="unit">% SOC</span></div>
-                      <div class="flow-tile-sub${esHidden("battery_power")}" data-live="battery-direction" style="color:#4ade80">${batteryDirection}</div>
-                    </div>
-                  </div>
-                  <hr class="flow-tile-divider">
-                  <div class="flow-detail-row three-cols">
-                    ${phaseRow("Voltage", `<span data-live="battery-voltage">${fmtNumber(batteryVoltage, 1)}</span> V`, "", !this.energyStatusVisible("battery_bms_voltage"))}
-                    ${phaseRow("Current", `<span data-live="battery-current">${fmtNumber(batteryCurrent, 1)}</span> A`, "", !this.energyStatusVisible("battery_current"))}
-                    ${phaseRow("Temp.", `<span data-live="battery-temp">${fmtNumber(batteryTemp, 1)}</span> °C`, "", !this.energyStatusVisible("battery_temperature"))}
-                  </div>
-                  <hr class="flow-tile-divider">
-                  <div class="flow-tile-foot">
-                    <div${esHidden("daily_battery_charge")}>Today: <span class="positive">charging <span data-live="battery-charge-daily">${fmtNumber(batteryChargeDaily, 2)}</span> kWh</span></div>
-                    <div${esHidden("daily_battery_discharge")}>Today: <span class="positive">discharge <span data-live="battery-discharge-daily">${fmtNumber(batteryDischargeDaily, 2)}</span> kWh</span></div>
-                  </div>
-                </div>
-                <div class="flow-tile flow-tile-home">
-                  <div class="flow-tile-head">
-                    <div class="flow-tile-icon" style="color:#38bdf8">${this.iconSvg("home2")}</div>
-                    <div class="flow-tile-heading">
-                      <div class="flow-tile-title">House (Loads)</div>
-                      <div class="flow-tile-main" data-live="load-main">${fmtPower(loadPower)}</div>
-                    </div>
-                  </div>
-                  <hr class="flow-tile-divider">
-                  <div class="flow-detail-row${singlePhase ? " one-col" : " three-cols"}">
-                    ${singlePhase
-                      ? `<div class="flow-phase"><div class="flow-phase-power">${inverterVoltageValue}</div></div>`
-                      : phaseLabels.map((label) => phaseRow(label, esSpan(`load_${phaseKey(label)}_power`, `<span style="color:#38bdf8" data-live="load-${phaseKey(label)}-power">${fmtPower(loadPhasePower(label))}</span>`), "", esAllHidden(`load_${phaseKey(label)}_power`))).join("")}
-                  </div>
-                  <hr class="flow-tile-divider">
-                  <div class="flow-daily-summary flow-daily-home${esHidden("daily_load_consumption")}">
-                    <span>Consumption today:</span>
-                    <strong><span data-live="load-daily">${fmtNumber(loadDaily, 2)}</span> kWh</strong>
-                  </div>
-                </div>
-                <svg class="flow-svg" viewBox="0 0 ${boardWidth} ${geometry.boardHeight}" preserveAspectRatio="xMidYMid meet">
-                  <defs>
-                    <filter id="flowGlow23" x="-35%" y="-35%" width="170%" height="170%">
-                      <feGaussianBlur stdDeviation="2.6" result="blur"/>
-                      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-                    </filter>
-                    <filter id="flowGlowSoft23" x="-25%" y="-25%" width="150%" height="150%">
-                      <feGaussianBlur stdDeviation="2" result="blur"/>
-                      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-                    </filter>
-                    <marker id="flow-arrow-pv" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="3.4" markerHeight="3.4" orient="auto-start-reverse"><path d="M0 0 10 5 0 10 2.7 5Z" fill="#fbbf24" stroke="none"/></marker>
-                    <marker id="flow-arrow-grid" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="3.4" markerHeight="3.4" orient="auto-start-reverse"><path d="M0 0 10 5 0 10 2.7 5Z" fill="#c084fc" stroke="none"/></marker>
-                    <marker id="flow-arrow-battery" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="3.4" markerHeight="3.4" orient="auto-start-reverse"><path d="M0 0 10 5 0 10 2.7 5Z" fill="#4ade80" stroke="none"/></marker>
-                    <marker id="flow-arrow-home" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="3.4" markerHeight="3.4" orient="auto-start-reverse"><path d="M0 0 10 5 0 10 2.7 5Z" fill="#38bdf8" stroke="none"/></marker>
-                  </defs>
-                  ${pvEnabled ? `<path data-flow-line-bg="pv" d="${pvPath}" class="flow-line-bg" stroke="#fbbf24" />
-                  <path data-flow-line="pv" d="${pvPath}" stroke="#fbbf24" class="${lineClass(active.pv)}" stroke-width="4" stroke-opacity="${active.pv ? 0.96 : 0.18}"${flowMarker("pv", active.pv)} />` : ""}
-                  <path data-flow-line-bg="battery" d="${batPath}" class="flow-line-bg" stroke="#4ade80" />
-                  <path data-flow-line="battery" d="${batPath}" stroke="#4ade80" class="${lineClass(active.batteryDischarge || active.batteryCharge)}" stroke-width="4" stroke-opacity="${active.batteryDischarge || active.batteryCharge ? 0.96 : 0.18}"${flowMarker("battery", active.batteryDischarge || active.batteryCharge)} />
-                  <path data-flow-line-bg="grid" d="${gridPath}" class="flow-line-bg" stroke="#c084fc" />
-                  <path data-flow-line="grid" d="${gridPath}" stroke="#c084fc" class="${lineClass(active.gridImport || active.gridExport)}" stroke-width="4" stroke-opacity="${active.gridImport || active.gridExport ? 0.96 : 0.18}"${flowMarker("grid", active.gridImport || active.gridExport)} />
-                  <path data-flow-line-bg="home" d="${homePath}" class="flow-line-bg" stroke="#38bdf8" />
-                  <path data-flow-line="home" d="${homePath}" stroke="#38bdf8" class="${lineClass(active.load)}" stroke-width="4" stroke-opacity="${active.load ? 0.96 : 0.18}"${flowMarker("home", active.load)} />
-                </svg>
-              </div>
-              <div class="flow-bottom">
-                <div class="flow-status-tile">
-                  <div class="flow-status-icon" style="color:#4dabf7">${this.iconSvg("shield")}</div>
-                  <div class="flow-status-copy">
-                    <span>Deye control</span>
-                    <strong class="mode-${controlOn ? "normal" : "disabled"}" data-live="control-status">${this.escapeHtml(controlStatus)}</strong>
-                    <div class="sub">Deye: <b data-live="manager-deye-mode">${currentMode || "—"}</b><b data-live="deye-mode" hidden>${currentMode || "—"}</b></div>
-                  </div>
-                </div>
-                <div class="flow-status-tile">
-                  <div class="flow-status-icon" style="color:#fbbf24">${this.iconSvg("clock")}</div>
-                  <div class="flow-status-copy">
-                    <span>Planned decision</span>
-                    <strong>${this.escapeHtml(plannedAction)}</strong>
-                  </div>
-                </div>
-                <div class="flow-status-tile">
-                  <div class="flow-status-icon" style="color:#4ade80">${this.iconSvg("gear")}</div>
-                  <div class="flow-status-copy">
-                    <span>Executed decision</span>
-                    <strong>${this.escapeHtml(executedAction)}</strong>
-                    <div class="sub">Source: <b data-live="executed-schedule-source">${scheduleSourceLabel}</b></div>
-                  </div>
-                </div>
-                <div class="flow-status-tile">
-                  <div class="flow-status-icon" style="color:#38bdf8">${this.iconSvg("shield")}</div>
-                  <div class="flow-status-copy">
-                    <span>Manager mode</span>
-                    <strong class="mode-${managerModeClass}" data-live="manager-mode">${modeText}</strong>
-                    <div class="sub">Slot: <b data-live="active-slot">${activeSlotLabel}</b></div>
-                    <div class="sub">Source: <b data-live="manager-schedule-source">${scheduleSourceLabel}</b></div>
-                  </div>
-                </div>
-              </div>
-              <div class="flow-footer">Data updated every 5 s</div>
-            </div>
-          </div>
-        </div>
-      </section>`;
-  }
-
-  scaleFlowPanel() {
-    const isMobile = !!this.querySelector(".mobile-status-panel");
-    const wrapper = this.querySelector(isMobile ? ".ms-flow-wrapper" : ".flow-wrapper");
-    const scaler = this.querySelector(isMobile ? ".ms-flow-scaler" : ".flow-scaler");
-    if (!wrapper || !scaler) return;
-    if (this._flowResizeObserver && this._flowObservedWrapper !== wrapper) {
-      this._flowResizeObserver.disconnect();
-      this._flowObservedWrapper = wrapper;
-      this._flowObservedWidth = wrapper.clientWidth || 0;
-      this._flowResizeObserver.observe(wrapper);
-    }
-    const baseWidth = parseFloat(scaler.dataset.baseWidth) || (isMobile ? 422 : 1328);
-    const baseHeight = parseFloat(scaler.dataset.baseHeight) || (isMobile ? 320 : 768);
-    const available = wrapper.clientWidth || this.clientWidth || baseWidth;
-    const scale = Math.min(1, Math.max(available / baseWidth, 0.2));
-    scaler.style.transform = `scale(${scale})`;
-    scaler.style.transformOrigin = "top left";
-    wrapper.style.height = `${baseHeight * scale}px`;
-    wrapper.style.overflow = "hidden";
-  }
-  updateFlowLines() {
-    const st = (key) => this.asNumber(this.state(this.energyStatusEntity(key)), 0) || 0;
-    const pvEnabled = this.pvGenerationEnabled();
-    const pvPower = pvEnabled ? st("pv_power") : 0;
-    const gridPower = st("grid_power");
-    const batteryPower = st("battery_power");
-    const loadPower = this.calculatedHouseLoad(pvPower, gridPower, batteryPower);
-    const active = {
-      pv: pvEnabled && pvPower > 1,
-      gridImport: gridPower > 1,
-      gridExport: gridPower < -1,
-      batteryDischarge: batteryPower > 1,
-      batteryCharge: batteryPower < -1,
-      load: loadPower > 1,
-    };
-    const updateSvg = (svg, scaler, markerPrefix) => {
-      if (!svg || !scaler) return;
-      const tileWidth = parseFloat(scaler.dataset.tileWidth) || 300;
-      const tileGap = parseFloat(scaler.dataset.tileGap) || 0;
-      const inverterColumnWidth = parseFloat(scaler.dataset.inverterColumnWidth) || 640;
-      const inverterVisualWidth = parseFloat(scaler.dataset.inverterVisualWidth) || 190;
-      const boardHeight = parseFloat(scaler.dataset.boardHeight) || 600;
-      const geometry = this.flowGeometry({ tileWidth, tileGap, inverterColumnWidth, inverterVisualWidth, boardHeight, pvEnabled });
-      const batPath = active.batteryCharge
-        ? geometry.paths.inverterToBattery
-        : geometry.paths.batteryToInverter;
-      const gridPath = active.gridExport
-        ? geometry.paths.inverterToGrid
-        : geometry.paths.gridToInverter;
-      svg.setAttribute("viewBox", `0 0 ${geometry.boardWidth} ${geometry.boardHeight}`);
-      const setPath = (key, d, color, isActive) => {
-        const background = svg.querySelector(`path[data-flow-line-bg="${key}"]`);
-        const path = svg.querySelector(`path[data-flow-line="${key}"]`);
-        if (!path && !background) return;
-        const show = Boolean(d);
-        if (background) {
-          if (show) {
-            background.setAttribute("d", d);
-            background.setAttribute("stroke", color);
-            background.style.display = "";
-          } else {
-            background.style.display = "none";
-          }
-        }
-        if (path) {
-          if (show) {
-            path.setAttribute("d", d);
-            path.setAttribute("stroke", color);
-            path.setAttribute("stroke-width", "4");
-            path.setAttribute("stroke-opacity", isActive ? 0.96 : 0.18);
-            path.style.display = "";
-            if (isActive) path.setAttribute("marker-end", `url(#${markerPrefix}-arrow-${key})`);
-            else path.removeAttribute("marker-end");
-            path.classList.toggle("flow-active", isActive);
-          } else {
-            path.style.display = "none";
-            path.removeAttribute("marker-end");
-            path.classList.remove("flow-active");
-          }
-        }
-      };
-      setPath("pv", pvEnabled ? geometry.paths.pvToInverter : "", "#fbbf24", active.pv);
-      setPath("battery", batPath, "#4ade80", active.batteryDischarge || active.batteryCharge);
-      setPath("grid", gridPath, "#c084fc", active.gridImport || active.gridExport);
-      setPath("home", geometry.paths.inverterToHome, "#38bdf8", active.load);
-    };
-    updateSvg(this.querySelector(".flow-svg"), this.querySelector(".flow-scaler"), "flow");
-    updateSvg(this.querySelector(".ms-flow-svg"), this.querySelector(".ms-flow-scaler"), "mf");
-  }
-
   clockFromMinutes(minutes) {
     const value = ((Number(minutes) % 1440) + 1440) % 1440;
     return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
@@ -5274,19 +4044,6 @@ class DeyeEnergyCard extends HTMLElement {
       const touSlot = hour < 4 ? 1 : hour < 8 ? 2 : hour < 12 ? 3 : hour < 16 ? 4 : hour < 20 ? 5 : 6;
       return [key, label, touSlot];
     });
-  }
-
-  async startSell() {
-    const scheduler = this.entity("switch", "scheduler");
-    const chargeScheduler = this.entity("switch", "charge_scheduler");
-    const controlMode = this.entity("select", "control_mode");
-    if (this.exists(controlMode)) await this.callService("select", "select_option", { entity_id: controlMode, option: "Schedule" });
-    if (this.exists(scheduler)) await this.callService("switch", "turn_on", { entity_id: scheduler });
-    if (this.exists(chargeScheduler)) await this.callService("switch", "turn_off", { entity_id: chargeScheduler });
-  }
-
-  async stopManager() {
-    return this.applyDefaultValues();
   }
 
   async restoreDefaults() {
@@ -5315,7 +4072,7 @@ class DeyeEnergyCard extends HTMLElement {
       return false;
     } finally {
       this._resumeApplying = false;
-      this.render();
+      if (this.isConnected) this.render();
     }
   }
 
@@ -5428,67 +4185,25 @@ class DeyeEnergyCard extends HTMLElement {
   iconSvg(type) {
     const icons = {
       sell: '<svg viewBox="0 0 24 24"><path d="M4 14h4l2-6 4 12 2-6h4"/><path d="M4 18h16"/></svg>',
-      load: '<svg viewBox="0 0 24 24"><path d="M6 12h6V6l6 6h-6v6z"/><path d="M4 20h16"/></svg>',
-      ct: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/><path d="M12 8v8M8 12h8"/></svg>',
       charge: '<svg viewBox="0 0 24 24"><path d="M13 2 5 13h6l-1 9 8-12h-6z"/></svg>',
       shield: '<svg viewBox="0 0 24 24"><path d="M12 3 5 6v6c0 4 3 7 7 9 4-2 7-5 7-9V6z"/><path d="M9 12l2 2 4-5"/></svg>',
       normal: '<svg viewBox="0 0 24 24"><path d="M3 12h2v7h14v-7h2"/><path d="M5 10l7-7 7 7"/><path d="M9 21v-6h6v6"/><path d="M12 3v4"/></svg>',
       edit: '<svg viewBox="0 0 24 24"><path d="M4 20h4l11-11-4-4L4 16z"/><path d="M13 6l4 4"/></svg>',
       remove: '<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg>',
       gear: '<svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"/><path d="M4 12h2m12 0h2M12 4v2m0 12v2M6.3 6.3l1.4 1.4m8.6 8.6 1.4 1.4m0-11.4-1.4 1.4m-8.6 8.6-1.4 1.4"/></svg>',
-      ai: '<svg viewBox="0 0 24 24"><path d="M12 3l1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7z"/><path d="M18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8z"/></svg>',
-      info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 10v6"/><path d="M12 7h.01"/></svg>',
       check: '<svg viewBox="0 0 24 24"><path d="M5 12l4 4L19 6"/></svg>',
-      copy: '<svg viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M5 16H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
       close: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>',
-      pv: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3"/><path d="M12 2v2M12 12v2M6 8H4m16 0h-2M7.8 3.8 6.4 2.4m9.8 1.4 1.4-1.4"/><path d="M4 17h16l-2 5H6z"/></svg>',
-      pv2: '<svg viewBox="0 0 64 64"><circle cx="18" cy="17" r="8.5" fill="#fbbf24" stroke="#fde68a" stroke-width="2"/><path d="M18 3v5M18 26v5M4 17h5M27 17h5M8.2 7.2l3.6 3.6M24.2 23.2l3.6 3.6M8.2 26.8l3.6-3.6M24.2 10.8l3.6-3.6" stroke="#fbbf24" stroke-width="3" stroke-linecap="round" fill="none"/><path d="M17 30h38l-6 22H11z" fill="#60a5fa" stroke="#93c5fd" stroke-width="2" stroke-linejoin="round"/><path d="M24 30l-4 22M36 30l-1 22M48 30l3 22M14 41h38" stroke="#1e3a8a" stroke-width="2" fill="none"/><path d="M31 52v7M23 59h17" stroke="#6b8298" stroke-width="3" fill="none"/></svg>',
-      home: '<svg viewBox="0 0 24 24"><path d="m3 11 9-8 9 8"/><path d="M5 10v11h14V10M9 21v-7h6v7"/></svg>',
-      home2: '<svg viewBox="0 0 64 64"><path d="M7 31 32 9l25 22" fill="none" stroke="#18baff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 28v29h15V41h9v16h15V28" fill="none" stroke="#18baff" stroke-width="6" stroke-linejoin="round"/><path d="M46 13h8v13" fill="none" stroke="#497b9f" stroke-width="4"/></svg>',
-      grid: '<svg viewBox="0 0 24 24"><path d="M12 2 6 22m6-20 6 20M8 8h8M6 14h12M4 22h16"/></svg>',
-      grid2: '<svg viewBox="0 0 64 64"><path d="M32 5 11 19h42zM32 5 19 59M32 5l13 54M16 30h32M13 43h38M7 59h50" fill="none" stroke="#c064f7" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/><path d="m18 19 14 11 14-11M19 30l13 13 13-13M16 43l16 16 16-16" fill="none" stroke="#d08aff" stroke-width="2.5" stroke-linejoin="round"/></svg>',
-      battery: '<svg viewBox="0 0 24 24"><rect x="3" y="6" width="17" height="12" rx="2"/><path d="M20 10h2v4h-2M7 12h9M11 8v8"/></svg>',
-      battery2: '<svg viewBox="0 0 64 64"><rect x="18" y="4" width="28" height="6" rx="2" fill="#24c84f" stroke="#69f58d" stroke-width="2"/><rect x="10" y="9" width="44" height="51" rx="6" fill="#20c94e" fill-opacity=".76" stroke="#58ef79" stroke-width="3"/><path d="M15 17h34v10H15zM15 31h34v10H15zM15 45h34v10H15z" fill="#3ee96a" fill-opacity=".42" stroke="none"/><path d="m34 16-12 23h11l-4 19 15-27H33z" fill="#effff3" stroke="#caffd6" stroke-width="1.5" stroke-linejoin="round"/></svg>',
       clock: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
-      thermometer: '<svg viewBox="0 0 24 24"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/><circle cx="11.5" cy="18.5" r="1.5"/></svg>',
       chart: '<svg viewBox="0 0 24 24"><path d="M4 20V10m6 10V4m6 16v-7m4 7H2"/></svg>',
-      zap: '<svg viewBox="0 0 24 24"><path d="M13 2 5 13h6l-1 9 8-12h-6z"/></svg>',
       money: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15 8.5c-.8-.7-1.8-1-3-1-1.7 0-3 .9-3 2s1 1.8 3 2.2 3 1.1 3 2.3-1.3 2-3 2c-1.3 0-2.5-.4-3.3-1.2M12 5v14"/></svg>',
-      pound: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><text x="12" y="17" text-anchor="middle" font-family="Arial, sans-serif" font-size="15" font-weight="700" fill="currentColor" stroke="none">£</text></svg>',
       calendar: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 10h18M8 14h.01m4 0h.01m4 0h.01M8 18h.01m4 0h.01"/></svg>',
-      weather: '<svg viewBox="0 0 24 24"><circle cx="8" cy="8" r="3"/><path d="M8 2v2M2 8h2M3.8 3.8l1.4 1.4M13 8h2M10.8 5.2l1.4-1.4"/><path d="M7 19h10a4 4 0 0 0 0-8 6 6 0 0 0-11.3 2A3 3 0 0 0 7 19z"/></svg>',
     };
     return icons[type] || icons.gear;
-  }
-
-  iconButton(icon, label, dataAttr = "") {
-    return `<button class="icon-action" ${dataAttr} title="${label}">${this.iconSvg(icon)}<span>${label}</span></button>`;
-  }
-
-  modeLegend() {
-    return this.slotWorkModes().concat(["Disabled"]).map((mode) => {
-      const meta = mode === "Disabled" ? this.modeMeta("", false) : this.modeMeta(mode, true);
-      return `<div class="mode-tile ${meta.cls}">
-        <div class="mode-icon">${this.iconSvg(meta.icon)}</div>
-        <div><strong>${meta.title}</strong><span>${meta.subtitle}</span></div>
-      </div>`;
-    }).join("");
   }
 
   modePill(mode, enabled) {
     const meta = this.modeMeta(mode, enabled);
     return `<span class="mode-pill ${meta.cls}">${meta.title}</span>`;
-  }
-
-  slotSummary(entities, enabled) {
-    if (!enabled) return `<span class="empty-value">-</span>`;
-    const mode = this.displayState(entities.mode, "Normal Operation");
-    const sell = this.numberState(entities.sellPower, 0);
-    const soc = this.numberState(entities.touSoc, 0);
-    return `
-      <span class="metric sell">${this.iconSvg("sell")} ${sell} W</span>
-      <span class="metric soc">\u25c7 ${soc}%</span>
-      <span class="sr-only">${this.slotModeLabel(mode)}</span>`;
   }
 
   selectedSlotList(slots) {
@@ -5682,8 +4397,6 @@ class DeyeEnergyCard extends HTMLElement {
           <div class="hint">The physical SOC written to Deye Time Of Use for Normal Operation slots. This is not the minimum selling SOC.</div>
           <button class="wide-action" data-save-normal-profile="1">Save Normal Operation settings</button>
           <div class="hint defaults-status ${this._defaultsStatus}" data-defaults-status ${this._defaultsMessage ? "" : "hidden"}>${this.escapeHtml(this._defaultsMessage)}</div>`;
-      } else if (tab === "energy-status") {
-        body = this.renderEnergyStatusTab();
       } else if (tab === "tariff") {
         body = this.renderTariffTab();
       } else if (tab === "history") {
@@ -5698,7 +4411,6 @@ class DeyeEnergyCard extends HTMLElement {
           <div class="settings-layout">
             <nav class="settings-nav">
               ${tabButton("defaults", "Mode settings")}
-              ${tabButton("energy-status", "Energy status sensors")}
               ${tabButton("tariff", "Tariff and distribution")}
               ${tabButton("history", "History and data")}
               ${tabButton("system", "System and diagnostics")}
@@ -5923,7 +4635,6 @@ class DeyeEnergyCard extends HTMLElement {
         : (layout.is_mobile ? "grid-template-columns:minmax(0,1fr)" : `grid-template-columns:${layout.prices_ratio}fr ${layout.buy_prices_ratio}fr ${layout.solcast_ratio}fr`);
 
     const isSingle = layout.layout_mode === "single";
-    const showStatus = isSingle ? layout.section === "status_energy" : layout.sections.status_energy;
     const showPrices = isSingle ? layout.section === "prices" : layout.sections.prices;
     const showBuyPrices = isSingle ? layout.section === "prices" : layout.sections.prices;
     const showSolcast = isSingle ? layout.section === "solcast" : layout.sections.solcast;
@@ -5933,7 +4644,6 @@ class DeyeEnergyCard extends HTMLElement {
       this._dialog = { type: layout.section };
     }
 
-    const statusSection = showStatus ? this.energyFlowPanel() : "";
     const pricesSection = showPrices ? `
              <section class="panel price-panel">
                <h2 class="panel-title">Sell prices</h2>
@@ -5992,7 +4702,6 @@ class DeyeEnergyCard extends HTMLElement {
           button{font:inherit}
            .panel,.schedule-shell,.table-wrap{box-sizing:border-box;border:1px solid rgba(107,157,182,.34);border-radius:10px;background:radial-gradient(circle at 12% 8%,rgba(20,85,130,.16),transparent 32%),linear-gradient(180deg,rgba(5,16,26,.98),rgba(7,21,32,.98));box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 12px 28px rgba(0,0,0,.18)}
           .panel-title,.table-title{margin:0;padding:12px 14px;background:linear-gradient(180deg,rgba(16,45,61,.92),rgba(6,20,31,.86));border-bottom:1px solid rgba(107,157,182,.24);font-size:18px;font-weight:800;color:#fff}
-          .status-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding:10px}
           .stat{border:1px solid rgba(111,154,178,.45);border-radius:7px;background:rgba(7,18,28,.74);padding:10px;min-width:0}
           .stat span{display:block;color:#a9c1d0;font-size:12px}.stat strong{display:block;margin-top:4px;color:#fff;font-size:18px;line-height:1.2}.stat.good strong,.good{color:#2dff95!important}.stat.warn strong,.warn{color:#ffd95c!important}.bad{color:#ff6b7a!important}
            .info-grid{display:grid;grid-template-columns:0.85fr 0.85fr 1.30fr;gap:14px;align-items:stretch;width:100%;box-sizing:border-box}.info-grid>.panel{height:auto;min-height:470px;display:flex;flex-direction:column;min-width:0}
@@ -6016,21 +4725,19 @@ class DeyeEnergyCard extends HTMLElement {
            .history-toolbar{display:grid;grid-template-columns:repeat(3,minmax(130px,1fr)) repeat(3,auto);gap:8px;align-items:end;margin-bottom:12px}.history-toolbar label{display:grid;gap:4px;color:#a9c1d0;font-size:11px}.history-toolbar button,.danger-action{min-height:38px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 12px;cursor:pointer}.history-section{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);margin-bottom:12px;overflow:hidden}.history-section h3{margin:0;padding:10px 12px;color:var(--green);background:rgba(18,42,59,.74)}.history-scroll{max-height:270px;overflow:auto;overscroll-behavior:contain}.history-scroll .settings-table{min-width:780px}.history-scroll details summary{cursor:pointer;color:var(--blue)}.history-scroll pre{max-width:520px;max-height:220px;overflow:auto;white-space:pre-wrap;color:#cfe1ea}.danger-action{background:rgba(138,24,42,.28);border-color:rgba(255,77,99,.55);color:#ff9cab}
            .settings-dialog{width:min(1180px,96vw)!important;height:min(820px,92vh);max-height:92vh!important;overflow:hidden!important;display:grid;grid-template-rows:auto minmax(0,1fr)}.settings-layout{min-height:0;display:grid;grid-template-columns:220px minmax(0,1fr)}.settings-nav{padding:12px;border-right:1px solid var(--line);background:rgba(4,15,24,.58);display:flex;flex-direction:column;gap:7px;overflow-y:auto}.settings-nav button{width:100%;min-height:42px;border:1px solid var(--line2);border-radius:7px;background:rgba(255,255,255,.025);color:#dfeef6;padding:8px 10px;text-align:left;cursor:pointer}.settings-nav button.active{border-color:var(--blue);color:#fff;background:rgba(21,155,255,.22)}.settings-content{min-width:0;overflow:auto;overscroll-behavior:contain;padding:14px}.diagnostic-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-bottom:12px}.diagnostic-summary>div{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03);padding:11px}.diagnostic-summary span{display:block;color:#9db7c6;font-size:11px}.diagnostic-summary strong{display:block;margin-top:5px;overflow-wrap:anywhere}.diagnostic-section{border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:12px;background:rgba(255,255,255,.025)}.diagnostic-section h3{margin:0;padding:10px 12px;background:rgba(18,42,59,.78);color:#dff4ff}.diagnostic-entities{max-height:260px;overflow:auto}.diag-badge{display:inline-flex;border-radius:999px;padding:3px 9px;font-weight:800}.diag-badge.ok{color:var(--green);background:rgba(53,214,111,.12)}.diag-badge.error{color:#ff8b98;background:rgba(255,77,99,.13)}.diagnostic-actions{display:flex;flex-wrap:wrap;gap:8px;padding:12px}.diagnostic-actions button{min-height:38px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 13px;cursor:pointer}.diagnostic-actions button.danger{background:rgba(138,24,42,.28);border-color:rgba(255,77,99,.55);color:#ff9cab}.diagnostic-actions button.resume{background:rgba(38,112,64,.55);border-color:rgba(103,229,100,.65)}.tou-diagnostics{padding:12px;display:flex;gap:10px;align-items:center;overflow-wrap:anywhere}.schedule-attempt{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;padding:12px}.schedule-attempt>div{border:1px solid var(--line);border-radius:7px;padding:9px;overflow-wrap:anywhere}.schedule-attempt .schedule-attempt-message{grid-column:span 3}.schedule-attempt span{display:block;font-size:11px;color:#9db7c6}.schedule-attempt strong{display:block;margin-top:4px}.schedule-attempt ul{margin:6px 0 0;padding:0;list-style:none}.schedule-attempt li{display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:2px 0}.schedule-attempt.failed{background:rgba(145,28,48,.08)}
            .sales-summary{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:10px}.sales-chart{height:130px;display:grid;grid-template-columns:repeat(24,1fr);gap:4px;align-items:end;padding:10px;border-top:1px solid var(--line)}.sales-bar{height:112px;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:4px;min-width:0}.sales-bar span{display:block;width:100%;min-height:4px;border-radius:4px 4px 0 0;background:#35d66f}.sales-bar.now span{background:#ffd166}.sales-bar em{font-style:normal;font-size:10px;color:#8aa8b8;writing-mode:vertical-rl;transform:rotate(180deg)}.sales-tables{display:grid;grid-template-columns:1fr .8fr 1fr;gap:10px;padding:0 10px 10px}.section-label{padding:8px 10px;color:#d9f7ff;background:#1b3445;font-size:12px;font-weight:900;text-transform:uppercase}.sales-scroll{max-height:170px;overflow:auto;overscroll-behavior:contain}.mini-table{width:100%;border-collapse:collapse}.mini-table td{padding:5px 8px;border-top:1px solid var(--line);font-size:12px}
-          .status-panel,.sales-panel{background:radial-gradient(circle at 12% 0%,rgba(20,85,130,.22),transparent 30%),linear-gradient(180deg,rgba(5,16,26,.99),rgba(7,21,32,.99));border-color:rgba(107,157,182,.3)}
-          .status-panel .panel-title,.sales-panel .panel-title{display:flex;align-items:center;gap:9px;padding:13px 15px;background:transparent;border-bottom:1px solid rgba(107,157,182,.25);font-size:21px}.status-panel .panel-title svg,.sales-panel .panel-title svg{width:21px;height:21px;color:var(--blue)}
-          .status-panel .status-grid{gap:10px;padding:12px}.status-panel .stat,.sales-summary .stat{position:relative;display:flex;align-items:center;gap:11px;min-height:58px;padding:10px 12px;border:1px solid rgba(107,157,182,.28);border-radius:8px;background:linear-gradient(180deg,rgba(12,31,45,.84),rgba(6,19,29,.88));box-shadow:inset 0 1px 0 rgba(255,255,255,.025)}
-          .stat-icon{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;background:rgba(21,155,255,.14);color:#55baff}.stat-icon svg{width:19px;height:19px}.stat-copy{min-width:0;flex:1}.status-panel .stat span,.sales-summary .stat span{font-size:11px;color:#8eacbd}.status-panel .stat strong,.sales-summary .stat strong{font-size:16px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-           .status-mode .stat-icon{color:var(--green);background:rgba(126,226,45,.14)}.status-mode.warn .stat-icon{color:var(--gold);background:rgba(246,166,25,.16)}.status-mode.bad .stat-icon{color:#ff6b7a;background:rgba(255,77,99,.15)}.status-mode.neutral .stat-icon{color:#a9c1d0;background:rgba(155,178,193,.12)}.status-mode.charge .stat-icon{color:var(--gold);background:rgba(246,166,25,.16)}.status-mode.zero .stat-icon{color:var(--blue);background:rgba(21,155,255,.16)}.status-mode.ct .stat-icon{color:var(--purple);background:rgba(188,99,255,.18)}.status-mode.normal .stat-icon{color:#4dabf7;background:rgba(77,171,247,.14)}.status-pv .stat-icon{color:#ffd166;background:rgba(255,209,102,.14)}.status-home .stat-icon{color:#57b9ff}.status-grid .stat-icon{color:#6ec7ff}.status-battery .stat-icon,.status-soc .stat-icon{color:var(--purple);background:rgba(188,99,255,.14)}.status-sold .stat-icon{color:var(--green);background:rgba(53,214,111,.14)}.status-slot .stat-icon{color:var(--gold);background:rgba(246,166,25,.14)}.status-inverter .stat-icon{color:var(--blue);background:rgba(21,155,255,.14)}.status-action .stat-icon{color:#d8ecf7;background:rgba(155,178,193,.1)}
-           .decision-strip{margin:0 12px 12px;padding:10px 13px;border:1px solid rgba(107,157,182,.32);border-left:4px solid var(--blue);border-radius:8px;background:rgba(6,20,31,.82);display:flex;align-items:center;gap:10px}.decision-strip svg{width:19px;height:19px;color:var(--blue)}.decision-strip strong{font-size:13px}.decision-strip span{color:#a9c1d0;font-size:12px}.decision-strip.good{border-left-color:var(--green)}.decision-strip.good svg{color:var(--green)}.decision-strip.warn,.decision-strip.charge{border-left-color:var(--gold)}.decision-strip.warn svg,.decision-strip.charge svg{color:var(--gold)}.decision-strip.bad{border-left-color:#ff4d63}.decision-strip.bad svg{color:#ff6b7a}.decision-strip.ct{border-left-color:var(--purple)}.decision-strip.ct svg{color:var(--purple)}.decision-strip.normal{border-left-color:#4dabf7}.decision-strip.normal svg{color:#4dabf7}
+          .sales-panel{background:radial-gradient(circle at 12% 0%,rgba(20,85,130,.22),transparent 30%),linear-gradient(180deg,rgba(5,16,26,.99),rgba(7,21,32,.99));border-color:rgba(107,157,182,.3)}
+          .sales-panel .panel-title{display:flex;align-items:center;gap:9px;padding:13px 15px;background:transparent;border-bottom:1px solid rgba(107,157,182,.25);font-size:21px}.sales-panel .panel-title svg{width:21px;height:21px;color:var(--blue)}
+          .sales-summary .stat{position:relative;display:flex;align-items:center;gap:11px;min-height:58px;padding:10px 12px;border:1px solid rgba(107,157,182,.28);border-radius:8px;background:linear-gradient(180deg,rgba(12,31,45,.84),rgba(6,19,29,.88));box-shadow:inset 0 1px 0 rgba(255,255,255,.025)}
+          .stat-icon{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;background:rgba(21,155,255,.14);color:#55baff}.stat-icon svg{width:19px;height:19px}.stat-copy{min-width:0;flex:1}.sales-summary .stat span{font-size:11px;color:#8eacbd}.sales-summary .stat strong{font-size:16px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
                      .sales-panel{width:100%;box-sizing:border-box}.sales-panel>div{padding:0 2px 2px}.sales-summary{gap:10px;padding:12px}.sales-summary .stat{border-left:3px solid rgba(21,155,255,.72)}.sales-summary .stat:nth-child(1){border-left-color:var(--green)}.sales-summary .stat:nth-child(2){border-left-color:#ffd166}.sales-summary .stat:nth-child(3){border-left-color:var(--blue)}.sales-summary .stat:nth-child(4){border-left-color:var(--purple)}.sales-summary .stat:nth-child(5){border-left-color:var(--gold)}
           .sales-chart{height:118px;margin:0 12px 12px;padding:10px 8px 7px;border:1px solid rgba(107,157,182,.25);border-radius:8px;background:rgba(4,15,24,.7)}.sales-bar{height:98px}.sales-bar span{background:linear-gradient(180deg,#74ea4b,#28b963);box-shadow:0 0 10px rgba(53,214,111,.12)}.sales-bar.now span{background:linear-gradient(180deg,#ffe08a,#f5b942)}
           .sales-tables{gap:12px;padding:0 12px 12px}.sales-tables>div{overflow:hidden;border:1px solid rgba(107,157,182,.25);border-radius:8px;background:rgba(4,15,24,.62)}.section-label{padding:9px 11px;background:rgba(18,42,59,.86);color:#d8edf8;font-size:11px;letter-spacing:0;text-transform:uppercase}.mini-table td{padding:6px 9px;border-top:1px solid rgba(118,166,190,.16);font-size:11px}.mini-table tr:hover td{background:rgba(21,155,255,.05)}
            .dialog-head{position:sticky;top:0;z-index:5;background:linear-gradient(180deg,rgba(14,50,70,.98),rgba(10,30,44,.98))}.dialog-actions{position:sticky;bottom:0;z-index:4;padding:12px 14px;background:rgba(6,20,32,.98);border-top:1px solid var(--line)}
            @media(max-width:1500px){.info-grid{grid-template-columns:1fr 1fr}.info-grid>.panel:nth-child(3){grid-column:1/-1}.schedule-main.selecting{grid-template-columns:1fr}.bulk-panel{max-width:none}.mode-legend{grid-template-columns:repeat(3,minmax(0,1fr))}}
-           @media(max-width:980px){.dem-v073{padding:10px}.info-grid{grid-template-columns:1fr}.status-grid,.sales-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.info-grid>.panel{height:auto;min-height:340px}.schedule-head{display:grid}.schedule-tools{justify-content:stretch}.tool-btn{flex:1}.mode-legend{grid-template-columns:1fr 1fr}.schedule-table{min-width:1160px}.schedule-table-card{overflow-x:auto}.sales-tables{grid-template-columns:1fr}.sales-chart{overflow-x:auto;grid-template-columns:repeat(24,24px)}.price-scroll{height:260px;overflow:auto;scrollbar-gutter:stable}.solcast-days{grid-template-columns:repeat(2,1fr)}.settings-layout{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.settings-nav{flex-direction:row;overflow-x:auto;overflow-y:hidden;border-right:0;border-bottom:1px solid var(--line)}.settings-nav button{width:auto;min-width:max-content;text-align:center}.diagnostic-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
+           @media(max-width:980px){.dem-v073{padding:10px}.info-grid{grid-template-columns:1fr}.sales-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.info-grid>.panel{height:auto;min-height:340px}.schedule-head{display:grid}.schedule-tools{justify-content:stretch}.tool-btn{flex:1}.mode-legend{grid-template-columns:1fr 1fr}.schedule-table{min-width:1160px}.schedule-table-card{overflow-x:auto}.sales-tables{grid-template-columns:1fr}.sales-chart{overflow-x:auto;grid-template-columns:repeat(24,24px)}.price-scroll{height:260px;overflow:auto;scrollbar-gutter:stable}.solcast-days{grid-template-columns:repeat(2,1fr)}.settings-layout{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.settings-nav{flex-direction:row;overflow-x:auto;overflow-y:hidden;border-right:0;border-bottom:1px solid var(--line)}.settings-nav button{width:auto;min-width:max-content;text-align:center}.diagnostic-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
            @media(max-width:620px){
              .dem-v073{padding:4px;gap:8px}.panel,.schedule-shell,.table-wrap{border-radius:7px}.panel-title{padding:10px 12px;font-size:18px}
-             .status-grid,.sales-summary{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px!important;padding:7px!important}.status-panel .stat,.sales-summary .stat{min-height:52px;padding:7px 8px;gap:7px}.status-panel .status-mode{grid-column:1/-1}.stat-icon{width:29px;height:29px}.stat-icon svg{width:17px;height:17px}.status-panel .stat span,.sales-summary .stat span{font-size:10px}.status-panel .stat strong,.sales-summary .stat strong{font-size:13px;line-height:1.25;white-space:normal;overflow-wrap:anywhere}
+             .sales-summary{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px!important;padding:7px!important}.sales-summary .stat{min-height:52px;padding:7px 8px;gap:7px}.stat-icon{width:29px;height:29px}.stat-icon svg{width:17px;height:17px}.sales-summary .stat span{font-size:10px}.sales-summary .stat strong{font-size:13px;line-height:1.25;white-space:normal;overflow-wrap:anywhere}
              .info-grid{gap:8px}.info-grid>.panel{min-height:0;height:auto}.price-summary{grid-template-columns:1fr}.price-scroll{height:230px}.price-table th,.price-table td{padding:4px 7px;font-size:11px}
               .solcast-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.solcast-days{display:flex;max-width:100%;gap:6px;overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x proximity;padding-bottom:5px}.solcast-day{min-width:132px;scroll-snap-align:start}.solcast-chart{height:162px;padding-left:5px;padding-right:5px}.solcast-bars{height:138px;min-width:0;width:100%;max-width:100%;grid-template-columns:repeat(24,minmax(0,1fr))}.solcast-performance{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;padding:7px}
              .schedule-shell{padding:7px}.schedule-head{gap:8px}.schedule-title h2{font-size:19px}.schedule-title p{font-size:11px;line-height:1.35}.schedule-tools{display:grid;grid-template-columns:1fr 1fr;gap:6px}.tool-btn{min-height:36px;padding:0 8px;justify-content:center;font-size:12px}.gear-btn{width:100%;min-height:36px}.mode-legend{display:flex;gap:10px;overflow-x:auto;padding:3px 1px 7px;scroll-snap-type:x proximity}.mode-tile{min-width:150px;scroll-snap-align:start}.mode-icon{width:30px;height:30px}.mode-tile strong{font-size:12px}.mode-tile span{font-size:10px}.schedule-table{min-width:880px}.schedule-table th,.schedule-table td{padding:2px 3px}.schedule-table td{font-size:10px}.schedule-foot{padding:7px;align-items:flex-start;flex-direction:column}.foot-actions{width:100%;display:grid;grid-template-columns:1fr 1fr}.foot-actions button{justify-content:center;padding:0 7px;font-size:11px}
@@ -6040,7 +4747,6 @@ class DeyeEnergyCard extends HTMLElement {
            .manual-schedule-table{min-width:820px}.manual-schedule-table .time-col{white-space:nowrap}.manual-schedule-table tr.editing{background:rgba(21,155,255,.09)}.manual-schedule-table tr.disabled{opacity:.72}.manual-schedule-table tr.editing td{border-top-color:rgba(21,155,255,.38)}.manual-schedule-table input,.manual-schedule-table select{width:100%;min-width:90px;box-sizing:border-box;background:rgba(8,22,34,.95);color:#f6fbff;border:1px solid rgba(107,157,182,.34);border-radius:7px;padding:5px 6px}.manual-schedule-table input[type=checkbox]{width:auto;min-width:0;accent-color:var(--blue)}.manual-action-cell{display:flex;gap:6px;align-items:center}.manual-schedule-table .icon-only.active{border-color:var(--blue);color:#2ea7ff;background:rgba(8,53,92,.55)}.manual-schedule-table .icon-only.remove:hover{border-color:rgba(255,77,99,.7);color:#ff9cab}.manual-schedule-table .icon-only:disabled{opacity:.35;cursor:not-allowed}.manual-row-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.manual-row-actions button{min-height:36px;border:1px solid var(--line2);border-radius:7px;background:#173a57;color:#fff;padding:0 12px;cursor:pointer}.manual-row-actions button:disabled{opacity:.45;cursor:not-allowed}.manual-schedule-table tr.time-current td{background:transparent;box-shadow:none;color:#fff8ea}.manual-schedule-table tr.time-current td,.manual-schedule-table tr.time-current td *{text-shadow:0 0 0 rgba(255,166,45,0);animation:manual-time-current-text-glow 2.4s ease-in-out infinite}.manual-schedule-table tr.time-current td svg,.manual-schedule-table tr.time-current td .icon-only{animation:manual-time-current-icon-glow 2.4s ease-in-out infinite}@keyframes manual-time-current-text-glow{0%,100%{text-shadow:0 0 0 rgba(255,166,45,0);color:inherit}50%{text-shadow:0 0 4px rgba(255,244,214,.95),0 0 10px rgba(255,176,58,.95),0 0 18px rgba(255,140,0,.55);color:#fffaf0}}@keyframes manual-time-current-icon-glow{0%,100%{filter:drop-shadow(0 0 0 rgba(255,166,45,0))}50%{filter:drop-shadow(0 0 3px rgba(255,244,214,.95)) drop-shadow(0 0 8px rgba(255,166,45,.85))}}
            </style>
             <div class="dem-v073" style="${demStyle}">
-            ${statusSection}
             ${infoGridSection}
             ${scheduleSection}
             ${salesSection}
@@ -6055,7 +4761,6 @@ class DeyeEnergyCard extends HTMLElement {
 
     this.bindControlsV073(slots);
     this._isRendered = true;
-    this.scaleFlowPanel();
     this.syncBulkPanelValues(slots);
     this.restoreScrollPositions();
   }
@@ -6279,20 +4984,6 @@ class DeyeEnergyCard extends HTMLElement {
       this.applyProfileToSlotDraft("Charging", true);
       this.renderDialogOnly();
     }));
-    root.querySelectorAll("[data-energy-role-field]").forEach((el) => {
-      const update = () => this.collectEnergyStatusDraft();
-      el.addEventListener("change", update);
-      if (el.tagName !== "SELECT") el.addEventListener("input", update);
-    });
-    root.querySelectorAll("[data-energy-pv-enabled]").forEach((el) => {
-      el.addEventListener("change", () => this.collectEnergyStatusDraft());
-    });
-    root.querySelectorAll("[data-save-energy-status]").forEach((el) => el.addEventListener("click", () => {
-      this.saveEnergyStatusDisplay();
-    }));
-    root.querySelectorAll("[data-save-energy-pv]").forEach((el) => el.addEventListener("click", () => {
-      this.saveEnergyPvGeneration();
-    }));
     root.querySelectorAll("[data-settings-tab]").forEach((el) => el.addEventListener("click", () => {
       this._settingsTab = el.dataset.settingsTab;
       this._tariffDraft = null;
@@ -6457,6 +5148,10 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
 
   setConfig(config) {
     this._config = config || {};
+    this._pfDraftSource = null;
+    this._pfDisplaySource = null;
+    this._pfDisplayCache = null;
+    this._pfDisplayKey = null;
   }
 
   getCardSize() { return 8; }
@@ -6473,7 +5168,10 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
   }
 
   disconnectedCallback() {
-    // no-op
+    this._pfDraftSource = null;
+    this._pfDisplaySource = null;
+    this._pfDisplayCache = null;
+    this._pfDisplayKey = null;
   }
 
   set hass(hass) {
@@ -6528,6 +5226,20 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
       if (!/return_response|does not support response/i.test(String(error?.message || ""))) throw error;
       return this.callService(domain, service, data);
     }
+  }
+
+  configuredEntity(key, domain, fallbackSuffix) {
+    const sources = [this._config?.entities, this._config?.entity_map, this._config?.mapping];
+    for (const source of sources) {
+      const value = source?.[key];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+    const candidates = [
+      `${domain}.deye_energy_${fallbackSuffix}`,
+      `${domain}.deye_${fallbackSuffix}`,
+      `${domain}.${fallbackSuffix}`,
+    ];
+    return candidates.find((id) => Boolean(this._hass?.states?.[id])) || candidates[0];
   }
 
   /* ---------- data loading ---------- */
@@ -7436,8 +6148,8 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
           .ic-hint.ic-ok { color: var(--ic-good); background: color-mix(in srgb, var(--ic-good) 12%, transparent); }
           .ic-hint.ic-bad { color: var(--ic-bad); background: color-mix(in srgb, var(--ic-bad) 12%, transparent); }
           .ic-field { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-          .ic-field input, .ic-select { background: var(--card-background-color, rgba(0,0,0,.2)); color: var(--ic-text); border: 1px solid var(--ic-line); border-radius: 8px; padding: 8px 10px; font: inherit; min-width: 140px; max-width: 100%; }
-          .ic-field input:focus, .ic-select:focus { outline: 2px solid color-mix(in srgb, var(--ic-accent) 45%, transparent); border-color: var(--ic-accent); }
+          .ic-field input, .ic-select, .pf-group .pf-entity-input, .pf-edit input[type="text"] { background: var(--card-background-color, rgba(0,0,0,.2)); color: var(--ic-text); border: 1px solid var(--ic-line); border-radius: 8px; padding: 8px 10px; font: inherit; min-width: 140px; max-width: 100%; }
+          .ic-field input:focus, .ic-select:focus, .pf-group .pf-entity-input:focus, .pf-edit input[type="text"]:focus { outline: 2px solid color-mix(in srgb, var(--ic-accent) 45%, transparent); border-color: var(--ic-accent); }
           .ic-unit { color: var(--ic-muted); font-size: .88rem; }
           .ic-readonly { color: var(--ic-text); }
           .ic-new { color: var(--ic-accent); font-weight: 600; }
@@ -7445,9 +6157,9 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
           .pf-edit-title { color: var(--ic-muted); font-size: .88rem; font-weight: 600; }
           .pf-edit-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
           .pf-group > .pf-edit + .pf-edit { margin-top: 16px; }
-          .pf-edit input[type="text"], .pf-edit select { min-width: 120px; }
+          .pf-edit select { min-width: 120px; }
           .pf-edit input[type="color"] { width: 48px; height: 36px; padding: 2px; }
-          .pf-group .pf-entity-input, .pf-edit .pf-detail-entity-input { min-width: 280px; width: 280px; max-width: 100%; }
+          .pf-group .pf-entity-input, .pf-edit .pf-detail-entity-input, .pf-edit input[data-pf-summary$=":entity"] { min-width: 480px; width: 480px; max-width: 100%; }
           .pf-edit .pf-detail-label-input { min-width: 240px; max-width: 100%; }
           .pf-row-actions { display: flex; flex-wrap: wrap; gap: 4px; }
           .ic-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 1000; }
@@ -7467,7 +6179,7 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
             .ic-table th, .ic-table td { padding: 8px 6px; }
             .ic-field { display: flex; width: 100%; }
             .ic-field input, .ic-select { width: 100%; min-width: 0; }
-            .pf-group .pf-entity-input, .pf-edit .pf-detail-entity-input, .pf-edit .pf-detail-label-input { width: 100%; min-width: 0; }
+            .pf-group .pf-entity-input, .pf-edit .pf-detail-entity-input, .pf-edit input[data-pf-summary$=":entity"], .pf-edit .pf-detail-label-input { width: 100%; min-width: 0; }
             .ic-overlay { padding: 10px; align-items: flex-end; }
             .ic-overlay-card { width: 100%; max-height: 90vh; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
             .ic-overlay-actions .ic-btn { flex: 1; }
@@ -7896,10 +6608,12 @@ class DeyeEnergyGraphsCard extends HTMLElement {
     this._history = {};
     this._lastFetch = 0;
     this._lastSig = '';
+    this._chartMeta = {};
   }
 
   disconnectedCallback() {
     if (this._timer) { clearTimeout(this._timer); this._timer = null; }
+    this._chartMeta = {};
   }
 
   set hass(hass) {
@@ -8071,6 +6785,7 @@ class DeyeEnergyGraphsCard extends HTMLElement {
     } finally {
       this._loading = false;
       this._lastSig = '';
+      if (!this.isConnected) return;
       this._render();
       this._scheduleFetch(60000);
     }
@@ -8319,14 +7034,28 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     this._stats = {};
     this._statsLoading = false;
     this._statsKey = '';
+    this._statsToken = 0;
+    this._clickHandler = null;
     if (typeof this.addEventListener === 'function') {
-      this.addEventListener('click', (e) => {
+      this._clickHandler = (e) => {
         const t = e?.target?.closest ? e.target.closest('.pf-value-click[data-entity], .pf-node-click[data-entity], .pf-consumer-click[data-entity]') : null;
         if (t) this._openMoreInfo(t.getAttribute('data-entity'));
         const p = e?.target?.closest ? e.target.closest('.pf-period[data-period]') : null;
         if (p) { this._period = p.getAttribute('data-period') || 'power'; this._maybeFetchStats(); this._render(); }
-      });
+      };
+      this.addEventListener('click', this._clickHandler);
     }
+  }
+
+  disconnectedCallback() {
+    if (this._clickHandler) {
+      this.removeEventListener('click', this._clickHandler);
+      this._clickHandler = null;
+    }
+    this._statsToken += 1;
+    this._statsLoading = false;
+    this._pfDisplaySource = null;
+    this._pfDisplayCache = null;
   }
 
   static getStubConfig() {
@@ -8366,7 +7095,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
   }
 
   getCardSize() { return 12; }
-  setConfig(config) { this._config = config || {}; this._period = 'power'; this._stats = {}; this._statsKey = ''; this._render(); this._maybeFetchStats(); }
+  setConfig(config) { this._config = config || {}; this._period = 'power'; this._stats = {}; this._statsKey = ''; this._statsToken += 1; this._pfDisplaySource = null; this._pfDisplayCache = null; this._render(); this._maybeFetchStats(); }
   set hass(hass) { const old = this._hass; this._hass = hass; if (!old) this._maybeFetchStats(); this._render(); }
 
   _esc(v) { return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
@@ -8415,11 +7144,6 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     if (format === 'pct') return value == null || !Number.isFinite(value) ? '—' : `${Math.round(value)} %`;
     if (format === 'kw') return value == null || !Number.isFinite(value) ? '—' : `${(value / 1000).toFixed(2)} kW`;
     return value == null || !Number.isFinite(value) ? '—' : String(Math.round(value * 100) / 100);
-  }
-  _extraNodeDetails(group) {
-    const details = this._powerFlowDisplay().node_details || {};
-    const rows = Array.isArray(details[group]) ? details[group] : [];
-    return rows.map((row) => this._detailLine(row.label, this._configValue(row.entity, row.format), '#9eb8c8', row.entity));
   }
   _nodeDetailRows(group, builtins, fallbackKeys) {
     const display = this._powerFlowDisplay();
@@ -8489,6 +7213,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const key = period + '|' + ids.join(',') + '|' + range.start.slice(0,13);
     if (this._statsKey === key) return;
     const fetchKey = key;
+    const token = ++this._statsToken;
     this._statsKey = key; this._statsLoading = true; this._stats = {};
     try {
       const periodType = period === 'month' ? 'day' : period === 'week' ? 'day' : period === '24h' ? 'hour' : 'day';
@@ -8500,7 +7225,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
         period: periodType,
         types: ['change'],
       });
-      if (this._statsKey !== fetchKey) return;
+      if (this._statsKey !== fetchKey || token !== this._statsToken || !this.isConnected) return;
       const data = res?.statistics && typeof res.statistics === 'object' && !Array.isArray(res.statistics) ? res.statistics : res;
       const out = {};
       for (const id of ids) {
@@ -8515,9 +7240,9 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       }
       this._stats = out;
     } catch (e) {
-      if (this._statsKey === fetchKey) console.warn('[deye-energy-power-flow-card] statistics fetch failed', e);
+      if (this._statsKey === fetchKey && token === this._statsToken && this.isConnected) console.warn('[deye-energy-power-flow-card] statistics fetch failed', e);
     } finally {
-      if (this._statsKey === fetchKey) {
+      if (this._statsKey === fetchKey && token === this._statsToken && this.isConnected) {
         this._statsLoading = false;
         this._render();
       }
@@ -8891,7 +7616,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.0.87",
+  description: "Deye Energy 0.8.0.88",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",
