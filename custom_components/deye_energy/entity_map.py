@@ -131,10 +131,13 @@ def validate_power_flow_payload(payload: Any) -> dict[str, Any]:
     kinds = set(defaults.get("chip_kinds", _POWER_FLOW_CHIP_KINDS))
     allowed_groups = set(defaults.get("node_detail_keys", ()))
     unknown = set(payload) - {
-        "schema_version", "entities", "node_details", "node_detail_layout", "chip_rows"
+        "schema_version", "layout", "entities", "node_details", "node_detail_layout", "chip_rows"
     }
     if unknown:
         raise ValueError(f"unsupported Power Flow display fields: {sorted(unknown)}")
+    layout_name = str(payload.get("layout", defaults.get("layout", "cross")) or "cross").strip().lower()
+    if layout_name not in {"cross", "left_right"}:
+        raise ValueError(f"unsupported Power Flow layout: {layout_name}")
     entities = payload.get("entities", {})
     if not isinstance(entities, dict):
         raise ValueError("Power Flow entities must be an object")
@@ -173,6 +176,7 @@ def validate_power_flow_payload(payload: Any) -> dict[str, Any]:
     normalized_chips: dict[str, list[dict[str, Any]]] = {"summary": summary_chips}
     return {
         "schema_version": 1,
+        "layout": layout_name,
         "entities": normalized_entities,
         "node_details": normalized_details,
         "node_detail_layout": normalized_layout,
@@ -193,12 +197,15 @@ def _validate_power_flow(document: dict[str, Any], source: str) -> None:
     if not isinstance(power_flow, dict):
         raise ValueError(f"power_flow in {source} must be an object")
     allowed = {
-        "schema_version", "entities", "sensor_groups", "node_detail_keys",
+        "schema_version", "layout", "entities", "sensor_groups", "node_detail_keys",
         "formats", "chip_kinds", "node_details", "node_detail_layout", "chip_rows",
     }
     unknown = set(power_flow) - allowed
     if unknown:
         raise ValueError(f"unsupported power_flow fields in {source}: {sorted(unknown)}")
+    layout_name = str(power_flow.get("layout", "cross") or "cross").strip().lower()
+    if layout_name not in {"cross", "left_right"}:
+        raise ValueError(f"unsupported power_flow layout in {source}: {layout_name}")
     entities = power_flow.get("entities", {})
     if not isinstance(entities, dict):
         raise ValueError(f"power_flow.entities in {source} must be an object")

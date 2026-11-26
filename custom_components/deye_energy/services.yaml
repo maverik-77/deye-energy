@@ -267,7 +267,7 @@ save_power_flow_display:
   fields:
     data:
       name: Display configuration JSON
-      description: JSON object with optional schema_version, entities, node_details and chip_rows. Unknown keys and invalid entity ids are rejected.
+      description: JSON object with optional schema_version, layout, entities, node_details, node_detail_layout and chip_rows. layout may be "cross" or "left_right". Unknown keys and invalid entity ids are rejected.
       required: true
       selector:
         text:

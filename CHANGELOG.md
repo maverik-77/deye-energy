@@ -4,7 +4,74 @@ All notable changes to Deye Energy. Versions before 0.8.0 are the history of the
 upstream Deye Energy Manager project and are not repeated here. Attribution is
 recorded at the bottom of README.md.
 
-## [0.8.1.01] - 2026-11-26
+## [0.8.1.02] - 2026-11-26
+
+### Added
+
+- **Configurable Power Flow layout**: the Power Flow card now supports a
+  persisted `layout` setting with two modes: `cross` (default, existing layout)
+  and `left_right`. In `left_right`, PV is top-left, Grid is bottom-left,
+  Inverter is middle, Battery is top-right, and Home is bottom-right. The
+  left-right layout uses curved SVG connection paths while preserving the same
+  glow-ball direction, speed and reversal logic as straight paths.
+- **Power Flow layout setting in Inverter Configuration**: added a separate
+  "Power flow layout" group in Inverter Configuration > Power Flow tab, allowing
+  users to switch layout and save it through the existing Power Flow display
+  save flow (`deye_energy.save_power_flow_display`).
+
+### Changed
+
+- **Inverter Configuration action buttons**: action buttons in Inverter
+  Configuration tabs now use a blue accent style to make them easier to locate.
+- **Power Flow display schema**: `power_flow.layout` is now part of the
+  effective/bundled/override Power Flow display payload and validation. Allowed
+  values are `cross` and `left_right`; unknown layout values and unsupported
+  fields are rejected.
+- **Manual Schedule independent from physical TOU**: Manual Schedule rows are no
+  longer compressed/mapped to the inverter's six physical Deye TOU ranges. Rows
+  accept whole-minute `HH:MM` boundaries and any number of rows as long as they
+  cover the full 24 hours with no gaps/overlaps. Active Manual Schedule drives
+  integration-controlled timed decisions at minute boundaries; it does not
+  auto-write physical TOU ranges.
+- **TOU direct-edit semantics**: physical Deye TOU is direct inverter
+  editing/baseline only. The integration does not auto-trigger TOU/schedule
+  writes from physical TOU state. `set_tou_slot` and direct TOU editing remain
+  available for physical range writes.
+- **Manual-trigger only**: schedule-triggered apply/default/mapping paths run
+  only when Manual Schedule is active, Deye control is active, and Schedule mode
+  is selected. Inactive Manual Schedule does not trigger integration-controlled
+  TOU/schedule actions.
+- **Documentation and service descriptions**: README, INSTALL and
+  `services.yaml` describe the Manual Schedule/physical TOU separation,
+  manual-only trigger behavior, 6-range physical TOU limit scope, and Power Flow
+  layout configuration.
+- **Power flow animation**: active links now carry discrete SVG glow balls
+  instead of the dotted stream. Travel time is `18 / flow_animation_speed`
+  seconds, divided by `clamp(sqrt(abs(power) / 1000), 0.4, 3)` and clamped to
+  0.35–8 seconds, so stronger links move faster. A reversal dims the current
+  glow and old arrow, cross-fades the arrowhead to the other end, re-brightens
+  the glow and then resumes movement; idle links show no arrow or balls.
+- **Power flow lifecycle**: the delegated click listener is now installed
+  idempotently, removed on disconnect and restored on reconnect. Animation
+  frames stop while the card is detached, and the one-shot timers used by the
+  main card's toggle and inverter focus-out handling are tracked and cleared.
+- **Lovelace resource follow-up**: when Home Assistant is already running, the
+  deferred `homeassistant_started` listener is cancelled instead of waiting for
+  an event that will not fire, and a `not_ready` result stays retryable rather
+  than being cached as complete.
+- **Diagnostics**: the reported integration version is now `0.8.1.02`, and the
+  manual-schedule guard says "schedule slots" instead of "work schedule".
+- **Tests**: added/updated coverage for Power Flow layout schema, save payload,
+  and render/geometry assumptions; retained lifecycle, deferral,
+  version-consistency, minute-boundary, and manual-row coverage.
+- **Maintenance**: bumped the integration version and card resource revision to
+  `0.8.1.02` in the manifest, frontend, manager, both byte-identical card copies
+  and the documentation.
+
+### Fixed
+
+- **Audit findings**: removed dead fields and locals, cleared ignored generated
+  caches from the working tree and aligned stale documentation with the code.
 
 ### Removed
 
@@ -22,98 +89,6 @@ recorded at the bottom of README.md.
   left behind by earlier UI removals were deleted too.
 - **Obsolete tests**: removed the charge-profile and normal-profile card tests
   that exercised the deleted UI, and renamed the remaining stale test cases.
-
-### Changed
-
-- **Manual Schedule independent from physical TOU**: Manual Schedule rows are no
-  longer compressed/mapped to the inverter's six physical Deye TOU ranges. Rows
-  accept whole-minute `HH:MM` boundaries and any number of rows as long as they
-  cover the full 24 hours with no gaps/overlaps. Active Manual Schedule drives
-  integration-controlled timed decisions at minute boundaries; it does not
-  auto-write physical TOU ranges.
-- **TOU direct-edit semantics**: physical Deye TOU is direct inverter
-  editing/baseline only. The integration does not auto-trigger TOU/schedule
-  writes from physical TOU state. `set_tou_slot` and direct TOU editing remain
-  available for physical range writes.
-- **Manual-trigger only**: schedule-triggered apply/default/mapping paths run
-  only when Manual Schedule is active, Deye control is active, and Schedule mode
-  is selected. Inactive Manual Schedule does not trigger integration-controlled
-  TOU/schedule actions.
-- **Documentation and service descriptions**: README, INSTALL and
-  `services.yaml` describe the Manual Schedule/physical TOU separation, manual-only
-  trigger behavior, and 6-range physical TOU limit scope.
-- **Power flow animation**: active links now carry discrete SVG glow balls
-  instead of the dotted stream. Travel time is `18 / flow_animation_speed`
-  seconds, divided by `clamp(sqrt(abs(power) / 1000), 0.4, 3)` and clamped to
-  0.35–8 seconds, so stronger links move faster. A reversal dims the current
-  glow and old arrow, cross-fades the arrowhead to the other end, re-brightens
-  the glow and then resumes movement; idle links show no arrow or balls.
-- **Power flow lifecycle**: the delegated click listener is now installed
-  idempotently, removed on disconnect and restored on reconnect. Animation
-  frames stop while the card is detached, and the one-shot timers used by the
-  main card's toggle and inverter focus-out handling are tracked and cleared.
-- **Lovelace resource follow-up**: when Home Assistant is already running, the
-  deferred `homeassistant_started` listener is cancelled instead of waiting for
-  an event that will not fire, and a `not_ready` result stays retryable rather
-  than being cached as complete.
-- **Diagnostics**: the reported integration version is now `0.8.1.01`, and the
-  manual-schedule guard says "schedule slots" instead of "work schedule".
-- **Tests**: added lifecycle, deferral, version-consistency, minute-boundary,
-  and manual-row coverage; updated assertions for the removed slot model and
-  manual/TOU separation.
-- **Maintenance**: bumped the integration version and card resource revision to
-  `0.8.1.01` in the manifest, frontend, manager, both byte-identical card copies
-  and the documentation.
-
-### Fixed
-
-- **Audit findings**: removed dead fields and locals, cleared ignored generated
-  caches from the working tree and aligned stale documentation with the code.
-
-### Removed
-
-- **Settings overlay contents**: removed the unreachable Charge profile, Normal
-  profile, Default settings, Mode settings and history UI from both card copies,
-  including their card-side save, draft and history methods. The gear now opens
-  **Settings and diagnostics** directly on **Tariff and distribution**; the only
-  other tab is **System and diagnostics**.
-- **Inert layout options**: removed `energy_tile_width`, `energy_tile_gap` and
-  `inverter_scale` from the sample dashboard and the card. Stale CSS selectors
-  left behind by earlier UI removals were deleted too.
-- **Obsolete tests**: removed the charge-profile and normal-profile card tests
-  that exercised the deleted UI, and renamed the remaining stale test cases.
-
-### Changed
-
-- **Power flow animation**: active links now carry discrete SVG glow balls
-  instead of the dotted stream. Travel time is `18 / flow_animation_speed`
-  seconds, divided by `clamp(sqrt(abs(power) / 1000), 0.4, 3)` and clamped to
-  0.35–8 seconds, so stronger links move faster. A reversal dims the current
-  glow and old arrow, cross-fades the arrowhead to the other end, re-brightens
-  the glow and then resumes movement; idle links show no arrow or balls.
-- **Power flow lifecycle**: the delegated click listener is now installed
-  idempotently, removed on disconnect and restored on reconnect. Animation
-  frames stop while the card is detached, and the one-shot timers used by the
-  main card's toggle and inverter focus-out handling are tracked and cleared.
-- **Lovelace resource follow-up**: when Home Assistant is already running, the
-  deferred `homeassistant_started` listener is cancelled instead of waiting for
-  an event that will not fire, and a `not_ready` result stays retryable rather
-  than being cached as complete.
-- **Diagnostics**: the reported integration version is now `0.8.1.01`, and the
-  manual-schedule guard says "schedule slots" instead of "work schedule".
-- **Docs and sample dashboard**: README and INSTALL describe the current cards,
-  flat tabs, gear overlay and power-flow behaviour; the sample dashboard keeps
-  only the live `flow_animation_speed` option.
-- **Tests**: added lifecycle, deferral and version-consistency coverage and
-  updated the remaining assertions to match the removed UI.
-- **Maintenance**: bumped the integration version and card resource revision to
-  `0.8.1.01` in the manifest, frontend, manager, both byte-identical card copies
-  and the documentation.
-
-### Fixed
-
-- **Audit findings**: removed dead fields and locals, cleared ignored generated
-  caches from the working tree and aligned stale documentation with the code.
 
 ### Preserved
 

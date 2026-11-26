@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.1.01
+// Resource revision: v=0.8.1.02
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -1690,7 +1690,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.1.01 (resource revision v=0.8.1.01)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.1.02 (resource revision v=0.8.1.02)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -4123,6 +4123,7 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
     if (!this._powerFlowDraft || (this._pfDraftSource !== key && !this._powerFlowDraftDirty)) {
       this._powerFlowDraft = {
         schema_version: 1,
+        layout: String(display.layout || "cross") === "left_right" ? "left_right" : "cross",
         entities: { ...(display.entities || {}) },
         node_details: this._pfCopy(display.node_details || {}),
         node_detail_layout: this.powerFlowEffectiveDetailLayout(display),
@@ -4372,11 +4373,23 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
   }
 
   renderPowerFlowConfigTab() {
-    this.powerFlowDraft();
+    const draft = this.powerFlowDraft();
     const message = this._powerFlowMessage
       ? `<div class="ic-hint ${/failed|unavailable/i.test(this._powerFlowMessage) ? "ic-bad" : "ic-ok"}">${this.escapeHtml(this._powerFlowMessage)}</div>`
       : "";
+    const layout = String(draft.layout || "cross") === "left_right" ? "left_right" : "cross";
     return `<section class="ic-section">
+        <h4>Power flow layout</h4>
+        <p class="ic-hint">Choose how nodes are arranged in the Power Flow card. "Left and right" places PV/Grid on the left, Inverter in the middle, and Battery/Home on the right, with curved connection lines.</p>
+        <div class="pf-edit-row">
+          <label class="ic-muted" for="pf-layout-select">Display layout</label>
+          <select id="pf-layout-select" data-pf-layout="1">
+            <option value="cross"${layout === "cross" ? " selected" : ""}>Cross (default)</option>
+            <option value="left_right"${layout === "left_right" ? " selected" : ""}>Left and right</option>
+          </select>
+        </div>
+      </section>
+      <section class="ic-section">
         <h4>Power flow mapping</h4>
         <p class="ic-hint">Edit the entity IDs used by the Power Flow card, add extra detail rows to each node, and extend the summary chip row. Save writes the shared entity-map override; the Power Flow card then updates without a restart.</p>
       </section>
@@ -4412,6 +4425,7 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
       });
       const payload = {
         schema_version: 1,
+        layout: String(draft.layout || "cross") === "left_right" ? "left_right" : "cross",
         entities: { ...(draft.entities || {}) },
         node_details: legacyDetails,
         node_detail_layout: layout,
@@ -4435,6 +4449,7 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
         this._pfDraftSource = this._pfDisplayKey;
         this._powerFlowDraft = {
           schema_version: 1,
+          layout: String(response.layout || "cross") === "left_right" ? "left_right" : "cross",
           entities: { ...(response.entities || {}) },
           node_details: this._pfCopy(response.node_details || {}),
           node_detail_layout: this.powerFlowEffectiveDetailLayout(response),
@@ -4672,6 +4687,8 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
           .ic-btn, .ic-action { border: 1px solid var(--ic-line); background: var(--ic-surface2); color: var(--ic-text); border-radius: 10px; padding: 10px 14px; font: inherit; cursor: pointer; }
           .ic-btn:hover, .ic-action:hover { border-color: var(--ic-accent); }
           .ic-btn:disabled, .ic-action:disabled { opacity: .55; cursor: default; }
+          .ic-action { background: color-mix(in srgb, var(--ic-accent) 28%, transparent); border-color: color-mix(in srgb, var(--ic-accent) 60%, var(--ic-line)); font-weight: 600; }
+          .ic-action:hover:not(:disabled) { background: color-mix(in srgb, var(--ic-accent) 38%, transparent); border-color: var(--ic-accent); }
           .ic-btn-primary { background: color-mix(in srgb, var(--ic-accent) 22%, transparent); border-color: color-mix(in srgb, var(--ic-accent) 55%, var(--ic-line)); }
           .ic-btn-secondary { background: transparent; }
           .ic-tabs { display: flex; flex-wrap: wrap; gap: 2px; border-bottom: 1px solid var(--ic-line); }
@@ -4815,6 +4832,12 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
       el.addEventListener("input", update);
       el.addEventListener("change", update);
     });
+    this.querySelectorAll("[data-pf-layout]").forEach((el) => el.addEventListener("change", () => {
+      const draft = this.powerFlowDraft();
+      draft.layout = el.value === "left_right" ? "left_right" : "cross";
+      this._powerFlowDraftDirty = true;
+      this._render();
+    }));
     this.querySelectorAll("[data-pf-add-detail]").forEach((el) => el.addEventListener("click", () => {
       const group = el.dataset.pfAddDetail;
       const draft = this.powerFlowDraft();
@@ -5709,10 +5732,60 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     return { p, intensity, oldArrow, newArrow, moving };
   }
   _flowGeometry(d) {
-    const points = String(d).match(/^M\s+([-\d.]+)\s+([-\d.]+)\s+L\s+([-\d.]+)\s+([-\d.]+)$/);
-    if (!points) return null;
-    const x1 = Number(points[1]), y1 = Number(points[2]), x2 = Number(points[3]), y2 = Number(points[4]);
-    return { x1, y1, x2, y2, length: Math.hypot(x2 - x1, y2 - y1) };
+    const str = String(d);
+    const line = str.match(/^M\s+([-\d.]+)\s+([-\d.]+)\s+L\s+([-\d.]+)\s+([-\d.]+)$/);
+    if (line) {
+      const x1 = Number(line[1]), y1 = Number(line[2]), x2 = Number(line[3]), y2 = Number(line[4]);
+      return { type: 'line', x1, y1, x2, y2, length: Math.hypot(x2 - x1, y2 - y1) };
+    }
+    const cubic = str.match(/^M\s+([-\d.]+)\s+([-\d.]+)\s+C\s+([-\d.]+)\s+([-\d.]+),\s*([-\d.]+)\s+([-\d.]+),\s*([-\d.]+)\s+([-\d.]+)$/);
+    if (cubic) {
+      const p0 = { x: Number(cubic[1]), y: Number(cubic[2]) };
+      const p1 = { x: Number(cubic[3]), y: Number(cubic[4]) };
+      const p2 = { x: Number(cubic[5]), y: Number(cubic[6]) };
+      const p3 = { x: Number(cubic[7]), y: Number(cubic[8]) };
+      const samples = 48;
+      const lut = [0];
+      let len = 0;
+      let prev = p0;
+      for (let i = 1; i <= samples; i += 1) {
+        const pt = this._cubicPoint(p0, p1, p2, p3, i / samples);
+        len += Math.hypot(pt.x - prev.x, pt.y - prev.y);
+        lut.push(len);
+        prev = pt;
+      }
+      return { type: 'cubic', p0, p1, p2, p3, length: len, lut, samples };
+    }
+    return null;
+  }
+  _cubicPoint(p0, p1, p2, p3, t) {
+    const mt = 1 - t;
+    return {
+      x: mt * mt * mt * p0.x + 3 * mt * mt * t * p1.x + 3 * mt * t * t * p2.x + t * t * t * p3.x,
+      y: mt * mt * mt * p0.y + 3 * mt * mt * t * p1.y + 3 * mt * t * t * p2.y + t * t * t * p3.y,
+    };
+  }
+  _pointAt(g, offset) {
+    if (!g || !g.length) return { x: 0, y: 0 };
+    const d = ((offset % g.length) + g.length) % g.length;
+    if (g.type === 'line') {
+      return {
+        x: Number((g.x1 + (g.x2 - g.x1) * d / g.length).toFixed(2)),
+        y: Number((g.y1 + (g.y2 - g.y1) * d / g.length).toFixed(2)),
+      };
+    }
+    const lut = g.lut || [0, g.length];
+    let lo = 0, hi = lut.length - 1;
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (lut[mid] < d) lo = mid + 1; else hi = mid;
+    }
+    const i = Math.max(1, lo);
+    const d0 = lut[i - 1], d1 = lut[i];
+    const segT = d1 > d0 ? (d - d0) / (d1 - d0) : 0;
+    const t = ((i - 1) + segT) / g.samples;
+    const pt = this._cubicPoint(g.p0, g.p1, g.p2, g.p3, Math.max(0, Math.min(1, t)));
+    return { x: Number(pt.x.toFixed(2)), y: Number(pt.y.toFixed(2)) };
   }
   _fmtW(v) { if (v == null || !Number.isFinite(v)) return '—'; const abs = Math.abs(v); if (abs >= 10000) return `${(v / 1000).toFixed(1)} kW`; return `${Math.round(v)} W`; }
   _fmtKwh(v) { return v == null || !Number.isFinite(v) ? '—' : `${v.toFixed(2)} kWh`; }
@@ -5900,10 +5973,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const g = state.geometry;
     if (!g || !g.length) return { x: 0, y: 0 };
     const offset = (state.phase + index * state.gap) % g.length;
-    return {
-      x: Number((g.x1 + (g.x2 - g.x1) * offset / g.length).toFixed(2)),
-      y: Number((g.y1 + (g.y2 - g.y1) * offset / g.length).toFixed(2)),
-    };
+    return this._pointAt(g, offset);
   }
   _flow(id, d, color, power, dir = 0) {
     const geometry = this._flowGeometry(d);
@@ -6076,6 +6146,8 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
 
   _render() {
     const e = this._entities();
+    const display = this._powerFlowDisplay();
+    const layout = String(display.layout || 'cross') === 'left_right' ? 'left_right' : 'cross';
     const isPower = !this._isEnergyPeriod();
     const periods = this._periods();
     const period = periods.includes(this._period) ? this._period : 'power';
@@ -6124,7 +6196,6 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const HALO_PAD = 16, HALO_SW = 8, RING_R = 121, RING_SW = 9;
     const DETAIL_ROW_H = 20;
     const DEFAULT_DETAIL_ROWS = { pv: 1, grid: 3, home: 2, batt: 6 };
-    const display = this._powerFlowDisplay();
     const statMap = this._statEntityMap();
 
     const pvDetails = this._nodeDetailRows('pv', {
@@ -6156,8 +6227,15 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       home: { w:174, h:dynamicNodeH('home',165,homeDetails) },
       batt: { w:223, h:dynamicNodeH('batt',220,battDetails) },
     };
-    const N = { pv:[600,188.5], grid:[254.5,470], inv:[600,470], home:[945.5,470], batt:[600,825.5] };
-    const PF_BOUNDS = { left:127, right:1073, top:N.pv[1]-SZ.pv.h/2-HALO_PAD, bottom:N.batt[1]+SZ.batt.h/2+HALO_PAD };
+    const N = layout === 'left_right'
+      ? { pv:[220,240], grid:[220,760], inv:[600,500], home:[980,760], batt:[980,240] }
+      : { pv:[600,188.5], grid:[254.5,470], inv:[600,470], home:[945.5,470], batt:[600,825.5] };
+    const PF_BOUNDS = {
+      left: Math.min(N.pv[0]-SZ.pv.w/2-HALO_PAD, N.grid[0]-SZ.grid.w/2-HALO_PAD, N.inv[0]-RING_R-RING_SW/2),
+      right: Math.max(N.home[0]+SZ.home.w/2+HALO_PAD, N.batt[0]+SZ.batt.w/2+HALO_PAD, N.inv[0]+RING_R+RING_SW/2),
+      top: Math.min(N.pv[1]-SZ.pv.h/2-HALO_PAD, N.batt[1]-SZ.batt.h/2-HALO_PAD, N.inv[1]-RING_R-RING_SW/2),
+      bottom: Math.max(N.grid[1]+SZ.grid.h/2+HALO_PAD, N.home[1]+SZ.home.h/2+HALO_PAD, N.inv[1]+RING_R+RING_SW/2),
+    };
     const PF_SCALE = (W - PF_MARGIN * 2) / (PF_BOUNDS.right - PF_BOUNDS.left);
     const PF_TX = PF_MARGIN - PF_BOUNDS.left * PF_SCALE;
     const PF_TY = PF_MARGIN - PF_BOUNDS.top * PF_SCALE;
@@ -6184,12 +6262,30 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       return `<rect x="${c[0]-hw}" y="${c[1]-hh}" width="${SURROUND_W}" height="${hh*2}" rx="36" fill="none" stroke="${color}" stroke-width="${HALO_SW}"/>`;
     };
     const straight = (x1, y1, x2, y2) => `M ${x1} ${y1} L ${x2} ${y2}`;
-    const pvToInv = straight(N.pv[0], edge.pv.b, N.inv[0], edge.inv.t);
-    const gridToInv = straight(edge.grid.r, N.grid[1], edge.inv.l, N.inv[1]);
-    const invToGrid = straight(edge.inv.l, N.inv[1], edge.grid.r, N.grid[1]);
-    const invToHome = straight(edge.inv.r, N.inv[1], edge.home.l, N.home[1]);
-    const battToInv = straight(N.batt[0], edge.batt.t, N.inv[0], edge.inv.b);
-    const invToBatt = straight(N.inv[0], edge.inv.b, N.batt[0], edge.batt.t);
+    const curve = (x1, y1, x2, y2, bend = 0.35) => {
+      const dx = x2 - x1;
+      const cx1 = x1 + dx * bend;
+      const cx2 = x2 - dx * bend;
+      return `M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}`;
+    };
+    const pvToInv = layout === 'left_right'
+      ? curve(edge.pv.r, N.pv[1], N.inv[0], edge.inv.t, 0.45)
+      : straight(N.pv[0], edge.pv.b, N.inv[0], edge.inv.t);
+    const gridToInv = layout === 'left_right'
+      ? curve(edge.grid.r, N.grid[1], N.inv[0], edge.inv.b, 0.45)
+      : straight(edge.grid.r, N.grid[1], edge.inv.l, N.inv[1]);
+    const invToGrid = layout === 'left_right'
+      ? curve(N.inv[0], edge.inv.b, edge.grid.r, N.grid[1], 0.45)
+      : straight(edge.inv.l, N.inv[1], edge.grid.r, N.grid[1]);
+    const invToHome = layout === 'left_right'
+      ? curve(N.inv[0], edge.inv.b, edge.home.l, N.home[1], 0.45)
+      : straight(edge.inv.r, N.inv[1], edge.home.l, N.home[1]);
+    const battToInv = layout === 'left_right'
+      ? curve(edge.batt.l, N.batt[1], N.inv[0], edge.inv.t, 0.45)
+      : straight(N.batt[0], edge.batt.t, N.inv[0], edge.inv.b);
+    const invToBatt = layout === 'left_right'
+      ? curve(N.inv[0], edge.inv.t, edge.batt.l, N.batt[1], 0.45)
+      : straight(N.inv[0], edge.inv.b, N.batt[0], edge.batt.t);
 
     const flows = [];
     flows.push(this._flow('pf-pv-inv', pvToInv, '#f6c945', isPower ? pvVal : (pvVal>0.01?1000:0), 1));
@@ -6351,7 +6447,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.1.01",
+  description: "Deye Energy 0.8.1.02",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

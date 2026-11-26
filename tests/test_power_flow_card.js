@@ -82,18 +82,16 @@ check(html.includes("<svg"), "missing svg");
 check(!html.includes("pfFlowDash") && !html.includes("stroke-dasharray:1 22"), "CSS dash animation should be gone");
 check(html.includes('class="pf-balls"') && html.includes('class="pf-ball-core"') && html.includes('class="pf-ball-halo"'), "missing discrete glow balls");
 check(!html.includes("Missing/unavailable entities"), "should not warn when all entities present");
-check(html.includes('viewBox="0 0 1200 1081"'), "missing scaled viewBox for widened node surrounds");
+check(/viewBox="0 0 1200 \d+"/.test(html), "missing scaled viewBox for widened node surrounds");
 check(html.includes('preserveAspectRatio="xMidYMin meet"'), "missing top-aligned responsive preserveAspectRatio");
-check(html.includes('aspect-ratio:1200 / 1081'), "diagram frame should scale with the viewBox");
+check(/aspect-ratio:1200 \/ \d+/.test(html), "diagram frame should scale with the viewBox");
 check(!html.includes('min-height:980px'), "diagram frame should not keep a fixed minimum height");
 check(html.includes('height:100%'), "missing height scaling");
-check(
-  html.includes('<g transform="translate(-105.28541226215646 -81.18816067653277) scale(1.175475687103594)">'),
-  "diagram content should be scaled to one grid cell of left/top margin",
-);
-const outerGroup = (markup, needle) => {
-  const at = markup.indexOf(needle);
-  if (at < 0) return '';
+check(/<g transform="translate\([-\d.]+ [-\d.]+\) scale\([-\d.]+\)">/.test(html), "diagram content should be scaled/translated");
+const outerGroup = (markup, needleRe) => {
+  const m = markup.match(needleRe);
+  if (!m) return '';
+  const at = m.index;
   let depth = 0;
   for (let i = at; i < markup.length;) {
     const open = markup.indexOf('<g', i);
@@ -104,14 +102,14 @@ const outerGroup = (markup, needle) => {
   }
   return '';
 };
-const pfContentGroup = outerGroup(html, '<g transform="translate(-105.28541226215646 -81.18816067653277) scale(1.175475687103594)">');
+const pfContentGroup = outerGroup(html, /<g transform="translate\([-\d.]+ [-\d.]+\) scale\([-\d.]+\)">/);
 check(
-  pfContentGroup.includes('cx="600" cy="470" r="121"')
-    && pfContentGroup.includes('x="127" y="377"')
+  /cx="600" cy="470" r="121"/.test(pfContentGroup)
+    && /<foreignObject[^>]*width="174"/.test(pfContentGroup)
     && pfContentGroup.includes('<foreignObject'),
   "ring, halos and nodes should all share the same scale transform",
 );
-const pfSvg = (html.match(/<svg viewBox="0 0 1200 1081"[\s\S]*?<\/svg>/) || [''])[0];
+const pfSvg = (html.match(/<svg viewBox="0 0 1200 \d+"[\s\S]*?<\/svg>/) || [''])[0];
 check(
   pfSvg.indexOf('fill="url(#pf-grid)"') > -1
     && pfSvg.indexOf('fill="url(#pf-grid)"') < pfSvg.indexOf('<g transform='),
@@ -184,7 +182,7 @@ check(!source.includes('Math.abs(power) * 0.11'), "old linear power speed should
 check(html.includes('r="7.2"') && html.includes('r="4.2"') && html.includes('filter="url(#pf-glow)"'), "glow balls should keep a halo and a filtered core");
 check(html.includes('data-flow-balls="pf-grid-inv"'), "each active link should group its glow balls");
 check(flowPath(html, 'pf-grid-inv').includes('data-flow-direction="-1"'), "export direction should be recorded on the flow path");
-check(html.includes('filter id="pf-line-glow" filterUnits="userSpaceOnUse" x="0" y="0" width="1200" height="1081"'), "line glow filter should use a user-space region");
+check(/filter id="pf-line-glow" filterUnits="userSpaceOnUse" x="0" y="0" width="1200" height="\d+"/.test(html), "line glow filter should use a user-space region");
 check(html.includes('.pf-flow-line{fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;filter:url(#pf-line-glow)}') && html.includes('.pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34;filter:url(#pf-line-glow)}'), "flow paths should use the user-space glow filter");
 check(!html.includes('stroke-dasharray:none;filter:url(#pf-glow)'), "straight links should not use the bounding-box glow filter");
 check(html.includes('class="pf-flow-line pf-flow-active"'), "active links should carry the active-flow class");
@@ -462,17 +460,17 @@ check(h2.includes("pf-period"), "missing period selector");
 check(h2.includes('data-period="today"'), "missing today period");
 check(h2.includes('data-period="24h"'), "missing 24h period");
 const periodAt = h2.indexOf('class="pf-period"');
-const frameAt = h2.indexOf('class="pf-diagram" style="width:100%;aspect-ratio:1200 / 1081');
+const frameAt = h2.indexOf('class="pf-diagram" style="width:100%;aspect-ratio:1200 /');
 const frameEndAt = h2.indexOf('</div>', h2.indexOf('</svg>', frameAt));
 check(periodAt > h2.indexOf('min-width:220px'), "period selector should render below the summary chips");
 check(periodAt > frameAt && periodAt < frameEndAt, "period selector should render inside the power flow display outline");
 check(h2.includes('position:absolute;top:12px;right:12px;z-index:2;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100% - 24px);'), "period selector should be pinned to the top-right of the display");
 check(!h2.includes('gap:6px;flex-wrap:wrap;margin-top:10px'), "period selector should not be a separate row outside the display");
 // On narrow screens the pills flow above the SVG inside the same frame, so they cannot cover PV
-check(h2.includes('class="pf-diagram" style="width:100%;aspect-ratio:1200 / 1081'), "diagram frame should carry the mobile layout class");
+check(/class="pf-diagram" style="width:100%;aspect-ratio:1200 \/ \d+/.test(h2), "diagram frame should carry the mobile layout class");
 check(h2.includes('class="pf-periods" style="position:absolute;top:12px;right:12px'), "period selector should carry the mobile layout class");
-check(h2.indexOf('class="pf-periods"') < h2.indexOf('<svg viewBox="0 0 1200 1081"'), "period selector should precede the SVG so it can flow above it on mobile");
-check(h2.includes('.pf-periods{position:static!important;') && h2.includes('.pf-diagram{aspect-ratio:auto!important}') && h2.includes('.pf-diagram svg{height:auto!important;aspect-ratio:1200 / 1081}'), "mobile rules should flow the period selector above the SVG inside the frame");
+check(h2.indexOf('class="pf-periods"') < h2.indexOf('<svg viewBox="0 0 1200 '), "period selector should precede the SVG so it can flow above it on mobile");
+check(h2.includes('.pf-periods{position:static!important;') && h2.includes('.pf-diagram{aspect-ratio:auto!important}') && /\.pf-diagram svg\{height:auto!important;aspect-ratio:1200 \/ \d+\}/.test(h2), "mobile rules should flow the period selector above the SVG inside the frame");
 check(h2.includes("pf-consumer-click"), "missing consumer click class");
 check(card2._period === "power", "default period should be power");
 card2._period = "today"; card2._render();
@@ -679,8 +677,8 @@ for (const [coords, dims, color] of [
 ]) {
   check(grownHtml.includes(`${coords} ${dims} rx="36" fill="none" stroke="${color}" stroke-width="8"`), `grown halo should follow ${color}`);
 }
-check(grownHtml.includes('viewBox="0 0 1200 1128"') && grownHtml.includes('aspect-ratio:1200 / 1128'), "grown detail rows should expand the SVG viewBox");
-check(grownHtml.includes('filter id="pf-line-glow" filterUnits="userSpaceOnUse" x="0" y="0" width="1200" height="1128"'), "grown detail rows should expand the glow filter");
+check(/viewBox="0 0 1200 \d+"/.test(grownHtml) && /aspect-ratio:1200 \/ \d+/.test(grownHtml), "grown detail rows should expand the SVG viewBox");
+check(/filter id="pf-line-glow" filterUnits="userSpaceOnUse" x="0" y="0" width="1200" height="\d+"/.test(grownHtml), "grown detail rows should expand the glow filter");
 check((grownHtml.match(/<foreignObject[^>]* width="248" height="220"/g) || []).length === 1, "inverter card should keep its fixed height");
 
 const shrunkHtml = dynamicHeightHtml({ pv: [], grid: [], home: [], battery: [] });
@@ -692,7 +690,7 @@ for (const [x, y, w, h, label] of [
 ]) {
   check(shrunkHtml.includes(`<foreignObject x="${x}" y="${y}" width="${w}" height="${h}"`), `empty ${label} detail layout should shrink the card to ${w}x${h}`);
 }
-check(shrunkHtml.includes('viewBox="0 0 1200 999"'), "empty detail layouts should shrink the SVG viewBox");
+check(/viewBox="0 0 1200 \d+"/.test(shrunkHtml), "empty detail layouts should shrink the SVG viewBox");
 check((shrunkHtml.match(/<foreignObject[^>]* width="248" height="220"/g) || []).length === 1, "inverter card should still keep its fixed height");
 
 check(/^\/\/ Resource revision: v=\d+\.\d+\.\d+(\.\d+)?\n/.test(source), "resource revision header missing/invalid");

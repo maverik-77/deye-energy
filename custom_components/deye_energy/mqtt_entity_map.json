@@ -156,6 +156,7 @@
   },
   "power_flow": {
     "schema_version": 1,
+    "layout": "cross",
     "entities": {
       "pv": "sensor.garage_deye_energy_pv_power",
       "grid": "sensor.garage_deye_energy_grid_power",

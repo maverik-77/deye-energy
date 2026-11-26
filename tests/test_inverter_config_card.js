@@ -432,8 +432,9 @@ async function testPowerFlowSaveSendsDraftPayload() {
   assert.equal(calls.length, 1);
   const payload = JSON.parse(calls[0][2].data);
   assert.deepEqual(Object.keys(payload).sort(), [
-    "chip_rows", "entities", "node_detail_layout", "node_details", "schema_version",
+    "chip_rows", "entities", "layout", "node_detail_layout", "node_details", "schema_version",
   ]);
+  assert.equal(payload.layout, "cross");
   assert.equal(payload.entities.pv, "sensor.custom_pv");
   assert.equal(payload.node_detail_layout.pv[0].label, "Temperature");
   assert.equal(payload.node_detail_layout.pv[1].builtin, "pv_energy");

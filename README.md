@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.1.01-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.1.02-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -14,13 +14,12 @@ statistics in a family of Lovelace cards. It is adapted to a Deye inverter
 exposed through MQTT (the Sunsynk / Deye add-on profile) and to a UK-style
 tariff.
 
-> **Release 0.8.1.01:** the unused stored 48-slot schedule model has been
-> removed. Manual Schedule is now independent from physical Deye Time Of Use
-> (TOU): manual rows can cover the full 24 hours at whole-minute `HH:MM`
-> boundaries with any number of rows, and only an active Manual Schedule triggers
-> integration-controlled timed application. Physical TOU is direct inverter
-> editing/baseline only (six physical ranges) and is not auto-triggered by the
-> integration.
+> **Release 0.8.1.02:** adds configurable Power Flow layout (`cross` or
+> `left_right`) selectable in Inverter Configuration > Power Flow, with curved
+> connections in left-right mode and the same glow-ball logic. Manual Schedule
+> remains independent from physical Deye TOU (whole-minute `HH:MM`, full 24h
+> coverage, no auto-write to physical TOU), and the unused stored 48-slot model
+> remains removed.
 
 ## Key features
 
@@ -74,7 +73,8 @@ tariff.
   are overridable in card config (including `entities.ac_output_voltage`);
   addable to any dashboard.
 - **Power flow** card (`custom:deye-energy-power-flow-card`) showing live
-  animated power flow between PV, Grid, Inverter, Battery and Home, with straight
+  animated power flow between PV, Grid, Inverter, Battery and Home, with
+  configurable layout (`cross` default, or `left_right`), straight/curved
   glowing links, directional arrows, glowing node widgets and per-node details
   for daily energy, voltage, current, temperature, SOC and configurable custom
   rows. The Grid node shows import/export energy and voltage by default, with no
@@ -116,8 +116,11 @@ tariff.
   Battery, while their inner cards stay 174 px wide and start at Battery's 16 px
   left inset. The Inverter ring is 121 px radius with a 9 px stroke, smaller than
   the original 151/11, and node halos and link endpoints follow the surrounds.
-  With default detail rows the visible gaps to the Inverter are 88.5 px for Grid
-  and Home, 70 px for PV and 100 px for Battery on a 1200×1081 canvas; custom
+  Layout can be switched in Inverter Configuration > Power Flow > "Power flow
+  layout" (`cross` or `left_right`); left-right uses curved links and keeps the
+  same glow-ball logic. With default detail rows in cross layout the visible gaps
+  to the Inverter are 88.5 px for Grid and Home, 70 px for PV and 100 px for
+  Battery on a 1200×1081 canvas; custom
   detail rows change the canvas height. The Inverter Temperature and Status rows
   are centred inside its ring. Grid has no frequency detail row by default, and
   detail-row label/value gaps are tighter. Entity mappings are overridable in
@@ -228,7 +231,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.1.01
+    - url: /deye_energy/deye-energy-card.js?v=0.8.1.02
       type: module
 ```
 

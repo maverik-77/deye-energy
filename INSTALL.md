@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0 — installation and upgrade
 
-This guide covers a first installation and an upgrade of Deye Energy 0.8.1.01.
+This guide covers a first installation and an upgrade of Deye Energy 0.8.1.02.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 ## 1. Before you start
@@ -44,7 +44,7 @@ integration registers the bundled card resource by itself; nothing to add.
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.1.01
+    - url: /deye_energy/deye-energy-card.js?v=0.8.1.02
       type: module
 ```
 
@@ -55,7 +55,7 @@ type: custom:deye-energy-card
 ```
 
 A sample dashboard is in `dashboard/energy_manager.yaml` (card revision
-`v=0.8.1.01`). After an upgrade, hard-refresh the browser (or clear the app
+`v=0.8.1.02`). After an upgrade, hard-refresh the browser (or clear the app
 cache) so that the new card revision is loaded.
 
 ## 5. First-run checklist
@@ -74,15 +74,18 @@ cache) so that the new card revision is loaded.
 1. Back up Home Assistant.
 2. Update through HACS (or replace the folder) and restart.
 3. Hard-refresh the browser. The resource revision is updated automatically in
-   UI/storage mode; in YAML mode change `v=` to `0.8.1.01`.
+   UI/storage mode; in YAML mode change `v=` to `0.8.1.02`.
 
-**0.8.1.01 behavior update — Manual Schedule independent from TOU.** Manual
-Schedule rows are independent from physical Deye TOU: any number of whole-minute
-`HH:MM` rows covering 24 hours are accepted, and only an active Manual Schedule
-triggers integration-controlled timed application. Physical Deye TOU is direct
-inverter editing/baseline (six physical ranges) and is not auto-triggered by the
-integration. The removed 48-slot stored-slot model and
-`deye_energy.apply_schedule_patch` remain removed with no compatibility aliases.
+**0.8.1.02 behavior update — Power Flow layout + Manual Schedule/TOU.** Power
+Flow layout is configurable in Inverter Configuration > Power Flow (`cross` or
+`left_right`, default `cross`); left-right uses curved links and the same
+glow-ball logic. Manual Schedule remains independent from physical Deye TOU: any
+number of whole-minute `HH:MM` rows covering 24 hours are accepted, and only an
+active Manual Schedule triggers integration-controlled timed application.
+Physical Deye TOU is direct inverter editing/baseline (six physical ranges) and
+is not auto-triggered by the integration. The removed 48-slot stored-slot model
+and `deye_energy.apply_schedule_patch` remain removed with no compatibility
+aliases.
 
 ## 7. Uninstall
 
