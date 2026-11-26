@@ -305,7 +305,7 @@ function test_tou_is_a_schedule_page_tab_not_a_settings_overlay() {
     assertTrue(!source.includes(forbidden), `TOU must not be wired into the settings overlay: ${forbidden}`);
   }
   assertTrue(source.includes('scheduleTabButton("tou", "Deye Time Of Use")'), "TOU must render as the second schedule tab");
-  assertTrue(source.includes('this.renderScheduleTabs(this.renderManualScheduleTab(), this.renderTouSettingsContent(slots))'), "TOU page must be passed into the schedule tabs");
+  assertTrue(source.includes("renderScheduleTabs(") && source.includes("renderManualScheduleTab(") && source.includes("renderTouSettingsContent("), "TOU page must be passed into the schedule tabs");
 }
 
 function test_overlay_and_mapping_tab_code_is_removed() {

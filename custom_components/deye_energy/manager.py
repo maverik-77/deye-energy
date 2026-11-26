@@ -40,6 +40,11 @@ from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_time_interval,
 )
+try:
+    from homeassistant.helpers.event import async_track_time_change
+except Exception:  # pragma: no cover - test/compat fallback
+    async_track_time_change = None
+
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import now as ha_now
 
@@ -116,6 +121,7 @@ from .const import (
     CONF_BUY_PRICE_CONTRACT,
     CONF_SELL_PRICE_CONTRACT,
     CONF_TARIFF_CATALOG_URL,
+    ACCEPTED_MANAGER_MODES,
     CONTROL_MODES,
     DOMAIN,
     MANAGER_MODES,
@@ -129,21 +135,7 @@ from .const import (
     MODE_ZERO_EXPORT_CT,
     normalize_manager_mode,
     PHYSICAL_NORMAL_MODES,
-    SCHEDULE_SCHEMA_VERSION,
-    SLOTS,
-    HOUR_SLOTS,
-    SLOT_INDEX,
-    SLOT_KEYS,
-    SLOTS_PER_DAY,
-    SLOT_MINUTES,
     MINUTES_PER_DAY,
-    hour_key,
-    hour_of_slot,
-    slot_key_at_minute,
-    slot_end_minute,
-    slot_start_minute,
-    slots_for_key,
-    SLOT_MODES,
     WORK_MODES,
     DEFAULT_BATTERY_SOC,
     DEFAULT_BATTERY_BMS_VOLTAGE_SENSOR,
@@ -328,39 +320,38 @@ def _source_mapping_snapshot(config: dict[str, Any]) -> dict[str, Any]:
 
 
 @dataclass
-class SlotSettings:
+class ActiveDecision:
+    """One minute-level decision for the inverter.
+
+    Manual Schedule rows and the six physical Deye TOU ranges are the only
+    sources.  Logical sale guards stay separate from physical TOU values:
+    ``minimum_sell_soc`` is never written to the inverter, while ``tou_soc``
+    is read from the active physical range.
+    """
+
     key: str
     label: str
-    enabled: bool = False
-    mode: str = MODE_NORMAL_OPERATION
-    # Physical Deye work mode used only by logical Normal Operation slots.
-    # It is intentionally independent from ``mode`` so no UI/logical label can
-    # ever be sent to the inverter select entity.
-    physical_work_mode: str | None = None
-    sell_power: float = 0
-    # Per-slot permission for physical Deye TOU Grid Charge.  Current limits are
-    # not part of the schedule; they are direct inverter configuration only.
-    charge_enabled: bool = False
-    # Manager safety threshold that stops Selling First when the battery SOC
-    # reaches this value.  It is a logical guard only and must never be written
-    # to the physical Deye Time Of Use SOC.
-    minimum_sell_soc: float = 0
-    # Physical Deye Time Of Use SOC for this logical slot.  It is deliberately
-    # unknown until restored from the user's prior configuration or explicitly
-    # confirmed by the user.  All logical modes (Normal, Charge, Selling First
-    # and disabled) use this value as the physical SOC written to the inverter.
-    tou_soc: float | None = None
-    min_sell_price: float = 0
+    source: str
+    start: int
+    end: int
+    enabled: bool
+    mode: str
+    physical_work_mode: str | None
+    sell_power: float
+    charge_enabled: bool
+    minimum_sell_soc: float
+    tou_soc: float | None
+    min_sell_price: float
+    battery_charge_enabled: bool = False
 
 
 @dataclass
 class TouMappingSlot:
-    """One physical Deye Time Of Use slot.
+    """One physical Deye Time Of Use range.
 
-    The model intentionally holds only the fields the inverter can store per
-    range: start/end time, SOC and the hourly Grid Charge permission.  Manager
-    logical modes, sell power, prices and physical work mode variants
-    are runtime overlays and are never persisted here.
+    The model holds only the fields the inverter stores per range: start/end,
+    SOC and the Grid Charge permission.  Manager logical modes, sell power,
+    prices and physical work mode variants are runtime overlays.
     """
 
     index: int
@@ -369,8 +360,6 @@ class TouMappingSlot:
     end: int
     soc: float
     grid_charge: bool
-    # Indices (0..SLOTS_PER_DAY-1) of the schedule slots this range covers.
-    source_slots: list[int] = field(default_factory=list)
     provider_fields: dict[str, Any] = field(default_factory=dict)
 
 
@@ -411,21 +400,10 @@ class DeyeEnergyRuntime:
     normal_profile_sell_power: float = 0
     normal_profile_tou_soc: float | None = None
     _normal_profile_loaded_from_store: bool = False
-    schedule_schema_version: int = 0
-    # UI-only manual schedule: variable time rows kept separate from the
-    # 48-slot Schedule slots model.  Activation selects these rows as the
-    # scheduler's trigger source without copying them into, or restoring, the
-    # Schedule slots.
+    # Manual Schedule rows and the six physical Deye TOU ranges are the only
+    # runtime trigger sources. While active, Manual Schedule overrides the six
+    # physical TOU ranges; no stored logical slot model is involved.
     manual_schedule: dict[str, Any] = field(default_factory=dict)
-    # Cached per-slot overlay built from the active manual rows.  Work-slot
-    # values are read live, so non-manual fields can never go stale.
-    _manual_effective_rows: dict[str, dict[str, Any]] = field(default_factory=dict)
-    _restored_slot_mode_keys: set[str] = field(default_factory=set)
-    # Track which per-slot helper entities have been restored so the 5A.1
-    # migration can safely resolve a missing selling slot tou_soc.
-    _restored_slot_tou_soc_keys: set[str] = field(default_factory=set)
-    _restored_slot_minimum_sell_soc_keys: set[str] = field(default_factory=set)
-    _tou_soc_migration_done: bool = False
     _install_init_battery_restart_capacity_done: bool = False
     # Stage 5B: physical Deye Time Of Use transaction state.
     tou_write_pending: bool = False
@@ -498,11 +476,6 @@ class DeyeEnergyRuntime:
         "skipped_inverter_unavailable": 0,
         "inverter_unavailable_reason": "",
     })
-    # Stage 5G.4J.8C: lightweight, persisted per-slot schedule generation and
-    # ownership.  These fields deliberately do not duplicate the schedule.
-    schedule_revision: int = 0
-    schedule_slot_revisions: dict[str, int] = field(default_factory=dict)
-    schedule_slot_ownership: dict[str, dict[str, Any]] = field(default_factory=dict)
     solcast_history: list[dict[str, Any]] = field(default_factory=list)
     solcast_tracking: dict[str, Any] = field(default_factory=dict)
     history_watermark: str = ""
@@ -517,7 +490,6 @@ class DeyeEnergyRuntime:
     weather_last_error: str = ""
     weather_forecast_timeout: float = 5.0
     _last_energy_sample_at: datetime | None = None
-    slots: dict[str, SlotSettings] = field(default_factory=dict)
     last_action: str = "Idle"
     last_applied_at: str = ""
     last_saved_at: str = ""
@@ -614,7 +586,6 @@ class DeyeEnergyRuntime:
     _active_tou_cancel_event: asyncio.Event | None = None
 
     def __post_init__(self) -> None:
-        self.slots = {key: SlotSettings(key=key, label=label) for key, label, *_ in SLOTS}
         self.manual_schedule = self._default_manual_schedule()
         self._source_mapping_signature = _source_mapping_snapshot(self.data)
 
@@ -920,43 +891,6 @@ class DeyeEnergyRuntime:
             # coalesces rapid requests and acquires _operation_lock outside this
             # method, so enabling control cannot deadlock or duplicate writes.
             self._schedule_schedule_reconciliation()
-
-    @staticmethod
-    def normalize_schedule_mode(
-        mode: Any,
-        physical_work_mode: Any = None,
-    ) -> tuple[str, str | None, bool]:
-        """Normalize one legacy slot without guessing a physical Deye mode."""
-        if mode in PHYSICAL_NORMAL_MODES:
-            return MODE_NORMAL_OPERATION, str(mode), True
-        if mode == MODE_NORMAL_OPERATION:
-            physical = str(physical_work_mode) if physical_work_mode in PHYSICAL_NORMAL_MODES else None
-            return MODE_NORMAL_OPERATION, physical, False
-        if mode in (MODE_SELLING_FIRST, MODE_CHARGE):
-            return str(mode), None, False
-        raise ValueError(f"Unsupported schedule mode: {mode}")
-
-    async def async_restore_slot_mode(
-        self,
-        slot_key: str,
-        restored_mode: str,
-    ) -> None:
-        """Restore and idempotently migrate one legacy slot entity state."""
-        slot = self.slots[slot_key]
-        stored_physical = slot.physical_work_mode
-        logical, physical, migrated = self.normalize_schedule_mode(restored_mode, stored_physical)
-        slot.mode = logical
-        slot.physical_work_mode = physical
-        self._restored_slot_mode_keys.add(slot_key)
-
-        # Persist the migration once all RestoreEntity slot states have been
-        # observed.  No inverter service call or profile/default substitution
-        # is performed here.
-        all_restored = len(self._restored_slot_mode_keys) == len(self.slots)
-        if migrated or (all_restored and self.schedule_schema_version < SCHEDULE_SCHEMA_VERSION):
-            if all_restored:
-                self.schedule_schema_version = SCHEDULE_SCHEMA_VERSION
-            self.mark_config_saved()
 
     @property
     def work_mode_select(self) -> str | None:
@@ -2472,6 +2406,10 @@ class DeyeEnergyRuntime:
         if entity_keys is not None:
             self._performance.inc("notify_granular_calls")
         published = 0
+        live_entity_ids = {id(entity) for entity in self.entities}
+        stale_ids = [key for key in self._entity_publish_signatures if key not in live_entity_ids]
+        for key in stale_ids:
+            self._entity_publish_signatures.pop(key, None)
         for entity in list(self.entities):
             if (
                 getattr(entity, "hass", None) is not None
@@ -2608,35 +2546,146 @@ class DeyeEnergyRuntime:
         # follow-up.  A later independent debounce/tick may consume the retained
         # dirty bit and reasons in a fresh bounded cycle.
 
-    def active_slot_key(self) -> str:
-        now = ha_now()
-        return slot_key_at_minute(now.hour * 60 + now.minute)
+    @staticmethod
+    def _state_is_on(value: Any) -> bool:
+        """Interpret a physical TOU boolean/label without guessing."""
+        if isinstance(value, bool):
+            return value
+        normalized = str(value or "").strip().lower()
+        return normalized in {
+            "on", "true", "1", "yes", "enable", "enabled", "allow grid", "both"
+        }
 
-    def effective_slots(self) -> dict[str, SlotSettings]:
-        """Return all 48 slots as seen by the scheduler's active source."""
-        return {key: self.effective_slot_for_key(key) for key, *_rest in SLOTS}
+    def _tou_range_at_minute(self, minute_of_day: int) -> tuple[int, int, int] | None:
+        """Return (index, start, end) of the physical TOU range for a minute."""
+        starts: list[int] = []
+        for index in range(1, 7):
+            value = self._time_to_minutes(self.state_text(self._tou_entity(index, "start")))
+            if value is None:
+                return None
+            starts.append(int(value) % MINUTES_PER_DAY)
+        minute = int(minute_of_day) % MINUTES_PER_DAY
+        for index in range(6):
+            start = starts[index]
+            next_start = starts[(index + 1) % 6]
+            if index == 5:
+                if minute >= start or minute < starts[0]:
+                    return index, start, next_start
+                continue
+            if start <= minute < next_start:
+                return index, start, next_start
+        return None
 
-    def effective_slot_for_key(self, slot_key: str) -> SlotSettings:
-        """Return the slot that currently drives the scheduler.
+    def _physical_tou_soc_at_minute(self, minute_of_day: int) -> float | None:
+        """Read the physical Deye TOU SOC covering a minute, when available."""
+        selected = self._tou_range_at_minute(minute_of_day)
+        if selected is None:
+            return None
+        index, _start, _end = selected
+        value = self.state_float(self._tou_entity(index + 1, "soc"), float("nan"))
+        return value if math.isfinite(value) and 0 <= value <= 100 else None
 
-        Schedule slots and Manual Schedule are independent sources.  While the
-        manual source is active its rows supply the logical trigger fields;
-        fields a manual row does not carry are inherited from the schedule slot.
-        The stored Schedule slots are never modified.
-        """
-        work_slot = self.slots[slot_key]
-        overlay = self._manual_effective_rows.get(slot_key)
-        if not self.manual_schedule_active or not overlay:
-            return work_slot
-        return replace(work_slot, **overlay)
+    def _decision_from_manual_row(self, row: dict[str, Any], index: int, minute: int) -> ActiveDecision:
+        """Convert one active Manual Schedule row into a minute decision."""
+        start = int(self._manual_time_to_minutes(row["from"], f"Row {index + 1} start time"))
+        end = int(self._manual_time_to_minutes(row["to"], f"Row {index + 1} end time"))
+        display_end = MINUTES_PER_DAY if index == len(self._manual_rows_for_decision()) - 1 and end == 0 else end
+        return ActiveDecision(
+            key=f"manual-{index + 1}",
+            label=f"{self._minutes_to_hhmm(start)}-{self._minutes_to_hhmm(display_end)}",
+            source="Manual Schedule",
+            start=start,
+            end=display_end,
+            enabled=bool(row.get("enabled", False)),
+            mode=str(row.get("mode", MODE_NORMAL_OPERATION)),
+            physical_work_mode=None,
+            sell_power=float(row.get("sell_power", 0) or 0),
+            charge_enabled=bool(row.get("charge_enabled", False)),
+            minimum_sell_soc=float(row.get("minimum_sell_soc", 0) or 0),
+            tou_soc=self._physical_tou_soc_at_minute(minute),
+            min_sell_price=self.price_sell_threshold if self.price_guard_enabled else 0,
+            battery_charge_enabled=bool(row.get("battery_charge_enabled", False)),
+        )
 
-    def effective_slot_at_minute(self, minute_of_day: int) -> SlotSettings:
-        """Return the effective slot covering a minute of the day."""
-        return self.effective_slot_for_key(slot_key_at_minute(int(minute_of_day)))
+    def _manual_rows_for_decision(self) -> list[dict[str, Any]]:
+        rows = self.manual_schedule.get("rows") if self.manual_schedule_active else None
+        return list(rows) if isinstance(rows, list) else []
+
+    def _decision_from_tou_range(self, minute: int) -> ActiveDecision:
+        """Build a decision directly from the active physical TOU range."""
+        selected = self._tou_range_at_minute(minute)
+        if selected is None:
+            return ActiveDecision(
+                key="tou-unavailable",
+                label="Time Of Use unavailable",
+                source="Time Of Use",
+                start=0,
+                end=0,
+                enabled=False,
+                mode=self.default_work_mode,
+                physical_work_mode=None,
+                sell_power=self.default_sell_power,
+                charge_enabled=False,
+                minimum_sell_soc=self.min_sell_soc,
+                tou_soc=None,
+                min_sell_price=self.price_sell_threshold if self.price_guard_enabled else 0,
+            )
+        index, start, end = selected
+        slot_text = self.state_text(self._tou_entity(index + 1, "mode"))
+        normalized_mode = str(slot_text or "").strip().lower()
+        sell = self._state_is_on(self.state_text(self._tou_entity(index + 1, "sell")))
+        if sell:
+            mode = MODE_SELLING_FIRST
+        elif "charge" in normalized_mode:
+            mode = MODE_CHARGE
+        else:
+            mode = MODE_NORMAL_OPERATION
+        physical = slot_text if slot_text in PHYSICAL_NORMAL_MODES else None
+        power = self.state_float(self._tou_entity(index + 1, "power"), float("nan"))
+        sell_power = power if math.isfinite(power) and power >= 0 else self.default_sell_power
+        grid = self.state_text(self._tou_entity(index + 1, "grid"))
+        charge_text = self.state_text(self._tou_entity(index + 1, "charge"))
+        grid_charge = self._state_is_on(grid) or (
+            not grid and "grid" in charge_text.lower()
+        )
+        soc = self.state_float(self._tou_entity(index + 1, "soc"), float("nan"))
+        return ActiveDecision(
+            key=f"tou-{index + 1}",
+            label=f"{self._minutes_to_hhmm(start)}-{self._minutes_to_hhmm(end)}",
+            source="Time Of Use",
+            start=start,
+            end=end,
+            enabled=True,
+            mode=mode,
+            physical_work_mode=physical,
+            sell_power=sell_power,
+            charge_enabled=grid_charge,
+            minimum_sell_soc=self.min_sell_soc,
+            tou_soc=soc if math.isfinite(soc) and 0 <= soc <= 100 else None,
+            min_sell_price=self.price_sell_threshold if self.price_guard_enabled else 0,
+        )
+
+    def active_decision_at_minute(self, minute_of_day: int) -> ActiveDecision:
+        """Return the single decision source for a wall-clock minute."""
+        minute = int(minute_of_day) % MINUTES_PER_DAY
+        if self.manual_schedule_active:
+            rows = self._manual_rows_for_decision()
+            for index, row in enumerate(rows):
+                start = int(self._manual_time_to_minutes(row["from"], f"Row {index + 1} start time"))
+                end = int(self._manual_time_to_minutes(row["to"], f"Row {index + 1} end time"))
+                end_cmp = MINUTES_PER_DAY if index == len(rows) - 1 and end == 0 else end
+                if start <= minute < end_cmp:
+                    return self._decision_from_manual_row(row, index, minute)
+        return self._decision_from_tou_range(minute)
 
     @property
-    def active_slot(self) -> SlotSettings:
-        return self.effective_slot_for_key(self.active_slot_key())
+    def active_decision(self) -> ActiveDecision:
+        """Return the decision for the current wall-clock minute."""
+        forced = getattr(self, "_test_force_active_decision", None)
+        if isinstance(forced, ActiveDecision):
+            return forced
+        now = ha_now()
+        return self.active_decision_at_minute(now.hour * 60 + now.minute)
 
     def state_float(self, entity_id: str | None, default: float = 0) -> float:
         value = self.state_float_or_none(entity_id)
@@ -3243,7 +3292,7 @@ class DeyeEnergyRuntime:
 
         grid = value("grid")
         battery = value("battery")
-        slot = self.active_slot
+        decision = self.active_decision
         return {
             "timestamp": current.isoformat(timespec="seconds"),
             "soc_pct": value("soc"),
@@ -3265,9 +3314,9 @@ class DeyeEnergyRuntime:
             ),
             "sell_price": value("sell_price"),
             "buy_price": value("buy_price"),
-            "active_mode": slot.mode if slot.enabled else MODE_NORMAL_OPERATION,
-            "active_power_w": max(0.0, float(slot.sell_power or 0.0)),
-            "slot_key": slot.key,
+            "active_mode": decision.mode if decision.enabled else MODE_NORMAL_OPERATION,
+            "active_power_w": max(0.0, float(decision.sell_power or 0.0)),
+            "slot_key": decision.key,
             "channels": {
                 name: {
                     "status": item.get("status"),
@@ -3415,17 +3464,49 @@ class DeyeEnergyRuntime:
 
     @property
     def mapping_error(self) -> bool:
-        return len(self._tou_mapping) > 6
+        # Physical TOU has a hard 6-range limit; manual schedule rows do not.
+        return (not self.manual_schedule_active) and len(self._tou_mapping) > 6
 
     @property
-    def next_active_slot(self) -> str:
-        keys = [key for key, *_rest in SLOTS]
-        current_index = keys.index(self.active_slot_key())
-        for offset in range(1, len(keys) + 1):
-            key, label, *_rest = SLOTS[(current_index + offset) % len(SLOTS)]
-            if self.effective_slot_for_key(key).enabled:
-                return label
-        return "NONE"
+    def next_active_decision(self) -> ActiveDecision | None:
+        if self.control_mode != "Schedule":
+            return None
+        now = ha_now()
+        minute = now.hour * 60 + now.minute
+        if self.manual_schedule_active:
+            rows = self._manual_rows_for_decision()
+            if not rows:
+                return None
+            ordered = sorted(rows, key=lambda r: int(self._manual_time_to_minutes(r["from"], "start")))
+            for row in ordered:
+                start = int(self._manual_time_to_minutes(row["from"], "start"))
+                if start > minute:
+                    idx = rows.index(row)
+                    return self._decision_from_manual_row(row, idx, start)
+            row = ordered[0]
+            idx = rows.index(row)
+            return self._decision_from_manual_row(row, idx, int(self._manual_time_to_minutes(row["from"], "start")))
+        return self._next_tou_decision(minute)
+
+    def _next_tou_decision(self, minute_of_day: int) -> ActiveDecision | None:
+        starts: list[int] = []
+        for idx in range(1, 7):
+            s = self._time_to_minutes(self.state_text(self._tou_entity(idx, "start")))
+            if s is None:
+                return None
+            starts.append(s)
+        unique = sorted(set(starts))
+        if not unique:
+            return None
+        for s in unique:
+            if s > minute_of_day:
+                return self.active_decision_at_minute(s)
+        return self.active_decision_at_minute(unique[0])
+
+    @property
+    def next_active_decision_label(self) -> str:
+        decision = self.next_active_decision
+        return decision.label if decision else "NONE"
 
     @property
     def decision_reason(self) -> str:
@@ -3444,7 +3525,7 @@ class DeyeEnergyRuntime:
             soc = self.state_float(self.battery_soc_sensor, 0)
             return f"SOC {soc:.0f}% reached or fell below the {self.active_min_sell_soc:.0f}% limit"
         reasons = {
-            "SLOT DISABLED": "The current slot is disabled; default settings apply",
+            "SLOT DISABLED": "The current decision is disabled; default settings apply",
             "SCHEDULE DISABLED": "The schedule is disabled; manager idle",
             "SELLING SUSPENDED": "Control stopped; default settings apply",
             "EMERGENCY STOPPED": "Emergency stop active",
@@ -3800,28 +3881,27 @@ class DeyeEnergyRuntime:
             })
         return rows
 
-    def active_slot_control_diagnostics(self) -> dict[str, Any]:
-        """Keep logical sale guards separate from physical TOU/control values."""
-        slot = self.active_slot
-        effective_soc = self._physical_tou_soc_for_slot(slot)
+    def active_decision_control_diagnostics(self) -> dict[str, Any]:
+        """Expose active decision and physical TOU/control values."""
+        decision = self.active_decision
         physical_tou = self.physical_tou_snapshot()
-        active_range = next((row for row in physical_tou if row["active"]), None)
+        active_range = next((row for row in physical_tou if row.get("active")), None)
         raw_sell_power = self.target_sell_power
         applied_sell_power = self.applied_sell_power
         manager_status = self.manager_status
-        sale_blocked_by_soc = (
-            manager_status == "SELLING BLOCKED" and "SOC" in self.decision_reason
-        )
-        result: dict[str, Any] = {
-            "slot": slot.key,
-            "mode": slot.mode if slot.enabled else "Disabled",
-            "minimum_sell_soc": slot.minimum_sell_soc,
-            "tou_soc": slot.tou_soc,
+        sale_blocked_by_soc = manager_status == "SELLING BLOCKED" and "SOC" in self.decision_reason
+        return {
+            "decision": decision.key,
+            "label": decision.label,
+            "source": decision.source,
+            "mode": decision.mode if decision.enabled else "Disabled",
+            "minimum_sell_soc": self.min_sell_soc,
+            "tou_soc": decision.tou_soc,
             "charge_profile_target_soc": self.charge_profile_target_soc,
-            "effective_tou_soc": effective_soc,
+            "effective_tou_soc": self._effective_physical_tou_soc(decision.tou_soc),
             "physical_range": active_range.get("range") if active_range else None,
             "physical_soc_actual": active_range.get("actual_soc") if active_range else "missing",
-            "grid_charge_expected": bool(slot.charge_enabled),
+            "grid_charge_expected": bool(decision.charge_enabled),
             "grid_charge_actual": active_range.get("actual_grid_charge") if active_range else "missing",
             "sale_blocked_by_soc": sale_blocked_by_soc,
             "power_limits": {
@@ -3833,13 +3913,12 @@ class DeyeEnergyRuntime:
                 "capped": applied_sell_power < raw_sell_power,
             },
         }
-        return result
 
     def record_schedule_attempt(self, status: str, stage: str, expected: dict[str, Any], message: str = "") -> None:
         self.last_schedule_attempt = {
             "status": status,
             "at": ha_now().isoformat(timespec="seconds"),
-            "slot": self.active_slot_key(),
+            "slot": self.active_decision.key,
             "stage": stage,
             "expected": expected,
             "actual": self.control_values_snapshot(),
@@ -3910,7 +3989,7 @@ class DeyeEnergyRuntime:
             if not tou["ok"]
             else "OK"
         )
-        return {"integration_version": "0.8.1.0", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
+        return {"integration_version": "0.8.1.01", "connected": self.data_available, "required_entities_complete": self.required_entities_complete, "entities": entities,
                 "inverter_provider": self.inverter_provider,
                 "inverter_device_id": self.data.get(CONF_INVERTER_DEVICE_ID),
                 "inverter_provider_label": provider_profile(self.data).label,
@@ -3959,11 +4038,11 @@ class DeyeEnergyRuntime:
                 "tou_reconciliation": self.tou_reconciliation_diagnostics(),
                 "tou_capabilities": self.tou_slot_capabilities(),
                 "physical_tou": self.physical_tou_snapshot(),
-                "active_slot_control": self.active_slot_control_diagnostics(),
+                "active_decision_control": self.active_decision_control_diagnostics(),
                 "soc_semantics": {
-                    "minimum_sell_soc": "logical sell-stop threshold for Selling slots; not the physical Deye TOU SOC",
+                    "minimum_sell_soc": "logical sell-stop threshold for Selling decisions; not the physical Deye TOU SOC",
                     "tou_soc": "physical Deye TOU SOC for all modes (Normal Operation, Charging, Selling, Disabled)",
-                    "charge_profile_target_soc": "physical Deye TOU SOC for Charging slots",
+                    "charge_profile_target_soc": "physical Deye TOU SOC for Charging decisions",
                 },
                 "charge_profile": {
                     "grid_charge_enabled": self.charge_profile_grid_enabled,
@@ -3980,7 +4059,8 @@ class DeyeEnergyRuntime:
                     "sell_power": self.normal_profile_sell_power,
                     "tou_soc": self.normal_profile_tou_soc,
                 },
-                "active_slot": self.active_slot_key(), "next_active_slot": self.next_active_slot,
+                "active_decision": self.active_decision.key,
+                "next_active_decision": self.next_active_decision_label,
                 "history_schema_version": HISTORY_SCHEMA_VERSION,
                 "optional_entities": optional_entities,
                 "data_quality": quality_context,
@@ -4131,42 +4211,10 @@ class DeyeEnergyRuntime:
         self.control_status = "Active" if self.control_enabled else "Disabled"
         if not self.control_enabled:
             self.executed_manager_action = "Not performed — control disabled"
-        self.schedule_revision = max(
-            0, int(self.safe_float(data.get("schedule_revision"), 0))
-        )
-        raw_slot_revisions = data.get("schedule_slot_revisions")
-        self.schedule_slot_revisions = {
-            str(key): max(0, int(self.safe_float(value, 0)))
-            for key, value in (
-                raw_slot_revisions.items()
-                if isinstance(raw_slot_revisions, dict)
-                else []
-            )
-            if str(key) in self.slots
-        }
-        raw_slot_ownership = data.get("schedule_slot_ownership")
-        self.schedule_slot_ownership = {
-            str(key): deepcopy(value)
-            for key, value in (
-                raw_slot_ownership.items()
-                if isinstance(raw_slot_ownership, dict)
-                else []
-            )
-            if str(key) in self.slots and isinstance(value, dict)
-        }
         self.last_saved_at = str(data.get("last_saved_at") or "")
-        self.schedule_schema_version = max(
-            0, int(self.safe_float(data.get("schedule_schema_version"), 0))
-        )
         stored_default_physical_mode = data.get("default_physical_work_mode")
         if stored_default_physical_mode in PHYSICAL_NORMAL_MODES:
             self.default_physical_work_mode = str(stored_default_physical_mode)
-
-        stored_physical_modes = data.get("slot_physical_modes")
-        if isinstance(stored_physical_modes, dict):
-            for slot_key, physical_mode in stored_physical_modes.items():
-                if slot_key in self.slots and physical_mode in PHYSICAL_NORMAL_MODES:
-                    self.slots[slot_key].physical_work_mode = str(physical_mode)
 
         if not data.get("sa_defaults_v1"):
             data["sa_defaults_v1"] = True
@@ -4217,10 +4265,9 @@ class DeyeEnergyRuntime:
             if restored is not None:
                 self._manual_tou_mapping = restored
         self.manual_schedule = self._load_manual_schedule_state(data.get("manual_schedule"))
-        self._manual_effective_rows = {}
         if self.manual_schedule_active:
             try:
-                self._rebuild_manual_effective_rows()
+                self._validate_manual_schedule_rows(self._manual_rows_for_decision())
             except Exception:
                 self.manual_schedule["active"] = False
                 self.manual_schedule["activation_snapshot"] = None
@@ -4235,20 +4282,11 @@ class DeyeEnergyRuntime:
         """Build the shared Store payload only on a save path."""
         return {
             "schema_version": HISTORY_SCHEMA_VERSION,
-            "schedule_revision": self.schedule_revision,
-            "schedule_slot_revisions": self.schedule_slot_revisions,
-            "schedule_slot_ownership": self.schedule_slot_ownership,
             "manual_tou_mapping": self._serialize_manual_tou_mapping(),
             "manual_schedule": deepcopy(self._ensure_manual_schedule()),
             "last_saved_at": self.last_saved_at,
-            "schedule_schema_version": self.schedule_schema_version,
             "control_enabled": self.control_enabled,
             "default_physical_work_mode": self.default_physical_work_mode,
-            "slot_physical_modes": {
-                slot_key: slot.physical_work_mode
-                for slot_key, slot in self.slots.items()
-                if slot.physical_work_mode in PHYSICAL_NORMAL_MODES
-            },
             "charge_profile": {
                 "target_soc": self.charge_profile_target_soc,
                 "grid_charge_enabled": self.charge_profile_grid_enabled,
@@ -4268,18 +4306,11 @@ class DeyeEnergyRuntime:
     def _ai_store_fingerprint_payload(self) -> dict[str, Any]:
         """Return a bounded canonical identity for the shared Store state."""
         return {
-            "schedule_revision": self.schedule_revision,
-            "schedule_slot_revisions": self.schedule_slot_revisions,
-            "schedule_slot_ownership": self.schedule_slot_ownership,
             "manual_tou_mapping": self._serialize_manual_tou_mapping(),
             "manual_schedule": deepcopy(self._ensure_manual_schedule()),
             "last_saved_at": self.last_saved_at,
-            "schedule_schema_version": self.schedule_schema_version,
             "control_enabled": self.control_enabled,
             "default_physical_work_mode": self.default_physical_work_mode,
-            "slot_physical_modes": {
-                key: slot.physical_work_mode for key, slot in self.slots.items()
-            },
             "charge_profile": [
                 self.charge_profile_target_soc,
                 self.charge_profile_grid_enabled,
@@ -4353,72 +4384,6 @@ class DeyeEnergyRuntime:
         if self._ai_save_dirty and not self._unloading:
             self.request_ai_save()
 
-
-    @staticmethod
-    def _expand_slot_updates(updates: Any) -> Any:
-        """Fan hourly plan entries out to the half-hour schedule slots they cover.
-
-        The optimizer and the card plan in hours.  An entry addressed to an
-        hourly key such as ``05_06`` becomes one identical entry for each
-        schedule slot of that hour; schedule slot keys pass through unchanged.
-        """
-        if not isinstance(updates, list):
-            return updates
-        expanded: list[Any] = []
-        for raw in updates:
-            if not isinstance(raw, dict):
-                expanded.append(raw)
-                continue
-            key = str(raw.get("slot_key") or "")
-            keys = slots_for_key(key)
-            if len(keys) <= 1:
-                expanded.append(raw)
-                continue
-            for slot_key in keys:
-                expanded.append({**raw, "slot_key": slot_key})
-        return expanded
-
-
-    def _schedule_slot_fingerprint(self, slot_key: str) -> str:
-        """Return the lightweight logical identity of one stored slot."""
-        slot = self.slots[slot_key]
-        return snapshot_id({
-            "enabled": bool(slot.enabled),
-            "mode": slot.mode,
-            "physical_work_mode": slot.physical_work_mode,
-            "sell_power": float(slot.sell_power),
-            "charge_enabled": bool(slot.charge_enabled),
-            "minimum_sell_soc": float(slot.minimum_sell_soc),
-            "tou_soc": None if slot.tou_soc is None else float(slot.tou_soc),
-            "min_sell_price": float(slot.min_sell_price),
-        })
-
-    def _claim_schedule_slots(
-        self,
-        slot_keys: list[str],
-        source: str,
-        context: dict[str, Any] | None = None,
-    ) -> int:
-        """Advance one schedule generation and record the writer of each slot."""
-        keys = [key for key in dict.fromkeys(slot_keys) if key in self.slots]
-        if not keys:
-            return self.schedule_revision
-        self.schedule_revision += 1
-        revision = self.schedule_revision
-        details = context if isinstance(context, dict) else {}
-        for key in keys:
-            self.schedule_slot_revisions[key] = revision
-            self.schedule_slot_ownership[key] = {
-                "source": source,
-                "revision": revision,
-                "plan_id": str(details.get("plan_id") or ""),
-                "target_date": str(details.get("target_date") or ""),
-                "slot_key": key,
-                "intent_revision": int(self.safe_float(details.get("intent_revision"), 0)),
-                "fingerprint": self._schedule_slot_fingerprint(key),
-                "changed_at": ha_now().isoformat(timespec="seconds"),
-            }
-        return revision
 
 
     async def async_load_solcast_history(self) -> None:
@@ -5319,25 +5284,29 @@ class DeyeEnergyRuntime:
     def active_min_sell_soc(self) -> float:
         if (
             self.control_mode == "Schedule"
-            and self.active_slot.enabled
-            and self.active_slot.mode == MODE_SELLING_FIRST
-            and self.active_slot.minimum_sell_soc > 0
+            and self.active_decision.enabled
+            and self.active_decision.mode == MODE_SELLING_FIRST
+            and self.min_sell_soc > 0
         ):
-            return self.active_slot.minimum_sell_soc
-        return self.min_sell_soc
+            return self.min_sell_soc
+        if self.control_mode != "Schedule" and self.min_sell_soc > 0:
+            return self.min_sell_soc
+        return 0.0
 
     @property
     def active_min_sell_price(self) -> float:
-        if self.control_mode == "Schedule" and self.active_slot.enabled and self.active_slot.min_sell_price > 0:
-            return self.active_slot.min_sell_price
+        if self.control_mode == "Schedule" and self.active_decision.enabled and self.active_decision.min_sell_price > 0:
+            return self.active_decision.min_sell_price
         return self.price_sell_threshold if self.price_guard_enabled else 0
 
     @property
     def soc_ok(self) -> bool:
+        soc = self.current_soc_or_none()
+        if soc is None or not 0 <= soc <= 100:
+            return False
         if not self.soc_guard_enabled or self.active_min_sell_soc <= 0:
             return True
-        soc = self.current_soc_or_none()
-        return soc is not None and 0 <= soc <= 100 and soc > self.active_min_sell_soc
+        return soc > self.active_min_sell_soc
 
     @property
     def price_ok(self) -> bool:
@@ -5366,8 +5335,8 @@ class DeyeEnergyRuntime:
         """
         if not (
             self.control_mode == "Schedule"
-            and self.active_slot.enabled
-            and self.active_slot.mode == MODE_SELLING_FIRST
+            and self.active_decision.enabled
+            and self.active_decision.mode == MODE_SELLING_FIRST
         ):
             return None
 
@@ -5400,7 +5369,7 @@ class DeyeEnergyRuntime:
 
     def _sell_block_fingerprint(self, reason: str) -> str:
         """Identify one continuous, normal sale block without repeated writes."""
-        return f"{self.active_slot_key()}:{reason.split(':', 1)[0]}"
+        return f"{self.active_decision.key}:{reason.split(':', 1)[0]}"
 
     @property
     def charge_allowed(self) -> bool:
@@ -5413,11 +5382,12 @@ class DeyeEnergyRuntime:
 
     @property
     def active_charge_slot(self) -> bool:
-        """Whether the current schedule slot uses its copied Charge settings."""
+        """Whether the current active decision uses Charge settings."""
+        decision = self.active_decision
         return (
             self.control_mode == "Schedule"
-            and self.active_slot.enabled
-            and self.active_slot.mode == MODE_CHARGE
+            and decision.enabled
+            and decision.mode == MODE_CHARGE
         )
 
     @property
@@ -5428,10 +5398,11 @@ class DeyeEnergyRuntime:
             # Legacy manager model: these override actions fall back to normal
             # operation.  The physical topology is resolved separately.
             return MODE_NORMAL_OPERATION
+        decision = self.active_decision
         if (
             self.control_mode == "Schedule"
-            and self.active_slot.enabled
-            and self.active_slot.mode == MODE_SELLING_FIRST
+            and decision.enabled
+            and decision.mode == MODE_SELLING_FIRST
             and self._selling_slot_is_blocked()
         ):
             return self.default_work_mode
@@ -5439,8 +5410,8 @@ class DeyeEnergyRuntime:
             # Charge is a manager profile, not a fourth Deye work mode.  Keep
             # the user's selected default logical mode (Normal Operation).
             return self.default_work_mode
-        if self.active_slot.enabled:
-            return self.active_slot.mode
+        if self.control_mode == "Schedule" and decision.enabled:
+            return decision.mode
         return self.default_work_mode
 
     @property
@@ -5449,11 +5420,12 @@ class DeyeEnergyRuntime:
             return self.manual_sell_power
         if self.control_mode != "Schedule":
             return self.default_sell_power
-        if self.active_slot.enabled and self.active_slot.mode == MODE_SELLING_FIRST and self._selling_slot_is_blocked():
+        decision = self.active_decision
+        if decision.enabled and decision.mode == MODE_SELLING_FIRST and self._selling_slot_is_blocked():
             return self.default_sell_power
         if self.active_charge_slot:
             return self.default_sell_power
-        return self.active_slot.sell_power if self.active_slot.enabled else self.default_sell_power
+        return decision.sell_power if decision.enabled else self.default_sell_power
 
     @property
     def applied_sell_power(self) -> float:
@@ -5471,6 +5443,7 @@ class DeyeEnergyRuntime:
     def _planned_manager_action_text(self) -> str:
         """Describe the existing decision path in stable, user-facing English."""
 
+        decision = self.active_decision
         if self.emergency_stop:
             action = "Emergency stop"
         elif self.control_mode == "Manual Sell":
@@ -5482,11 +5455,13 @@ class DeyeEnergyRuntime:
             action = "Selling stopped — default settings"
         elif self.control_mode == "Protect Battery":
             action = "Battery protection — default settings"
-        elif self.control_mode != "Schedule" or not self.scheduler_enabled:
+        elif self.control_mode != "Schedule":
             action = "Schedule disabled — no action"
-        elif not self.active_slot.enabled:
+        elif not self.manual_schedule_active or not self.scheduler_enabled:
+            action = "Manual Schedule inactive — no action"
+        elif not decision.enabled:
             action = "Slot disabled — default settings"
-        elif self.active_slot.mode == MODE_SELLING_FIRST:
+        elif decision.mode == MODE_SELLING_FIRST:
             guard_issue = self._selling_slot_guard_issue()
             if guard_issue is not None:
                 _kind, reason = guard_issue
@@ -5494,9 +5469,9 @@ class DeyeEnergyRuntime:
             else:
                 power = self._format_decision_power(self.applied_sell_power)
                 action = f"Selling — {power}"
-        elif self.active_slot.mode == MODE_CHARGE:
-            source = "from grid" if self.active_slot.charge_enabled else "from PV"
-            target_soc = self.safe_float(self.active_slot.tou_soc, 0)
+        elif decision.mode == MODE_CHARGE:
+            source = "from grid" if decision.charge_enabled else "from PV"
+            target_soc = self.safe_float(decision.tou_soc, 0)
             action = f"Charging {source} — target SOC {target_soc:.0f}%"
         else:
             measurement = (
@@ -5558,23 +5533,24 @@ class DeyeEnergyRuntime:
         if self.control_mode == "Schedule":
             if not self.scheduler_enabled:
                 return "SCHEDULE DISABLED"
-            if not self.active_slot.enabled:
+            decision = self.active_decision
+            if not decision.enabled:
                 return "SLOT DISABLED"
             guard_issue = self._selling_slot_guard_issue()
             if guard_issue and guard_issue[0] == "blocked":
                 return "SELLING BLOCKED"
-            if self.last_schedule_attempt.get("status") == "failed" and self.last_schedule_attempt.get("slot") == self.active_slot_key():
+            if self.last_schedule_attempt.get("status") == "failed" and self.last_schedule_attempt.get("slot") == decision.key:
                 return "SCHEDULE APPLY ERROR"
-            if self.active_slot.mode == MODE_SELLING_FIRST and not self.soc_ok:
+            if decision.mode == MODE_SELLING_FIRST and not self.soc_ok:
                 return "SOC TOO LOW"
-            if self.active_slot.mode == MODE_SELLING_FIRST and not self.price_ok:
+            if decision.mode == MODE_SELLING_FIRST and not self.price_ok:
                 return "PRICE TOO LOW"
             if self.active_charge_slot:
-                return "GRID CHARGING" if self.active_slot.charge_enabled else "PV CHARGING"
-            if self.active_slot.mode == MODE_SELLING_FIRST:
+                return "GRID CHARGING" if decision.charge_enabled else "PV CHARGING"
+            if decision.mode == MODE_SELLING_FIRST:
                 return "SELLING ACTIVE"
-            if self.active_slot.mode == MODE_NORMAL_OPERATION:
-                physical = self.active_slot.physical_work_mode
+            if decision.mode == MODE_NORMAL_OPERATION:
+                physical = self._active_physical_work_mode()
                 if physical == MODE_ZERO_EXPORT_CT:
                     return "NORMAL OPERATION (CT)"
                 return "NORMAL OPERATION (LOAD)"
@@ -5582,10 +5558,16 @@ class DeyeEnergyRuntime:
         return "WAITING"
 
     def _active_physical_work_mode(self) -> str:
-        """Return the physical work mode variant for the current active slot."""
-        if self.active_slot and self.active_slot.enabled and self.active_slot.physical_work_mode:
-            return self.active_slot.physical_work_mode
-        return self.normal_profile_physical_work_mode
+        """Return the physical work mode variant for the current active decision."""
+        decision = self.active_decision
+        if self.control_mode == "Schedule" and decision.enabled:
+            if decision.mode == MODE_NORMAL_OPERATION and decision.physical_work_mode in PHYSICAL_NORMAL_MODES:
+                return str(decision.physical_work_mode)
+            if decision.mode in (MODE_SELLING_FIRST, MODE_CHARGE):
+                return self.default_normal_physical_work_mode()
+        if self.normal_profile_physical_work_mode in PHYSICAL_NORMAL_MODES:
+            return str(self.normal_profile_physical_work_mode)
+        return self.default_normal_physical_work_mode()
 
     def default_normal_physical_work_mode(self) -> str:
         """Return the explicit default variant or the pre-5F.1 profile fallback."""
@@ -5901,7 +5883,7 @@ class DeyeEnergyRuntime:
     def _pending_control_key(self) -> str:
         """Identify the user-visible target that owns an in-flight write."""
         return (
-            f"{self.control_mode}:{self.active_slot_key()}"
+            f"{self.control_mode}:{self.active_decision.key}"
             if self.control_mode == "Schedule"
             else self.control_mode
         )
@@ -6214,7 +6196,7 @@ class DeyeEnergyRuntime:
         if started:
             self._pending_control_transaction = {
                 "key": key,
-                "slot": self.active_slot_key(),
+                "slot": self.active_decision.key,
                 "expected": dict(expected),
                 "stage": stage,
                 "started_at": now,
@@ -6416,118 +6398,28 @@ class DeyeEnergyRuntime:
             )
         return starts
 
-    def physical_tou_soc_for_slot(self, slot_key: str) -> float | None:
-        """Read the physical Deye TOU SOC covering an hourly schedule slot.
+    def physical_tou_soc_at_minute(self, minute_of_day: int) -> float | None:
+        """Read the physical Deye TOU SOC covering a minute of day."""
+        selected = self._tou_range_at_minute(int(minute_of_day) % MINUTES_PER_DAY)
+        if selected is None:
+            return None
+        index, _start, _end = selected
+        value = self.safe_float(
+            self.state_text(self._tou_entity(index + 1, "soc")),
+            float("nan"),
+        )
+        return value if math.isfinite(value) and 0 <= value <= 100 else None
 
-        This is used only to seed a missing new helper.  An existing restored
-        slot value, including an intentional zero, always has priority.
-        """
-        slot_row = next((row for row in SLOTS if row[0] == slot_key), None)
-        if slot_row is None:
-            return None
-        target = int(slot_row[2])
-        starts = [
-            self._time_to_minutes(self.state_text(self._tou_entity(idx, "start")))
-            for idx in range(1, 7)
-        ]
-        if any(value is None for value in starts):
-            return None
-        for offset, start in enumerate(starts):
-            end = starts[(offset + 1) % 6]
-            if start == end:
-                continue
-            contains = start <= target < end if start < end else target >= start or target < end
-            if not contains:
-                continue
-            value = self.safe_float(
-                self.state_text(self._tou_entity(offset + 1, "soc")),
-                float("nan"),
-            )
-            return value if math.isfinite(value) and 0 <= value <= 100 else None
-        return None
+    def _physical_tou_soc_at_minute(self, minute_of_day: int) -> float | None:
+        return self.physical_tou_soc_at_minute(minute_of_day)
 
     def tou_mapping_errors(self) -> list[str]:
         return [item["entity_id"] for item in self.tou_mapping_diagnostics()["entities"] if not item["ok"]]
 
-    @staticmethod
-    def _physical_tou_soc_for_slot(slot: SlotSettings) -> float | None:
-        """Return the physical Deye Time Of Use SOC for a schedule slot.
-
-        The value is always the user-owned ``tou_soc``; ``minimum_sell_soc`` is
-        a logical sale-guard and is never used as the physical SOC.
-        """
-        return None if slot.tou_soc is None else float(slot.tou_soc)
-
-    def mark_slot_tou_soc_restored(self, slot_key: str) -> None:
-        """Signal that the per-slot tou_soc number entity has been added."""
-        self._restored_slot_tou_soc_keys.add(slot_key)
-
-    def mark_slot_minimum_sell_soc_restored(self, slot_key: str) -> None:
-        """Signal that the per-slot minimum_sell_soc number entity has been added."""
-        self._restored_slot_minimum_sell_soc_keys.add(slot_key)
-
-    def _selling_tou_soc_migration_ready(self) -> bool:
-        """Return True only after all required per-slot entities are restored."""
-        if not self.slots:
-            return False
-        return (
-            len(self._restored_slot_mode_keys) == len(self.slots)
-            and len(self._restored_slot_tou_soc_keys) == len(self.slots)
-            and len(self._restored_slot_minimum_sell_soc_keys) == len(self.slots)
-        )
-
-    def _migrate_selling_tou_soc(self) -> None:
-        """Idempotently resolve tou_soc for Selling First slots after restore.
-
-        Order of sources for a Selling First slot with ``tou_soc is None``:
-        1. Existing restored ``tou_soc`` (already present, nothing to do).
-        2. Physical Deye TOU readback for that hour, when the provider exposes it.
-        3. ``minimum_sell_soc`` as a backward-compatibility fallback when the
-           provider does not expose a physical readback.
-        4. Leave ``None`` and keep the migration incomplete until the next tick
-           if a physical readback capability exists but the value is not yet
-           readable (e.g. ``unknown`` / ``unavailable``).
-
-        The migration is not driven by ``schedule_schema_version``; it relies on
-        the presence of the restored per-slot entities and a valid physical readback.
-        """
-        if self._tou_soc_migration_done:
-            return
-        if not self._selling_tou_soc_migration_ready():
-            return
-        readback_supported = provider_profile(self.data).native_tou
-        unresolved: list[str] = []
-        for slot in self.slots.values():
-            if not (slot.enabled and slot.mode == MODE_SELLING_FIRST):
-                continue
-            if slot.tou_soc is not None:
-                continue
-            physical_soc: float | None = None
-            if readback_supported:
-                try:
-                    physical_soc = self.physical_tou_soc_for_slot(slot.key)
-                except Exception:
-                    physical_soc = None
-            if physical_soc is not None:
-                slot.tou_soc = float(physical_soc)
-                continue
-            if readback_supported:
-                # Physical readback capability exists but the state is not yet
-                # available; wait for the next tick instead of guessing.
-                unresolved.append(slot.key)
-                continue
-            if math.isfinite(slot.minimum_sell_soc):
-                slot.tou_soc = float(slot.minimum_sell_soc)
-                continue
-            unresolved.append(slot.key)
-        if not unresolved:
-            self._tou_soc_migration_done = True
-
-    def _effective_physical_tou_soc_for_slot(self, slot: SlotSettings) -> float:
-        """Return a finite physical TOU SOC for every schedule slot."""
-        soc = self._physical_tou_soc_for_slot(slot)
-        if soc is not None:
-            return float(soc)
+    def _effective_physical_tou_soc(self, tou_soc: float | None) -> float:
+        """Return a finite physical TOU SOC for a decision or TOU range."""
+        if tou_soc is not None and math.isfinite(float(tou_soc)):
+            return float(tou_soc)
         fallback = self.normal_profile_tou_soc
         if fallback is not None and math.isfinite(fallback):
             return float(fallback)
@@ -7101,106 +6993,46 @@ class DeyeEnergyRuntime:
                 self.notify_update()
 
     def schedule_to_tou_mapping(
-        self, slot_source: dict[str, SlotSettings] | None = None
+        self, decisions: list[ActiveDecision] | None = None
     ) -> TouMapping:
-        """Build the physical Deye TOU mapping from the active trigger source.
+        """Build the physical 6-range Deye TOU mapping.
 
-        The mapping compresses the schedule into ranges where the physical key
-        (effective Deye TOU SOC, hourly Grid Charge flag) is identical.  Logical
-        manager modes and other runtime overlays are not part of the key.
-        ``slot_source`` allows validating a candidate manual row set before it
-        becomes active.
+        Manual Schedule is independent and does not produce physical TOU writes.
+        This mapping represents direct inverter TOU baseline/ranges only.
         """
-        source = slot_source if slot_source is not None else self.effective_slots()
-        raw: list[tuple[int, float, bool]] = []
-        for index, (slot_key, _label, _start, _end) in enumerate(SLOTS):
-            slot = source[slot_key]
-            soc = self._effective_physical_tou_soc_for_slot(slot)
-            # ``charge_enabled`` is the physical Grid Charge flag of the slot.
-            grid_charge = bool(slot.charge_enabled)
-            raw.append((index, round(float(soc), 1), grid_charge))
+        return self._physical_tou_baseline_mapping()
 
-        if len(raw) != SLOTS_PER_DAY:
-            raise ValueError(f"Schedule must cover exactly {SLOTS_PER_DAY} slots, got {len(raw)}")
-
-        compressed: list[TouMappingSlot] = []
-        for index, soc, grid_charge in raw:
-            if compressed:
-                last = compressed[-1]
-                if round(last.soc, 1) == soc and last.grid_charge == grid_charge:
-                    last.end = (index + 1) * SLOT_MINUTES
-                    last.source_slots.append(index)
-                    continue
-            compressed.append(
+    def _physical_tou_baseline_mapping(self, decisions: list[ActiveDecision] | None = None) -> TouMapping:
+        """Use the six physical TOU ranges as the baseline mapping."""
+        slots: list[TouMappingSlot] = []
+        for idx in range(1, 7):
+            start = self._time_to_minutes(self.state_text(self._tou_entity(idx, "start")))
+            next_start = self._time_to_minutes(self.state_text(self._tou_entity((idx % 6) + 1, "start")))
+            if start is None:
+                start = 0
+            end = next_start if next_start is not None else 0
+            soc = self.safe_float(self.state_text(self._tou_entity(idx, "soc")), 100.0)
+            soc = soc if math.isfinite(soc) else 100.0
+            grid = provider_boolean_state(self.data, "grid", self.state_text(self._tou_entity(idx, "grid")))
+            slots.append(
                 TouMappingSlot(
-                    index=len(compressed) + 1,
-                    start=index * SLOT_MINUTES,
-                    end=(index + 1) * SLOT_MINUTES,
-                    soc=soc,
-                    grid_charge=grid_charge,
-                    source_slots=[index],
-                    provider_fields={},
+                    index=idx,
+                    start=int(start) % MINUTES_PER_DAY,
+                    end=int(end) % MINUTES_PER_DAY,
+                    soc=round(float(soc), 1),
+                    grid_charge=bool(grid),
                 )
             )
-
-        # Wrap the day: a range ending at midnight is represented as 0.
-        for slot in compressed:
-            if slot.end == MINUTES_PER_DAY:
-                slot.end = 0
-
-        # Deye exposes exactly six physical TOU ranges.  If the natural schedule
-        # still needs more, we fail before writing anything.
-        if len(compressed) > 6:
-            return TouMapping(slots=compressed)
-
-        # If fewer than six ranges are needed, deterministically split the
-        # longest range (on a slot boundary) until we have six slots.
-        while len(compressed) < 6:
-            split_index = -1
-            longest = 0
-            for index, segment in enumerate(compressed):
-                segment_end = MINUTES_PER_DAY if segment.end == 0 else int(segment.end)
-                duration = segment_end - int(segment.start)
-                if duration > longest and duration > SLOT_MINUTES:
-                    longest = duration
-                    split_index = index
-            if split_index < 0:
-                break
-            segment = compressed[split_index]
-            segment_end = MINUTES_PER_DAY if segment.end == 0 else int(segment.end)
-            slot_count = (segment_end - int(segment.start)) // SLOT_MINUTES
-            middle = int(segment.start) + (slot_count // 2) * SLOT_MINUTES
-            first = TouMappingSlot(
-                index=segment.index,
-                start=segment.start,
-                end=middle,
-                soc=segment.soc,
-                grid_charge=segment.grid_charge,
-                source_slots=[h for h in segment.source_slots if h * SLOT_MINUTES < middle],
-                provider_fields=segment.provider_fields,
-            )
-            second = TouMappingSlot(
-                index=segment.index + 1,
-                start=middle,
-                end=segment.end,
-                soc=segment.soc,
-                grid_charge=segment.grid_charge,
-                source_slots=[h for h in segment.source_slots if h * SLOT_MINUTES >= middle],
-                provider_fields=segment.provider_fields,
-            )
-            compressed[split_index : split_index + 1] = [first, second]
-            # Reindex after a split.
-            for idx, item in enumerate(compressed, start=1):
-                item.index = idx
-
-        return TouMapping(slots=compressed)
+        return TouMapping(slots=slots)
 
     @property
     def _tou_mapping(self) -> TouMapping:
+        # Manual Schedule is independent from physical TOU ranges.
+        # Physical TOU mapping remains the direct inverter baseline/edit model.
         manual = getattr(self, "_manual_tou_mapping", None)
         if manual is not None and len(manual.slots) == 6:
             return manual
-        return self.schedule_to_tou_mapping()
+        return self._physical_tou_baseline_mapping()
 
     def schedule_mapping_snapshot(self) -> list[dict[str, Any]]:
         """Expose the single backend 24 h -> Deye TOU mapping used for writes."""
@@ -7259,14 +7091,6 @@ class DeyeEnergyRuntime:
                 raise ValueError(
                     f"Deye Time Of Use slot {idx + 1} cannot have zero length"
                 )
-            source_slots: list[int] = []
-            for slot_index, (_key, _label, slot_start, _slot_end) in enumerate(SLOTS):
-                minute = int(slot_start)
-                if idx == 5:
-                    if minute >= start_minute or minute < end_minute:
-                        source_slots.append(slot_index)
-                elif start_minute <= minute < end_minute:
-                    source_slots.append(slot_index)
             slots.append(
                 TouMappingSlot(
                     index=idx + 1,
@@ -7274,59 +7098,10 @@ class DeyeEnergyRuntime:
                     end=end_minute % MINUTES_PER_DAY,
                     soc=round(float(soc_values[idx]), 1),
                     grid_charge=bool(grid_values[idx]),
-                    source_slots=source_slots,
-                    provider_fields={},
                 )
             )
         return TouMapping(slots=slots)
 
-    def tou_mapping_to_schedule_patch(self, mapping: TouMapping | None = None) -> list[dict[str, Any]]:
-        """Build a schedule patch that reflects only the physical TOU SOC/Grid Charge.
-
-        Manager logical modes, sell power, charge/discharge/grid charge currents,
-        minimum sell price and the logical sale guard ``minimum_sell_soc`` are
-        preserved.  Only ``tou_soc`` and the hourly ``charge_enabled`` flag are
-        updated.
-        """
-        if mapping is None:
-            mapping = self.read_physical_tou_mapping()
-        slot_to_physical: dict[int, tuple[float, bool]] = {}
-        for slot in mapping.slots:
-            for slot_index in slot.source_slots:
-                if 0 <= int(slot_index) < SLOTS_PER_DAY:
-                    slot_to_physical[int(slot_index)] = (slot.soc, slot.grid_charge)
-        if len(slot_to_physical) != SLOTS_PER_DAY:
-            # Arbitrary-minute physical boundaries may not align with 30-minute
-            # schedule slots. Assign each schedule slot by its start minute.
-            slot_to_physical = {}
-            for slot_index, (_key, _label, slot_start, _slot_end) in enumerate(SLOTS):
-                minute = int(slot_start) % MINUTES_PER_DAY
-                for slot in mapping.slots:
-                    start = int(slot.start) % MINUTES_PER_DAY
-                    end = int(slot.end) % MINUTES_PER_DAY
-                    if slot.index == 6 or end == 0:
-                        in_range = minute >= start or minute < (end or 0)
-                    else:
-                        in_range = start <= minute < end
-                    if in_range:
-                        slot_to_physical[slot_index] = (slot.soc, slot.grid_charge)
-                        break
-        if len(slot_to_physical) != SLOTS_PER_DAY:
-            raise ValueError(
-                f"The physical TOU map covers {len(slot_to_physical)} slots, required {SLOTS_PER_DAY}"
-            )
-
-        patch: list[dict[str, Any]] = []
-        for slot_index, (_key, _label, _start, _end) in enumerate(SLOTS):
-            if slot_index not in slot_to_physical:
-                continue
-            start_soc, start_grid = slot_to_physical[slot_index]
-            update: dict[str, Any] = {"slot_key": _key, "charge_enabled": start_grid}
-            # In 5A.1 physical TOU SOC is independent of the logical mode.  The
-            # logical sale guard ``minimum_sell_soc`` is never overwritten here.
-            update["tou_soc"] = start_soc
-            patch.append(update)
-        return patch
 
     def _serialize_manual_tou_mapping(self) -> dict[str, Any] | None:
         """Persist a manually saved 24 h TOU map, independent of Schedule slots."""
@@ -7377,7 +7152,6 @@ class DeyeEnergyRuntime:
                         end=end,
                         soc=round(soc, 1),
                         grid_charge=grid_charge,
-                        source_slots=[],
                     )
                 )
             mapping = TouMapping(slots=slots)
@@ -7400,18 +7174,6 @@ class DeyeEnergyRuntime:
                     coverage[minute % MINUTES_PER_DAY] += 1
             if any(count != 1 for count in coverage):
                 return None
-            for slot_index, (_key, _label, slot_start, _slot_end) in enumerate(SLOTS):
-                minute = int(slot_start)
-                for slot in mapping.slots:
-                    start = int(slot.start)
-                    end = int(slot.end)
-                    if slot.index == 6:
-                        in_range = minute >= start or minute < end
-                    else:
-                        in_range = start <= minute < end
-                    if in_range:
-                        slot.source_slots.append(slot_index)
-                        break
             return mapping
         except Exception:
             return None
@@ -7607,45 +7369,6 @@ class DeyeEnergyRuntime:
             "last_reconciliation_error": self.tou_last_reconciliation_error or None,
         }
 
-    def _apply_reverse_sync_patch_locked(
-        self, updates: list[dict[str, Any]]
-    ) -> list[int]:
-        """Apply only physical hourly fields while ``_operation_lock`` is held.
-
-        This deliberately does not call ``async_apply_schedule_patch`` and does
-        not schedule reconciliation.  The confirmed physical readback is the
-        source of truth for this local mutation.
-        """
-        if not updates:
-            raise ValueError("The Deye TOU reverse sync contains no hours")
-        changed_hours: list[str] = []
-        seen: set[str] = set()
-        slot_times = {key: self._minutes_to_clock(int(start)) for key, _label, start, _end in SLOTS}
-        for update in updates:
-            if not isinstance(update, dict):
-                raise ValueError("Invalid Deye TOU reverse sync entry")
-            if set(update) != {"slot_key", "tou_soc", "charge_enabled"}:
-                raise ValueError(
-                    "Deye TOU reverse sync may only change tou_soc and charge_enabled"
-                )
-            slot_key = str(update["slot_key"])
-            if slot_key not in self.slots or slot_key in seen:
-                raise ValueError(f"Invalid reverse sync slot: {slot_key}")
-            seen.add(slot_key)
-            soc = float(update["tou_soc"])
-            if not math.isfinite(soc) or not 0 <= soc <= 100:
-                raise ValueError(f"Invalid reverse sync SOC for {slot_key}: {soc}")
-            grid = bool(update["charge_enabled"])
-            target = self.slots[slot_key]
-            if target.tou_soc != soc or target.charge_enabled != grid:
-                changed_hours.append(slot_times[slot_key])
-            target.tou_soc = soc
-            target.charge_enabled = grid
-        if len(seen) != SLOTS_PER_DAY:
-            raise ValueError(
-                f"Reverse sync Deye TOU covered {len(seen)} slots, {SLOTS_PER_DAY} required"
-            )
-        return sorted(changed_hours)
 
     def _tou_raw_snapshot(self) -> dict[str, str]:
         """Capture every physical value that can be touched by a TOU write."""
@@ -7735,24 +7458,7 @@ class DeyeEnergyRuntime:
             )
             self.notify_update()
             return False
-        effective_slots = self.effective_slots()
-        missing_soc = [
-            effective_slots[key].label
-            for key, _label, _start, _end in SLOTS
-            if self._physical_tou_soc_for_slot(effective_slots[key]) is None
-        ]
-        if missing_soc:
-            self.tou_reconciliation_status = "waiting_readback"
-            self.tou_reconciliation_in_sync = False
-            self.tou_last_reconciliation_error = (
-                "Cannot confirm the physical Deye Time Of Use: no tou_soc in the schedule"
-            )
-            self.last_error = (
-                "Deye battery SOC (TOU) requires confirmation for slots: "
-                + ", ".join(missing_soc)
-            )
-            self.notify_update()
-            return False
+        # In the minute/TOU model SOC is physical per range; no stored-slot seeding.
         readback_matches = self._refresh_tou_reconciliation_state(mapping)
         missing = self.tou_mapping_errors()
         if missing:
@@ -7813,116 +7519,38 @@ class DeyeEnergyRuntime:
         transaction_id: str | None,
         items: list[dict[str, Any]],
         physical_snapshot: dict[str, str],
-        schedule_snapshot: dict[str, SlotSettings],
+        schedule_snapshot: Any = None,
     ) -> None:
-        """Apply confirmed physical TOU readback locally and verify round-trip."""
+        """Refresh local state after a confirmed manual physical TOU write."""
         self.tou_contract_status = "waiting"
         self.reverse_sync_status = "applying"
         self.reverse_sync_last_error = ""
         self.reverse_sync_changed_hours = []
         self.reverse_sync_round_trip_ok = None
         self.notify_update()
-        if self.manual_schedule_active:
-            # Manual rows are the authoritative trigger source.  A confirmed
-            # physical TOU write must never be copied into the independent
-            # work slots while that source is selected.
-            self.reverse_sync_status = "skipped_manual_schedule"
-            self.reverse_sync_round_trip_ok = True
-            self.tou_contract_status = "confirmed"
-            self.tou_operation_status = "success"
-            self.notify_update()
-            return
         try:
-            if not self._control_result_is_current(transaction_id) or not self._control_is_active():
-                raise ControlDisabledError(self._control_block_message())
-
-            capability_rows = self.tou_slot_capabilities()
-            full_readback = all(
-                row["fields"][field]["readable"]
-                for row in capability_rows
-                for field in ("start", "soc", "grid_charge")
-            )
-            if not full_readback:
-                raise ValueError(
-                    "Reverse sync requires a complete confirmed readback "
-                    "Deye Time Of Use 6/6."
-                )
-
-            # Read and validate every physical field again.  The request payload
-            # is intentionally not used as the reverse-sync source of truth.
-            self._validated_tou_start_vector(1)
             confirmed_mapping = self.read_physical_tou_mapping()
-            patch = self.tou_mapping_to_schedule_patch(confirmed_mapping)
-            changed_hours = self._apply_reverse_sync_patch_locked(patch)
-            round_trip = self.schedule_to_tou_mapping()
-            round_trip_ok = self._tou_mappings_match(confirmed_mapping, round_trip)
-            if not round_trip_ok:
-                # A manual 24 h mapping is authoritative and may use arbitrary
-                # minute boundaries that the Schedule slots cannot express.
-                # Keep the confirmed physical map and avoid rolling back a
-                # verified inverter write.
+            async with self._operation_lock:
                 self._manual_tou_mapping = confirmed_mapping
-                self.reverse_sync_changed_hours = changed_hours
-                self.reverse_sync_round_trip_ok = True
-                self.reverse_sync_status = "confirmed_manual"
-                self.reverse_sync_last_error = ""
-                self.tou_contract_status = "confirmed"
-                self.tou_operation_status = "success"
-                return
-
-            self._manual_tou_mapping = None
-            self.reverse_sync_changed_hours = changed_hours
-            self.reverse_sync_round_trip_ok = True
-            self.reverse_sync_status = "confirmed"
-            self.reverse_sync_last_error = ""
-            self.tou_contract_status = "confirmed"
-            self.tou_operation_status = "success"
-        except (Exception, asyncio.CancelledError) as err:
-            self.slots = {key: replace(slot) for key, slot in schedule_snapshot.items()}
-            self.reverse_sync_status = "rollback"
-            self.reverse_sync_round_trip_ok = False
-            rollback_snapshot = {
-                item["entity_id"]: physical_snapshot[item["entity_id"]]
-                for item in items
-                if item.get("written") and item.get("entity_id") in physical_snapshot
-            }
-            try:
-                with self._control_rollback_scope(transaction_id, rollback_snapshot):
-                    rollback_ok, rollback_errors = await self._async_rollback_tou_transaction(
-                        items, physical_snapshot
-                    )
-            except Exception as rollback_err:
-                rollback_ok = False
-                rollback_errors = [str(rollback_err)]
-
-            base_error = str(err) or err.__class__.__name__
-            if rollback_ok:
-                message = (
-                    f"Deye Time Of Use reverse sync error: {base_error}. "
-                    "The schedule and previous physical settings were restored."
-                )
-                self.reverse_sync_status = "rollback"
-                self.tou_contract_status = "rollback"
-                self.tou_operation_status = "error"
-            else:
-                message = (
-                    f"CRITICAL Deye Time Of Use reverse sync error: {base_error}. "
-                    "Full restore of the physical settings was not confirmed: "
-                    + ", ".join(rollback_errors)
-                )
-                self.reverse_sync_status = "rollback_failed"
-                self.tou_contract_status = "rollback_failed"
-                self.tou_operation_status = "critical"
-            self.reverse_sync_last_error = message
-            self.tou_last_error = message
-            self.last_error = message
-            self.tou_transaction_log = list(items)
+                self._last_tou_signature = self._tou_signature(self._expected_tou_readback_rows(confirmed_mapping))
+                self._refresh_tou_reconciliation_state(confirmed_mapping)
+                self.reverse_sync_status = "confirmed"
+                self.reverse_sync_round_trip_ok = self.tou_reconciliation_in_sync
+                self.tou_contract_status = "confirmed" if self.tou_reconciliation_in_sync else "error"
+                self.tou_operation_status = "success" if self.tou_reconciliation_in_sync else "error"
+                if not self.tou_reconciliation_in_sync:
+                    self.reverse_sync_status = "round_trip_mismatch"
+                    self.reverse_sync_last_error = self.tou_last_reconciliation_error or "Physical TOU readback mismatch"
+            self.request_ai_save()
             self.notify_update()
-            if isinstance(err, asyncio.CancelledError):
-                raise
-            if isinstance(err, ControlDisabledError):
-                raise ControlDisabledError(message) from err
-            raise ValueError(message) from err
+        except Exception as err:
+            self.reverse_sync_status = "readback_error"
+            self.reverse_sync_round_trip_ok = False
+            self.reverse_sync_last_error = f"{type(err).__name__}: {err}"
+            self.tou_contract_status = "error"
+            self.tou_last_error = self.reverse_sync_last_error
+            self.notify_update()
+            raise
 
     async def async_set_physical_tou_slot(
         self,
@@ -8019,9 +7647,6 @@ class DeyeEnergyRuntime:
         try:
             async with self._operation_lock:
                 async with self._control_operation("manual_tou") as transaction_id:
-                    schedule_snapshot = {
-                        key: replace(value) for key, value in self.slots.items()
-                    }
                     start_entity = self._tou_entity(slot, "start")
                     end_entity = self._tou_entity(next_slot, "start")
                     soc_entity = self._tou_entity(slot, "soc")
@@ -8101,21 +7726,16 @@ class DeyeEnergyRuntime:
                         self.notify_update()
                         raise ValueError(message)
 
-                    await self._async_reverse_sync_after_manual_tou_locked(
-                        transaction_id,
-                        items,
-                        snapshot,
-                        schedule_snapshot,
-                    )
-                    # Reverse sync adopts only a Manager-owned, confirmed manual
-                    # edit.  Refresh the physical signature from readback so the
-                    # next tick sees agreement and cannot create a write loop.
+                    # Manual physical TOU edits become the authoritative TOU baseline.
                     try:
                         self._manual_tou_mapping = self.read_physical_tou_mapping()
                     except Exception:
-                        pass
+                        self._manual_tou_mapping = None
                     self._last_tou_signature = ""
                     self._refresh_tou_reconciliation_state()
+                    if self._control_result_is_current(transaction_id):
+                        self.tou_operation_status = "success"
+                        self.tou_contract_status = "confirmed"
                     self.last_error = ""
                     self.last_action = f"Deye Time Of Use written manually — slot {slot}"
                     self.mark_config_saved()
@@ -8123,23 +7743,6 @@ class DeyeEnergyRuntime:
             self._release_tou_write(reservation)
 
 
-    async def async_apply_slot_grid_charge(self, slot_key: str) -> bool:
-        """Apply the schedule after a physical TOU Grid Charge change for one hour."""
-        if slot_key not in self.slots:
-            raise ValueError(f"Unknown schedule slot: {slot_key}")
-        self._last_tou_signature = ""
-        self._clear_slot_failure_latch()
-        self.mark_config_saved()
-        self.notify_update()
-        if not self._control_is_active():
-            self.last_action = (
-                "Changes were saved in the schedule. Deye control is disabled — "
-                "they were not sent to the inverter."
-            )
-            self.executed_manager_action = "Not performed — control disabled"
-            self.notify_update()
-            return True
-        return bool(await self.async_tick())
 
     # ------------------------------------------------------------------
     # Manual schedule (UI/service-only, separate from Schedule slots)
@@ -8236,8 +7839,9 @@ class DeyeEnergyRuntime:
             "minimum_sell_soc": self.safe_float(raw.get("minimum_sell_soc", defaults["minimum_sell_soc"]), 0),
             "battery_charge_enabled": bool(raw.get("battery_charge_enabled", defaults["battery_charge_enabled"])),
         }
-        if row["mode"] not in SLOT_MODES:
+        if row["mode"] not in ACCEPTED_MANAGER_MODES:
             raise ValueError(f"Unsupported manual schedule mode in row {index + 1}: {row['mode']}")
+        row["mode"] = normalize_manager_mode(row["mode"])
         numeric_limits = {
             "sell_power": (0.0, float(self.effective_inverter_max_power_w)),
             "minimum_sell_soc": (0.0, 100.0),
@@ -8742,76 +8346,6 @@ class DeyeEnergyRuntime:
             "scheduler_enabled": bool(self.scheduler_enabled),
         }
 
-    def _manual_row_for_slot_start(self, rows: list[dict[str, Any]], slot_start_minute: int) -> dict[str, Any]:
-        minute = int(slot_start_minute) % (24 * 60)
-        for index, row in enumerate(rows):
-            start = self._manual_time_to_minutes(row["from"], f"Row {index + 1} start time")
-            end = self._manual_time_to_minutes(row["to"], f"Row {index + 1} end time")
-            end_cmp = 24 * 60 if index == len(rows) - 1 and end == 0 else end
-            if start <= minute < end_cmp:
-                return row
-        raise ValueError(f"Manual schedule does not cover slot starting at {self._minutes_to_hhmm(minute)}")
-
-    def _manual_schedule_to_slot_updates(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        updates: list[dict[str, Any]] = []
-        for slot_key, _label, start, _end in SLOTS:
-            row = self._manual_row_for_slot_start(rows, int(start))
-            # Only the fields still present on a manual row are written.  The
-            # physical Deye mode, discharge/charge currents and sell-from price
-            # stay at their values from the Schedule slots.
-            update = {
-                "slot_key": slot_key,
-                "enabled": bool(row.get("enabled", True)),
-                "mode": str(row.get("mode", MODE_NORMAL_OPERATION)),
-                "sell_power": float(row.get("sell_power", 0)),
-                "charge_enabled": bool(row.get("charge_enabled", False)),
-                "minimum_sell_soc": float(row.get("minimum_sell_soc", 0)),
-            }
-            updates.append(update)
-        return updates
-
-    def _manual_schedule_effective_rows(
-        self, rows: list[dict[str, Any]]
-    ) -> dict[str, dict[str, Any]]:
-        """Build the per-slot manual overlay without touching the work slots."""
-        return {
-            str(update["slot_key"]): {
-                field: value for field, value in update.items() if field != "slot_key"
-            }
-            for update in self._manual_schedule_to_slot_updates(rows)
-        }
-
-    def _rebuild_manual_effective_rows(
-        self, rows: list[dict[str, Any]] | None = None
-    ) -> dict[str, dict[str, Any]]:
-        """Validate manual rows and refresh the cached scheduler overlay."""
-        source = rows if rows is not None else self._ensure_manual_schedule().get("rows", [])
-        validated = self._validate_manual_schedule_rows(source)
-        self._manual_effective_rows = self._manual_schedule_effective_rows(validated)
-        return self._manual_effective_rows
-
-    def _effective_slots_for_rows(
-        self, rows: list[dict[str, Any]]
-    ) -> dict[str, SlotSettings]:
-        """Build effective slots for a candidate row set (TOU preflight)."""
-        overlay = self._manual_schedule_effective_rows(
-            self._validate_manual_schedule_rows(rows)
-        )
-        return {
-            key: replace(self.slots[key], **fields)
-            for key, fields in overlay.items()
-        }
-
-    def _validate_manual_tou_range_count(
-        self, rows: list[dict[str, Any]]
-    ) -> None:
-        """Reject manual rows that cannot fit the inverter's six TOU ranges."""
-        mapping = self.schedule_to_tou_mapping(self._effective_slots_for_rows(rows))
-        if len(mapping) > 6:
-            raise ValueError(
-                f"Manual schedule requires {len(mapping)} Deye Time Of Use ranges; "
-                "Deye supports at most 6"
-            )
 
     def _request_manual_schedule_reconciliation(self) -> None:
         """Apply the newly selected trigger source immediately when possible."""
@@ -8941,17 +8475,11 @@ class DeyeEnergyRuntime:
         manual["rows"] = validated_rows
         try:
             if manual.get("active"):
-                self._validate_manual_tou_range_count(validated_rows)
-                self._rebuild_manual_effective_rows(validated_rows)
                 self.scheduler_enabled = True
                 self._request_manual_schedule_reconciliation()
                 await self._async_enforce_manual_schedule_battery_charge()
         except Exception:
             manual["rows"] = previous_rows
-            try:
-                self._rebuild_manual_effective_rows(previous_rows)
-            except Exception:
-                self._manual_effective_rows = {}
             self.mark_config_saved()
             await self.async_save_ai_data()
             self.notify_update()
@@ -8968,17 +8496,11 @@ class DeyeEnergyRuntime:
         manual["rows"] = validated_rows
         try:
             if manual.get("active"):
-                self._validate_manual_tou_range_count(validated_rows)
-                self._rebuild_manual_effective_rows(validated_rows)
                 self.scheduler_enabled = True
                 self._request_manual_schedule_reconciliation()
                 await self._async_enforce_manual_schedule_battery_charge()
         except Exception:
             manual["rows"] = previous_rows
-            try:
-                self._rebuild_manual_effective_rows(previous_rows)
-            except Exception:
-                self._manual_effective_rows = {}
             self.mark_config_saved()
             await self.async_save_ai_data()
             self.notify_update()
@@ -8991,16 +8513,13 @@ class DeyeEnergyRuntime:
     async def async_activate_manual_schedule(self) -> dict[str, Any]:
         manual = self._ensure_manual_schedule()
         rows = self._validate_manual_schedule_rows(manual.get("rows", []))
-        self._validate_manual_tou_range_count(rows)
         previous_active = bool(manual.get("active"))
         previous_snapshot = deepcopy(manual.get("activation_snapshot"))
-        previous_overlay = deepcopy(self._manual_effective_rows)
         previous_scheduler = self.scheduler_enabled
         try:
             if not previous_active:
                 manual["activation_snapshot"] = self._manual_schedule_activation_snapshot()
             manual["active"] = True
-            self._rebuild_manual_effective_rows(rows)
             self.scheduler_enabled = True
             self.mark_config_saved()
             await self.async_save_ai_data()
@@ -9009,7 +8528,6 @@ class DeyeEnergyRuntime:
         except Exception:
             manual["active"] = previous_active
             manual["activation_snapshot"] = previous_snapshot
-            self._manual_effective_rows = previous_overlay
             self.scheduler_enabled = previous_scheduler
             self.mark_config_saved()
             await self.async_save_ai_data()
@@ -9023,7 +8541,6 @@ class DeyeEnergyRuntime:
         if not manual.get("active"):
             manual["active"] = False
             manual["activation_snapshot"] = None
-            self._manual_effective_rows = {}
             self.scheduler_enabled = True
             self.mark_config_saved()
             await self.async_save_ai_data()
@@ -9032,7 +8549,6 @@ class DeyeEnergyRuntime:
             return self.manual_schedule_state()
         manual["active"] = False
         manual["activation_snapshot"] = None
-        self._manual_effective_rows = {}
         self.scheduler_enabled = True
         self.mark_config_saved()
         await self.async_save_ai_data()
@@ -9040,162 +8556,7 @@ class DeyeEnergyRuntime:
         self.notify_update()
         return self.manual_schedule_state()
 
-    def _ensure_manual_schedule_allows_apply(self) -> None:
-        if self.manual_schedule_active:
-            raise ValueError(
-                "Manual schedule is active. Deactivate it before editing schedule slots."
-            )
 
-
-    async def async_apply_schedule_patch(
-        self,
-        updates: list[dict[str, Any]],
-    ) -> None:
-        """Validate and save a list-based logical slot patch, then reconcile."""
-        if not isinstance(updates, list) or not updates:
-            raise ValueError("Schedule patch must contain at least one slot")
-        updates = self._expand_slot_updates(updates)
-
-        numeric_limits = {
-            "sell_power": (0.0, float(self.effective_inverter_max_power_w)),
-            "minimum_sell_soc": (0.0, 100.0),
-            "tou_soc": (0.0, 100.0),
-            "min_sell_price": (0.0, 5.0),
-        }
-        allowed_fields = {
-            "enabled",
-            "mode",
-            "physical_work_mode",
-            "charge_enabled",
-            "force_copy_normal_profile",
-            "force_copy_charge_profile",
-            *numeric_limits,
-        }
-
-        async with self._operation_lock:
-            self._ensure_manual_schedule_allows_apply()
-            previous_schedule_revision = self.schedule_revision
-            previous_slot_revisions = deepcopy(self.schedule_slot_revisions)
-            previous_slot_ownership = deepcopy(self.schedule_slot_ownership)
-            changed_keys = [
-                str(update.get("slot_key") or "")
-                for update in updates
-                if isinstance(update, dict)
-            ]
-            previous_slots = {key: replace(slot) for key, slot in self.slots.items()}
-            previous_scheduler = self.scheduler_enabled
-            try:
-                for update in updates:
-                    update = dict(update) if isinstance(update, dict) else update
-                    if not isinstance(update, dict):
-                        raise ValueError("Each schedule update must be an object")
-                    slot_key = str(update.get("slot_key") or "")
-                    if slot_key not in self.slots:
-                        raise ValueError(f"Unknown schedule slot: {slot_key}")
-                    if "min_soc" in update:
-                        update.setdefault("minimum_sell_soc", update.pop("min_soc"))
-                    unknown = set(update) - allowed_fields - {"slot_key"}
-                    if unknown:
-                        raise ValueError(f"Unsupported schedule fields: {', '.join(sorted(unknown))}")
-                    slot = self.slots[slot_key]
-                    if "enabled" in update:
-                        slot.enabled = bool(update["enabled"])
-                    previous_mode = slot.mode
-                    force_copy = bool(update.get("force_copy_normal_profile"))
-                    force_copy_charge = bool(update.get("force_copy_charge_profile"))
-                    if "mode" in update:
-                        mode = str(update["mode"])
-                        if mode not in SLOT_MODES:
-                            raise ValueError(f"Unsupported slot mode: {mode}")
-                        slot.mode = mode
-                        if mode == MODE_NORMAL_OPERATION and (previous_mode != MODE_NORMAL_OPERATION or force_copy):
-                            slot.enabled = True
-                            if self.normal_profile_physical_work_mode in PHYSICAL_NORMAL_MODES:
-                                slot.physical_work_mode = self.normal_profile_physical_work_mode
-                            if self.normal_profile_sell_power >= 0:
-                                slot.sell_power = self.normal_profile_sell_power
-                            if self.normal_profile_tou_soc is not None and self.normal_profile_tou_soc >= 0:
-                                slot.tou_soc = self.normal_profile_tou_soc
-                        elif mode == MODE_CHARGE:
-                            slot.enabled = True
-                            if previous_mode != MODE_CHARGE or force_copy_charge:
-                                slot.tou_soc = self.charge_profile_target_soc
-                                slot.charge_enabled = self.charge_profile_grid_enabled
-                        elif previous_mode == MODE_NORMAL_OPERATION:
-                            slot.physical_work_mode = None
-                    if "physical_work_mode" in update:
-                        physical_mode = str(update["physical_work_mode"] or "")
-                        if slot.mode != MODE_NORMAL_OPERATION:
-                            raise ValueError(
-                                "physical_work_mode is only allowed for Normal Operation"
-                            )
-                        if physical_mode not in PHYSICAL_NORMAL_MODES:
-                            raise ValueError(
-                                f"Unsupported physical work mode: {physical_mode}"
-                            )
-                        slot.physical_work_mode = physical_mode
-                    if "charge_enabled" in update:
-                        slot.charge_enabled = bool(update["charge_enabled"])
-                    for field_name, (minimum, maximum) in numeric_limits.items():
-                        if field_name not in update:
-                            continue
-                        value = float(update[field_name])
-                        if not math.isfinite(value) or not minimum <= value <= maximum:
-                            raise ValueError(
-                                f"{field_name} for {slot_key} must be between {minimum:g} and {maximum:g}"
-                            )
-                        if field_name == "sell_power":
-                            self.validate_manual_sell_power_w(
-                                f"sell_power for {slot_key}", value
-                            )
-                        setattr(slot, field_name, value)
-
-                if any(slot.enabled for slot in self.slots.values()):
-                    self.scheduler_enabled = True
-                logical_changed = (
-                    self.scheduler_enabled != previous_scheduler
-                    or any(
-                        self.slots[key] != previous_slots[key] for key in self.slots
-                    )
-                )
-                if not logical_changed:
-                    self._claim_schedule_slots(changed_keys, "manual")
-                    self.last_action = "The schedule already matches — nothing to save"
-                    self.mark_config_saved()
-                    self.notify_update()
-                    return
-                self._clear_pending_control_transaction()
-                self._last_slot_failure_signature = ""
-                if self.mapping_error:
-                    raise ValueError(
-                        f"Mapping requires {len(self._tou_mapping)} ranges; "
-                        "Deye supports at most 6"
-                    )
-                self._claim_schedule_slots(changed_keys, "manual")
-                self.mark_config_saved()
-                if self._control_is_active() and not self.emergency_stop:
-                    self._schedule_schedule_reconciliation()
-                else:
-                    self._schedule_reconcile_requested = False
-                    blocked_reason = (
-                        "an emergency stop is active"
-                        if self.emergency_stop
-                        else "Deye control is disabled"
-                    )
-                    self.last_action = (
-                        f"Changes saved in the Schedule. {blocked_reason} — "
-                        "they were not sent to the inverter."
-                    )
-                    self.executed_manager_action = f"Not performed — {blocked_reason.lower()}"
-                    self.notify_update()
-            except Exception:
-                self.slots = previous_slots
-                self.scheduler_enabled = previous_scheduler
-                self.schedule_revision = previous_schedule_revision
-                self.schedule_slot_revisions = previous_slot_revisions
-                self.schedule_slot_ownership = previous_slot_ownership
-                self.notify_update()
-                raise
 
     def _schedule_schedule_reconciliation(self) -> None:
         """Coalesce schedule edits and apply their physical effects asynchronously."""
@@ -9525,45 +8886,37 @@ class DeyeEnergyRuntime:
                     self.executed_manager_action = "Performed: direct settings"
 
     def _slot_failure_fingerprint(self, reason: str) -> str:
-        """Return a stable signature of an active-slot fault.
-
-        This prevents the minute timer from restoring the same defaults over
-        and over.  It changes when the slot, schedule, relevant source state
-        or TOU mapping availability changes.
-        """
-        slot = self.active_slot
+        """Return a stable signature of an active-decision fault."""
+        decision = self.active_decision
         control_entities = [
             self.work_mode_select,
             self.max_sell_power_number,
             *self.tou_mapping_errors(),
         ]
-        # Control values are deliberately represented only by availability:
-        # applying defaults changes their values and must not defeat the
-        # failure latch on the next minute tick.
         availability = [
             f"{entity_id}:{self.entity_available(entity_id)}" for entity_id in control_entities if entity_id
         ]
         sensor_states = [
             f"{entity_id}:{self.state_text(entity_id)}"
             for entity_id in (
-                self.battery_soc_sensor if slot.mode == MODE_SELLING_FIRST else None,
-                self.price_sensor if slot.mode == MODE_SELLING_FIRST and slot.min_sell_price > 0 else None,
+                self.battery_soc_sensor if decision.mode == MODE_SELLING_FIRST else None,
+                self.price_sensor if decision.mode == MODE_SELLING_FIRST and decision.min_sell_price > 0 else None,
             )
             if entity_id
         ]
         soc_quality = (
             str(self.soc_diagnostics().get("status") or "unknown")
-            if slot.mode == MODE_SELLING_FIRST
+            if decision.mode == MODE_SELLING_FIRST
             else "not_required"
         )
-        slot_data = (
-            slot.key, slot.enabled, slot.mode, slot.sell_power,
-            slot.minimum_sell_soc, slot.tou_soc, slot.min_sell_price,
-            slot.charge_enabled,
+        decision_data = (
+            decision.key, decision.enabled, decision.mode, decision.sell_power,
+            self.min_sell_soc, decision.tou_soc, decision.min_sell_price,
+            decision.charge_enabled,
         )
         return repr((
             self.control_mode,
-            slot_data,
+            decision_data,
             tuple(availability),
             tuple(sensor_states),
             soc_quality,
@@ -9618,7 +8971,7 @@ class DeyeEnergyRuntime:
             )
         if (
             self.control_mode == "Schedule"
-            and self.active_slot.enabled
+            and self.active_decision.enabled
             and self._last_slot_failure_signature
             and self._last_slot_failure_signature == self._slot_failure_fingerprint("")
         ):
@@ -9629,8 +8982,8 @@ class DeyeEnergyRuntime:
             return False
         sell_requested = self.control_mode == "Manual Sell" or (
             self.control_mode == "Schedule"
-            and self.active_slot.enabled
-            and self.active_slot.mode == MODE_SELLING_FIRST
+            and self.active_decision.enabled
+            and self.active_decision.mode == MODE_SELLING_FIRST
         )
         sell_block_reason = ""
         if sell_requested:
@@ -9680,16 +9033,9 @@ class DeyeEnergyRuntime:
         self.record_schedule_attempt("pending", stage, expected, cap_message)
         try:
             self._validate_control_plan(target_mode, applied_sell_power)
-            stage = "Deye Time Of Use mapping"
-            if self.control_mode == "Schedule" and not await self.async_apply_time_of_use_map():
-                if not self._control_is_active():
-                    raise ControlDisabledError(self._control_block_message())
-                message = f"Control transaction failed ({stage}): {self.last_error}"
-                self.record_schedule_attempt("failed", stage, expected, message)
-                self.last_action = "Deye Time Of Use mapping was not applied"
-                self.last_error = message
-                self.notify_update()
-                return False
+            # Manual Schedule controls inverter by active decision/work mode/power.
+            # Physical TOU baseline is edited directly and must not be auto-written
+            # by schedule triggers.
             stage = "numeric values"
             applied_sell_power_native = await self.async_set_max_sell_power_number_if_needed(target_sell_power)
             expected["Max Sell Power"] = applied_sell_power_native
@@ -9719,7 +9065,7 @@ class DeyeEnergyRuntime:
                 self.last_error = message
                 self.notify_update()
                 return False
-            if self.control_mode == "Schedule" and self.active_slot.enabled:
+            if self.control_mode == "Schedule" and self.active_decision.enabled:
                 return await self._async_handle_slot_failure(message, stage, expected)
             self.record_schedule_attempt("failed", stage, expected, message)
             await self.async_apply_safe_defaults(message)
@@ -10025,8 +9371,6 @@ class DeyeEnergyRuntime:
 
         self._refresh_tou_reconciliation_state()
         self.planned_manager_action = self._planned_manager_action_text()
-        if self.manual_schedule_active and not self.emergency_stop:
-            await self._async_enforce_manual_schedule_battery_charge()
         if not self._control_is_active():
             self.executed_manager_action = (
                 "Not performed — emergency stop"
@@ -10035,6 +9379,8 @@ class DeyeEnergyRuntime:
             )
             self.notify_update()
             return True
+        if self.manual_schedule_active and not self.emergency_stop:
+            await self._async_enforce_manual_schedule_battery_charge()
 
         profile = provider_profile(self.data)
         if not profile.basic_control:
@@ -10067,8 +9413,8 @@ class DeyeEnergyRuntime:
                 result = await self.async_apply_safe_defaults(
                     "Selling stopped" if self.control_mode == "Stop Sell" else "Battery protection active"
                 )
-            elif self.scheduler_enabled:
-                if self.active_slot.enabled:
+            elif self.manual_schedule_active and self.scheduler_enabled:
+                if self.active_decision.enabled:
                     result = await self.async_apply_targets()
                 else:
                     await self.async_apply_default_values("Default settings")
@@ -10093,7 +9439,6 @@ class DeyeEnergyRuntime:
                 self._inverter_datetime_last_error = (
                     f"Inverter datetime sync failed ({type(err).__name__}): {err}"
                 )
-            self._migrate_selling_tou_soc()
             try:
                 await self._async_tick_impl(*_args)
             except ControlDisabledError as err:
@@ -10186,9 +9531,16 @@ class DeyeEnergyRuntime:
                 self.soc_diagnostics()
             )
             self._start_schedule_input_listener()
-            self.unsub_timer = async_track_time_interval(
-                self.hass, self.async_tick, timedelta(minutes=1)
-            )
+            # Align control ticks to minute boundaries so Manual/TOU decisions
+            # switch exactly when their configured minute starts.
+            if async_track_time_change is not None:
+                self.unsub_timer = async_track_time_change(
+                    self.hass, self.async_tick, second=0
+                )
+            else:
+                self.unsub_timer = async_track_time_interval(
+                    self.hass, self.async_tick, timedelta(minutes=1)
+                )
             if self._tariff_catalog_manager.refresh_due():
                 self._tariff_refresh_task = self.hass.async_create_task(
                     self.async_refresh_tariff_catalog()
@@ -10247,9 +9599,6 @@ class DeyeEnergyRuntime:
         if self.unsub_input_listener:
             self.unsub_input_listener()
             self.unsub_input_listener = None
-        if self.unsub_input_debounce:
-            self.unsub_input_debounce()
-            self.unsub_input_debounce = None
         if self.unsub_timer:
             self.unsub_timer()
             self.unsub_timer = None
@@ -10276,30 +9625,6 @@ class DeyeEnergyRuntime:
             self.control_mode = mode
             self.notify_update()
 
-    def set_work_mode_for_slot(self, slot_key: str, mode: str) -> None:
-        if mode in SLOT_MODES:
-            slot = self.slots[slot_key]
-            previous_mode = slot.mode
-            slot.mode = mode
-            if mode == MODE_NORMAL_OPERATION and previous_mode != MODE_NORMAL_OPERATION:
-                slot.enabled = True
-                self.scheduler_enabled = True
-                if self.normal_profile_physical_work_mode in PHYSICAL_NORMAL_MODES:
-                    slot.physical_work_mode = self.normal_profile_physical_work_mode
-                if math.isfinite(self.normal_profile_sell_power) and 0 <= self.normal_profile_sell_power <= self.effective_inverter_max_power_w:
-                    slot.sell_power = self.normal_profile_sell_power
-                if self.normal_profile_tou_soc is not None and math.isfinite(self.normal_profile_tou_soc) and 0 <= self.normal_profile_tou_soc <= 100:
-                    slot.tou_soc = self.normal_profile_tou_soc
-            elif mode == MODE_CHARGE:
-                slot.enabled = True
-                self.scheduler_enabled = True
-                if previous_mode != MODE_CHARGE:
-                    slot.tou_soc = self.charge_profile_target_soc
-                    slot.charge_enabled = self.charge_profile_grid_enabled
-            elif previous_mode == MODE_NORMAL_OPERATION:
-                slot.physical_work_mode = None
-            self._clear_slot_failure_latch()
-            self.notify_update()
 
     def set_default_work_mode(self, mode: str) -> None:
         normalized = normalize_manager_mode(mode)

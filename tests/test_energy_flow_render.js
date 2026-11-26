@@ -96,7 +96,6 @@ function makeHass(managerStatus = "present", scheduleSource = null) {
     "sensor.deye_energy_load_power": makeState("2800"),
     "sensor.deye_energy_battery_power": makeState("1050"),
     "sensor.deye_energy_battery_soc": makeState("67"),
-    "sensor.deye_energy_active_slot": makeState("2130_2200"),
     "sensor.deye_energy_decision_reason": makeState("Plan testowy"),
   };
 
@@ -151,8 +150,6 @@ function readDynamic(card) {
 function test_dynamic_status_values_render_without_reference_error() {
   const text = readDynamic(makeCard());
   assert.strictEqual(text["[data-live='decision-reason']"], "Plan testowy");
-  assert.strictEqual(text["[data-live='manager-schedule-source']"], "Schedule slots");
-  assert.strictEqual(text["[data-live='active-slot']"], "21:30-22:00");
   assert.strictEqual(text["[data-live='manager-mode']"], "Aktywny");
   for (const removed of [
     /energyFlowPanel\(\)/,
@@ -187,7 +184,6 @@ function test_card_render_survives_missing_manager_status_entity() {
   assert.match(card.innerHTML, /class="dem-v073"/);
   const text = readDynamic(card);
   assert.strictEqual(text["[data-live='manager-mode']"], "No data");
-  assert.strictEqual(text["[data-live='manager-schedule-source']"], "Schedule slots");
 }
 
 function test_card_render_survives_unavailable_manager_status_entity() {
@@ -197,38 +193,6 @@ function test_card_render_survives_unavailable_manager_status_entity() {
   assert.match(card.innerHTML, /class="dem-v073"/);
   const text = readDynamic(card);
   assert.strictEqual(text["[data-live='manager-mode']"], "unavailable");
-}
-
-function test_dynamic_schedule_source_captions_are_live() {
-  const manual = readDynamic(makeCard("present", "manual"));
-  assert.strictEqual(
-    manual["[data-live='executed-schedule-source']"],
-    "Manual schedule",
-  );
-  assert.strictEqual(
-    manual["[data-live='manager-schedule-source']"],
-    "Manual schedule",
-  );
-
-  const slots = readDynamic(makeCard("present", "work"));
-  assert.strictEqual(
-    slots["[data-live='executed-schedule-source']"],
-    "Schedule slots",
-  );
-  assert.strictEqual(
-    slots["[data-live='manager-schedule-source']"],
-    "Schedule slots",
-  );
-
-  const missing = readDynamic(makeCard());
-  assert.strictEqual(
-    missing["[data-live='executed-schedule-source']"],
-    "Schedule slots",
-  );
-  assert.strictEqual(
-    missing["[data-live='manager-schedule-source']"],
-    "Schedule slots",
-  );
 }
 
 function test_removed_energy_status_tile_markers_are_absent() {
@@ -247,7 +211,7 @@ function setManualRows(card, rows) {
   });
 }
 
-function test_active_slot_time_label_uses_manual_row_when_manual_active() {
+function test_active_time_label_uses_manual_row_when_manual_active() {
   const card = makeCard("present", "manual");
   setManualRows(card, [
     { from: "00:00", to: "12:00" },
@@ -263,7 +227,7 @@ function test_active_slot_time_label_uses_manual_row_when_manual_active() {
   );
 }
 
-function test_active_slot_time_label_uses_work_slot_when_work_active() {
+function test_active_time_label_uses_tou_when_manual_inactive() {
   const card = makeCard("present", "work");
   setManualRows(card, [{ from: "00:00", to: "00:00" }]);
   assert.strictEqual(
@@ -272,7 +236,7 @@ function test_active_slot_time_label_uses_work_slot_when_work_active() {
   );
 }
 
-function test_active_slot_time_label_falls_back_without_manual_rows() {
+function test_active_time_label_falls_back_without_manual_rows() {
   const card = makeCard("present", "manual");
   assert.strictEqual(
     card.activeSlotTimeLabel(new Date("2026-11-19T21:45:00Z")),
@@ -280,7 +244,7 @@ function test_active_slot_time_label_falls_back_without_manual_rows() {
   );
 }
 
-function test_dynamic_active_slot_uses_manual_row_range() {
+function test_dynamic_active_time_uses_manual_row_range() {
   const card = makeCard("present", "manual");
   setManualRows(card, [
     { from: "00:00", to: "12:00" },
@@ -294,7 +258,7 @@ function test_dynamic_active_slot_uses_manual_row_range() {
   assert.notStrictEqual(label, "21:30-22:00");
 }
 
-function test_dynamic_active_slot_uses_work_slot_when_work_active() {
+function test_dynamic_active_time_uses_tou_when_manual_inactive() {
   const card = makeCard("present", "work");
   setManualRows(card, [{ from: "00:00", to: "00:00" }]);
   assert.strictEqual(
@@ -317,12 +281,6 @@ test_dynamic_status_values_render_without_reference_error();
 test_card_full_render_with_manager_status_control_contract();
 test_card_render_survives_missing_manager_status_entity();
 test_card_render_survives_unavailable_manager_status_entity();
-test_dynamic_schedule_source_captions_are_live();
 test_removed_energy_status_tile_markers_are_absent();
-test_active_slot_time_label_uses_manual_row_when_manual_active();
-test_active_slot_time_label_uses_work_slot_when_work_active();
-test_active_slot_time_label_falls_back_without_manual_rows();
-test_dynamic_active_slot_uses_manual_row_range();
-test_dynamic_active_slot_uses_work_slot_when_work_active();
 test_energy_status_power_switches_to_kw_at_10000_watts();
 console.log("energy flow render tests passed");

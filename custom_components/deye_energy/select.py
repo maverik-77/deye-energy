@@ -6,7 +6,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import ACCEPTED_SLOT_MODES, CONTROL_MODES, DOMAIN, normalize_manager_mode, PHYSICAL_NORMAL_MODES, SLOTS, SLOT_MODES, WORK_MODES
+from .const import CONTROL_MODES, DOMAIN, normalize_manager_mode, PHYSICAL_NORMAL_MODES, WORK_MODES
 from .entity import DeyeEnergyEntity
 from .inverter_provider import (
     normal_profile_mode_label_to_key,
@@ -104,34 +104,6 @@ class DeyeNormalProfileModeSelect(DeyeEnergyEntity, SelectEntity, RestoreEntity)
         self.runtime.mark_config_saved()
 
 
-class DeyeSlotModeSelect(DeyeEnergyEntity, SelectEntity, RestoreEntity):
-    def __init__(self, runtime, slot_key, label):
-        super().__init__(runtime, f"slot_{slot_key}_mode", f"Mode {label}")
-        self.slot_key = slot_key
-
-    @property
-    def options(self):
-        return SLOT_MODES
-
-    @property
-    def current_option(self):
-        return self.runtime.slots[self.slot_key].mode
-
-    async def async_added_to_hass(self):
-        if (last_state := await self.async_get_last_state()) is not None:
-            normalized = normalize_manager_mode(last_state.state)
-            if normalized in ACCEPTED_SLOT_MODES:
-                await self.runtime.async_restore_slot_mode(
-                    self.slot_key,
-                    normalized,
-                )
-
-    async def async_select_option(self, option: str):
-        self.runtime.set_work_mode_for_slot(self.slot_key, option)
-        self.runtime.mark_config_saved()
-        await self.runtime.async_tick()
-
-
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback):
     runtime = hass.data[DOMAIN][entry.entry_id]
     entities = [
@@ -139,5 +111,4 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         DeyeDefaultWorkModeSelect(runtime),
         DeyeNormalProfileModeSelect(runtime),
     ]
-    entities.extend(DeyeSlotModeSelect(runtime, key, label) for key, label, *_ in SLOTS)
     async_add_entities(entities)

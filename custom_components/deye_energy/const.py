@@ -208,10 +208,9 @@ MODE_NORMAL_OPERATION = "Normal Operation"
 # Canonical logical modes exposed by Deye Energy to the user.
 MANAGER_MODES = (MODE_NORMAL_OPERATION, MODE_CHARGE, MODE_SELLING_FIRST)
 
-# Stable schedule schema.  Physical Deye work modes remain separate from the
-# logical Normal Operation mode and must never be written to the inverter as
-# the literal ``Normal Operation`` value.
-SCHEDULE_SCHEMA_VERSION = 1
+# Physical Deye work modes remain separate from the logical Normal Operation
+# mode and must never be written to the inverter as the literal
+# ``Normal Operation`` value.
 PHYSICAL_NORMAL_MODES = (MODE_ZERO_EXPORT, MODE_ZERO_EXPORT_CT)
 
 CONTROL_MODES = ["Schedule", "Manual Sell", "Stop Sell", "Protect Battery", "Charge Battery"]
@@ -221,10 +220,8 @@ CONTROL_MODES = ["Schedule", "Manual Sell", "Stop Sell", "Protect Battery", "Cha
 # global work mode select entity.
 WORK_MODES = [MODE_NORMAL_OPERATION, MODE_SELLING_FIRST]
 
-SLOT_MODES = list(MANAGER_MODES)
-
-# Legacy values accepted during restore and external service calls.  They are
-# normalised to the canonical manager mode values at runtime.
+# Legacy values accepted from stored manual rows and external service calls.
+# They are normalised to the canonical manager mode values at runtime.
 LEGACY_MANAGER_MODE_MAP: dict[str, str] = {
     "Selling First": MODE_SELLING_FIRST,
     "Sell": MODE_SELLING_FIRST,
@@ -238,6 +235,9 @@ LEGACY_MANAGER_MODE_MAP: dict[str, str] = {
     "Zero Export": MODE_NORMAL_OPERATION,
     "Essentials": MODE_NORMAL_OPERATION,
 }
+
+# Canonical and historical names accepted for manager row modes.
+ACCEPTED_MANAGER_MODES = [*MANAGER_MODES, *list(LEGACY_MANAGER_MODE_MAP.keys())]
 
 
 # Service schemas accept the canonical work-mode names and every historical
@@ -253,87 +253,4 @@ def normalize_manager_mode(value: str) -> str:
     return LEGACY_MANAGER_MODE_MAP.get(str(value).strip(), str(value).strip())
 
 
-ACCEPTED_SLOT_MODES = [*SLOT_MODES, *list(LEGACY_MANAGER_MODE_MAP.keys())]
-
-SLOT_MINUTES = 30
 MINUTES_PER_DAY = 1440
-SLOTS_PER_DAY = MINUTES_PER_DAY // SLOT_MINUTES
-
-
-def _clock_digits(minute: int) -> str:
-    hour, rest = divmod(minute % MINUTES_PER_DAY, 60)
-    return f"{hour:02d}{rest:02d}"
-
-
-def _clock_label(minute: int) -> str:
-    hour, rest = divmod(minute % MINUTES_PER_DAY, 60)
-    return f"{hour:02d}:{rest:02d}"
-
-
-# Schedule slots: (key, label, start_minute, end_minute).  The last slot ends at
-# 1440 (midnight).  Keys look like ``0530_0600``.
-SLOTS = [
-    (
-        f"{_clock_digits(start)}_{_clock_digits(start + SLOT_MINUTES)}",
-        f"{_clock_label(start)}-{_clock_label(start + SLOT_MINUTES)}",
-        start,
-        start + SLOT_MINUTES,
-    )
-    for start in range(0, MINUTES_PER_DAY, SLOT_MINUTES)
-]
-
-# Legacy hourly keys stay supported.  An hourly key such as ``05_06`` fans out
-# to the schedule slots it covers.
-HOUR_SLOTS = [
-    (f"{hour:02d}_{(hour + 1) % 24:02d}", f"{hour:02d}:00-{(hour + 1) % 24:02d}:00", hour, hour + 1)
-    for hour in range(24)
-]
-HOUR_SLOT_KEYS = [row[0] for row in HOUR_SLOTS]
-SLOT_KEYS = [row[0] for row in SLOTS]
-SLOT_INDEX = {key: index for index, key in enumerate(SLOT_KEYS)}
-_HOUR_KEY_TO_SLOTS = {
-    HOUR_SLOTS[hour][0]: [
-        SLOTS[hour * (60 // SLOT_MINUTES) + offset][0] for offset in range(60 // SLOT_MINUTES)
-    ]
-    for hour in range(24)
-}
-
-
-def slot_key_at_minute(minute_of_day: int) -> str:
-    """Return the schedule slot covering a minute of the day."""
-    return SLOTS[(int(minute_of_day) % MINUTES_PER_DAY) // SLOT_MINUTES][0]
-
-
-def hour_key(hour: int) -> str:
-    """Return the hourly plan key for a local hour."""
-    return HOUR_SLOTS[int(hour) % 24][0]
-
-
-def slots_for_key(key: str) -> list[str]:
-    """Resolve a schedule slot key or an hourly plan key to schedule slot keys."""
-    text = str(key or "")
-    if text in SLOT_INDEX:
-        return [text]
-    return list(_HOUR_KEY_TO_SLOTS.get(text, []))
-
-
-def hour_of_slot(key: str) -> int:
-    """Local start hour of a schedule slot or hourly plan key."""
-    text = str(key or "")
-    return int(text[:2]) if len(text) >= 2 and text[:2].isdigit() else 0
-
-
-def slot_start_minute(key: str) -> int:
-    """Start minute of the day for a schedule slot key (or an hourly plan key)."""
-    text = str(key or "")
-    if text in SLOT_INDEX:
-        return SLOTS[SLOT_INDEX[text]][2]
-    return hour_of_slot(text) * 60
-
-
-def slot_end_minute(key: str) -> int:
-    """End minute (exclusive) for a schedule slot key or an hourly plan key."""
-    text = str(key or "")
-    if text in SLOT_INDEX:
-        return SLOTS[SLOT_INDEX[text]][3]
-    return (hour_of_slot(text) + 1) * 60

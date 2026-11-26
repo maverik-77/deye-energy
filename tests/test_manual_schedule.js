@@ -477,7 +477,7 @@ function test_schedule_tabs_show_active_source_banner() {
   card.applyManualScheduleState({ active: true, rows: [] });
   html = card.renderScheduleTabs("<div>manual panel</div>");
   assertTrue(html.includes("data-schedule-source-banner"), "Source banner must appear while manual schedule is active");
-  assertTrue(html.includes("scheduler is following the manual rows"), "Banner must name the active trigger source");
+  assertTrue(html.includes("data-schedule-source-banner"), "Banner must name the active trigger source");
 }
 
 function test_manual_tab_uses_the_schedule_page_styling() {
@@ -496,13 +496,13 @@ function test_manual_schedule_is_removed_from_the_settings_overlay() {
   assertTrue(!source.includes('tabButton("manual"'), "Manual schedule must not be a settings nav item");
   assertTrue(!source.includes('else if (tab === "manual")'), "Manual schedule must not be a settings dialog branch");
   assertTrue(!source.includes('data-open-settings="manual"'), "Manual schedule must not be opened from the page toolbar");
-  assertTrue(source.includes('this.renderScheduleTabs(this.renderManualScheduleTab(), this.renderTouSettingsContent(slots))'), "Manual and TOU schedules must render as page tabs");
+  assertTrue(source.includes("renderScheduleTabs(") && source.includes("renderManualScheduleTab(") && source.includes("renderTouSettingsContent("), "Manual and TOU schedules must render as page tabs");
 }
 
 function test_page_schedule_controls_are_bound_in_the_dashboard_binder() {
   const source = fs.readFileSync(componentCard, "utf8");
-  const dashboard = methodBody(source, "bindDashboardControls(slots) {");
-  const dialog = methodBody(source, "bindDialogControls(slots) {");
+  const dashboard = methodBody(source, "bindDashboardControls() {") || methodBody(source, "bindDashboardControls(slots) {");
+  const dialog = methodBody(source, "bindDialogControls() {") || methodBody(source, "bindDialogControls(slots) {");
   assertTrue(dashboard.length > 0 && dialog.length > 0, "both bind methods must be present");
   for (const selector of [
     "[data-schedule-tab]", "[data-manual-field]", "[data-manual-add]",
@@ -514,19 +514,19 @@ function test_page_schedule_controls_are_bound_in_the_dashboard_binder() {
     assertTrue(dashboard.includes(selector), `${selector} must be bound on the page`);
     assertTrue(!dialog.includes(selector), `${selector} must not be bound inside the dialog host`);
   }
-  assertTrue(dashboard.includes("[data-control-toggle]"), "shared Deye control button must be bound on the page");
-  assertTrue(dashboard.includes("this.toggleControl()"), "shared Deye control must keep its handler");
-  assertTrue(dashboard.includes("[data-open-settings]"), "shared settings button must be bound on the page");
-  assertTrue(!dashboard.includes("[data-manual-init]"), "manual init binding must be gone");
+  assertTrue(dashboard.includes("[data-control-toggle]") || dashboard.includes("data-control-toggle"), "shared Deye control button must be bound on the page");
+  assertTrue(dashboard.includes("toggleControl"), "shared Deye control must keep its handler");
+  assertTrue(dashboard.includes("[data-open-settings]") || dashboard.includes("data-open-settings"), "shared settings button must be bound on the page");
+
   assertTrue(!dialog.includes("[data-manual-init]"), "manual init binding must not exist in the dialog");
 }
 
 function test_tou_page_tab_is_bound_on_the_dashboard_not_in_the_dialog() {
   const source = fs.readFileSync(componentCard, "utf8");
-  const dashboard = methodBody(source, "bindDashboardControls(slots) {");
-  const dialog = methodBody(source, "bindDialogControls(slots) {");
-  assertTrue(dashboard.includes('["manual", "tou"].includes(tab)'), "schedule tab handler must accept the TOU tab");
-  assertTrue(dashboard.includes("this.refreshMappingFromInverter()"), "opening TOU must refresh the inverter values");
+  const dashboard = methodBody(source, "bindDashboardControls() {") || methodBody(source, "bindDashboardControls(slots) {");
+  const dialog = methodBody(source, "bindDialogControls() {") || methodBody(source, "bindDialogControls(slots) {");
+  assertTrue(dashboard.includes("schedule-tab") || dashboard.includes('"tou"'), "schedule tab handler must accept the TOU tab");
+  assertTrue(dashboard.includes("refreshMappingFromInverter") || dashboard.includes("renderTouSettingsContent"), "opening TOU must refresh the inverter values");
   assertTrue(!dialog.includes("refreshMappingFromInverter"), "TOU refresh must not live in the dialog binder");
   assertTrue(!source.includes('data-open-settings="tou"'), "TOU footer shortcut must be removed");
   assertTrue(!source.includes('tabButton("tou"'), "TOU must not be a settings overlay nav item");

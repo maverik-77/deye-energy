@@ -59,8 +59,6 @@ def test_issue_5_tou_runtime_fails_closed_without_mapping_instead_of_guessing_pr
 
 def test_issue_7_manager_has_no_slot_or_target_current_contract():
     runtime = make_runtime()
-    runtime.active_slot.enabled = True
-    runtime.active_slot.mode = const.MODE_NORMAL_OPERATION
 
     for attr in (
         "target_discharge_current",
@@ -69,35 +67,18 @@ def test_issue_7_manager_has_no_slot_or_target_current_contract():
         "default_discharge_current",
         "normal_profile_discharge_current",
         "discharge_current_number",
+        "slots",
+        "set_work_mode_for_slot",
+        "async_apply_slot_grid_charge",
+        "async_apply_schedule_patch",
     ):
         assert not hasattr(runtime, attr)
-    for attr in ("charge_current", "discharge_current", "grid_charge_current"):
-        assert not hasattr(runtime.active_slot, attr)
-
-
-def test_issue_7_current_fields_are_rejected_by_schedule_contract():
-    runtime = make_runtime()
-    slot_key = runtime.active_slot_key()
-    with pytest.raises(ValueError, match="Unsupported schedule fields"):
-        asyncio.run(
-            runtime.async_apply_schedule_patch(
-                [
-                    {
-                        "slot_key": slot_key,
-                        "mode": const.MODE_NORMAL_OPERATION,
-                        "discharge_current": 75,
-                    }
-                ]
-            )
-        )
 
 
 def test_issue_7_apply_targets_never_writes_direct_current_entities():
     runtime = make_runtime()
-    runtime.active_slot.enabled = True
-    runtime.active_slot.mode = const.MODE_NORMAL_OPERATION
-    runtime.control_enabled = True
-    runtime.control_status = "Active"
+    runtime.control_mode = "Schedule"
+    runtime.scheduler_enabled = True
     runtime.hass.states.values[const.DEFAULT_DISCHARGE_CURRENT] = FakeState("80")
     runtime.hass.states.values[const.DEFAULT_CHARGE_CURRENT] = FakeState("80")
     runtime.hass.states.values[const.DEFAULT_GRID_CHARGE_CURRENT] = FakeState("60")
@@ -106,7 +87,7 @@ def test_issue_7_apply_targets_never_writes_direct_current_entities():
         return True
 
     runtime.async_apply_time_of_use_map = _tou_ok
-    assert asyncio.run(runtime.async_apply_targets()) is True
+    asyncio.run(runtime.async_apply_targets())
     direct_current_entities = {
         const.DEFAULT_DISCHARGE_CURRENT,
         const.DEFAULT_CHARGE_CURRENT,

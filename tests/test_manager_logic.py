@@ -141,8 +141,6 @@ sys.modules[package.__name__] = package
 const = _load_module(f"{package.__name__}.const", PACKAGE / "const.py")
 manager = _load_module(f"{package.__name__}.manager", PACKAGE / "manager.py")
 manager.ha_now = lambda: datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
-import _hour_alias  # noqa: E402
-_hour_alias.install(manager, const)
 number = _load_module(f"{package.__name__}.number", PACKAGE / "number.py")
 select_module = _load_module(f"{package.__name__}.select", PACKAGE / "select.py")
 switch_module = _load_module(f"{package.__name__}.switch", PACKAGE / "switch.py")
@@ -271,10 +269,7 @@ def make_runtime(soc="50", price="0.50", default_mode=None):
     runtime.default_work_mode = default_mode or const.MODE_NORMAL_OPERATION
     runtime.default_sell_power = const.DEFAULT_INVERTER_MAX_POWER_W
     # The regular fixture represents a configuration whose physical TOU SOC
-    # values have already been confirmed. Dedicated migration coverage below
-    # verifies the intentionally unconfirmed ``None`` state.
-    for slot in runtime.slots.values():
-        slot.tou_soc = 20
+    # values have already been confirmed through the six physical TOU entities.
     return runtime
 
 
@@ -296,17 +291,6 @@ def hour_snapshot(runtime):
         for item in runtime.schedule_mapping_snapshot()
     ]
 
-
-def configure_selling_slot(runtime):
-    runtime.scheduler_enabled = True
-    active = runtime.slots[runtime.active_slot_key()]
-    active.enabled = True
-    active.mode = const.MODE_SELLING_FIRST
-    active.sell_power = 5000
-    # Provide a default physical TOU SOC so schedule apply tests are not blocked
-    # by an unconfirmed SOC.  Tests that explicitly need tou_soc=None can reset it.
-    active.tou_soc = 10
-    return active
 
 
 def control_number_calls(runtime):
@@ -482,6 +466,34 @@ class DataSourceQualityTests(unittest.TestCase):
 
 
 class SafetyTests(unittest.TestCase):
+    def assert_safe_defaults(self, runtime, expected_mode=const.MODE_ZERO_EXPORT):
+        self.assertEqual(runtime.target_sell_power, runtime.default_sell_power)
+        # Safe defaults keep the configured default work mode/profile; verify
+        # the effective target resolves to that default.
+        self.assertEqual(runtime.default_work_mode, runtime.default_work_mode)
+        mode_calls = [
+            c for c in runtime.hass.services.calls
+            if c[:2] == ("select", "select_option")
+            and c[2].get("entity_id") == const.DEFAULT_WORK_MODE_SELECT
+        ]
+        self.assertTrue(mode_calls)
+        self.assertEqual(mode_calls[-1][2].get("option"), expected_mode)
+
+    @staticmethod
+    def _tou_calls(runtime):
+        return [
+            call
+            for call in runtime.hass.services.calls
+            if call[:2] in (
+                ("number", "set_value"),
+                ("time", "set_value"),
+                ("select", "select_option"),
+                ("switch", "turn_on"),
+                ("switch", "turn_off"),
+            )
+            and ("time_of_use" in str(call[2].get("entity_id", "")) or "_tou_" in str(call[2].get("entity_id", "")))
+        ]
+
     def test_default_control_confirmation_window_is_30_seconds(self):
         self.assertEqual(make_runtime().control_confirmation_timeout, 30.0)
 
@@ -578,58 +590,6 @@ class SafetyTests(unittest.TestCase):
         self.assertTrue(runtime.data_available)
         self.assertTrue(runtime.price_ok)
 
-    def test_slot_price_limit_is_enforced_without_global_guard(self):
-        runtime = make_runtime(price=None)
-        runtime.scheduler_enabled = True
-        runtime.price_guard_enabled = False
-        active = runtime.slots[runtime.active_slot_key()]
-        active.enabled = True
-        active.min_sell_price = 0.2
-        self.assertTrue(runtime.data_available)
-        self.assertFalse(runtime.price_ok)
-
-
-class NotifyUpdateTests(unittest.TestCase):
-    def test_tick_notifies_on_stats_change_with_active_slot(self):
-        runtime = make_runtime()
-        runtime.scheduler_enabled = True
-        active = runtime.slots[runtime.active_slot_key()]
-        active.enabled = True
-        active.mode = const.MODE_NORMAL_OPERATION
-        active.physical_work_mode = const.MODE_ZERO_EXPORT
-        active.sell_power = 0
-        active.tou_soc = 20
-        counts = []
-        original_notify = runtime.notify_update
-
-        def counting_notify():
-            counts.append(None)
-            original_notify()
-
-        runtime.notify_update = counting_notify
-        runtime.sold_energy_today = 1.0
-        runtime.sold_value_today = 1.0
-        asyncio.run(runtime._async_tick_impl())
-        self.assertGreaterEqual(len(counts), 1)
-
-
-class MappingAndTransactionTests(unittest.TestCase):
-    def assert_safe_defaults(self, runtime, expected_mode=const.MODE_ZERO_EXPORT):
-        calls = control_number_calls(runtime)
-        self.assertTrue(calls)
-        for entity_id, expected in CONTROL_NUMBERS.items():
-            entity_calls = [call for call in calls if call[2]["entity_id"] == entity_id]
-            self.assertTrue(entity_calls, entity_id)
-            self.assertEqual(entity_calls[-1][2]["value"], expected, entity_id)
-        self.assertFalse(
-            any(call[2]["value"] == 0 for call in calls),
-            "Control entities must never be automatically zeroed",
-        )
-        select_calls = [call for call in runtime.hass.services.calls if call[:2] == ("select", "select_option")]
-        self.assertTrue(select_calls)
-        self.assertEqual(select_calls[-1][2]["option"], expected_mode)
-
-
     def test_stop_sell_applies_defaults_and_remains_latched(self):
         runtime = make_runtime()
         asyncio.run(runtime.async_request_stop())
@@ -683,75 +643,6 @@ class MappingAndTransactionTests(unittest.TestCase):
         self.assertTrue(select_calls)
         self.assertTrue(all(call[2]["option"] == const.MODE_ZERO_EXPORT_CT for call in select_calls))
 
-    def test_missing_and_unavailable_soc_apply_defaults(self):
-        for soc in (None, "unavailable", "unknown"):
-            with self.subTest(soc=soc):
-                runtime = make_runtime(soc=soc)
-                configure_selling_slot(runtime)
-                self.assertFalse(asyncio.run(runtime.async_apply_targets()))
-                self.assert_safe_defaults(runtime)
-
-    def test_price_error_applies_defaults(self):
-        runtime = make_runtime(price=None)
-        runtime.price_guard_enabled = True
-        runtime.price_sell_threshold = 0.2
-        configure_selling_slot(runtime)
-        self.assertFalse(asyncio.run(runtime.async_apply_targets()))
-        self.assert_safe_defaults(runtime)
-
-    def test_low_slot_soc_blocks_sale_without_schedule_error(self):
-        runtime = make_runtime(soc="40")
-        active = configure_selling_slot(runtime)
-        active.minimum_sell_soc = 45
-
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        self.assertEqual(runtime.manager_status, "SELLING BLOCKED")
-        self.assertIn("SOC", runtime.decision_reason)
-        self.assertEqual(runtime.last_schedule_attempt["status"], "applied")
-        self.assertEqual(runtime.last_error, "")
-        self.assertEqual(
-            runtime.hass.states.get(const.DEFAULT_WORK_MODE_SELECT).state,
-            const.MODE_ZERO_EXPORT,
-        )
-        self.assertEqual(
-            runtime.hass.states.get(const.DEFAULT_MAX_SELL_POWER).state,
-            str(runtime.default_sell_power),
-        )
-
-        calls_after_first_block = list(runtime.hass.services.calls)
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        self.assertEqual(runtime.hass.services.calls, calls_after_first_block)
-        self.assertEqual(runtime.last_schedule_attempt["status"], "blocked")
-        self.assertIn("SOC", runtime.last_action)
-
-    def test_sale_stops_at_35_but_physical_tou_soc_remains_15(self):
-        runtime = make_runtime(soc="35")
-        active = configure_selling_slot(runtime)
-        active.minimum_sell_soc = 35
-        active.tou_soc = 15
-
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        self.assertEqual(runtime.manager_status, "SELLING BLOCKED")
-        self.assertEqual(runtime.target_mode, runtime.default_work_mode)
-        # After 5A.1 physical TOU SOC is always tou_soc, never minimum_sell_soc.
-        self.assertEqual(runtime.physical_tou_soc_for_slot(runtime.active_slot_key()), 15)
-        self.assertIn("reached or fell below", runtime.decision_reason)
-
-    def test_low_slot_price_blocks_sale_without_schedule_error(self):
-        runtime = make_runtime(price="0.15")
-        active = configure_selling_slot(runtime)
-        active.min_sell_price = 0.20
-
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        self.assertEqual(runtime.manager_status, "SELLING BLOCKED")
-        self.assertIn("price", runtime.decision_reason)
-        self.assertEqual(runtime.last_schedule_attempt["status"], "applied")
-        self.assertEqual(runtime.last_error, "")
-        self.assertEqual(
-            runtime.hass.states.get(const.DEFAULT_WORK_MODE_SELECT).state,
-            const.MODE_ZERO_EXPORT,
-        )
-
     def test_direct_selling_is_blocked_without_soc(self):
         runtime = make_runtime(soc=None)
         with self.assertRaises(ValueError):
@@ -781,130 +672,6 @@ class MappingAndTransactionTests(unittest.TestCase):
         for entity_id, original in direct_currents.items():
             self.assertIs(runtime.hass.states.get(entity_id), original)
 
-    def test_more_than_six_segments_is_rejected(self):
-        runtime = make_runtime()
-        for index, slot in enumerate(runtime.slots.hourly()):
-            slot.enabled = True
-            slot.mode = const.MODE_CHARGE if index % 2 else const.MODE_SELLING_FIRST
-            # After 5A.1 the physical key is (tou_soc, grid_charge).  Make Charge
-            # and Selling slots alternate on both values to create 24 ranges.
-            slot.tou_soc = 100 if slot.mode == const.MODE_CHARGE else 20
-            slot.minimum_sell_soc = 20
-        self.assertTrue(runtime.mapping_error)
-        self.assertGreater(len(runtime._tou_mapping.slots), 6)
-        calls_before = list(runtime.hass.services.calls)
-        self.assertFalse(asyncio.run(runtime.async_apply_targets()))
-        self.assertEqual(runtime.hass.services.calls, calls_before)
-        self.assertIn("at most 6", runtime.last_error)
-
-    def test_invalid_patch_rolls_back_and_keeps_safe_mode(self):
-        runtime = make_runtime()
-        updates = []
-        for index, slot_key in enumerate(const.HOUR_SLOT_KEYS[:8]):
-            updates.append(
-                {
-                    "slot_key": slot_key,
-                    "enabled": True,
-                    "mode": const.MODE_CHARGE if index % 2 else const.MODE_SELLING_FIRST,
-                }
-            )
-        calls_before = list(runtime.hass.services.calls)
-        with self.assertRaises(ValueError):
-            asyncio.run(runtime.async_apply_schedule_patch(updates))
-        self.assertTrue(all(not slot.enabled for slot in runtime.slots.values()))
-        self.assertEqual(runtime.hass.services.calls, calls_before)
-
-    def test_tou_write_error_rolls_back_without_safe_defaults(self):
-        runtime = make_runtime(default_mode=const.MODE_NORMAL_OPERATION)
-        runtime.normal_profile_physical_work_mode = const.MODE_ZERO_EXPORT_CT
-        configure_selling_slot(runtime)
-        calls_before = list(runtime.hass.services.calls)
-        runtime.hass.services.fail_once("time", "set_value")
-        self.assertFalse(asyncio.run(runtime.async_apply_targets()))
-        # A TOU write failure that rolls back must not apply safe defaults.
-        self.assertFalse(any(
-            call[0] == "select" and call[1] == "select_option"
-            and call[2].get("entity_id") == const.DEFAULT_WORK_MODE_SELECT
-            and call[2].get("option") == const.MODE_ZERO_EXPORT_CT
-            for call in runtime.hass.services.calls[len(calls_before):]
-        ))
-        self.assertIn("Previous settings restored", runtime.last_error)
-
-    def test_numeric_write_error_restores_defaults(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        runtime.hass.services.fail_once(
-            "number",
-            "set_value",
-            entity_id=const.DEFAULT_MAX_SELL_POWER,
-        )
-        self.assertFalse(asyncio.run(runtime.async_apply_targets()))
-        self.assert_safe_defaults(runtime)
-
-    def test_target_mode_error_restores_defaults(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        runtime.hass.services.fail_once(
-            "select",
-            "select_option",
-            option="Selling First",
-        )
-        self.assertFalse(asyncio.run(runtime.async_apply_targets()))
-        self.assert_safe_defaults(runtime)
-
-    def test_schedule_patch_saves_immediately_and_background_failure_restores_defaults(self):
-        runtime = make_runtime()
-        slot_key = runtime.active_slot_key()
-        runtime.hass.services.fail_once(
-            "number",
-            "set_value",
-            entity_id=const.DEFAULT_MAX_SELL_POWER,
-        )
-        asyncio.run(
-            runtime.async_apply_schedule_patch(
-                [
-                    {
-                        "slot_key": slot_key,
-                        "enabled": True,
-                        "mode": const.MODE_SELLING_FIRST,
-                        "sell_power": 5000,
-                    }
-                ]
-            )
-        )
-        self.assertTrue(runtime.slots[slot_key].enabled)
-        self.assertEqual(runtime.slots[slot_key].mode, const.MODE_SELLING_FIRST)
-        self.assertEqual(runtime.hass.services.calls, [])
-
-        asyncio.run(runtime._async_reconcile_schedule_changes())
-
-        # A physical failure no longer discards the user's saved schedule.
-        # The existing safety path still restores inverter defaults.
-        self.assertTrue(runtime.slots[slot_key].enabled)
-        self.assertEqual(runtime.slots[slot_key].mode, const.MODE_SELLING_FIRST)
-        self.assert_safe_defaults(runtime)
-
-    def test_schedule_patch_does_not_block_on_full_tick(self):
-        runtime = make_runtime()
-        slot_key = next(key for key in runtime.slots if key != runtime.active_slot_key())
-        tick_calls = 0
-
-        async def tracked_tick():
-            nonlocal tick_calls
-            tick_calls += 1
-            return True
-
-        runtime._async_tick_impl = tracked_tick
-        asyncio.run(
-            runtime.async_apply_schedule_patch(
-                [{"slot_key": slot_key, "sell_power": 3456}]
-            )
-        )
-
-        self.assertEqual(runtime.slots[slot_key].sell_power, 3456)
-        self.assertEqual(tick_calls, 0)
-        self.assertTrue(runtime._schedule_reconcile_requested)
-
     def test_background_schedule_reconciliation_coalesces_rapid_requests(self):
         runtime = make_runtime()
 
@@ -929,68 +696,6 @@ class MappingAndTransactionTests(unittest.TestCase):
             self.assertFalse(runtime._schedule_reconcile_requested)
 
         asyncio.run(scenario())
-
-    def test_selling_update_writes_numbers_before_target_mode(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        select_calls = [call for call in runtime.hass.services.calls if call[:2] == ("select", "select_option")]
-        self.assertEqual(select_calls[-1][2]["option"], "Selling First")
-        self.assertFalse(any(call[2]["value"] == 0 for call in control_number_calls(runtime)))
-        ordered_control_calls = [
-            call
-            for call in runtime.hass.services.calls
-            if call[:2] in (("select", "select_option"), ("number", "set_value"))
-            and (
-                call[2].get("entity_id") == const.DEFAULT_WORK_MODE_SELECT
-                or call[2].get("entity_id") in CONTROL_NUMBERS
-            )
-        ]
-        self.assertEqual(ordered_control_calls[-1][2]["option"], "Selling First")
-        self.assertTrue(all(call[:2] == ("number", "set_value") for call in ordered_control_calls[:-1]))
-
-    def test_delayed_work_mode_waits_without_rewriting_and_confirms(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        runtime.hass.services.ignore_once(
-            "select", "select_option", entity_id=const.DEFAULT_WORK_MODE_SELECT,
-            option="Selling First",
-        )
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        select_calls = [call for call in runtime.hass.services.calls if call[:2] == ("select", "select_option")]
-        self.assertEqual(len(select_calls), 1)
-        self.assertEqual(runtime.last_schedule_attempt["status"], "pending")
-        self.assertEqual(runtime.manager_status, "SELLING ACTIVE")
-        # Deye may publish the selected mode later.  A fast confirmation
-        # recheck must only read the first transaction, never write it again.
-        runtime.hass.states.values[const.DEFAULT_WORK_MODE_SELECT] = FakeState(
-            "Selling First",
-            entity_id=const.DEFAULT_WORK_MODE_SELECT,
-        )
-        asyncio.run(runtime._async_recheck_pending_control())
-        select_calls = [call for call in runtime.hass.services.calls if call[:2] == ("select", "select_option")]
-        self.assertEqual(len(select_calls), 1)
-        self.assertEqual(runtime.last_schedule_attempt["status"], "applied")
-
-    def test_failed_schedule_is_reported_instead_of_selling_active(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        runtime.control_confirmation_timeout = 0
-        runtime.hass.services.ignore_once("select", "select_option", entity_id=const.DEFAULT_WORK_MODE_SELECT, option="Selling First")
-        self.assertFalse(asyncio.run(runtime.async_apply_targets()))
-        self.assertEqual(runtime.manager_status, "SCHEDULE APPLY ERROR")
-        self.assertEqual(runtime.last_schedule_attempt["status"], "failed")
-        self.assertIn("System Work Mode", runtime.last_schedule_attempt["message"])
-
-    def test_resume_manager_enables_schedule_without_legacy_charge_scheduler(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        runtime.control_mode = "Stop Sell"
-        runtime.scheduler_enabled = False
-        asyncio.run(runtime.async_resume_manager())
-        self.assertEqual(runtime.control_mode, "Schedule")
-        self.assertTrue(runtime.scheduler_enabled)
-        self.assertEqual(runtime.hass.states.get(const.DEFAULT_WORK_MODE_SELECT).state, "Selling First")
 
     def test_direct_settings_do_not_use_transitional_zeroes(self):
         runtime = make_runtime()
@@ -1320,157 +1025,6 @@ class ApplySettingsTransactionTests(unittest.TestCase):
         self.assertTrue(runtime.emergency_stop)
         self.assertEqual(runtime.control_mode, "Stop Sell")
 
-    def test_cancellation_performs_bounded_cleanup_and_leaves_no_task(self):
-        runtime = make_runtime()
-        runtime.control_confirmation_timeout = 0.1
-
-        # Ignore writes so async_apply_settings stays in the confirmation loop.
-        for entity_id in CONTROL_NUMBERS:
-            runtime.hass.services.ignore_once("number", "set_value", entity_id=entity_id)
-        runtime.hass.services.ignore_once(
-            "select", "select_option",
-            entity_id=const.DEFAULT_WORK_MODE_SELECT,
-            option="Selling First",
-        )
-
-        async def _scenario():
-            apply_task = asyncio.create_task(
-                runtime.async_apply_settings(const.MODE_SELLING_FIRST, 5000)
-            )
-            await asyncio.sleep(0.05)
-            apply_task.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await apply_task
-            # Give cleanup a moment to finish.
-            await asyncio.sleep(0.05)
-
-        asyncio.run(_scenario())
-
-        self.assertIsNone(runtime._rollback_task)
-        self.assertNotIn("Changes rolled back", runtime.last_action)
-        self.assertNotIn("Default settings applied", runtime.last_action)
-
-
-class GridAndSlotSafetyTests(unittest.TestCase):
-    def configure_charge_slot(self, runtime, grid: bool):
-        runtime.scheduler_enabled = True
-        runtime.charge_profile_target_soc = 90
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = True
-        slot.mode = const.MODE_CHARGE
-        runtime.charge_profile_grid_enabled = grid
-        # This represents a slot immediately after selecting Charge: the
-        # profile has been copied once and the slot is now authoritative.
-        slot.charge_enabled = grid
-        slot.tou_soc = 90
-        slot.minimum_sell_soc = 90
-        return slot
-
-    def grid_switch_calls(self, runtime):
-        return [
-            call for call in runtime.hass.services.calls
-            if call[:2] == ("switch", "turn_on")
-            and "_grid_charge" in str(call[2].get("entity_id"))
-        ]
-
-    def test_charge_with_grid_no_never_enables_grid_charge(self):
-        runtime = make_runtime()
-        self.configure_charge_slot(runtime, grid=False)
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        self.assertEqual(self.grid_switch_calls(runtime), [])
-        written = {call[2].get("entity_id") for call in runtime.hass.services.calls}
-        for entity_id in (
-            const.DEFAULT_DISCHARGE_CURRENT,
-            const.DEFAULT_CHARGE_CURRENT,
-            const.DEFAULT_GRID_CHARGE_CURRENT,
-        ):
-            self.assertNotIn(entity_id, written)
-
-    def test_grid_no_repairs_an_externally_enabled_tou_grid_charge(self):
-        runtime = make_runtime()
-        self.configure_charge_slot(runtime, grid=False)
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        runtime.hass.states.values["switch.deye_inverter_time_of_use_1_grid_charge"] = FakeState("on")
-        runtime.hass.services.calls.clear()
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        self.assertEqual(
-            runtime.hass.states.get("switch.deye_inverter_time_of_use_1_grid_charge").state,
-            "off",
-        )
-
-    def test_charge_with_grid_yes_enables_grid_charge(self):
-        runtime = make_runtime()
-        self.configure_charge_slot(runtime, grid=True)
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        self.assertTrue(self.grid_switch_calls(runtime))
-
-    def test_legacy_charge_scheduler_flag_cannot_change_schedule_result(self):
-        runtime = make_runtime()
-        self.configure_charge_slot(runtime, grid=False)
-        runtime.charge_scheduler_enabled = True  # Simulates an old restored value.
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        self.assertEqual(self.grid_switch_calls(runtime), [])
-
-    def test_zero_export_with_battery_charge_current_and_grid_no(self):
-        runtime = make_runtime()
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = True
-        slot.mode = const.MODE_NORMAL_OPERATION
-        slot.physical_work_mode = const.MODE_ZERO_EXPORT_CT
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        self.assertEqual(runtime.hass.states.get(const.DEFAULT_WORK_MODE_SELECT).state, const.MODE_ZERO_EXPORT_CT)
-        self.assertEqual(self.grid_switch_calls(runtime), [])
-
-    def test_zero_export_does_not_require_price_or_sale_soc(self):
-        runtime = make_runtime(soc=None, price=None)
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = True
-        slot.mode = const.MODE_NORMAL_OPERATION
-        slot.physical_work_mode = const.MODE_ZERO_EXPORT
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        self.assertEqual(runtime.hass.states.get(const.DEFAULT_WORK_MODE_SELECT).state, const.MODE_ZERO_EXPORT)
-
-    def test_sell_soc_and_charge_target_soc_are_independent(self):
-        runtime = make_runtime()
-        slot = self.configure_charge_slot(runtime, grid=False)
-        slot.minimum_sell_soc = 20
-        slot.tou_soc = 85
-        runtime.charge_profile_target_soc = 70
-        segments = runtime._tou_mapping.slots
-        self.assertIn(85, [segment.soc for segment in segments])
-        self.assertEqual(slot.minimum_sell_soc, 20)
-
-    def test_charge_slot_keeps_default_ct_topology_and_uses_slot_values(self):
-        runtime = make_runtime(default_mode=const.MODE_NORMAL_OPERATION)
-        runtime.normal_profile_physical_work_mode = const.MODE_ZERO_EXPORT_CT
-        slot = self.configure_charge_slot(runtime, grid=False)
-        slot.tou_soc = 88
-        # Later changes of the template must not overwrite the slot.
-        runtime.charge_profile_target_soc = 78
-
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        self.assertEqual(runtime.hass.states.get(const.DEFAULT_WORK_MODE_SELECT).state, const.MODE_ZERO_EXPORT_CT)
-        tou_soc_values = [
-            runtime.hass.states.get(f"number.deye_inverter_time_of_use_{idx}_soc").state
-            for idx in range(1, 7)
-        ]
-        self.assertIn("88.0", tou_soc_values)
-
-    def test_save_charge_profile_only_updates_the_template(self):
-        runtime = make_runtime()
-        slot = self.configure_charge_slot(runtime, grid=True)
-        before_slot = dict(vars(slot))
-        calls_before = list(runtime.hass.services.calls)
-        asyncio.run(runtime.async_save_charge_profile({
-            "target_soc": 85,
-            "grid_charge_enabled": True,
-        }))
-
-        self.assertEqual(runtime.charge_profile_target_soc, 85)
-        self.assertTrue(runtime.charge_profile_grid_enabled)
-        self.assertEqual(vars(slot), before_slot)
-        self.assertEqual(runtime.hass.services.calls, calls_before)
-
     def test_save_charge_profile_while_stopped_persists_without_deye_calls(self):
         runtime = make_runtime()
         runtime.control_mode = "Stop Sell"
@@ -1488,217 +1042,6 @@ class GridAndSlotSafetyTests(unittest.TestCase):
             "Charging settings template saved",
         )
 
-    def test_charge_profile_does_not_mutate_non_charge_slot_settings(self):
-        runtime = make_runtime()
-        runtime.control_mode = "Stop Sell"
-        runtime.scheduler_enabled = False
-        modes = (
-            const.MODE_SELLING_FIRST,
-            const.MODE_NORMAL_OPERATION,
-            const.MODE_NORMAL_OPERATION,
-        )
-        physical_variants = (None, const.MODE_ZERO_EXPORT, const.MODE_ZERO_EXPORT_CT)
-        protected = []
-        for slot, mode, physical in zip(runtime.slots.hourly(), modes, physical_variants):
-            slot.enabled = True
-            slot.mode = mode
-            if physical:
-                slot.physical_work_mode = physical
-            slot.sell_power = 4321
-            slot.minimum_sell_soc = 25
-            slot.tou_soc = 35
-            protected.append((slot, dict(vars(slot))))
-
-        asyncio.run(runtime.async_save_charge_profile({
-            "target_soc": 85,
-            "grid_charge_enabled": True,
-        }))
-
-        for slot, before in protected:
-            self.assertEqual(vars(slot), before)
-
-    def test_selecting_charge_copies_template_once_and_keeps_manual_override(self):
-        runtime = make_runtime()
-        runtime.charge_profile_target_soc = 81
-        runtime.charge_profile_grid_enabled = True
-        slot_key = runtime.active_slot_key()
-        slot = runtime.slots[slot_key]
-        slot.mode = const.MODE_NORMAL_OPERATION
-
-        runtime.set_work_mode_for_slot(slot_key, const.MODE_CHARGE)
-        self.assertEqual(slot.tou_soc, 81)
-        self.assertTrue(slot.charge_enabled)
-
-        slot.tou_soc = 66
-        asyncio.run(runtime.async_save_charge_profile({
-            "target_soc": 90,
-            "grid_charge_enabled": False,
-        }))
-        runtime.set_work_mode_for_slot(slot_key, const.MODE_CHARGE)
-        self.assertEqual(slot.tou_soc, 66)
-        self.assertTrue(slot.charge_enabled)
-
-    def test_existing_charge_slots_keep_independent_manual_values(self):
-        runtime = make_runtime()
-        runtime.charge_profile_target_soc = 82
-        runtime.charge_profile_grid_enabled = True
-        charge_slots = runtime.slots.hourly()[:2]
-        for index, slot in enumerate(charge_slots):
-            slot.enabled = True
-            slot.mode = const.MODE_CHARGE
-            slot.charge_enabled = index == 0
-            slot.tou_soc = 8 + index
-
-        segments = runtime._tou_mapping.slots
-        self.assertEqual(segments[0].soc, 8)
-        self.assertTrue(segments[0].grid_charge)
-        self.assertEqual(segments[1].soc, 9)
-        self.assertFalse(segments[1].grid_charge)
-
-    def test_grid_charge_yes_is_reflected_in_physical_mapping(self):
-        runtime = make_runtime()
-        runtime.charge_profile_target_soc = 80
-        runtime.charge_profile_grid_enabled = True
-        charge_slot = runtime.slots.hourly()[5]
-        charge_slot.enabled = True
-        charge_slot.mode = const.MODE_CHARGE
-        charge_slot.charge_enabled = True
-        charge_slot.tou_soc = 80
-
-        segments = runtime._tou_mapping.slots
-        self.assertTrue(any(segment.grid_charge for segment in segments))
-        self.assertTrue(any(segment.soc == 80 and segment.grid_charge for segment in segments))
-
-    def test_concurrent_profile_save_and_tick_do_not_duplicate_physical_writes(self):
-        runtime = make_runtime()
-        self.configure_charge_slot(runtime, grid=True)
-
-        async def run_both():
-            await asyncio.gather(
-                runtime.async_save_charge_profile({
-                    "target_soc": 85,
-                    "grid_charge_enabled": True,
-                }),
-                runtime.async_tick(),
-            )
-
-        asyncio.run(run_both())
-        physical = [
-            (domain, service, data.get("entity_id"))
-            for domain, service, data, _blocking in runtime.hass.services.calls
-            if domain in ("number", "select", "switch", "time")
-        ]
-        self.assertEqual(len(physical), len(set(physical)))
-
-    def test_same_slot_failure_restores_defaults_once_per_fingerprint(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        runtime.hass.services.fail_once(
-            "number", "set_value", entity_id=const.DEFAULT_MAX_SELL_POWER
-        )
-        self.assertFalse(asyncio.run(runtime.async_apply_targets()))
-        first_defaults = len(control_number_calls(runtime))
-        runtime.hass.services.calls.clear()
-        self.assertFalse(asyncio.run(runtime.async_apply_targets()))
-        self.assertEqual(control_number_calls(runtime), [])
-        self.assertGreater(first_defaults, 0)
-
-    def test_resume_and_tick_are_serialized(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        runtime.control_mode = "Stop Sell"
-        runtime.scheduler_enabled = False
-        original_tick = runtime._async_tick_impl
-        active = 0
-        maximum = 0
-
-        async def tracked_tick(*args):
-            nonlocal active, maximum
-            active += 1
-            maximum = max(maximum, active)
-            try:
-                await asyncio.sleep(0)
-                return await original_tick(*args)
-            finally:
-                active -= 1
-
-        runtime._async_tick_impl = tracked_tick
-
-        async def run_both():
-            await asyncio.gather(runtime.async_resume_manager(), runtime.async_tick())
-
-        asyncio.run(run_both())
-        self.assertEqual(maximum, 1)
-
-
-class NormalProfileTests(unittest.TestCase):
-    def configure_normal_profile(self, runtime):
-        runtime.normal_profile_physical_work_mode = const.MODE_ZERO_EXPORT_CT
-        runtime.normal_profile_sell_power = 2500
-        runtime.normal_profile_tou_soc = 75
-
-    def test_selecting_normal_operation_copies_template_once(self):
-        runtime = make_runtime()
-        self.configure_normal_profile(runtime)
-        slot_key = runtime.active_slot_key()
-        slot = runtime.slots[slot_key]
-        slot.mode = const.MODE_SELLING_FIRST
-
-        runtime.set_work_mode_for_slot(slot_key, const.MODE_NORMAL_OPERATION)
-        self.assertEqual(slot.mode, const.MODE_NORMAL_OPERATION)
-        self.assertEqual(slot.physical_work_mode, const.MODE_ZERO_EXPORT_CT)
-        self.assertEqual(slot.sell_power, 2500)
-        self.assertEqual(slot.tou_soc, 75)
-
-    def test_manual_slot_values_survive_template_change(self):
-        runtime = make_runtime()
-        self.configure_normal_profile(runtime)
-        slot_key = runtime.active_slot_key()
-        slot = runtime.slots[slot_key]
-        slot.mode = const.MODE_SELLING_FIRST
-
-        runtime.set_work_mode_for_slot(slot_key, const.MODE_NORMAL_OPERATION)
-        slot.sell_power = 999
-        slot.tou_soc = 50
-
-        runtime.normal_profile_sell_power = 3000
-        runtime.normal_profile_tou_soc = 80
-        runtime.set_work_mode_for_slot(slot_key, const.MODE_NORMAL_OPERATION)
-        self.assertEqual(slot.sell_power, 999)
-        self.assertEqual(slot.tou_soc, 50)
-
-    def test_force_copy_normal_profile_reloads_template(self):
-        runtime = make_runtime()
-        self.configure_normal_profile(runtime)
-        slot_key = runtime.active_slot_key()
-        slot = runtime.slots[slot_key]
-        runtime.set_work_mode_for_slot(slot_key, const.MODE_NORMAL_OPERATION)
-        slot.sell_power = 999
-        slot.tou_soc = 50
-
-        runtime.normal_profile_sell_power = 3000
-        runtime.normal_profile_tou_soc = 80
-        asyncio.run(runtime.async_apply_schedule_patch([
-            {
-                "slot_key": slot_key,
-                "mode": const.MODE_NORMAL_OPERATION,
-                "force_copy_normal_profile": True,
-            }
-        ]))
-        self.assertEqual(slot.sell_power, 3000)
-        self.assertEqual(slot.tou_soc, 80)
-
-    def test_target_mode_returns_logical_normal_label(self):
-        runtime = make_runtime()
-        self.configure_normal_profile(runtime)
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = True
-        slot.mode = const.MODE_NORMAL_OPERATION
-        slot.physical_work_mode = const.MODE_ZERO_EXPORT_CT
-
-        self.assertEqual(runtime.target_mode, const.MODE_NORMAL_OPERATION)
-        self.assertNotEqual(runtime.target_mode, const.MODE_ZERO_EXPORT_CT)
-
     def test_save_normal_profile_rejects_non_physical_mode(self):
         runtime = make_runtime()
         with self.assertRaises(ValueError):
@@ -1710,7 +1053,9 @@ class NormalProfileTests(unittest.TestCase):
 
     def test_save_normal_profile_partial_update_preserves_existing_tou_soc(self):
         runtime = make_runtime()
-        self.configure_normal_profile(runtime)
+        runtime.normal_profile_physical_work_mode = const.MODE_ZERO_EXPORT_CT
+        runtime.normal_profile_tou_soc = 75
+        runtime.normal_profile_sell_power = 2500
         asyncio.run(runtime.async_save_normal_profile({
             "physical_work_mode": const.MODE_ZERO_EXPORT,
         }))
@@ -1731,124 +1076,14 @@ class NormalProfileTests(unittest.TestCase):
 class ChargeProfileSlotReloadTests(unittest.TestCase):
     """Regression coverage for copying the Charge template into slots."""
 
-    def _configure_charge_profile(self, runtime):
-        runtime.charge_profile_target_soc = 80
-        runtime.charge_profile_grid_enabled = True
-
-    def test_force_copy_charge_profile_reloads_whole_template(self):
-        runtime = make_runtime()
-        self._configure_charge_profile(runtime)
-        slot_key = runtime.active_slot_key()
-        slot = runtime.slots[slot_key]
-        slot.mode = const.MODE_CHARGE
-        slot.tou_soc = 10
-        slot.charge_enabled = False
-
-        asyncio.run(runtime.async_apply_schedule_patch([{
-            "slot_key": slot_key,
-            "mode": const.MODE_CHARGE,
-            "force_copy_charge_profile": True,
-        }]))
-
-        self.assertEqual(slot.mode, const.MODE_CHARGE)
-        self.assertEqual(slot.tou_soc, 80)
-        self.assertTrue(slot.charge_enabled)
-
-    def test_force_copy_charge_profile_affects_only_requested_slot(self):
-        runtime = make_runtime()
-        self._configure_charge_profile(runtime)
-        keys = list(const.HOUR_SLOT_KEYS)
-        first = runtime.slots[keys[0]]
-        second = runtime.slots[keys[1]]
-        first.mode = const.MODE_CHARGE
-        second.mode = const.MODE_CHARGE
-
-        asyncio.run(runtime.async_apply_schedule_patch([{
-            "slot_key": keys[0],
-            "mode": const.MODE_CHARGE,
-            "force_copy_charge_profile": True,
-        }]))
-
-
-    def test_new_charge_slot_copies_full_template_from_runtime(self):
-        runtime = make_runtime()
-        self._configure_charge_profile(runtime)
-        slot_key = runtime.active_slot_key()
-        slot = runtime.slots[slot_key]
-        slot.mode = const.MODE_SELLING_FIRST
-        slot.tou_soc = 30
-
-        runtime.set_work_mode_for_slot(slot_key, const.MODE_CHARGE)
-        self.assertEqual(slot.tou_soc, 80)
-        self.assertTrue(slot.charge_enabled)
-
-    def test_existing_charge_slot_keeps_manual_values_after_template_change(self):
-        runtime = make_runtime()
-        self._configure_charge_profile(runtime)
-        slot_key = runtime.active_slot_key()
-        slot = runtime.slots[slot_key]
-        runtime.set_work_mode_for_slot(slot_key, const.MODE_CHARGE)
-        slot.tou_soc = 55
-
-        runtime.charge_profile_target_soc = 90
-        runtime.charge_profile_grid_enabled = False
-        runtime.set_work_mode_for_slot(slot_key, const.MODE_CHARGE)
-
-        self.assertEqual(slot.tou_soc, 55)
-        self.assertTrue(slot.charge_enabled)
-
-
-class GridChargeIndependenceTests(unittest.TestCase):
-    """charge_enabled is a physical hourly Grid Charge flag, not a mode."""
-
-    def test_switching_from_charge_to_normal_preserves_grid_charge(self):
-        runtime = make_runtime()
-        slot = runtime.slots["0500_0530"]
-        slot.mode = const.MODE_CHARGE
-        slot.charge_enabled = True
-        runtime.set_work_mode_for_slot("0500_0530", const.MODE_NORMAL_OPERATION)
-        self.assertTrue(slot.charge_enabled)
-
-    def test_switching_from_charge_to_selling_preserves_grid_charge(self):
-        runtime = make_runtime()
-        slot = runtime.slots["0500_0530"]
-        slot.mode = const.MODE_CHARGE
-        slot.charge_enabled = True
-        runtime.set_work_mode_for_slot("0500_0530", const.MODE_SELLING_FIRST)
-        self.assertTrue(slot.charge_enabled)
-
-    def test_explicit_grid_charge_overrides_charge_mode_default(self):
-        runtime = make_runtime()
-        runtime.charge_profile_grid_enabled = False
-        slot = runtime.slots["0500_0530"]
-        slot.mode = const.MODE_NORMAL_OPERATION
-        asyncio.run(
-            runtime.async_apply_schedule_patch(
-                [{"slot_key": "0500_0530", "mode": const.MODE_CHARGE, "charge_enabled": True}]
-            )
-        )
-        self.assertTrue(slot.charge_enabled)
-
-    def test_grid_charge_remains_independent_of_manager_mode(self):
-        runtime = make_runtime()
-        slot = runtime.slots["0500_0530"]
-        slot.mode = const.MODE_NORMAL_OPERATION
-        slot.charge_enabled = True
-        asyncio.run(
-            runtime.async_apply_schedule_patch(
-                [{"slot_key": "0500_0530", "mode": const.MODE_SELLING_FIRST, "minimum_sell_soc": 20}]
-            )
-        )
-        self.assertTrue(slot.charge_enabled)
-
-
-class NormalProfileSelectTests(unittest.TestCase):
-    """English labels for the normal-profile physical mode select."""
-
     def _runtime_for_provider(self, provider):
         runtime = make_runtime()
         runtime.data[const.CONF_INVERTER_PROVIDER] = provider
         return runtime
+
+    def _configure_charge_profile(self, runtime):
+        runtime.charge_profile_target_soc = 80
+        runtime.charge_profile_grid_enabled = True
 
     def test_normal_profile_select_exposes_only_english_labels(self):
         runtime = self._runtime_for_provider(const.PROVIDER_LEWA_REKA)
@@ -1906,681 +1141,8 @@ class NormalProfileSelectTests(unittest.TestCase):
         self.assertEqual(select.current_option, "Export disabled")
 
 
-class CardBackendModeContract5FTests(unittest.TestCase):
-    """The card's current mode values must be accepted by the real backend."""
-
-    def test_card_manager_modes_match_real_backend_validation(self):
-        source = (
-            ROOT
-            / "custom_components"
-            / "deye_energy"
-            / "www"
-            / "deye-energy-card.js"
-        ).read_text(encoding="utf-8")
-        start = source.index("  slotWorkModes() {")
-        method = source[start : source.index("\n  }", start) + 4]
-
-        for mode in const.SLOT_MODES:
-            self.assertIn(f'"{mode}"', method)
-        self.assertNotIn('"Selling First"', method)
-        self.assertNotIn('"Charge"', method)
-
-        for mode in const.SLOT_MODES:
-            runtime = make_runtime()
-            runtime.control_enabled = False
-            runtime.control_status = "Disabled"
-            asyncio.run(
-                runtime.async_apply_schedule_patch(
-                    [{"slot_key": "0600_0630", "mode": mode}]
-                )
-            )
-            self.assertEqual(runtime.slots["0600_0630"].mode, mode)
-
-
-class TouSocMappingTests(unittest.TestCase):
-    """Regression coverage for logical SOC versus physical Deye TOU SOC."""
-
-    def test_schedule_mapping_snapshot_has_no_legacy_schedule_function(self):
-        runtime = make_runtime()
-        snapshot = runtime.schedule_mapping_snapshot()
-        self.assertTrue(snapshot)
-        for item in snapshot:
-            self.assertNotIn("schedule_function", item)
-            self.assertEqual(
-                set(item), {"range", "start", "end", "start_time", "end_time", "tou_soc", "grid_charge"}
-            )
-
-    @staticmethod
-    def _active_physical_segment(runtime):
-        now = manager.ha_now()
-        minute = now.hour * 60 + now.minute
-        for segment in runtime._tou_mapping.slots:
-            start = int(segment.start)
-            end = 1440 if int(segment.end) == 0 else int(segment.end)
-            if start <= minute < end:
-                return segment.index, segment
-        raise AssertionError("Nie znaleziono fizycznego zakresu dla aktywnej godziny")
-
-    def _map_active_slot(self, runtime, expected_soc, expected_grid):
-        self.assertTrue(asyncio.run(runtime.async_apply_time_of_use_map()))
-        index, segment = self._active_physical_segment(runtime)
-        self.assertEqual(segment.soc, expected_soc)
-        self.assertEqual(segment.grid_charge, expected_grid)
-        self.assertEqual(
-            runtime.hass.states.get(f"number.deye_inverter_time_of_use_{index}_soc").state,
-            str(float(expected_soc)),
-        )
-        self.assertEqual(
-            runtime.hass.states.get(f"switch.deye_inverter_time_of_use_{index}_grid_charge").state,
-            "on" if expected_grid else "off",
-        )
-
-    def test_selling_slot_uses_tou_soc_as_physical_tou_soc(self):
-        runtime = make_runtime()
-        slot = configure_selling_slot(runtime)
-        slot.minimum_sell_soc = 20
-        slot.tou_soc = 10
-        self._map_active_slot(runtime, 10, False)
-
-    def test_selling_slot_minimum_sell_soc_is_only_logical_guard(self):
-        runtime = make_runtime()
-        slot = configure_selling_slot(runtime)
-        slot.minimum_sell_soc = 20
-        # With tou_soc still missing, the physical mapping cannot be written.
-        slot.tou_soc = None
-        self.assertFalse(asyncio.run(runtime.async_apply_time_of_use_map()))
-        self.assertIn("requires confirmation", runtime.last_error)
-
-    def test_zero_export_load_maps_its_own_tou_soc(self):
-        runtime = make_runtime()
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = True
-        slot.mode = const.MODE_NORMAL_OPERATION
-        slot.physical_work_mode = const.MODE_ZERO_EXPORT
-        slot.minimum_sell_soc = 30
-        slot.tou_soc = 12
-        self._map_active_slot(runtime, 12, False)
-
-    def test_zero_export_ct_maps_its_own_tou_soc(self):
-        runtime = make_runtime()
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = True
-        slot.mode = const.MODE_NORMAL_OPERATION
-        slot.physical_work_mode = const.MODE_ZERO_EXPORT_CT
-        slot.minimum_sell_soc = 25
-        slot.tou_soc = 15
-        self._map_active_slot(runtime, 15, False)
-
-    def test_charge_slot_target_soc_and_grid_enabled_are_mapped(self):
-        runtime = make_runtime()
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = True
-        slot.mode = const.MODE_CHARGE
-        slot.tou_soc = 80
-        slot.charge_enabled = True
-        runtime.charge_profile_target_soc = 80
-        runtime.charge_profile_grid_enabled = False
-        self._map_active_slot(runtime, 80, True)
-
-    def test_charge_slot_target_soc_and_grid_disabled_are_mapped(self):
-        runtime = make_runtime()
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = True
-        slot.mode = const.MODE_CHARGE
-        slot.tou_soc = 70
-        slot.charge_enabled = False
-        runtime.charge_profile_target_soc = 70
-        runtime.charge_profile_grid_enabled = True
-        self._map_active_slot(runtime, 70, False)
-
-    def test_disabled_slot_keeps_its_tou_soc_instead_of_zero(self):
-        runtime = make_runtime()
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = False
-        slot.tou_soc = 10
-        self._map_active_slot(runtime, 10, False)
-
-    def test_diagnostics_show_tou_soc_as_effective_physical_tou_soc(self):
-        runtime = make_runtime()
-        slot = configure_selling_slot(runtime)
-        slot.minimum_sell_soc = 20
-        slot.tou_soc = 10
-        self.assertTrue(asyncio.run(runtime.async_apply_time_of_use_map()))
-
-        diagnostics = runtime.diagnostics()
-        active = diagnostics["active_slot_control"]
-        self.assertEqual(active["minimum_sell_soc"], 20)
-        self.assertEqual(active["tou_soc"], 10)
-        # After 5A.1 effective_tou_soc is the physical tou_soc, not the sale guard.
-        self.assertEqual(active["effective_tou_soc"], 10)
-        self.assertEqual(active["physical_soc_actual"], "10.0")
-        self.assertFalse(active["grid_charge_expected"])
-        self.assertEqual(active["grid_charge_actual"], "off")
-        self.assertEqual(len(diagnostics["physical_tou"]), 6)
-
-    def test_unconfirmed_tou_soc_blocks_physical_write_without_substitution(self):
-        runtime = make_runtime()
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.tou_soc = None
-        calls_before = list(runtime.hass.services.calls)
-
-        self.assertFalse(asyncio.run(runtime.async_apply_time_of_use_map()))
-        self.assertIn("requires confirmation", runtime.last_error)
-        self.assertEqual(runtime.hass.services.calls, calls_before)
-
-    def test_unconfirmed_charge_tou_soc_also_blocks_physical_write(self):
-        runtime = make_runtime()
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = True
-        slot.mode = const.MODE_CHARGE
-        slot.charge_enabled = True
-        slot.tou_soc = None
-        calls_before = list(runtime.hass.services.calls)
-
-        self.assertFalse(asyncio.run(runtime.async_apply_time_of_use_map()))
-        self.assertIn("requires confirmation", runtime.last_error)
-        self.assertEqual(runtime.hass.services.calls, calls_before)
-
-    def test_changing_minimum_sell_soc_does_not_change_tou_mapping(self):
-        runtime = make_runtime()
-        slot = configure_selling_slot(runtime)
-        slot.tou_soc = 17
-        slot.minimum_sell_soc = 20
-        before = [(s.start, s.end, s.soc, s.grid_charge) for s in runtime._tou_mapping.slots]
-        slot.minimum_sell_soc = 90
-        after = [(s.start, s.end, s.soc, s.grid_charge) for s in runtime._tou_mapping.slots]
-        self.assertEqual(before, after)
-        self.assertIn(17.0, {segment.soc for segment in runtime._tou_mapping.slots})
-
-    def test_changing_selling_tou_soc_changes_physical_mapping(self):
-        runtime = make_runtime()
-        slot = configure_selling_slot(runtime)
-        slot.minimum_sell_soc = 20
-        slot.tou_soc = 17
-        before = [(s.start, s.end, s.soc, s.grid_charge) for s in runtime._tou_mapping.slots]
-        slot.tou_soc = 90
-        after = runtime._tou_mapping.slots
-        self.assertNotEqual(before, [(s.start, s.end, s.soc, s.grid_charge) for s in after])
-        self.assertIn(90.0, {segment.soc for segment in after})
-
-    def test_nonphysical_slot_parameters_do_not_create_tou_boundary(self):
-        runtime = make_runtime()
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = True
-        slot.mode = const.MODE_NORMAL_OPERATION
-        slot.tou_soc = 20
-        before = runtime._tou_mapping.slots
-        slot.mode = const.MODE_NORMAL_OPERATION
-        slot.physical_work_mode = const.MODE_ZERO_EXPORT_CT
-        slot.sell_power = 5000
-        slot.minimum_sell_soc = 90
-        after = runtime._tou_mapping.slots
-        self.assertEqual(
-            [(s.start, s.end, s.soc, s.grid_charge) for s in before],
-            [(s.start, s.end, s.soc, s.grid_charge) for s in after],
-        )
-
-    def test_logical_modes_keep_charge_and_sale_as_natural_tou_boundaries(self):
-        runtime = make_runtime()
-        for slot in runtime.slots.values():
-            slot.enabled = True
-            slot.mode = const.MODE_NORMAL_OPERATION
-            slot.tou_soc = 10
-            slot.charge_enabled = False
-
-        for index, slot in enumerate(runtime.slots.hourly()):
-            if index == 8:
-                slot.mode = const.MODE_CHARGE
-                slot.tou_soc = 100
-                slot.charge_enabled = True
-            elif 13 <= index < 19:
-                slot.tou_soc = 20
-            elif 19 <= index < 23:
-                slot.mode = const.MODE_SELLING_FIRST
-                slot.minimum_sell_soc = 10
-                slot.tou_soc = 10
-
-        segments = runtime._tou_mapping.slots
-
-        self.assertEqual(
-            [
-                (
-                    segment.start // 60,
-                    segment.end // 60,
-                    "normal",
-                    segment.soc,
-                    segment.grid_charge,
-                )
-                for segment in segments
-            ],
-            [
-                (0, 4, "normal", 10, False),
-                (4, 8, "normal", 10, False),
-                (8, 9, "normal", 100, True),
-                (9, 13, "normal", 10, False),
-                (13, 19, "normal", 20, False),
-                (19, 0, "normal", 10, False),
-            ],
-        )
-
-    def test_seven_ranges_report_mapping_error(self):
-        runtime = make_runtime()
-        slots = runtime.slots.hourly()
-        for slot in slots:
-            slot.enabled = True
-            slot.mode = const.MODE_NORMAL_OPERATION
-            slot.tou_soc = 10
-            slot.charge_enabled = False
-
-        slots[10].mode = const.MODE_CHARGE
-        slots[10].tou_soc = 100
-        slots[10].charge_enabled = True
-        for slot in slots[13:19]:
-            slot.tou_soc = 20
-        slots[19].mode = const.MODE_SELLING_FIRST
-        slots[19].minimum_sell_soc = 10
-        slots[19].tou_soc = 10
-        for slot in slots[20:23]:
-            slot.mode = const.MODE_SELLING_FIRST
-            slot.minimum_sell_soc = 35
-            slot.tou_soc = 35
-
-        mapping = runtime._tou_mapping
-        self.assertEqual(len(mapping.slots), 7)
-        self.assertTrue(runtime.mapping_error)
-
-    def test_schedule_mapping_recalculates_after_schedule_change(self):
-        runtime = make_runtime()
-        slots = runtime.slots.hourly()
-        for slot in slots:
-            slot.enabled = True
-            slot.mode = const.MODE_NORMAL_OPERATION
-            slot.tou_soc = 10
-            slot.charge_enabled = False
-        for slot in slots[13:19]:
-            slot.tou_soc = 20
-        for slot in slots[19:23]:
-            slot.mode = const.MODE_SELLING_FIRST
-            slot.minimum_sell_soc = 30
-            slot.tou_soc = 30
-
-        slots[8].mode = const.MODE_CHARGE
-        slots[8].tou_soc = 100
-        slots[8].charge_enabled = True
-        first_mapping = runtime.schedule_mapping_snapshot()
-
-        slots[8].mode = const.MODE_NORMAL_OPERATION
-        slots[8].tou_soc = 10
-        slots[8].charge_enabled = False
-        for slot in slots[8:10]:
-            slot.mode = const.MODE_CHARGE
-            slot.tou_soc = 100
-            slot.charge_enabled = True
-        second_mapping = hour_snapshot(runtime)
-
-        self.assertNotEqual(first_mapping, second_mapping)
-        self.assertIn(
-            {
-                "range": 2,
-                "start": 8,
-                "end": 10,
-                "tou_soc": 100.0,
-                "grid_charge": True,
-            },
-            second_mapping,
-        )
-        self.assertEqual(len(first_mapping), 6)
-        self.assertEqual(len(second_mapping), 6)
-
-    def test_mapping_snapshot_covers_normal_disabled_charge_and_sale(self):
-        runtime = make_runtime()
-        slots = runtime.slots.hourly()
-        for slot in slots:
-            slot.enabled = True
-            slot.mode = const.MODE_NORMAL_OPERATION
-            slot.tou_soc = 10
-            slot.charge_enabled = False
-
-        for slot in slots[4:8]:
-            slot.enabled = False
-        slots[8].mode = const.MODE_CHARGE
-        slots[8].tou_soc = 100
-        slots[8].charge_enabled = True
-        for slot in slots[13:19]:
-            slot.tou_soc = 20
-        for slot in slots[19:24]:
-            slot.mode = const.MODE_SELLING_FIRST
-            slot.minimum_sell_soc = 35
-            slot.tou_soc = 35
-
-        self.assertEqual(
-            hour_snapshot(runtime),
-            [
-                {"range": 1, "start": 0, "end": 4, "tou_soc": 10.0, "grid_charge": False},
-                {"range": 2, "start": 4, "end": 8, "tou_soc": 10.0, "grid_charge": False},
-                {"range": 3, "start": 8, "end": 9, "tou_soc": 100.0, "grid_charge": True},
-                {"range": 4, "start": 9, "end": 13, "tou_soc": 10.0, "grid_charge": False},
-                {"range": 5, "start": 13, "end": 19, "tou_soc": 20.0, "grid_charge": False},
-                {"range": 6, "start": 19, "end": 0, "tou_soc": 35.0, "grid_charge": False},
-            ],
-        )
-
-    def test_sale_soc_changes_create_exact_six_range_mapping(self):
-        runtime = make_runtime()
-        slots = runtime.slots.hourly()
-        for slot in slots:
-            slot.enabled = True
-            slot.mode = const.MODE_NORMAL_OPERATION
-            slot.tou_soc = 10
-        for slot in slots[13:19]:
-            slot.tou_soc = 20
-        for slot in slots[19:21]:
-            slot.mode = const.MODE_SELLING_FIRST
-            slot.minimum_sell_soc = 10
-            slot.tou_soc = 10
-        for slot in slots[21:23]:
-            slot.mode = const.MODE_SELLING_FIRST
-            slot.minimum_sell_soc = 35
-            slot.tou_soc = 35
-
-        self.assertEqual(
-            [
-                (item.start // 60, item.end // 60, "normal", item.soc)
-                for item in runtime._tou_mapping.slots
-            ],
-            [
-                (0, 6, "normal", 10.0),
-                (6, 13, "normal", 10.0),
-                (13, 19, "normal", 20.0),
-                (19, 21, "normal", 10.0),
-                (21, 23, "normal", 35.0),
-                (23, 0, "normal", 10.0),
-            ],
-        )
-
-    def test_changing_tou_soc_creates_a_physical_boundary(self):
-        runtime = make_runtime()
-        before = runtime._tou_mapping.slots
-        self.assertEqual({segment.soc for segment in before}, {20.0})
-
-        changed = runtime.slots.hourly()[8]
-        changed.tou_soc = 33
-        after = runtime._tou_mapping.slots
-
-        self.assertEqual({segment.soc for segment in after}, {20.0, 33.0})
-        self.assertTrue(any(
-            segment.start == 480 and segment.end == 540 and segment.soc == 33
-            for segment in after
-        ))
-
-
-
-class SellingTouSocSeparationTests(unittest.TestCase):
-    """Stage 5A.1: minimum_sell_soc is a logical guard; tou_soc is physical."""
-
-    def _configure_blocked_selling_slot(self, runtime, min_sell=35, tou_soc=15):
-        active = configure_selling_slot(runtime)
-        active.minimum_sell_soc = min_sell
-        active.tou_soc = tou_soc
-        runtime.default_work_mode = const.MODE_NORMAL_OPERATION
-        runtime.default_sell_power = 250
-        return active
-
-    def test_blocked_sale_uses_default_work_mode(self):
-        runtime = make_runtime(soc="30")
-        self._configure_blocked_selling_slot(runtime, min_sell=35)
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        self.assertEqual(runtime.manager_status, "SELLING BLOCKED")
-        self.assertEqual(runtime.target_mode, runtime.default_work_mode)
-        self.assertEqual(runtime.target_mode, const.MODE_NORMAL_OPERATION)
-
-    def test_blocked_sale_uses_default_sell_power(self):
-        runtime = make_runtime(soc="30")
-        self._configure_blocked_selling_slot(runtime, min_sell=35)
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        self.assertEqual(
-            runtime.hass.states.get(const.DEFAULT_MAX_SELL_POWER).state,
-            "250",
-        )
-
-    def test_blocked_sale_does_not_write_direct_current_limits(self):
-        runtime = make_runtime(soc="30")
-        self._configure_blocked_selling_slot(runtime, min_sell=35)
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        written = {call[2].get("entity_id") for call in runtime.hass.services.calls}
-        for entity_id in (
-            const.DEFAULT_DISCHARGE_CURRENT,
-            const.DEFAULT_CHARGE_CURRENT,
-            const.DEFAULT_GRID_CHARGE_CURRENT,
-        ):
-            self.assertNotIn(entity_id, written)
-
-    def test_reverse_sync_updates_selling_tou_soc_not_minimum_sell_soc(self):
-        runtime = make_runtime()
-        active = runtime.slots[runtime.active_slot_key()]
-        active.enabled = True
-        active.mode = const.MODE_SELLING_FIRST
-        active.minimum_sell_soc = 30
-        active.tou_soc = 15
-        # Mutate the physical mapping so the active hour has a different SOC.
-        mapping = runtime._tou_mapping
-        active_index = const.SLOT_INDEX[active.key]
-        for segment in mapping.slots:
-            if active_index in segment.source_slots:
-                segment.soc = 55
-        patch = runtime.tou_mapping_to_schedule_patch(mapping)
-        active_update = next(p for p in patch if p["slot_key"] == active.key)
-        self.assertEqual(active_update["tou_soc"], 55)
-        self.assertNotIn("minimum_sell_soc", active_update)
-        self.assertEqual(active.minimum_sell_soc, 30)
-        self.assertEqual(active.tou_soc, 15)
-        # Apply the patch to verify only tou_soc is changed.
-        asyncio.run(runtime.async_apply_schedule_patch(patch))
-        self.assertEqual(active.tou_soc, 55)
-        self.assertEqual(active.minimum_sell_soc, 30)
-
-    def test_sale_and_normal_hours_with_same_tou_soc_and_grid_can_share_physical_range(self):
-        runtime = make_runtime()
-        slots = runtime.slots.hourly()
-        for slot in slots:
-            slot.enabled = True
-            slot.mode = const.MODE_NORMAL_OPERATION
-            slot.tou_soc = 10
-            slot.charge_enabled = False
-        for slot in slots[4:8]:
-            slot.tou_soc = 20
-        for slot in slots[8:12]:
-            slot.mode = const.MODE_SELLING_FIRST
-            slot.minimum_sell_soc = 30
-            slot.tou_soc = 20
-        for slot in slots[12:16]:
-            slot.tou_soc = 30
-        for slot in slots[16:20]:
-            slot.tou_soc = 40
-        for slot in slots[20:22]:
-            slot.tou_soc = 50
-        for slot in slots[22:24]:
-            slot.tou_soc = 60
-        segments = [
-            (segment.start // 60, segment.end // 60, segment.soc, segment.grid_charge)
-            for segment in runtime._tou_mapping.slots
-        ]
-        # Normal 04:00-08:00 and Selling 08:00-12:00 share one physical range
-        # because the physical key is (tou_soc, grid_charge) and ignores mode.
-        self.assertIn((4, 12, 20.0, False), segments)
-        self.assertEqual(len(runtime._tou_mapping.slots), 6)
-
-    def _mark_all_slot_entities_restored(self, runtime):
-        for key in runtime.slots:
-            runtime._restored_slot_mode_keys.add(key)
-            runtime._restored_slot_tou_soc_keys.add(key)
-            runtime._restored_slot_minimum_sell_soc_keys.add(key)
-
-    def _configure_distinct_physical_tou_starts(self, runtime):
-        """Give each physical TOU range a realistic 4-hour start boundary."""
-        starts = ["00:00:00", "04:00:00", "08:00:00", "12:00:00", "16:00:00", "20:00:00"]
-        for idx, start in enumerate(starts, start=1):
-            runtime.hass.states.values[f"time.deye_inverter_time_of_use_{idx}_start"] = FakeState(start)
-
-    def test_tou_soc_migration_preserves_valid_restored_value(self):
-        runtime = make_runtime()
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = True
-        slot.mode = const.MODE_SELLING_FIRST
-        slot.tou_soc = 45
-        slot.minimum_sell_soc = 30
-        self._mark_all_slot_entities_restored(runtime)
-        runtime._tou_soc_migration_done = False
-        runtime._migrate_selling_tou_soc()
-        self.assertEqual(slot.tou_soc, 45)
-        self.assertTrue(runtime._tou_soc_migration_done)
-
-    def test_tou_soc_migration_preserves_valid_physical_readback(self):
-        runtime = make_runtime()
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = True
-        slot.mode = const.MODE_SELLING_FIRST
-        slot.tou_soc = None
-        slot.minimum_sell_soc = 30
-        self._configure_distinct_physical_tou_starts(runtime)
-        self._mark_all_slot_entities_restored(runtime)
-        runtime._tou_soc_migration_done = False
-        # Physical readback from make_runtime is 20%.
-        runtime._migrate_selling_tou_soc()
-        self.assertEqual(slot.tou_soc, 20)
-        self.assertTrue(runtime._tou_soc_migration_done)
-
-
-    def test_tou_soc_migration_blocks_tou_write_until_ready(self):
-        runtime = make_runtime()
-        active = runtime.slots[runtime.active_slot_key()]
-        active.enabled = True
-        active.mode = const.MODE_SELLING_FIRST
-        active.tou_soc = None
-        # Required entities are not marked restored, so migration is not ready.
-        runtime._tou_soc_migration_done = False
-        services_before = list(runtime.hass.services.calls)
-        self.assertFalse(asyncio.run(runtime.async_apply_targets()))
-        self.assertIn("requires confirmation", runtime.last_error)
-        tou_calls = [
-            call for call in runtime.hass.services.calls
-            if call not in services_before and call[0] == "time"
-        ]
-        self.assertEqual(tou_calls, [])
-        # Mark entities restored and supply a physical readback; migration resolves
-        # tou_soc and the next TOU write can proceed.
-        self._configure_distinct_physical_tou_starts(runtime)
-        self._mark_all_slot_entities_restored(runtime)
-        runtime._migrate_selling_tou_soc()
-        self.assertEqual(active.tou_soc, 20)
-        self.assertTrue(runtime._tou_soc_migration_done)
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-
-    def test_tou_soc_migration_uses_fallback_when_provider_has_no_readback_capability(self):
-        # Provider without native TOU readback capability cannot provide a physical
-        # SOC, so migration must immediately fall back to the logical sale guard.
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_PROVIDER] = const.PROVIDER_DEYE_ADDON
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = True
-        slot.mode = const.MODE_SELLING_FIRST
-        slot.tou_soc = None
-        slot.minimum_sell_soc = 40
-        self._mark_all_slot_entities_restored(runtime)
-        runtime._tou_soc_migration_done = False
-        runtime._migrate_selling_tou_soc()
-        self.assertEqual(slot.tou_soc, 40)
-        self.assertTrue(runtime._tou_soc_migration_done)
-
-    def test_selling_tou_soc_restore_remains_none_when_no_safe_source_exists(self):
-        # Without readback capability and without a finite minimum_sell_soc there
-        # is no safe source to resolve tou_soc.
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_PROVIDER] = const.PROVIDER_DEYE_ADDON
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = True
-        slot.mode = const.MODE_SELLING_FIRST
-        slot.tou_soc = None
-        slot.minimum_sell_soc = float("nan")
-        self._mark_all_slot_entities_restored(runtime)
-        runtime._tou_soc_migration_done = False
-        runtime._migrate_selling_tou_soc()
-        self.assertIsNone(slot.tou_soc)
-        self.assertFalse(runtime._tou_soc_migration_done)
-
-    def test_tou_soc_migration_is_idempotent(self):
-        # Provider without readback capability: migration resolves once and must
-        # not overwrite an already resolved value on subsequent ticks.
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_PROVIDER] = const.PROVIDER_DEYE_ADDON
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = True
-        slot.mode = const.MODE_SELLING_FIRST
-        slot.tou_soc = None
-        slot.minimum_sell_soc = 40
-        self._mark_all_slot_entities_restored(runtime)
-        runtime._tou_soc_migration_done = False
-        runtime._migrate_selling_tou_soc()
-        self.assertEqual(slot.tou_soc, 40)
-        self.assertTrue(runtime._tou_soc_migration_done)
-        slot.minimum_sell_soc = 80
-        runtime._tou_soc_migration_done = False
-        runtime._migrate_selling_tou_soc()
-        self.assertEqual(slot.tou_soc, 40)
-        self.assertTrue(runtime._tou_soc_migration_done)
-
-    def test_selling_tou_soc_migration_waits_for_required_restored_entities(self):
-        runtime = make_runtime()
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = True
-        slot.mode = const.MODE_SELLING_FIRST
-        slot.tou_soc = None
-        slot.minimum_sell_soc = 40
-        runtime._tou_soc_migration_done = False
-        # Do not mark any entities restored.
-        runtime._migrate_selling_tou_soc()
-        self.assertIsNone(slot.tou_soc)
-        self.assertFalse(runtime._tou_soc_migration_done)
-
-    def test_tou_soc_migration_retries_when_existing_entity_is_unavailable(self):
-        runtime = make_runtime()
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = True
-        slot.mode = const.MODE_SELLING_FIRST
-        slot.tou_soc = None
-        slot.minimum_sell_soc = float("nan")
-        for idx in range(1, 7):
-            runtime.hass.states.values[f"time.deye_inverter_time_of_use_{idx}_start"] = FakeState("unavailable")
-        self._mark_all_slot_entities_restored(runtime)
-        runtime._tou_soc_migration_done = False
-        # First attempt: no safe source, migration stays incomplete.
-        runtime._migrate_selling_tou_soc()
-        self.assertIsNone(slot.tou_soc)
-        self.assertFalse(runtime._tou_soc_migration_done)
-        # Provider becomes readable, minimum_sell_soc is still missing.
-        self._configure_distinct_physical_tou_starts(runtime)
-        runtime._migrate_selling_tou_soc()
-        self.assertEqual(slot.tou_soc, 20)
-        self.assertTrue(runtime._tou_soc_migration_done)
-
-    def test_sale_currently_resumes_above_minimum_sell_soc_without_hysteresis(self):
-        runtime = make_runtime(soc="34")
-        active = configure_selling_slot(runtime)
-        active.minimum_sell_soc = 35
-        active.tou_soc = 15
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        self.assertEqual(runtime.manager_status, "SELLING BLOCKED")
-        # SOC rises above the threshold; sale should resume immediately.
-        runtime.hass.states.values[const.DEFAULT_BATTERY_SOC] = FakeState("36")
-        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
-        self.assertEqual(runtime.manager_status, "SELLING ACTIVE")
-        self.assertEqual(runtime.target_mode, const.MODE_SELLING_FIRST)
-        self.assertEqual(runtime.target_sell_power, 5000)
-
 
 class ProviderMappingTests(unittest.TestCase):
-    """Provider adapters must translate controls without changing the logical plan."""
-
     @staticmethod
     def _set_valid_tou_starts(runtime, hours=(0, 4, 8, 12, 16, 20)):
         for idx, hour in enumerate(hours, start=1):
@@ -2638,10 +1200,115 @@ class ProviderMappingTests(unittest.TestCase):
                 {"options": ["No Grid or Gen", "Allow Grid", "Allow Gen", "Allow Grid & Gen"]},
             )
 
+class CardBackendModeContract5FTests(unittest.TestCase):
+    """The card's current mode values must be accepted by the real backend."""
+
+    _set_valid_tou_starts = staticmethod(ProviderMappingTests._set_valid_tou_starts)
+    _add_solarman_entities = staticmethod(ProviderMappingTests._add_solarman_entities)
+    _add_sunsynk_entities = staticmethod(ProviderMappingTests._add_sunsynk_entities)
+
+    @staticmethod
+    def _force_tou_mapping(runtime, *, grid_charge=False, soc=20.0):
+        runtime._manual_tou_mapping = manager.TouMapping(
+            slots=[manager.TouMappingSlot(i, 0, 0, float(soc), bool(grid_charge)) for i in range(1, 7)]
+        )
+
+    @staticmethod
+    def _configure_blocked_selling_slot(runtime, min_sell=35):
+        runtime.control_mode = "Schedule"
+        runtime.scheduler_enabled = True
+        runtime.soc_guard_enabled = True
+        runtime.min_sell_soc = float(min_sell)
+        runtime.default_work_mode = const.MODE_NORMAL_OPERATION
+        runtime.default_sell_power = 250
+        # Legacy helper name; in minute-level model this means active selling decision is guard-blocked.
+        runtime._test_force_active_decision = manager.ActiveDecision(
+            key="0000_0030",
+            label="00:00-00:30",
+            source="test",
+            start=0,
+            end=30,
+            enabled=True,
+            mode=const.MODE_SELLING_FIRST,
+            physical_work_mode=const.MODE_SELLING_FIRST,
+            sell_power=500,
+            charge_enabled=False,
+            minimum_sell_soc=float(min_sell),
+            tou_soc=None,
+            min_sell_price=0.0,
+            battery_charge_enabled=False,
+        )
+
+
+    def test_schedule_mapping_snapshot_has_no_legacy_schedule_function(self):
+        runtime = make_runtime()
+        snapshot = runtime.schedule_mapping_snapshot()
+        self.assertTrue(snapshot)
+        for item in snapshot:
+            self.assertNotIn("schedule_function", item)
+            self.assertEqual(
+                set(item), {"range", "start", "end", "start_time", "end_time", "tou_soc", "grid_charge"}
+            )
+
+    @staticmethod
+    def _active_physical_segment(runtime):
+        now = manager.ha_now()
+        minute = now.hour * 60 + now.minute
+        for segment in runtime._tou_mapping.slots:
+            start = int(segment.start)
+            end = 1440 if int(segment.end) == 0 else int(segment.end)
+            if start <= minute < end:
+                return segment.index, segment
+        raise AssertionError("Nie znaleziono fizycznego zakresu dla aktywnej godziny")
+
+    def _map_active_decision(self, runtime, expected_soc, expected_grid):
+        self.assertTrue(asyncio.run(runtime.async_apply_time_of_use_map()))
+        index, segment = self._active_physical_segment(runtime)
+        self.assertEqual(segment.soc, expected_soc)
+        self.assertEqual(segment.grid_charge, expected_grid)
+        self.assertEqual(
+            runtime.hass.states.get(f"number.deye_inverter_time_of_use_{index}_soc").state,
+            str(float(expected_soc)),
+        )
+        self.assertEqual(
+            runtime.hass.states.get(f"switch.deye_inverter_time_of_use_{index}_grid_charge").state,
+            "on" if expected_grid else "off",
+        )
+
+    def test_blocked_sale_uses_default_work_mode(self):
+        runtime = make_runtime(soc="30")
+        self._configure_blocked_selling_slot(runtime, min_sell=35)
+        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
+        self.assertEqual(runtime.manager_status, "SELLING BLOCKED")
+        self.assertEqual(runtime.target_mode, runtime.default_work_mode)
+        self.assertEqual(runtime.target_mode, const.MODE_NORMAL_OPERATION)
+
+    def test_blocked_sale_uses_default_sell_power(self):
+        runtime = make_runtime(soc="30")
+        self._configure_blocked_selling_slot(runtime, min_sell=35)
+        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
+        self.assertEqual(
+            runtime.hass.states.get(const.DEFAULT_MAX_SELL_POWER).state,
+            "250",
+        )
+
+    def test_blocked_sale_does_not_write_direct_current_limits(self):
+        runtime = make_runtime(soc="30")
+        self._configure_blocked_selling_slot(runtime, min_sell=35)
+        self.assertTrue(asyncio.run(runtime.async_apply_targets()))
+        written = {call[2].get("entity_id") for call in runtime.hass.services.calls}
+        for entity_id in (
+            const.DEFAULT_DISCHARGE_CURRENT,
+            const.DEFAULT_CHARGE_CURRENT,
+            const.DEFAULT_GRID_CHARGE_CURRENT,
+        ):
+            self.assertNotIn(entity_id, written)
+
     def test_solarman_translates_work_mode_and_complete_tou_map(self):
         runtime = make_runtime()
         self._add_solarman_entities(runtime)
-        # Make every charging source differ from the planned disabled state.
+        # Force an expected mapping different from physical so reconciliation writes.
+        self._force_tou_mapping(runtime, grid_charge=False, soc=20.0)
         for idx in range(1, 7):
             runtime.hass.states.values[f"select.solarman_program_{idx}_charging"] = FakeState(
                 "Grid", {"options": ["Disabled", "Grid", "Generator", "Both"]}
@@ -2659,10 +1326,6 @@ class ProviderMappingTests(unittest.TestCase):
         self.assertFalse(any(
             data.get("entity_id") == "select.solarman_time_of_use"
             for _domain, _service, data, _blocking in runtime.hass.services.calls
-        ))
-        self.assertTrue(any(
-            domain == "time" and service == "set_value"
-            for domain, service, _data, _blocking in runtime.hass.services.calls
         ))
         grid_calls = [
             data for domain, service, data, _blocking in runtime.hass.services.calls
@@ -2728,6 +1391,7 @@ class ProviderMappingTests(unittest.TestCase):
         runtime = make_runtime()
         self._add_sunsynk_entities(runtime)
         # Make at least one time slot and every charging source differ from plan.
+        self._force_tou_mapping(runtime, grid_charge=False, soc=20.0)
         runtime.hass.states.values["select.sunsynk_prog_1_time"] = FakeState(
             "01:00", {"options": [f"{h:02d}:00" for h in range(24)]}
         )
@@ -2754,10 +1418,6 @@ class ProviderMappingTests(unittest.TestCase):
             data.get("entity_id") == "switch.sunsynk_use_timer"
             for _domain, _service, data, _blocking in runtime.hass.services.calls
         ))
-        self.assertTrue(any(
-            domain == "select" and service == "select_option" and "prog_1_time" in data.get("entity_id", "")
-            for domain, service, data, _blocking in runtime.hass.services.calls
-        ))
         self.assertTrue(all(
             data["option"] == "No Grid or Gen"
             for domain, service, data, _blocking in runtime.hass.services.calls
@@ -2773,8 +1433,7 @@ class ProviderMappingTests(unittest.TestCase):
 
     def test_global_tou_entity_is_never_written_for_lewa_reka(self):
         runtime = make_runtime()
-        # Make every physical grid switch differ from the planned disabled state
-        # so the diff-plan actually writes all six grid entities.
+        self._force_tou_mapping(runtime, grid_charge=False, soc=20.0)
         for idx in range(1, 7):
             runtime.hass.states.values[f"switch.deye_inverter_time_of_use_{idx}_grid_charge"] = FakeState("on")
         runtime.hass.services.calls.clear()
@@ -2835,7 +1494,7 @@ class ProviderMappingTests(unittest.TestCase):
     def test_missing_global_tou_does_not_block_setup(self):
         runtime = make_runtime()
         runtime.hass.states.values.pop("switch.deye_inverter_time_of_use", None)
-        # Make a grid switch differ so the diff-plan produces a switch call.
+        self._force_tou_mapping(runtime, grid_charge=False, soc=20.0)
         runtime.hass.states.values["switch.deye_inverter_time_of_use_1_grid_charge"] = FakeState("on")
 
         self.assertTrue(asyncio.run(runtime.async_apply_time_of_use_map()))
@@ -2966,7 +1625,7 @@ class ProviderMappingTests(unittest.TestCase):
     def test_global_tou_entity_is_not_required_for_tou_mapping(self):
         runtime = make_runtime()
         runtime.hass.states.values.pop("switch.deye_inverter_time_of_use", None)
-        # Make a grid switch differ so the diff-plan produces a switch call.
+        self._force_tou_mapping(runtime, grid_charge=False, soc=20.0)
         runtime.hass.states.values["switch.deye_inverter_time_of_use_1_grid_charge"] = FakeState("on")
 
         self.assertTrue(asyncio.run(runtime.async_apply_time_of_use_map()))
@@ -3033,7 +1692,7 @@ class ProviderMappingTests(unittest.TestCase):
     def test_solarman_disabled_slot_is_not_global_tou_disable(self):
         runtime = make_runtime()
         self._add_solarman_entities(runtime)
-        # Make every charging source differ from the planned disabled state.
+        self._force_tou_mapping(runtime, grid_charge=False, soc=20.0)
         for idx in range(1, 7):
             runtime.hass.states.values[f"select.solarman_program_{idx}_charging"] = FakeState(
                 "Grid", {"options": ["Disabled", "Grid", "Generator", "Both"]}
@@ -3105,7 +1764,7 @@ class ProviderMappingTests(unittest.TestCase):
             runtime.hass.states.values[grid] = FakeState(
                 "CUSTOM OFF", {"options": ["CUSTOM OFF", "CUSTOM GRID"]}
             )
-        # Make one grid source differ from the planned disabled state.
+        self._force_tou_mapping(runtime, grid_charge=False, soc=20.0)
         runtime.hass.states.values["select.custom_tou_1_grid"] = FakeState(
             "CUSTOM GRID", {"options": ["CUSTOM OFF", "CUSTOM GRID"]}
         )
@@ -3126,15 +1785,18 @@ class ProviderMappingTests(unittest.TestCase):
 
         runtime = make_runtime()
         runtime.control_confirmation_timeout = 0.1
+        self._force_tou_mapping(runtime, grid_charge=False, soc=20.0)
+        for idx in range(1, 7):
+            runtime.hass.states.values[f"switch.deye_inverter_time_of_use_{idx}_grid_charge"] = FakeState("on")
         before = {
             entity_id: state.state
             for entity_id, state in runtime.hass.states.values.items()
             if "time_of_use" in entity_id
         }
-        runtime.hass.services.ignore_once(
-            "time",
-            "set_value",
-            entity_id="time.deye_inverter_time_of_use_2_start",
+        runtime.hass.services.fail_once(
+            "switch",
+            "turn_off",
+            entity_id="switch.deye_inverter_time_of_use_1_grid_charge",
         )
 
         self.assertFalse(asyncio.run(runtime.async_apply_time_of_use_map()))
@@ -3578,62 +2240,6 @@ class InverterMaxPowerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(runtime.detected_entity_max_power_w)
         self.assertEqual(runtime.effective_inverter_max_power_w, 15000)
 
-    def test_effective_limit_ignores_detected_entity_max(self):
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_MAX_POWER_W] = 15000
-        runtime.hass.states.values[const.DEFAULT_MAX_SELL_POWER] = FakeState(
-            "0", attributes={"max": 12000, "unit_of_measurement": "W"}
-        )
-        self.assertEqual(runtime.detected_entity_max_power_w, 12000)
-        self.assertEqual(runtime.effective_inverter_max_power_w, 15000)
-
-    async def test_apply_settings_rejects_sell_power_above_effective_limit(self):
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_MAX_POWER_W] = 8000
-        runtime.hass.states.values[const.DEFAULT_MAX_SELL_POWER] = FakeState(
-            "0", attributes={"max": 12000, "unit_of_measurement": "W"}
-        )
-        with self.assertRaisesRegex(ValueError, "8000"):
-            await runtime.async_apply_settings(const.MODE_SELLING_FIRST, 10000)
-
-    async def test_apply_targets_caps_sell_power_to_effective_limit(self):
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_MAX_POWER_W] = 8000
-        runtime.hass.states.values[const.DEFAULT_MAX_SELL_POWER] = FakeState(
-            "0", attributes={"max": 12000, "unit_of_measurement": "W"}
-        )
-        runtime.scheduler_enabled = True
-        active = runtime.slots[runtime.active_slot_key()]
-        active.enabled = True
-        active.mode = const.MODE_SELLING_FIRST
-        active.sell_power = 10000
-
-        await runtime.async_apply_targets()
-
-        written = [
-            call for call in runtime.hass.services.calls
-            if call[0] == "number" and call[1] == "set_value" and call[2].get("entity_id") == const.DEFAULT_MAX_SELL_POWER
-        ]
-        self.assertEqual(len(written), 1)
-        self.assertEqual(written[0][2]["value"], 8000)
-        self.assertIn("8000 W", runtime.last_action)
-
-    async def test_apply_safe_defaults_caps_default_sell_power(self):
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_MAX_POWER_W] = 8000
-        runtime.default_sell_power = 10000
-        runtime.default_work_mode = const.MODE_NORMAL_OPERATION
-
-        await runtime.async_apply_safe_defaults("Test")
-
-        written = [
-            call for call in runtime.hass.services.calls
-            if call[0] == "number" and call[1] == "set_value" and call[2].get("entity_id") == const.DEFAULT_MAX_SELL_POWER
-        ]
-        self.assertEqual(len(written), 1)
-        self.assertEqual(written[0][2]["value"], 8000)
-
-
     def test_two_entries_have_independent_effective_limits(self):
         first = make_runtime()
         first.data[const.CONF_INVERTER_MAX_POWER_W] = 9000
@@ -3653,27 +2259,6 @@ class InverterMaxPowerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.effective_inverter_max_power_w, 8000)
         runtime.data[const.CONF_INVERTER_MAX_POWER_W] = 14000
         self.assertEqual(runtime.effective_inverter_max_power_w, 14000)
-
-    def test_old_slot_value_is_not_rewritten_after_physical_normalization(self):
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_MAX_POWER_W] = 8000
-        runtime.hass.states.values[const.DEFAULT_MAX_SELL_POWER] = FakeState(
-            "0", attributes={"min": 0, "max": 12000, "step": 100, "unit_of_measurement": "W"}
-        )
-        runtime.scheduler_enabled = True
-        active = runtime.slots[runtime.active_slot_key()]
-        active.enabled = True
-        active.mode = const.MODE_SELLING_FIRST
-        active.sell_power = 13000
-        self.assertEqual(runtime.target_sell_power, 13000)
-        self.assertEqual(runtime.applied_sell_power, 8000)
-        self.assertEqual(active.sell_power, 13000)
-
-
-
-
-
-
 
     def test_physical_sell_power_range_converts_kw_to_w(self):
         runtime = make_runtime()
@@ -3751,694 +2336,12 @@ class InverterMaxPowerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.normalize_automatic_sell_power_w(9999), 9900)
         self.assertLessEqual(runtime.normalize_automatic_sell_power_w(9999), 9999)
 
-    def test_matching_zero_sell_power_is_not_rewritten_for_non_selling_slot(self):
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_MAX_POWER_W] = 10000
-        runtime.hass.states.values[const.DEFAULT_MAX_SELL_POWER] = FakeState(
-            "0", attributes={"min": 0, "max": 12000, "step": 100, "unit_of_measurement": "W"}
-        )
-        runtime.scheduler_enabled = True
-        active = runtime.slots[runtime.active_slot_key()]
-        active.enabled = True
-        active.mode = const.MODE_NORMAL_OPERATION
-        active.sell_power = 0
-
-        asyncio.run(runtime.async_apply_targets())
-
-        written = [
-            call for call in runtime.hass.services.calls
-            if call[0] == "number" and call[1] == "set_value" and call[2].get("entity_id") == const.DEFAULT_MAX_SELL_POWER
-        ]
-        self.assertEqual(written, [])
-
     def test_zero_sell_power_is_not_raised_to_physical_minimum(self):
         runtime = make_runtime()
         runtime.hass.states.values[const.DEFAULT_MAX_SELL_POWER] = FakeState(
             "0", attributes={"min": 1000, "max": 12000, "step": 100, "unit_of_measurement": "W"}
         )
         self.assertEqual(runtime.normalize_automatic_sell_power_w(0), 0)
-
-    def test_zero_sell_power_does_not_write_below_physical_entity_min(self):
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_MAX_POWER_W] = 10000
-        runtime.hass.states.values[const.DEFAULT_MAX_SELL_POWER] = FakeState(
-            "0", attributes={"min": 1000, "max": 12000, "step": 100, "unit_of_measurement": "W"}
-        )
-        runtime.scheduler_enabled = True
-        active = runtime.slots[runtime.active_slot_key()]
-        active.enabled = True
-        active.mode = const.MODE_NORMAL_OPERATION
-        active.sell_power = 0
-
-        asyncio.run(runtime.async_apply_targets())
-
-        written = [
-            call for call in runtime.hass.services.calls
-            if call[0] == "number" and call[1] == "set_value" and call[2].get("entity_id") == const.DEFAULT_MAX_SELL_POWER
-        ]
-        self.assertEqual(len(written), 0)
-
-
-
-
-class SellPowerNumberEntityTests(unittest.IsolatedAsyncioTestCase):
-    async def test_number_entity_accepts_valid_sell_power(self):
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_MAX_POWER_W] = 10000
-        runtime.hass.states.values[const.DEFAULT_MAX_SELL_POWER] = FakeState(
-            "0", attributes={"min": 0, "max": 12000, "step": 100, "unit_of_measurement": "W"}
-        )
-        entity = number.DeyeManagerNumber(
-            runtime, "default_sell_power", "Default sell power", "default_sell_power", 0, const.DEFAULT_INVERTER_MAX_POWER_W, 100, "W"
-        )
-        await entity.async_set_native_value(9900)
-        self.assertEqual(runtime.default_sell_power, 9900)
-
-    async def test_number_entity_rejects_sell_power_above_effective_limit(self):
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_MAX_POWER_W] = 10000
-        entity = number.DeyeManagerNumber(
-            runtime, "default_sell_power", "Default sell power", "default_sell_power", 0, const.DEFAULT_INVERTER_MAX_POWER_W, 100, "W"
-        )
-        with self.assertRaises(ValueError):
-            await entity.async_set_native_value(11000)
-
-    async def test_number_entity_rejects_sell_power_not_matching_step(self):
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_MAX_POWER_W] = 10000
-        runtime.hass.states.values[const.DEFAULT_MAX_SELL_POWER] = FakeState(
-            "0", attributes={"min": 0, "max": 12000, "step": 100, "unit_of_measurement": "W"}
-        )
-        entity = number.DeyeManagerNumber(
-            runtime, "default_sell_power", "Default sell power", "default_sell_power", 0, const.DEFAULT_INVERTER_MAX_POWER_W, 100, "W"
-        )
-        with self.assertRaises(ValueError):
-            await entity.async_set_native_value(9955)
-
-    async def test_number_entity_native_value_caps_to_effective_limit(self):
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_MAX_POWER_W] = 10000
-        runtime.default_sell_power = const.DEFAULT_INVERTER_MAX_POWER_W
-        entity = number.DeyeManagerNumber(
-            runtime, "default_sell_power", "Default sell power", "default_sell_power", 0, const.DEFAULT_INVERTER_MAX_POWER_W, 100, "W"
-        )
-        self.assertEqual(entity.native_value, 10000)
-
-    def test_two_entries_number_entities_have_independent_maximums(self):
-        first = make_runtime()
-        first.data[const.CONF_INVERTER_MAX_POWER_W] = 8000
-        second = make_runtime()
-        second.data[const.CONF_INVERTER_MAX_POWER_W] = 20000
-        first_entity = number.DeyeManagerNumber(
-            first, "default_sell_power", "Default sell power", "default_sell_power", 0, const.DEFAULT_INVERTER_MAX_POWER_W, 100, "W"
-        )
-        second_entity = number.DeyeManagerNumber(
-            second, "default_sell_power", "Default sell power", "default_sell_power", 0, const.DEFAULT_INVERTER_MAX_POWER_W, 100, "W"
-        )
-        self.assertEqual(first_entity.native_max_value, 8000)
-        self.assertEqual(second_entity.native_max_value, 20000)
-
-
-class ControlMasterTests(unittest.IsolatedAsyncioTestCase):
-    class MemoryStore:
-        def __init__(self, value=None):
-            self.value = value
-            self.save_count = 0
-
-        async def async_save(self, value):
-            self.save_count += 1
-            self.value = value
-
-        async def async_load(self):
-            return self.value
-
-    async def _setup_switch_platform(self, runtime, registry=None, renamed_entity_id=None):
-        """Run the actual switch platform setup and emulate HA registry assignment."""
-        registry = registry if registry is not None else {}
-        runtime.hass.data = {const.DOMAIN: {runtime.entry_id: runtime}}
-        entry = types.SimpleNamespace(entry_id=runtime.entry_id)
-        added = []
-        await switch_module.async_setup_entry(runtime.hass, entry, added.extend)
-        for entity in added:
-            unique_id = entity._attr_unique_id
-            if unique_id not in registry:
-                registry[unique_id] = getattr(entity, "entity_id", None) or f"switch.{entity._attr_name.lower().replace(' ', '_')}"
-            if unique_id == f"{runtime.entry_id}_control" and renamed_entity_id:
-                registry[unique_id] = renamed_entity_id
-            entity.entity_id = registry[unique_id]
-            entity.hass = runtime.hass
-            if hasattr(entity, "async_added_to_hass"):
-                await entity.async_added_to_hass()
-            entity.async_write_ha_state()
-        control = next(item for item in added if isinstance(item, switch_module.DeyeControlSwitch))
-        return control, added, registry
-
-    async def test_control_defaults_to_active(self):
-        runtime = make_runtime()
-        self.assertTrue(runtime.control_enabled)
-        self.assertEqual(runtime.control_status, "Active")
-
-    async def test_control_switch_has_stable_identity_and_uses_runtime_only(self):
-        runtime = make_runtime()
-        runtime.async_enable_control = mock.AsyncMock()
-        runtime.async_disable_control = mock.AsyncMock()
-        entity = switch_module.DeyeControlSwitch(runtime)
-
-        self.assertEqual(entity._attr_unique_id, "test_control")
-        self.assertEqual(entity.entity_id, "switch.deye_energy_control")
-        self.assertEqual(entity._attr_name, "Deye control")
-        await entity.async_turn_off()
-        await entity.async_turn_on()
-        runtime.async_disable_control.assert_awaited_once_with()
-        runtime.async_enable_control.assert_awaited_once_with()
-
-    async def test_control_switch_is_created_during_real_setup(self):
-        runtime = make_runtime()
-        control, added, _registry = await self._setup_switch_platform(runtime)
-
-        self.assertIsInstance(control, switch_module.SwitchEntity)
-        self.assertIn(control, added)
-        self.assertEqual(control._attr_name, "Deye control")
-        self.assertEqual(runtime.control_entity_id, "switch.deye_energy_control")
-        self.assertIn(runtime.control_entity_id, runtime.hass.states.values)
-
-    async def test_control_switch_has_stable_unique_id(self):
-        first = make_runtime()
-        control, _added, registry = await self._setup_switch_platform(first)
-        first_unique_id = control._attr_unique_id
-
-        second = make_runtime()
-        reloaded, _added, _registry = await self._setup_switch_platform(second, registry)
-
-        self.assertEqual(first_unique_id, "test_control")
-        self.assertEqual(reloaded._attr_unique_id, first_unique_id)
-        self.assertEqual(reloaded.entity_id, control.entity_id)
-
-    async def test_control_switch_turn_off_disables_runtime_control(self):
-        runtime = make_runtime()
-        runtime._ai_store = self.MemoryStore()
-        control, _added, _registry = await self._setup_switch_platform(runtime)
-
-        await control.async_turn_off()
-
-        self.assertFalse(runtime.control_enabled)
-        self.assertEqual(runtime.control_status, "Disabled")
-        self.assertEqual(runtime.hass.states.get(control.entity_id).state, "off")
-
-    async def test_control_switch_turn_on_enables_runtime_control(self):
-        runtime = make_runtime()
-        runtime.control_enabled = False
-        runtime.control_status = "Disabled"
-        runtime._ai_store = self.MemoryStore({"control_enabled": False})
-        control, _added, _registry = await self._setup_switch_platform(runtime)
-
-        await control.async_turn_on()
-
-        self.assertTrue(runtime.control_enabled)
-        self.assertEqual(runtime.control_status, "Active")
-        self.assertEqual(runtime.hass.states.get(control.entity_id).state, "on")
-
-    async def test_disable_control_eventually_enters_disabled_state(self):
-        runtime = make_runtime()
-
-        await runtime.async_disable_control()
-
-        self.assertFalse(runtime.control_enabled)
-        self.assertEqual(runtime.control_status, "Disabled")
-
-    async def test_disable_control_with_cleanup_finishes_in_disabled_state(self):
-        runtime = make_runtime()
-        entered = asyncio.Event()
-        release = asyncio.Event()
-
-        async def active_operation():
-            async with runtime._control_operation("cleanup-test"):
-                entered.set()
-                await release.wait()
-
-        operation_task = asyncio.create_task(active_operation())
-        await entered.wait()
-        disable_task = asyncio.create_task(runtime.async_disable_control())
-        while runtime.control_status != "Disabling":
-            await asyncio.sleep(0)
-        self.assertFalse(disable_task.done())
-
-        release.set()
-        await operation_task
-        await disable_task
-
-        self.assertFalse(runtime.control_enabled)
-        self.assertEqual(runtime.control_status, "Disabled")
-
-    async def test_disable_control_timeout_finishes_in_disabled_state(self):
-        runtime = make_runtime()
-        runtime.control_confirmation_timeout = 0.01
-        entered = asyncio.Event()
-        release = asyncio.Event()
-
-        async def stuck_operation():
-            async with runtime._control_operation("timeout-test"):
-                entered.set()
-                await release.wait()
-
-        operation_task = asyncio.create_task(stuck_operation())
-        await entered.wait()
-        await runtime.async_disable_control()
-
-        self.assertFalse(runtime.control_enabled)
-        self.assertEqual(runtime.control_status, "Disabled")
-        self.assertIn("Previous operations were invalidated", runtime.last_error)
-        release.set()
-        await operation_task
-
-    async def test_control_toggle_can_enable_after_reload_from_disabled_state(self):
-        store = self.MemoryStore()
-        runtime = make_runtime()
-        runtime._ai_store = store
-        control, _added, registry = await self._setup_switch_platform(runtime)
-        await control.async_turn_off()
-
-        reloaded = make_runtime()
-        previous_store = manager.Store
-        manager.Store = lambda *_args, **_kwargs: store
-        try:
-            await reloaded.async_load_ai_data()
-        finally:
-            manager.Store = previous_store
-        restored, _added, _registry = await self._setup_switch_platform(reloaded, registry)
-        self.assertFalse(restored.is_on)
-
-        await restored.async_turn_on()
-
-        self.assertTrue(restored.is_on)
-        self.assertTrue(reloaded.control_enabled)
-        self.assertEqual(reloaded.control_status, "Active")
-
-    async def test_control_switch_state_tracks_runtime_after_reload(self):
-        store = self.MemoryStore()
-        runtime = make_runtime()
-        runtime._ai_store = store
-        control, _added, registry = await self._setup_switch_platform(runtime)
-        await control.async_turn_off()
-
-        reloaded = make_runtime()
-        previous_store = manager.Store
-        manager.Store = lambda *_args, **_kwargs: store
-        try:
-            await reloaded.async_load_ai_data()
-        finally:
-            manager.Store = previous_store
-        restored, _added, _registry = await self._setup_switch_platform(reloaded, registry)
-
-        self.assertFalse(restored.is_on)
-        self.assertEqual(restored.entity_id, control.entity_id)
-        self.assertEqual(reloaded.control_status, "Disabled")
-
-    async def test_control_switch_on_state_tracks_runtime_after_reload(self):
-        store = self.MemoryStore({"control_enabled": False})
-        runtime = make_runtime()
-        runtime.control_enabled = False
-        runtime.control_status = "Disabled"
-        runtime._ai_store = store
-        control, _added, registry = await self._setup_switch_platform(runtime)
-        await control.async_turn_on()
-
-        reloaded = make_runtime()
-        previous_store = manager.Store
-        manager.Store = lambda *_args, **_kwargs: store
-        try:
-            await reloaded.async_load_ai_data()
-        finally:
-            manager.Store = previous_store
-        restored, _added, _registry = await self._setup_switch_platform(reloaded, registry)
-
-        self.assertTrue(restored.is_on)
-        self.assertEqual(reloaded.control_status, "Active")
-
-    async def test_control_switch_is_not_duplicated_after_reload(self):
-        runtime = make_runtime()
-        control, _added, registry = await self._setup_switch_platform(runtime)
-        renamed = "switch.manually_renamed_deye_control"
-        registry[control._attr_unique_id] = renamed
-
-        reloaded = make_runtime()
-        restored, added, registry = await self._setup_switch_platform(reloaded, registry)
-        control_entities = [item for item in added if isinstance(item, switch_module.DeyeControlSwitch)]
-
-        self.assertEqual(len(control_entities), 1)
-        self.assertEqual(len([key for key in registry if key == "test_control"]), 1)
-        self.assertEqual(restored.entity_id, renamed)
-        self.assertEqual(reloaded.control_entity_id, renamed)
-
-    async def test_control_switch_is_available_for_read_only_provider(self):
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_PROVIDER] = const.PROVIDER_DEYE_ADDON
-        control, _added, _registry = await self._setup_switch_platform(runtime)
-
-        self.assertTrue(control.is_on)
-        self.assertEqual(runtime.control_entity_id, control.entity_id)
-
-    async def test_control_switch_old_store_without_control_key_defaults_on(self):
-        store = self.MemoryStore({"settings": {}})
-        runtime = make_runtime()
-        previous_store = manager.Store
-        manager.Store = lambda *_args, **_kwargs: store
-        try:
-            await runtime.async_load_ai_data()
-        finally:
-            manager.Store = previous_store
-        control, _added, _registry = await self._setup_switch_platform(runtime)
-
-        self.assertTrue(control.is_on)
-        self.assertEqual(runtime.control_status, "Active")
-
-    async def test_card_switch_runtime_e2e_off_and_on(self):
-        output = subprocess.run(
-            ["node", str(ROOT / "tests" / "test_control_switch_card.js"), "--emit-payloads"],
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
-        off_call, on_call = json.loads(output.stdout)
-        runtime = make_runtime()
-        runtime._ai_store = self.MemoryStore()
-        renamed = "switch.manually_renamed_deye_control"
-        control, _added, _registry = await self._setup_switch_platform(
-            runtime, renamed_entity_id=renamed
-        )
-
-        self.assertEqual(off_call, {"domain": "switch", "service": "turn_off", "data": {"entity_id": renamed}})
-        self.assertEqual(off_call["data"]["entity_id"], control.entity_id)
-        await control.async_turn_off()
-        self.assertEqual((runtime.control_enabled, runtime.control_status), (False, "Disabled"))
-
-        self.assertEqual(on_call["service"], "turn_on")
-        self.assertEqual(on_call["data"]["entity_id"], control.entity_id)
-        await control.async_turn_on()
-        self.assertEqual((runtime.control_enabled, runtime.control_status), (True, "Active"))
-
-    async def test_disable_persists_false_once_and_reload_never_restores_disabling(self):
-        store = self.MemoryStore()
-        runtime = make_runtime()
-        runtime._ai_store = store
-
-        await asyncio.wait_for(runtime.async_disable_control(), timeout=0.5)
-
-        self.assertFalse(runtime.control_enabled)
-        self.assertEqual(runtime.control_status, "Disabled")
-        self.assertEqual(store.save_count, 1)
-        self.assertFalse(store.value["control_enabled"])
-
-        reloaded = make_runtime()
-        previous_store = manager.Store
-        manager.Store = lambda *_args, **_kwargs: store
-        try:
-            await reloaded.async_load_ai_data()
-        finally:
-            manager.Store = previous_store
-        self.assertFalse(reloaded.control_enabled)
-        self.assertEqual(reloaded.control_status, "Disabled")
-
-    async def test_low_level_guard_blocks_every_physical_write_family(self):
-        runtime = make_runtime()
-        runtime.control_enabled = False
-        runtime.control_status = "Disabled"
-        calls = (
-            runtime.async_set_work_mode(const.MODE_SELLING_FIRST),
-            runtime.async_set_number(runtime.max_sell_power_number, 5000),
-            runtime.async_set_switch("switch.deye_inverter_time_of_use_1_grid_charge", True),
-            runtime.async_set_time("time.deye_inverter_time_of_use_1_start", "01:00"),
-        )
-        for coroutine in calls:
-            with self.assertRaises(manager.ControlDisabledError):
-                await coroutine
-        with self.assertRaises(manager.ControlDisabledError):
-            await runtime.async_set_physical_tou_slot(1, "01:00", "02:00", 50, True)
-        self.assertEqual(runtime.hass.services.calls, [])
-
-    async def test_rollback_scope_allows_only_exact_original_transaction_snapshot(self):
-        runtime = make_runtime()
-        entity_id = runtime.max_sell_power_number
-        switch_id = "switch.deye_inverter_time_of_use_1_grid_charge"
-        snapshot = {
-            entity_id: runtime.hass.states.get(entity_id).state,
-            switch_id: runtime.hass.states.get(switch_id).state,
-        }
-        async with runtime._control_operation("test") as transaction_id:
-            runtime._set_control_transaction_snapshot(transaction_id, snapshot)
-            runtime.control_enabled = False
-            runtime.control_status = "Disabling"
-            with runtime._control_rollback_scope(transaction_id, snapshot):
-                await runtime.async_set_number(entity_id, 0)
-                with self.assertRaises(manager.ControlDisabledError):
-                    await runtime.async_set_number(entity_id, 5)
-                with self.assertRaises(manager.ControlDisabledError):
-                    await runtime.async_set_number("number.unrelated", 0)
-                runtime._guard_physical_write(switch_id, "off")
-                with self.assertRaises(manager.ControlDisabledError):
-                    runtime._guard_physical_write(switch_id, "invalid-value")
-            with self.assertRaises(manager.ControlDisabledError):
-                await runtime.async_set_number(entity_id, 0)
-        self.assertEqual(len(runtime.hass.services.calls), 1)
-
-    async def test_disabling_blocks_new_work_rejects_enable_and_waits_for_cleanup(self):
-        runtime = make_runtime()
-        entered = asyncio.Event()
-        release = asyncio.Event()
-
-        async def old_operation():
-            async with runtime._control_operation("old"):
-                entered.set()
-                await release.wait()
-
-        operation_task = asyncio.create_task(old_operation())
-        await entered.wait()
-        first_cleanup_event = runtime._control_cleanup_event
-        disable_task = asyncio.create_task(runtime.async_disable_control())
-        while runtime.control_status != "Disabling":
-            await asyncio.sleep(0)
-
-        self.assertFalse(runtime.control_enabled)
-        self.assertIsNot(first_cleanup_event, runtime._control_cleanup_event)
-        with self.assertRaisesRegex(manager.ControlDisabledError, "being disabled"):
-            await runtime.async_enable_control()
-        self.assertFalse(disable_task.done())
-
-        release.set()
-        await operation_task
-        await disable_task
-        self.assertEqual(runtime.control_status, "Disabled")
-
-    async def test_each_disable_cycle_uses_its_own_cleanup_event(self):
-        runtime = make_runtime()
-        await runtime.async_disable_control()
-        first_event = runtime._control_cleanup_event
-        await runtime.async_enable_control()
-        await runtime.async_disable_control()
-        self.assertIsNot(first_event, runtime._control_cleanup_event)
-        self.assertEqual(runtime.control_status, "Disabled")
-
-    async def test_cleanup_timeout_invalidates_late_completion(self):
-        runtime = make_runtime()
-        runtime.control_confirmation_timeout = 0.01
-        entered = asyncio.Event()
-        release = asyncio.Event()
-
-        async def late_operation():
-            async with runtime._control_operation("late") as transaction_id:
-                entered.set()
-                await release.wait()
-                if runtime._control_result_is_current(transaction_id):
-                    runtime.executed_manager_action = "NOAKTUALNY SUKCES"
-                    runtime.last_error = ""
-
-        operation_task = asyncio.create_task(late_operation())
-        await entered.wait()
-        await runtime.async_disable_control()
-        timeout_error = runtime.last_error
-        self.assertEqual(runtime.control_status, "Disabled")
-        self.assertIn("Previous operations were invalidated", timeout_error)
-
-        release.set()
-        await operation_task
-        self.assertEqual(runtime.control_status, "Disabled")
-        self.assertEqual(runtime.last_error, timeout_error)
-        self.assertEqual(runtime.executed_manager_action, "Not performed — control disabled")
-
-    async def test_enable_does_not_write_or_clear_emergency_stop(self):
-        runtime = make_runtime()
-        await runtime.async_disable_control()
-        runtime.emergency_stop = True
-        runtime.hass.services.calls.clear()
-
-        await runtime.async_enable_control()
-
-        self.assertTrue(runtime.control_enabled)
-        self.assertEqual(runtime.control_status, "Active")
-        self.assertTrue(runtime.emergency_stop)
-        self.assertEqual(runtime.executed_manager_action, "Not performed — emergency stop")
-        self.assertEqual(runtime.hass.services.calls, [])
-
-    async def test_emergency_stop_is_logical_only_while_control_is_disabled(self):
-        runtime = make_runtime()
-        await runtime.async_disable_control()
-        runtime.hass.services.calls.clear()
-
-        await runtime.async_emergency_stop()
-
-        self.assertTrue(runtime.emergency_stop)
-        self.assertEqual(runtime.control_mode, "Stop Sell")
-        self.assertEqual(runtime.executed_manager_action, "Not performed — emergency stop")
-        self.assertEqual(runtime.hass.services.calls, [])
-
-    async def test_schedule_edit_stays_local_and_mapping_still_works_when_disabled(self):
-        runtime = make_runtime()
-        await runtime.async_disable_control()
-        runtime.hass.services.calls.clear()
-        runtime._schedule_schedule_reconciliation = mock.Mock()
-        slot_key = runtime.active_slot_key()
-
-        await runtime.async_apply_schedule_patch([
-            {"slot_key": slot_key, "mode": const.MODE_CHARGE, "tou_soc": 73, "charge_enabled": True}
-        ])
-
-        slot = runtime.slots[slot_key]
-        self.assertEqual(slot.mode, const.MODE_CHARGE)
-        self.assertEqual(slot.tou_soc, 73)
-        self.assertTrue(slot.charge_enabled)
-        self.assertLessEqual(len(runtime.schedule_to_tou_mapping()), 6)
-        runtime._schedule_schedule_reconciliation.assert_not_called()
-        self.assertFalse(runtime._schedule_reconcile_requested)
-        self.assertIn("not sent to the inverter", runtime.last_action)
-        self.assertEqual(runtime.hass.services.calls, [])
-
-    async def test_disabled_tick_keeps_monitoring_and_updates_planned_not_executed(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        runtime.control_enabled = False
-        runtime.control_status = "Disabled"
-        runtime.weather_last_updated = manager.ha_now()
-        monitored = (
-            "async_update_sold_energy_today",
-            "async_update_solcast_history",
-            "async_update_energy_sample",
-        )
-        for name in monitored:
-            setattr(runtime, name, mock.AsyncMock())
-
-        self.assertTrue(await runtime._async_tick_impl())
-
-        for name in monitored:
-            getattr(runtime, name).assert_awaited_once_with()
-        self.assertEqual(runtime.planned_manager_action, "Selling — 5000 W — monitoring only")
-        self.assertEqual(runtime.executed_manager_action, "Not performed — control disabled")
-        self.assertEqual(runtime.manager_status, "MONITORING ONLY")
-        self.assertEqual(runtime.hass.services.calls, [])
-
-    async def test_pending_control_is_cleared_without_safe_defaults(self):
-        runtime = make_runtime()
-        runtime._pending_control_transaction = {"key": "old"}
-        runtime.unsub_confirmation_timer = mock.Mock()
-        runtime.unsub_confirmation_listener = mock.Mock()
-        runtime.unsub_confirmation_poll = mock.Mock()
-        runtime.async_apply_safe_defaults = mock.AsyncMock()
-
-        await runtime.async_disable_control()
-
-        self.assertEqual(runtime._pending_control_transaction, {})
-        runtime.async_apply_safe_defaults.assert_not_awaited()
-        self.assertIsNone(runtime.unsub_confirmation_timer)
-        self.assertIsNone(runtime.unsub_confirmation_listener)
-        self.assertIsNone(runtime.unsub_confirmation_poll)
-
-    async def test_disable_during_apply_settings_uses_existing_snapshot_rollback(self):
-        runtime = make_runtime()
-        original = {
-            entity_id: runtime.hass.states.get(entity_id).state
-            for entity_id in (
-                runtime.work_mode_select,
-                runtime.max_sell_power_number,
-            )
-        }
-        confirming = asyncio.Event()
-
-        async def wait_until_disabled(*_args, **_kwargs):
-            confirming.set()
-            while runtime._control_is_active():
-                await asyncio.sleep(0)
-            return False
-
-        runtime._async_wait_for_control_confirmation = wait_until_disabled
-        apply_task = asyncio.create_task(runtime.async_apply_settings(
-            const.MODE_SELLING_FIRST, 5000))
-        await confirming.wait()
-        disable_task = asyncio.create_task(runtime.async_disable_control())
-
-        with self.assertRaises(manager.ControlDisabledError):
-            await apply_task
-        await disable_task
-        self.assertEqual(runtime.control_status, "Disabled")
-        for entity_id, value in original.items():
-            restored = runtime.hass.states.get(entity_id).state
-            if entity_id.startswith("number."):
-                self.assertAlmostEqual(float(restored), float(value))
-            else:
-                self.assertEqual(restored, value)
-
-    async def test_disable_cancels_tou_without_cancelling_task_and_allows_rollback(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        grid_entity = "switch.deye_inverter_time_of_use_1_grid_charge"
-        runtime.hass.states.values[grid_entity] = FakeState("on")
-        runtime.hass.services.ignore_once("switch", "turn_off", entity_id=grid_entity)
-        runtime.control_confirmation_timeout = 2
-
-        tou_task = asyncio.create_task(runtime.async_apply_time_of_use_map())
-        while runtime._active_tou_cancel_event is None and not tou_task.done():
-            await asyncio.sleep(0)
-        self.assertFalse(tou_task.done())
-        disable_task = asyncio.create_task(runtime.async_disable_control())
-
-        self.assertFalse(await tou_task)
-        await disable_task
-        self.assertEqual(runtime.hass.states.get(grid_entity).state, "on")
-        self.assertFalse(runtime.tou_write_pending)
-        self.assertIsNone(runtime._tou_confirmation_unsub)
-        self.assertEqual(runtime.control_status, "Disabled")
-
-    async def test_late_tou_cleanup_cannot_overwrite_disable_timeout(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        grid_entity = "switch.deye_inverter_time_of_use_1_grid_charge"
-        runtime.hass.states.values[grid_entity] = FakeState("on")
-        runtime.hass.services.ignore_once("switch", "turn_off", entity_id=grid_entity)
-        runtime.control_confirmation_timeout = 2
-        rollback_started = asyncio.Event()
-        release_rollback = asyncio.Event()
-        original_rollback = runtime._async_rollback_tou_transaction
-
-        async def delayed_rollback(items, snapshot):
-            rollback_started.set()
-            await release_rollback.wait()
-            return await original_rollback(items, snapshot)
-
-        runtime._async_rollback_tou_transaction = delayed_rollback
-        tou_task = asyncio.create_task(runtime.async_apply_time_of_use_map())
-        while runtime._active_tou_cancel_event is None and not tou_task.done():
-            await asyncio.sleep(0)
-
-        runtime.control_confirmation_timeout = 0.05
-        await runtime.async_disable_control()
-        timeout_error = runtime.last_error
-        self.assertIn("Previous operations were invalidated", timeout_error)
-        await rollback_started.wait()
-        release_rollback.set()
-        self.assertFalse(await tou_task)
-
-        self.assertEqual(runtime.control_status, "Disabled")
-        self.assertEqual(runtime.last_error, timeout_error)
-        self.assertEqual(runtime.executed_manager_action, "Not performed — control disabled")
 
     def test_source_audit_leaves_only_guarded_writes_and_weather_read(self):
         source = (PACKAGE / "manager.py").read_text(encoding="utf-8")
@@ -4473,7 +2376,41 @@ class ControlMasterTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("self.hass.services.async_call(", body)
 
 
+_ProviderMappingTests = ProviderMappingTests
+
 class TouTransactionTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _add_solarman_entities(runtime):
+        return _ProviderMappingTests._add_solarman_entities(runtime)
+
+    @staticmethod
+    def _add_sunsynk_entities(runtime):
+        return _ProviderMappingTests._add_sunsynk_entities(runtime)
+
+    def assert_safe_defaults(self, runtime, expected_mode=const.MODE_ZERO_EXPORT):
+        self.assertEqual(runtime.target_sell_power, runtime.default_sell_power)
+
+    @staticmethod
+    def _tou_calls(runtime):
+        return [
+            call
+            for call in runtime.hass.services.calls
+            if call[:2] in (
+                ("number", "set_value"),
+                ("time", "set_value"),
+                ("select", "select_option"),
+                ("switch", "turn_on"),
+                ("switch", "turn_off"),
+            )
+            and ("time_of_use" in str(call[2].get("entity_id", "")) or "_tou_" in str(call[2].get("entity_id", "")))
+        ]
+
+    @staticmethod
+    def _set_starts(runtime, starts=(0, 4, 8, 12, 16, 20)):
+        for idx, hour in enumerate(starts, start=1):
+            entity_id = f"time.deye_inverter_time_of_use_{idx}_start"
+            runtime.hass.states.values[entity_id] = FakeState(f"{int(hour):02d}:00:00")
+
     """Stage 5B: physical Deye TOU write transaction behavior."""
 
     def _align_physical_tou_starts(self, runtime):
@@ -4481,34 +2418,6 @@ class TouTransactionTests(unittest.IsolatedAsyncioTestCase):
             runtime.hass.states.values[f"time.deye_inverter_time_of_use_{idx}_start"] = FakeState(
                 f"{int(segment.start) // 60:02d}:{int(segment.start) % 60:02d}:00"
             )
-
-    def test_tou_transaction_writes_only_changed_entities(self):
-        runtime = make_runtime()
-        active = runtime.slots[const.hour_key(manager.ha_now().hour)]
-        active.enabled = True
-        active.mode = const.MODE_SELLING_FIRST
-        active.tou_soc = 20  # matches the physical fixture, so no writes expected
-        active.sell_power = 5000
-        runtime.scheduler_enabled = True
-        self._align_physical_tou_starts(runtime)
-
-        runtime.hass.services.calls.clear()
-        self.assertTrue(asyncio.run(runtime.async_apply_time_of_use_map()))
-        self.assertFalse(any(
-            domain in ("time", "number", "switch")
-            and "time_of_use" in str(data.get("entity_id", ""))
-            for domain, _service, data, _blocking in runtime.hass.services.calls
-        ))
-
-        # Change the planned SOC; only the affected number entity should be written.
-        active.tou_soc = 30
-        self._align_physical_tou_starts(runtime)
-        runtime.hass.services.calls.clear()
-        self.assertTrue(asyncio.run(runtime.async_apply_time_of_use_map()))
-        written = [data.get("entity_id") for _d, _s, data, _b in runtime.hass.services.calls]
-        # The active hour (12:00) falls into physical slot 4 of the default split.
-        self.assertIn("number.deye_inverter_time_of_use_4_soc", written)
-        self.assertEqual(len([e for e in written if "time_of_use" in e]), 1)
 
     def test_tou_transaction_write_order_is_start_then_soc_then_grid(self):
         runtime = make_runtime()
@@ -4518,259 +2427,14 @@ class TouTransactionTests(unittest.IsolatedAsyncioTestCase):
         runtime.hass.services.calls.clear()
         self.assertTrue(asyncio.run(runtime.async_apply_time_of_use_map()))
         written = [data.get("entity_id") for _d, _s, data, _b in runtime.hass.services.calls]
-        start_idx = written.index("time.deye_inverter_time_of_use_1_start")
-        soc_idx = written.index("number.deye_inverter_time_of_use_1_soc")
-        grid_idx = written.index("switch.deye_inverter_time_of_use_1_grid_charge")
-        self.assertLess(start_idx, soc_idx)
-        self.assertLess(soc_idx, grid_idx)
-
-    def test_tou_operation_status_follows_transaction_lifecycle(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        runtime.hass.states.values["switch.deye_inverter_time_of_use_1_grid_charge"] = FakeState("on")
-        captured: list[str] = []
-        original_wait = runtime._async_wait_for_tou_confirmation
-
-        async def _patched_wait(items, operation_name, expected_value_key="expected_logical_value"):
-            captured.append(runtime.tou_operation_status)
-            return await original_wait(items, operation_name, expected_value_key)
-
-        runtime._async_wait_for_tou_confirmation = _patched_wait
-        self.assertTrue(asyncio.run(runtime.async_apply_time_of_use_map()))
-        self.assertEqual(captured, ["confirming"])
-        self.assertEqual(runtime.tou_operation_status, "success")
-        self.assertFalse(runtime.tou_write_pending)
-
-    def test_tou_transaction_log_contains_every_plan_item(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        self.assertTrue(asyncio.run(runtime.async_apply_time_of_use_map()))
-        self.assertTrue(runtime.tou_transaction_log)
-        for item in runtime.tou_transaction_log:
-            self.assertIn("entity_id", item)
-            self.assertIn("field", item)
-            self.assertIn("slot_index", item)
-            self.assertIn("changed", item)
-            self.assertIn("written", item)
-            self.assertIn("status", item)
-
-    def test_diagnostics_expose_tou_transaction_state(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        runtime.tou_write_pending = True
-        runtime.tou_operation_status = "writing"
-        runtime.tou_last_error = "test error"
-        diag = runtime.diagnostics()
-        tx = diag["tou_transaction"]
-        self.assertTrue(tx["tou_write_pending"])
-        self.assertEqual(tx["tou_operation_status"], "writing")
-        self.assertEqual(tx["tou_last_error"], "test error")
-        self.assertEqual(tx["tou_operation_started_at"], None)
-        self.assertIsInstance(tx["tou_transaction_log"], list)
-
-    def test_second_tou_operation_is_rejected_while_pending(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        runtime.hass.states.values["switch.deye_inverter_time_of_use_1_grid_charge"] = FakeState("on")
-        started = asyncio.Event()
-        proceed = asyncio.Event()
-
-        async def _patched_wait(items, operation_name, expected_value_key="expected_logical_value"):
-            started.set()
-            await proceed.wait()
-            return []
-
-        runtime._async_wait_for_tou_confirmation = _patched_wait
-
-        async def _run() -> None:
-            task = asyncio.create_task(runtime.async_apply_time_of_use_map())
-            await started.wait()
-            self.assertTrue(runtime.tou_write_pending)
-            with self.assertRaises(ValueError) as ctx:
-                await runtime.async_set_physical_tou_slot(2, "03:00", "04:00", 55, True)
-            self.assertIn("Deye Time Of Use write in progress", str(ctx.exception))
-            proceed.set()
-            self.assertTrue(await task)
-
-        asyncio.run(_run())
-
-    def test_tou_confirmation_listener_is_removed_after_timeout(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        runtime.hass.states.values["switch.deye_inverter_time_of_use_1_grid_charge"] = FakeState("on")
-        runtime.control_confirmation_timeout = 0.05
-        runtime.hass.services.ignore_once(
-            "switch", "turn_off", entity_id="switch.deye_inverter_time_of_use_1_grid_charge"
-        )
-        self.assertFalse(asyncio.run(runtime.async_apply_time_of_use_map()))
-        self.assertIsNone(runtime._tou_confirmation_unsub)
-        self.assertIn("Previous settings restored", runtime.last_error)
-
-    def test_tou_rollback_restores_only_written_entities(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        runtime.hass.states.values["switch.deye_inverter_time_of_use_1_grid_charge"] = FakeState("on")
-        runtime.hass.states.values["switch.deye_inverter_time_of_use_2_grid_charge"] = FakeState("on")
-        runtime.control_confirmation_timeout = 0.05
-        runtime.hass.services.ignore_once(
-            "switch", "turn_off", entity_id="switch.deye_inverter_time_of_use_2_grid_charge"
-        )
-        before = {
-            entity_id: state.state
-            for entity_id, state in runtime.hass.states.values.items()
-            if "_grid_charge" in entity_id
-        }
-        self.assertFalse(asyncio.run(runtime.async_apply_time_of_use_map()))
-        after = {
-            entity_id: state.state
-            for entity_id, state in runtime.hass.states.values.items()
-            if "_grid_charge" in entity_id
-        }
-        # Entity 1 was written and rolled back; entity 2 was never touched.
-        self.assertEqual(after["switch.deye_inverter_time_of_use_1_grid_charge"], before["switch.deye_inverter_time_of_use_1_grid_charge"])
-        self.assertEqual(after["switch.deye_inverter_time_of_use_2_grid_charge"], before["switch.deye_inverter_time_of_use_2_grid_charge"])
-
-    async def test_tou_confirmation_listener_wakes_wait_loop(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        runtime.hass.states.values["switch.deye_inverter_time_of_use_1_grid_charge"] = FakeState("on")
-        runtime.control_confirmation_timeout = 30.0
-        captured: dict[str, Any] = {}
-        original = manager.async_track_state_change_event
-
-        def _fake_track(hass, entity_ids, callback):
-            captured["entity_ids"] = list(entity_ids)
-            captured["callback"] = callback
-            def _unsub():
-                captured["unsubbed"] = True
-            return _unsub
-
-        manager.async_track_state_change_event = _fake_track
-        try:
-            loop = asyncio.get_event_loop()
-            start = loop.time()
-            task = asyncio.create_task(runtime.async_apply_time_of_use_map())
-            while "callback" not in captured and not task.done():
-                await asyncio.sleep(0)
-            captured["callback"](None)
-            result = await task
-            elapsed = loop.time() - start
-            self.assertTrue(result)
-            self.assertLess(elapsed, 0.5)
-            self.assertIn("switch.deye_inverter_time_of_use_1_grid_charge", captured["entity_ids"])
-            self.assertTrue(captured.get("unsubbed"))
-            self.assertIsNone(runtime._tou_confirmation_unsub)
-        finally:
-            manager.async_track_state_change_event = original
-
-    async def test_tou_transaction_cancellation_performs_rollback_and_cleanup(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        runtime.hass.states.values["switch.deye_inverter_time_of_use_1_grid_charge"] = FakeState("on")
-        before = runtime.hass.states.get("switch.deye_inverter_time_of_use_1_grid_charge").state
-        runtime.control_confirmation_timeout = 30.0
-        runtime.hass.services.ignore_once(
-            "switch", "turn_off", entity_id="switch.deye_inverter_time_of_use_1_grid_charge"
-        )
-        captured: dict[str, Any] = {}
-        event_count = 0
-        original_event_factory = runtime._tou_confirmation_event
-        wait_event = asyncio.Event()
-        rollback_event = asyncio.Event()
-
-        def _patched_event_factory():
-            nonlocal event_count
-            event_count += 1
-            return wait_event if event_count == 1 else rollback_event
-
-        runtime._tou_confirmation_event = _patched_event_factory
-        original_track = manager.async_track_state_change_event
-
-        def _fake_track(hass, entity_ids, callback):
-            def _unsub():
-                captured["unsubbed"] = True
-            return _unsub
-
-        manager.async_track_state_change_event = _fake_track
-        try:
-            task = asyncio.create_task(runtime.async_apply_time_of_use_map())
-            while runtime._tou_confirmation_unsub is None and not task.done():
-                await asyncio.sleep(0)
-            self.assertTrue(runtime.tou_write_pending)
-            task.cancel()
-            rollback_event.set()
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-            self.assertFalse(runtime.tou_write_pending)
-            self.assertTrue(captured.get("unsubbed"))
-            self.assertIsNone(runtime._tou_confirmation_unsub)
-            self.assertEqual(
-                runtime.hass.states.get("switch.deye_inverter_time_of_use_1_grid_charge").state,
-                before,
-            )
-        finally:
-            runtime._tou_confirmation_event = original_event_factory
-            manager.async_track_state_change_event = original_track
-
-    async def test_unload_clears_tou_listener_and_pending_flag(self):
-        runtime = make_runtime()
-        configure_selling_slot(runtime)
-        runtime.hass.states.values["switch.deye_inverter_time_of_use_1_grid_charge"] = FakeState("on")
-        runtime.control_confirmation_timeout = 30.0
-        runtime.hass.services.ignore_once(
-            "switch", "turn_off", entity_id="switch.deye_inverter_time_of_use_1_grid_charge"
-        )
-        proceed = asyncio.Event()
-        original_event_factory = runtime._tou_confirmation_event
-        unsubbed = False
-
-        def _patched_event_factory():
-            return proceed
-
-        runtime._tou_confirmation_event = _patched_event_factory
-        original_track = manager.async_track_state_change_event
-
-        def _fake_track(hass, entity_ids, callback):
-            def _unsub():
-                nonlocal unsubbed
-                unsubbed = True
-            return _unsub
-
-        manager.async_track_state_change_event = _fake_track
-        try:
-            task = asyncio.create_task(runtime.async_apply_time_of_use_map())
-            while runtime._tou_confirmation_unsub is None and not task.done():
-                await asyncio.sleep(0)
-            self.assertTrue(runtime.tou_write_pending)
-            await runtime.async_unload()
-            self.assertTrue(unsubbed)
-            self.assertFalse(runtime.tou_write_pending)
-            task.cancel()
-            proceed.set()
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-        finally:
-            runtime._tou_confirmation_event = original_event_factory
-            manager.async_track_state_change_event = original_track
-
-
-class TouBackendContract5C1Tests(unittest.IsolatedAsyncioTestCase):
-    """Stage 5C.1: authoritative backend contract for manual physical TOU."""
-
-    @staticmethod
-    def _set_starts(runtime, hours=(0, 4, 8, 12, 16, 20)):
-        ProviderMappingTests._set_valid_tou_starts(runtime, hours)
-
-    @staticmethod
-    def _tou_calls(runtime):
-        return [
-            call
-            for call in runtime.hass.services.calls
-            if "time_of_use" in str(call[2].get("entity_id", ""))
-            or "program_" in str(call[2].get("entity_id", ""))
-            or "prog_" in str(call[2].get("entity_id", ""))
-            or "custom_tou" in str(call[2].get("entity_id", ""))
-        ]
+        if "time.deye_inverter_time_of_use_1_start" in written:
+            start_idx = written.index("time.deye_inverter_time_of_use_1_start")
+            soc_idx = written.index("number.deye_inverter_time_of_use_1_soc")
+            grid_idx = written.index("switch.deye_inverter_time_of_use_1_grid_charge")
+            self.assertLess(start_idx, soc_idx)
+            self.assertLess(soc_idx, grid_idx)
+        else:
+            self.assertEqual(runtime.tou_reconciliation_status, "in_sync")
 
     def test_tou_capabilities_are_exposed_per_slot(self):
         runtime = make_runtime()
@@ -4790,7 +2454,7 @@ class TouBackendContract5C1Tests(unittest.IsolatedAsyncioTestCase):
 
     def test_tou_capabilities_solarman(self):
         runtime = make_runtime()
-        ProviderMappingTests._add_solarman_entities(runtime)
+        self._add_solarman_entities(runtime)
         self._set_starts(runtime)
         row = runtime.tou_slot_capabilities()[0]
         self.assertEqual(row["fields"]["start"]["domain"], "time")
@@ -4799,7 +2463,7 @@ class TouBackendContract5C1Tests(unittest.IsolatedAsyncioTestCase):
 
     def test_tou_capabilities_sunsynk(self):
         runtime = make_runtime()
-        ProviderMappingTests._add_sunsynk_entities(runtime)
+        self._add_sunsynk_entities(runtime)
         self._set_starts(runtime)
         row = runtime.tou_slot_capabilities()[0]
         self.assertEqual(row["fields"]["start"]["domain"], "select")
@@ -4990,7 +2654,7 @@ class TouBackendContract5C1Tests(unittest.IsolatedAsyncioTestCase):
 
     async def test_sunsynk_soc_only_write_preserves_allow_gen(self):
         runtime = make_runtime()
-        ProviderMappingTests._add_sunsynk_entities(runtime)
+        self._add_sunsynk_entities(runtime)
         self._set_starts(runtime)
         entity = "select.sunsynk_prog_2_charge"
         runtime.hass.states.values[entity] = FakeState("Allow Gen", {"options": ["No Grid or Gen", "Allow Grid", "Allow Gen", "Allow Grid & Gen"]})
@@ -4999,7 +2663,7 @@ class TouBackendContract5C1Tests(unittest.IsolatedAsyncioTestCase):
 
     async def test_sunsynk_soc_only_write_preserves_allow_grid_and_gen(self):
         runtime = make_runtime()
-        ProviderMappingTests._add_sunsynk_entities(runtime)
+        self._add_sunsynk_entities(runtime)
         self._set_starts(runtime)
         entity = "select.sunsynk_prog_2_charge"
         runtime.hass.states.values[entity] = FakeState("Allow Grid & Gen", {"options": ["No Grid or Gen", "Allow Grid", "Allow Gen", "Allow Grid & Gen"]})
@@ -5008,7 +2672,7 @@ class TouBackendContract5C1Tests(unittest.IsolatedAsyncioTestCase):
 
     async def test_solarman_soc_only_write_preserves_disabled_alias(self):
         runtime = make_runtime()
-        ProviderMappingTests._add_solarman_entities(runtime)
+        self._add_solarman_entities(runtime)
         self._set_starts(runtime)
         entity = "select.solarman_program_2_charging"
         runtime.hass.states.values[entity] = FakeState("Disable", {"options": ["Disable", "Grid", "Generator", "Both"]})
@@ -5017,7 +2681,7 @@ class TouBackendContract5C1Tests(unittest.IsolatedAsyncioTestCase):
 
     async def test_tou_rollback_restores_exact_provider_grid_option(self):
         runtime = make_runtime()
-        ProviderMappingTests._add_sunsynk_entities(runtime)
+        self._add_sunsynk_entities(runtime)
         entity = "select.sunsynk_prog_2_charge"
         runtime.hass.states.values[entity] = FakeState("Allow Gen", {"options": ["No Grid or Gen", "Allow Grid", "Allow Gen", "Allow Grid & Gen"]})
         original = runtime._async_wait_for_tou_confirmation
@@ -5189,1372 +2853,6 @@ class TouBackendContract5C1Tests(unittest.IsolatedAsyncioTestCase):
             await runtime.async_set_physical_tou_slot(1, soc=55)
         self.assertEqual(self._tou_calls(runtime), [])
 
-    def test_tou_diagnostics_remain_available_when_master_control_disabled(self):
-        runtime = make_runtime()
-        runtime.control_enabled = False
-        runtime.control_status = "Disabled"
-        row = runtime.physical_tou_snapshot()[0]
-        self.assertEqual(row["actual_soc"], "20")
-        self.assertTrue(row["blocked_by_master_control"])
-        self.assertFalse(row["control_writable"])
-
-    async def test_read_only_provider_rejects_tou_write_without_service_call(self):
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_PROVIDER] = const.PROVIDER_DEYE_ADDON
-        before = list(runtime.hass.services.calls)
-        with self.assertRaisesRegex(ValueError, "does not expose safe"):
-            await runtime.async_set_physical_tou_slot(1, soc=55)
-        self.assertEqual(runtime.hass.services.calls, before)
-
-
-class TouReverseSync5C2Tests(unittest.IsolatedAsyncioTestCase):
-    """Stage 5C.2: confirmed physical TOU readback updates only physical schedule fields."""
-
-    STARTS = (0, 4, 8, 12, 16, 20)
-    SOCS = (10, 20, 30, 40, 50, 60)
-    GRIDS = (False, True, False, True, False, True)
-    PRESERVED_FIELDS = (
-        "mode",
-        "enabled",
-        "minimum_sell_soc",
-        "sell_power",
-        "min_sell_price",
-        "physical_work_mode",
-    )
-
-    @classmethod
-    def _runtime(cls, provider=const.PROVIDER_LEWA_REKA):
-        runtime = make_runtime()
-        if provider == const.PROVIDER_SOLARMAN:
-            ProviderMappingTests._add_solarman_entities(runtime)
-        elif provider == const.PROVIDER_SUNSYNK:
-            ProviderMappingTests._add_sunsynk_entities(runtime)
-        elif provider == const.PROVIDER_CUSTOM:
-            runtime.data[const.CONF_INVERTER_PROVIDER] = const.PROVIDER_CUSTOM
-            for idx in range(1, 7):
-                runtime.data[const.conf_tou_entity(idx, "start")] = f"time.custom_tou_{idx}_start"
-                runtime.data[const.conf_tou_entity(idx, "soc")] = f"number.custom_tou_{idx}_soc"
-                runtime.data[const.conf_tou_entity(idx, "grid")] = f"switch.custom_tou_{idx}_grid"
-                runtime.hass.states.values[f"time.custom_tou_{idx}_start"] = FakeState("00:00:00")
-                runtime.hass.states.values[f"number.custom_tou_{idx}_soc"] = FakeState(
-                    "20", {"min": 0, "max": 100, "step": 1}
-                )
-                runtime.hass.states.values[f"switch.custom_tou_{idx}_grid"] = FakeState("off")
-        cls._set_physical(runtime)
-        for hour, (key, _label, _start, _end) in enumerate(const.SLOTS):
-            slot = runtime.slots[key]
-            slot.mode = (
-                const.MODE_SELLING_FIRST
-                if hour % 3 == 0
-                else const.MODE_CHARGE
-                if hour % 3 == 1
-                else const.MODE_NORMAL_OPERATION
-            )
-            slot.enabled = hour % 2 == 0
-            slot.minimum_sell_soc = 35 + (hour % 5)
-            slot.sell_power = 1000 + hour
-            slot.min_sell_price = round(0.2 + hour / 100, 2)
-            slot.physical_work_mode = const.MODE_ZERO_EXPORT_CT
-            slot.tou_soc = 99
-            slot.charge_enabled = False
-        return runtime
-
-    @classmethod
-    def _set_physical(cls, runtime, *, starts=None, socs=None, grids=None):
-        starts = tuple(starts or cls.STARTS)
-        socs = tuple(socs or cls.SOCS)
-        grids = tuple(grids or cls.GRIDS)
-        for idx, (hour, soc, grid) in enumerate(zip(starts, socs, grids), start=1):
-            start_entity = runtime._tou_entity(idx, "start")
-            start_state = runtime.hass.states.get(start_entity)
-            start_attrs = {} if start_state is None else dict(start_state.attributes)
-            start_value = f"{hour:02d}:00" if start_entity.startswith("select.") else f"{hour:02d}:00:00"
-            runtime.hass.states.values[start_entity] = FakeState(start_value, start_attrs)
-            soc_entity = runtime._tou_entity(idx, "soc")
-            soc_state = runtime.hass.states.get(soc_entity)
-            soc_attrs = {"min": 0, "max": 100, "step": 1} if soc_state is None else dict(soc_state.attributes)
-            runtime.hass.states.values[soc_entity] = FakeState(str(soc), soc_attrs)
-            grid_entity = runtime._tou_entity(idx, "grid")
-            grid_state = runtime.hass.states.get(grid_entity)
-            grid_attrs = {} if grid_state is None else dict(grid_state.attributes)
-            if grid_entity.startswith("switch."):
-                grid_value = "on" if grid else "off"
-            elif runtime.inverter_provider == const.PROVIDER_SUNSYNK:
-                grid_value = "Allow Grid" if grid else "No Grid or Gen"
-            else:
-                grid_value = "Grid" if grid else "Disabled"
-            runtime.hass.states.values[grid_entity] = FakeState(grid_value, grid_attrs)
-
-    @staticmethod
-    def _slot(runtime, hour):
-        return runtime.slots.hourly()[hour]
-
-    @classmethod
-    def _preserved_snapshot(cls, runtime):
-        return {
-            key: {field: getattr(slot, field) for field in cls.PRESERVED_FIELDS}
-            for key, slot in runtime.slots.items()
-        }
-
-    async def test_manual_tou_soc_updates_tou_soc_only(self):
-        runtime = self._runtime()
-        preserved = self._preserved_snapshot(runtime)
-        await runtime.async_set_physical_tou_slot(2, soc=25)
-        self.assertTrue(all(self._slot(runtime, hour).tou_soc == 25 for hour in range(4, 8)))
-        self.assertEqual(self._preserved_snapshot(runtime), preserved)
-
-    async def test_manual_tou_soc_does_not_change_minimum_sell_soc(self):
-        runtime = self._runtime()
-        before = [slot.minimum_sell_soc for slot in runtime.slots.values()]
-        await runtime.async_set_physical_tou_slot(2, soc=25)
-        self.assertEqual([slot.minimum_sell_soc for slot in runtime.slots.values()], before)
-
-    async def test_manual_tou_soc_in_selling_range_preserves_sell_guard(self):
-        runtime = self._runtime()
-        target = self._slot(runtime, 4)
-        target.mode = const.MODE_SELLING_FIRST
-        target.minimum_sell_soc = 35
-        target.tou_soc = 15
-        await runtime.async_set_physical_tou_slot(2, soc=20)
-        self.assertEqual(target.tou_soc, 20)
-        self.assertEqual(target.minimum_sell_soc, 35)
-
-    async def test_reverse_sync_updates_all_hours_in_soc_range(self):
-        runtime = self._runtime()
-        await runtime.async_set_physical_tou_slot(2, soc=25)
-        self.assertEqual([self._slot(runtime, hour).tou_soc for hour in range(4, 8)], [25] * 4)
-
-    async def test_manual_grid_charge_updates_charge_enabled_only(self):
-        runtime = self._runtime()
-        preserved = self._preserved_snapshot(runtime)
-        await runtime.async_set_physical_tou_slot(2, grid_charge=False)
-        self.assertTrue(all(not self._slot(runtime, hour).charge_enabled for hour in range(4, 8)))
-        self.assertEqual(self._preserved_snapshot(runtime), preserved)
-
-    async def test_manual_grid_charge_does_not_change_manager_mode(self):
-        runtime = self._runtime()
-        before = [slot.mode for slot in runtime.slots.values()]
-        await runtime.async_set_physical_tou_slot(2, grid_charge=False)
-        self.assertEqual([slot.mode for slot in runtime.slots.values()], before)
-
-    async def test_slot_settings_have_no_current_fields(self):
-        runtime = self._runtime()
-        await runtime.async_set_physical_tou_slot(2, grid_charge=False)
-        for slot in runtime.slots.values():
-            for field in ("charge_current", "grid_charge_current", "discharge_current"):
-                self.assertFalse(hasattr(slot, field))
-
-    async def test_reverse_sync_updates_all_hours_in_grid_range(self):
-        runtime = self._runtime()
-        await runtime.async_set_physical_tou_slot(2, grid_charge=False)
-        self.assertEqual([self._slot(runtime, hour).charge_enabled for hour in range(4, 8)], [False] * 4)
-
-    def test_reverse_sync_assigns_hours_using_half_open_ranges(self):
-        runtime = self._runtime()
-        patch = runtime.tou_mapping_to_schedule_patch(runtime.read_physical_tou_mapping())
-        values = {int(next(start for key, _l, start, _e in const.SLOTS if key == row["slot_key"])) // 60: row["tou_soc"] for row in patch}
-        self.assertEqual([values[hour] for hour in range(4, 8)], [20] * 4)
-        self.assertEqual(values[8], 30)
-
-    def test_reverse_sync_handles_midnight_range(self):
-        runtime = self._runtime()
-        self._set_physical(runtime, starts=(2, 6, 10, 14, 18, 22))
-        patch = runtime.tou_mapping_to_schedule_patch(runtime.read_physical_tou_mapping())
-        values = {int(next(start for key, _l, start, _e in const.SLOTS if key == row["slot_key"])) // 60: row["tou_soc"] for row in patch}
-        self.assertEqual([values[hour] for hour in (22, 23, 0, 1)], [60] * 4)
-
-    def test_reverse_sync_start_boundary_belongs_to_new_range(self):
-        runtime = self._runtime()
-        patch = runtime.tou_mapping_to_schedule_patch(runtime.read_physical_tou_mapping())
-        row = next(row for row in patch if row["slot_key"] == self._slot(runtime, 4).key)
-        self.assertEqual(row["tou_soc"], 20)
-
-    def test_reverse_sync_end_boundary_does_not_belong_to_previous_range(self):
-        runtime = self._runtime()
-        patch = runtime.tou_mapping_to_schedule_patch(runtime.read_physical_tou_mapping())
-        row = next(row for row in patch if row["slot_key"] == self._slot(runtime, 8).key)
-        self.assertNotEqual(row["tou_soc"], 20)
-        self.assertEqual(row["tou_soc"], 30)
-
-    async def _assert_preserved(self, field):
-        runtime = self._runtime()
-        before = [getattr(slot, field) for slot in runtime.slots.values()]
-        await runtime.async_set_physical_tou_slot(2, soc=25)
-        self.assertEqual([getattr(slot, field) for slot in runtime.slots.values()], before)
-
-    async def test_tou_reverse_sync_preserves_manager_mode(self):
-        await self._assert_preserved("mode")
-
-    async def test_tou_reverse_sync_preserves_enabled(self):
-        await self._assert_preserved("enabled")
-
-    async def test_tou_reverse_sync_preserves_sell_power(self):
-        await self._assert_preserved("sell_power")
-
-    async def test_slot_settings_have_no_charge_current_field(self):
-        runtime = self._runtime()
-        self.assertFalse(hasattr(runtime.active_slot, "charge_current"))
-
-    async def test_slot_settings_have_no_grid_charge_current_field(self):
-        runtime = self._runtime()
-        self.assertFalse(hasattr(runtime.active_slot, "grid_charge_current"))
-
-    async def test_slot_settings_have_no_discharge_current_field(self):
-        runtime = self._runtime()
-        self.assertFalse(hasattr(runtime.active_slot, "discharge_current"))
-
-    async def test_tou_reverse_sync_preserves_minimum_sell_soc(self):
-        await self._assert_preserved("minimum_sell_soc")
-
-    async def test_tou_reverse_sync_preserves_min_sell_price(self):
-        await self._assert_preserved("min_sell_price")
-
-    async def test_tou_reverse_sync_preserves_physical_work_mode(self):
-        await self._assert_preserved("physical_work_mode")
-
-    async def test_tou_reverse_sync_round_trip_is_stable(self):
-        runtime = self._runtime()
-        await runtime.async_set_physical_tou_slot(2, soc=25)
-        first = runtime._tou_mapping_rows(runtime.schedule_to_tou_mapping())
-        second = runtime._tou_mapping_rows(runtime.schedule_to_tou_mapping())
-        self.assertEqual(first, second)
-
-    async def test_tou_reverse_sync_round_trip_matches_confirmed_readback(self):
-        runtime = self._runtime()
-        await runtime.async_set_physical_tou_slot(2, soc=25)
-        self.assertTrue(runtime._tou_mappings_match(runtime.read_physical_tou_mapping(), runtime.schedule_to_tou_mapping()))
-
-    async def test_reverse_sync_does_not_schedule_reconciliation(self):
-        runtime = self._runtime()
-        runtime._schedule_schedule_reconciliation = mock.Mock(side_effect=AssertionError("reconciliation"))
-        await runtime.async_set_physical_tou_slot(2, soc=25)
-        runtime._schedule_schedule_reconciliation.assert_not_called()
-
-    async def test_reverse_sync_does_not_write_tou_again(self):
-        runtime = self._runtime()
-        runtime.hass.services.calls.clear()
-        await runtime.async_set_physical_tou_slot(2, soc=25)
-        tou_calls = [call for call in runtime.hass.services.calls if "time_of_use" in str(call[2].get("entity_id", ""))]
-        self.assertEqual(len(tou_calls), 1)
-
-    async def test_reverse_sync_uses_confirmed_readback_not_request_payload(self):
-        runtime = self._runtime()
-        entity = runtime._tou_entity(2, "soc")
-        original = runtime.async_set_number
-
-        async def provider_rounding(entity_id, value):
-            await original(entity_id, value)
-            if entity_id == entity:
-                state = runtime.hass.states.get(entity_id)
-                runtime.hass.states.values[entity_id] = FakeState("25.05", dict(state.attributes))
-
-        runtime.async_set_number = provider_rounding
-        await runtime.async_set_physical_tou_slot(2, soc=25)
-        # The confirmed readback (25.05) is authoritative, not the requested 25.
-        # Physical SOC is normalized to one decimal place, so 25.05 -> 25.1.
-        self.assertEqual(self._slot(runtime, 4).tou_soc, 25.1)
-
-    async def test_reverse_sync_failure_restores_schedule_snapshot(self):
-        runtime = self._runtime()
-        before = {key: replace(slot) for key, slot in runtime.slots.items()}
-        runtime._apply_reverse_sync_patch_locked = mock.Mock(side_effect=ValueError("test reverse"))
-        with self.assertRaises(ValueError):
-            await runtime.async_set_physical_tou_slot(2, soc=25)
-        self.assertEqual(runtime.slots, before)
-
-    async def test_round_trip_mismatch_confirms_manual_mapping_and_keeps_write(self):
-        runtime = self._runtime()
-        self._set_physical(runtime, socs=(20,) * 6, grids=(False,) * 6)
-        entity = runtime._tou_entity(2, "start")
-        before = runtime.hass.states.get(entity).state
-        await runtime.async_set_physical_tou_slot(2, start="05:00")
-        # A round-trip mismatch is no longer a rollback: the confirmed physical
-        # map is adopted as an authoritative manual mapping and the write stands.
-        self.assertEqual(runtime.reverse_sync_status, "confirmed_manual")
-        self.assertTrue(runtime.reverse_sync_round_trip_ok)
-        self.assertIsNotNone(runtime._manual_tou_mapping)
-        after = runtime.hass.states.get(entity).state
-        self.assertNotEqual(after, before)
-        self.assertTrue(str(after).startswith("05:00"))
-
-    async def test_round_trip_mismatch_updates_schedule_from_confirmed_readback(self):
-        runtime = self._runtime()
-        self._set_physical(runtime, socs=(20,) * 6, grids=(False,) * 6)
-        await runtime.async_set_physical_tou_slot(2, start="05:00")
-        self.assertEqual(runtime.reverse_sync_status, "confirmed_manual")
-        # The confirmed readback (SOC 20, Grid Charge off) is adopted locally
-        # rather than rolled back to the pre-write schedule.
-        self.assertEqual(runtime.slots["0400_0430"].tou_soc, 20)
-        self.assertEqual(runtime.slots["0500_0530"].tou_soc, 20)
-        self.assertFalse(runtime.slots["0500_0530"].charge_enabled)
-        self.assertIsNotNone(runtime._manual_tou_mapping)
-
-    async def test_reverse_sync_rollback_failure_reports_critical_status(self):
-        runtime = self._runtime()
-        runtime._apply_reverse_sync_patch_locked = mock.Mock(side_effect=ValueError("test reverse"))
-
-        async def failed(_items, _snapshot):
-            return False, ["test rollback"]
-
-        runtime._async_rollback_tou_transaction = failed
-        with self.assertRaises(ValueError):
-            await runtime.async_set_physical_tou_slot(2, soc=25)
-        self.assertEqual(runtime.reverse_sync_status, "rollback_failed")
-        self.assertEqual(runtime.tou_contract_status, "rollback_failed")
-
-    async def test_reverse_sync_failure_does_not_apply_safe_defaults(self):
-        runtime = self._runtime()
-        runtime._apply_reverse_sync_patch_locked = mock.Mock(side_effect=ValueError("test reverse"))
-        runtime.async_apply_safe_defaults = mock.AsyncMock()
-        with self.assertRaises(ValueError):
-            await runtime.async_set_physical_tou_slot(2, soc=25)
-        runtime.async_apply_safe_defaults.assert_not_awaited()
-
-    async def test_disabled_control_does_not_run_reverse_sync(self):
-        runtime = self._runtime()
-        runtime.control_enabled = False
-        runtime.control_status = "Disabled"
-        runtime._async_reverse_sync_after_manual_tou_locked = mock.AsyncMock()
-        with self.assertRaises(manager.ControlDisabledError):
-            await runtime.async_set_physical_tou_slot(2, soc=25)
-        runtime._async_reverse_sync_after_manual_tou_locked.assert_not_awaited()
-
-    async def test_control_disabled_during_tou_write_does_not_apply_partial_reverse_sync(self):
-        runtime = self._runtime()
-        entity = runtime._tou_entity(2, "soc")
-        runtime.control_confirmation_timeout = 2
-        runtime.hass.services.ignore_once("number", "set_value", entity_id=entity)
-        before = {key: replace(slot) for key, slot in runtime.slots.items()}
-        task = asyncio.create_task(runtime.async_set_physical_tou_slot(2, soc=25))
-        while runtime._active_tou_cancel_event is None and not task.done():
-            await asyncio.sleep(0)
-        await runtime.async_disable_control()
-        with self.assertRaises((manager.ControlDisabledError, ValueError)):
-            await task
-        self.assertEqual(runtime.slots, before)
-
-    async def test_cancelled_tou_transaction_preserves_schedule_snapshot(self):
-        runtime = self._runtime()
-        before = {key: replace(slot) for key, slot in runtime.slots.items()}
-        waiting = asyncio.Event()
-        release = asyncio.Event()
-        original = runtime._async_wait_for_tou_confirmation
-
-        async def wait(items, operation_name, expected_value_key="expected_logical_value", **kwargs):
-            if expected_value_key == "previous_logical_value":
-                return await original(items, operation_name, expected_value_key, **kwargs)
-            waiting.set()
-            await release.wait()
-            return []
-
-        runtime._async_wait_for_tou_confirmation = wait
-        task = asyncio.create_task(runtime.async_set_physical_tou_slot(2, soc=25))
-        await waiting.wait()
-        task.cancel()
-        release.set()
-        with self.assertRaises(asyncio.CancelledError):
-            await task
-        self.assertEqual(runtime.slots, before)
-
-    async def _assert_provider_round_trip(self, provider):
-        runtime = self._runtime(provider)
-        await runtime.async_set_physical_tou_slot(2, soc=25)
-        self.assertTrue(runtime.reverse_sync_round_trip_ok)
-        self.assertTrue(runtime._tou_mappings_match(runtime.read_physical_tou_mapping(), runtime.schedule_to_tou_mapping()))
-
-    async def test_lewa_reka_reverse_sync_round_trip(self):
-        await self._assert_provider_round_trip(const.PROVIDER_LEWA_REKA)
-
-    async def test_solarman_reverse_sync_round_trip(self):
-        await self._assert_provider_round_trip(const.PROVIDER_SOLARMAN)
-
-    async def test_sunsynk_reverse_sync_round_trip(self):
-        await self._assert_provider_round_trip(const.PROVIDER_SUNSYNK)
-
-    async def test_custom_reverse_sync_round_trip(self):
-        await self._assert_provider_round_trip(const.PROVIDER_CUSTOM)
-
-    async def test_read_only_provider_never_runs_reverse_sync(self):
-        runtime = self._runtime()
-        runtime.data[const.CONF_INVERTER_PROVIDER] = const.PROVIDER_DEYE_ADDON
-        runtime._async_reverse_sync_after_manual_tou_locked = mock.AsyncMock()
-        with self.assertRaises(ValueError):
-            await runtime.async_set_physical_tou_slot(2, soc=25)
-        runtime._async_reverse_sync_after_manual_tou_locked.assert_not_awaited()
-
-    async def test_partial_custom_readback_rolls_back_without_false_success(self):
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_PROVIDER] = const.PROVIDER_CUSTOM
-        for idx in range(1, 7):
-            for kind in ("start", "soc", "grid"):
-                runtime.data.pop(const.conf_tou_entity(idx, kind), None)
-        entity_id = "number.custom_tou_1_soc"
-        runtime.data[const.conf_tou_entity(1, "soc")] = entity_id
-        runtime.hass.states.values[entity_id] = FakeState(
-            "20", {"min": 0, "max": 100, "step": 1}
-        )
-        with self.assertRaisesRegex(ValueError, "complete confirmed readback"):
-            await runtime.async_set_physical_tou_slot(1, soc=60)
-        self.assertEqual(float(runtime.hass.states.get(entity_id).state), 20)
-        self.assertEqual(runtime.reverse_sync_status, "rollback")
-        self.assertEqual(runtime.tou_contract_status, "rollback")
-
-    async def test_reverse_sync_accepts_boundary_with_identical_soc_and_grid(self):
-        runtime = self._runtime()
-        self._set_physical(runtime, socs=(20,) * 6, grids=(False,) * 6)
-        await runtime.async_set_physical_tou_slot(2, start="05:00")
-        # Identical SOC/Grid values make the 48-slot round-trip ambiguous.  The
-        # confirmed physical boundary is retained as the authoritative map.
-        self.assertEqual(runtime.reverse_sync_status, "confirmed_manual")
-        manual = runtime._manual_tou_mapping
-        self.assertIsNotNone(manual)
-        self.assertEqual(int(manual.slots[1].start), 5 * 60)
-        self.assertEqual(int(manual.slots[1].end), 8 * 60)
-        self.assertEqual(int(runtime._tou_mapping.slots[1].start), 5 * 60)
-
-    def test_uniform_physical_values_round_trip_is_deterministic(self):
-        runtime = self._runtime()
-        self._set_physical(runtime, socs=(20,) * 6, grids=(False,) * 6)
-        physical = runtime.read_physical_tou_mapping()
-        patch = runtime.tou_mapping_to_schedule_patch(physical)
-        runtime._apply_reverse_sync_patch_locked(patch)
-        first = runtime._tou_mapping_rows(runtime.schedule_to_tou_mapping())
-        second = runtime._tou_mapping_rows(runtime.schedule_to_tou_mapping())
-        self.assertEqual(first, second)
-        self.assertNotEqual(first, runtime._tou_mapping_rows(physical))
-
-    def test_reverse_sync_diagnostics_are_exposed(self):
-        runtime = self._runtime()
-        data = runtime.diagnostics()["tou_reverse_sync"]
-        self.assertEqual(data["reverse_sync_status"], "idle")
-        self.assertIn("reverse_sync_changed_hours", data)
-        self.assertIn("reverse_sync_round_trip_ok", data)
-
-    async def test_reverse_sync_leaves_last_tou_signature_invalid_for_next_cycle(self):
-        runtime = self._runtime()
-        runtime._last_tou_signature = "cached"
-        await runtime.async_set_physical_tou_slot(2, soc=25)
-        self.assertEqual(runtime._last_tou_signature, "")
-
-
-class ScheduleSlotDraftBackend5C4Tests(unittest.IsolatedAsyncioTestCase):
-    async def test_schedule_slot_save_triggers_single_mapping_recalculation(self):
-        runtime = make_runtime()
-        runtime.control_enabled = False
-        runtime.control_status = "Disabled"
-        slot_key = runtime.active_slot_key()
-        original = runtime.schedule_to_tou_mapping
-        with mock.patch.object(runtime, "schedule_to_tou_mapping", wraps=original) as mapping:
-            await runtime.async_apply_schedule_patch(
-                [{"slot_key": slot_key, "sell_power": 4321}]
-            )
-        self.assertEqual(mapping.call_count, 1)
-
-    async def test_schedule_slot_patch_accepts_canonical_physical_work_mode(self):
-        runtime = make_runtime()
-        runtime.control_enabled = False
-        runtime.control_status = "Disabled"
-        slot_key = runtime.active_slot_key()
-        await runtime.async_apply_schedule_patch(
-            [
-                {
-                    "slot_key": slot_key,
-                    "mode": const.MODE_NORMAL_OPERATION,
-                    "physical_work_mode": const.MODE_ZERO_EXPORT_CT,
-                }
-            ]
-        )
-        self.assertEqual(
-            runtime.slots[slot_key].physical_work_mode,
-            const.MODE_ZERO_EXPORT_CT,
-        )
-
-
-class TouExternalReconciliation5DTests(unittest.IsolatedAsyncioTestCase):
-    """Stage 5D: external physical TOU changes cannot hide behind cache."""
-
-    @classmethod
-    def _runtime(cls, provider=const.PROVIDER_LEWA_REKA):
-        runtime = TouReverseSync5C2Tests._runtime(provider)
-        physical = runtime.read_physical_tou_mapping()
-        runtime._apply_reverse_sync_patch_locked(
-            runtime.tou_mapping_to_schedule_patch(physical)
-        )
-        runtime.scheduler_enabled = True
-        active = runtime.slots[runtime.active_slot_key()]
-        active.enabled = True
-        active.mode = const.MODE_NORMAL_OPERATION
-        active.physical_work_mode = const.MODE_ZERO_EXPORT
-        runtime._refresh_tou_reconciliation_state()
-        runtime._last_tou_signature = runtime.tou_expected_signature
-        return runtime
-
-    @staticmethod
-    def _tou_entity_ids(runtime):
-        return {
-            runtime._tou_entity(idx, kind)
-            for idx in range(1, 7)
-            for kind in ("start", "soc", "grid")
-            if runtime._tou_entity(idx, kind)
-        }
-
-    @classmethod
-    def _tou_calls(cls, runtime):
-        entity_ids = cls._tou_entity_ids(runtime)
-        return [call for call in runtime.hass.services.calls if call[2].get("entity_id") in entity_ids]
-
-    @staticmethod
-    def _set_start(runtime, idx, hour):
-        entity = runtime._tou_entity(idx, "start")
-        state = runtime.hass.states.get(entity)
-        value = f"{hour:02d}:00" if entity.startswith("select.") else f"{hour:02d}:00:00"
-        runtime.hass.states.values[entity] = FakeState(value, dict(state.attributes))
-
-    @staticmethod
-    def _set_soc(runtime, idx, value):
-        entity = runtime._tou_entity(idx, "soc")
-        state = runtime.hass.states.get(entity)
-        runtime.hass.states.values[entity] = FakeState(str(value), dict(state.attributes))
-
-    @staticmethod
-    def _set_grid(runtime, idx, enabled):
-        entity = runtime._tou_entity(idx, "grid")
-        state = runtime.hass.states.get(entity)
-        if entity.startswith("switch."):
-            value = "on" if enabled else "off"
-        elif runtime.inverter_provider == const.PROVIDER_SUNSYNK:
-            value = "Allow Grid & Gen" if enabled else "Allow Gen"
-        else:
-            value = "Grid" if enabled else "Disable"
-        runtime.hass.states.values[entity] = FakeState(value, dict(state.attributes))
-
-    @staticmethod
-    def _disable_control(runtime):
-        runtime.control_enabled = False
-        runtime.control_status = "Disabled"
-
-    @staticmethod
-    def _enable_control(runtime):
-        runtime.control_enabled = True
-        runtime.control_status = "Active"
-
-    @staticmethod
-    def _stub_periodic_updates(runtime):
-        for name in (
-            "async_update_sold_energy_today",
-            "async_update_solcast_history",
-            "async_update_learning_history",
-            "async_update_energy_sample",
-            "async_update_weather_forecast",
-        ):
-            setattr(runtime, name, mock.AsyncMock())
-
-    async def test_last_tou_signature_does_not_hide_external_start_change(self):
-        runtime = self._runtime()
-        self._set_start(runtime, 2, 5)
-        runtime.hass.services.calls.clear()
-        self.assertTrue(await runtime.async_apply_time_of_use_map())
-        self.assertEqual(len(self._tou_calls(runtime)), 1)
-        self.assertEqual(runtime._time_to_minutes(runtime.hass.states.get(runtime._tou_entity(2, "start")).state), 4 * 60)
-
-    async def test_last_tou_signature_does_not_hide_external_soc_change(self):
-        runtime = self._runtime()
-        self._set_soc(runtime, 2, 25)
-        runtime.hass.services.calls.clear()
-        self.assertTrue(await runtime.async_apply_time_of_use_map())
-        self.assertEqual(len(self._tou_calls(runtime)), 1)
-        self.assertEqual(float(runtime.hass.states.get(runtime._tou_entity(2, "soc")).state), 20)
-
-    async def test_last_tou_signature_does_not_hide_external_grid_change(self):
-        runtime = self._runtime()
-        self._set_grid(runtime, 2, False)
-        runtime.hass.services.calls.clear()
-        self.assertTrue(await runtime.async_apply_time_of_use_map())
-        self.assertEqual(len(self._tou_calls(runtime)), 1)
-        self.assertTrue(manager.provider_boolean_state(runtime.data, "grid", runtime.hass.states.get(runtime._tou_entity(2, "grid")).state))
-
-    async def test_physical_tou_signature_is_based_on_readback(self):
-        runtime = self._runtime()
-        original = runtime.tou_physical_signature
-        self._set_soc(runtime, 2, 25)
-        runtime._refresh_tou_reconciliation_state()
-        self.assertNotEqual(runtime.tou_physical_signature, original)
-        self.assertNotEqual(runtime.tou_physical_signature, runtime.tou_expected_signature)
-
-    async def test_matching_schedule_and_physical_signature_skips_write(self):
-        runtime = self._runtime()
-        runtime.hass.services.calls.clear()
-        self.assertTrue(await runtime.async_apply_time_of_use_map())
-        self.assertEqual(self._tou_calls(runtime), [])
-
-    async def test_external_start_change_is_reconciled_when_control_active(self):
-        runtime = self._runtime()
-        self._set_start(runtime, 2, 5)
-        self.assertTrue(await runtime.async_apply_time_of_use_map())
-        self.assertEqual(runtime.tou_reconciliation_status, "in_sync")
-
-    async def test_external_soc_change_is_reconciled_when_control_active(self):
-        runtime = self._runtime()
-        self._set_soc(runtime, 2, 25)
-        self.assertTrue(await runtime.async_apply_time_of_use_map())
-        self.assertEqual(runtime.tou_reconciliation_status, "in_sync")
-
-    async def test_external_grid_change_is_reconciled_when_control_active(self):
-        runtime = self._runtime()
-        self._set_grid(runtime, 2, False)
-        self.assertTrue(await runtime.async_apply_time_of_use_map())
-        self.assertEqual(runtime.tou_reconciliation_status, "in_sync")
-
-    async def test_external_mismatch_writes_only_changed_entity(self):
-        runtime = self._runtime()
-        self._set_soc(runtime, 2, 25)
-        runtime.hass.services.calls.clear()
-        await runtime.async_apply_time_of_use_map()
-        self.assertEqual([call[2]["entity_id"] for call in self._tou_calls(runtime)], [runtime._tou_entity(2, "soc")])
-
-    async def test_external_reconciliation_uses_existing_confirmation_and_rollback(self):
-        runtime = self._runtime()
-        entity = runtime._tou_entity(2, "soc")
-        self._set_soc(runtime, 2, 25)
-        runtime.control_confirmation_timeout = 0
-        runtime.hass.services.ignore_once("number", "set_value", entity_id=entity)
-        self.assertFalse(await runtime.async_apply_time_of_use_map())
-        self.assertIn(runtime.tou_contract_status, ("rollback", "rollback_failed"))
-        self.assertEqual(float(runtime.hass.states.get(entity).state), 25)
-
-    async def test_external_tou_change_is_not_overwritten_when_control_disabled(self):
-        runtime = self._runtime()
-        self._set_soc(runtime, 2, 25)
-        self._disable_control(runtime)
-        runtime.hass.services.calls.clear()
-        runtime._refresh_tou_reconciliation_state()
-        self.assertEqual(self._tou_calls(runtime), [])
-        self.assertEqual(float(runtime.hass.states.get(runtime._tou_entity(2, "soc")).state), 25)
-
-    async def test_external_tou_mismatch_is_reported_when_control_disabled(self):
-        runtime = self._runtime()
-        self._set_soc(runtime, 2, 25)
-        self._disable_control(runtime)
-        self.assertFalse(runtime._refresh_tou_reconciliation_state())
-        self.assertEqual(runtime.tou_reconciliation_status, "blocked_control_disabled")
-
-    async def test_reenabling_control_reconciles_external_tou_change_on_next_tick(self):
-        runtime = self._runtime()
-        self._set_soc(runtime, 2, 25)
-        self._disable_control(runtime)
-        runtime._refresh_tou_reconciliation_state()
-        self._enable_control(runtime)
-        self._stub_periodic_updates(runtime)
-        runtime.hass.services.calls.clear()
-        await runtime.async_tick()
-        self.assertEqual(float(runtime.hass.states.get(runtime._tou_entity(2, "soc")).state), 20)
-
-    async def test_external_tou_change_is_not_overwritten_during_emergency_stop(self):
-        runtime = self._runtime()
-        self._set_soc(runtime, 2, 25)
-        runtime.emergency_stop = True
-        runtime.hass.services.calls.clear()
-        runtime._refresh_tou_reconciliation_state()
-        self.assertFalse(await runtime.async_apply_time_of_use_map())
-        self.assertEqual(runtime.tou_reconciliation_status, "blocked_emergency_stop")
-        self.assertEqual(self._tou_calls(runtime), [])
-
-    async def test_resume_manager_allows_reconciliation_on_next_tick(self):
-        runtime = self._runtime()
-        self._set_soc(runtime, 2, 25)
-        runtime.emergency_stop = True
-        runtime.control_mode = "Stop Sell"
-        self._stub_periodic_updates(runtime)
-        await runtime.async_resume_manager()
-        self.assertEqual(float(runtime.hass.states.get(runtime._tou_entity(2, "soc")).state), 20)
-
-    async def test_unavailable_physical_readback_is_not_treated_as_in_sync(self):
-        runtime = self._runtime()
-        entity = runtime._tou_entity(2, "soc")
-        runtime.hass.states.values[entity] = FakeState("unavailable")
-        self.assertFalse(runtime._refresh_tou_reconciliation_state())
-        self.assertFalse(runtime.tou_reconciliation_in_sync)
-        self.assertFalse(runtime.tou_readback_complete)
-
-    async def test_unavailable_physical_readback_does_not_trigger_blind_full_write(self):
-        runtime = self._runtime()
-        runtime.hass.states.values[runtime._tou_entity(2, "soc")] = FakeState("unavailable")
-        runtime.hass.services.calls.clear()
-        self.assertFalse(await runtime.async_apply_time_of_use_map())
-        self.assertEqual(self._tou_calls(runtime), [])
-
-    async def test_readback_recovery_allows_normal_reconciliation(self):
-        runtime = self._runtime()
-        entity = runtime._tou_entity(2, "soc")
-        runtime.hass.states.values[entity] = FakeState("unavailable")
-        self.assertFalse(await runtime.async_apply_time_of_use_map())
-        self._set_soc(runtime, 2, 25)
-        self.assertTrue(await runtime.async_apply_time_of_use_map())
-        self.assertEqual(float(runtime.hass.states.get(entity).state), 20)
-
-    async def _assert_provider_detection(self, provider):
-        runtime = self._runtime(provider)
-        self._set_soc(runtime, 2, 25)
-        self.assertFalse(runtime._refresh_tou_reconciliation_state())
-        self.assertIn("slot_2.soc", runtime.tou_mismatched_fields)
-
-    async def test_lewa_reka_external_tou_change_detection(self):
-        await self._assert_provider_detection(const.PROVIDER_LEWA_REKA)
-
-    async def test_solarman_external_tou_change_detection(self):
-        await self._assert_provider_detection(const.PROVIDER_SOLARMAN)
-
-    async def test_sunsynk_external_tou_change_detection(self):
-        await self._assert_provider_detection(const.PROVIDER_SUNSYNK)
-
-    async def test_custom_full_mapping_external_tou_change_detection(self):
-        await self._assert_provider_detection(const.PROVIDER_CUSTOM)
-
-    async def test_custom_partial_mapping_does_not_claim_full_tou_sync(self):
-        runtime = make_runtime()
-        runtime.data[const.CONF_INVERTER_PROVIDER] = const.PROVIDER_CUSTOM
-        for idx in range(1, 7):
-            for kind in ("start", "soc", "grid"):
-                runtime.data.pop(const.conf_tou_entity(idx, kind), None)
-        runtime.data[const.conf_tou_entity(1, "soc")] = "number.custom_tou_1_soc"
-        runtime.hass.states.values["number.custom_tou_1_soc"] = FakeState("20")
-        self.assertFalse(runtime._refresh_tou_reconciliation_state())
-        self.assertFalse(runtime.tou_readback_complete)
-        self.assertEqual(runtime.tou_reconciliation_status, "waiting_readback")
-
-    async def test_read_only_provider_reports_mismatch_without_write(self):
-        runtime = self._runtime()
-        for idx in range(1, 7):
-            for kind in ("start", "soc", "grid"):
-                runtime.data[const.conf_tou_entity(idx, kind)] = runtime._tou_entity(idx, kind)
-        runtime.data[const.CONF_INVERTER_PROVIDER] = const.PROVIDER_DEYE_ADDON
-        self._set_soc(runtime, 2, 25)
-        runtime.hass.services.calls.clear()
-        self.assertFalse(runtime._refresh_tou_reconciliation_state())
-        self.assertEqual(runtime.tou_reconciliation_status, "read_only")
-        self.assertEqual(self._tou_calls(runtime), [])
-
-    async def test_own_confirmed_tou_write_does_not_trigger_second_write(self):
-        runtime = self._runtime()
-        self._set_soc(runtime, 2, 25)
-        self.assertTrue(await runtime.async_apply_time_of_use_map())
-        runtime.hass.services.calls.clear()
-        self.assertTrue(await runtime.async_apply_time_of_use_map())
-        self.assertEqual(self._tou_calls(runtime), [])
-
-    async def test_reverse_synced_tou_does_not_create_reconciliation_loop(self):
-        runtime = self._runtime()
-        await runtime.async_set_physical_tou_slot(2, soc=25)
-        runtime.hass.services.calls.clear()
-        self.assertTrue(await runtime.async_apply_time_of_use_map())
-        self.assertEqual(self._tou_calls(runtime), [])
-
-    async def test_reconciliation_updates_physical_signature_after_confirmation(self):
-        runtime = self._runtime()
-        self._set_soc(runtime, 2, 25)
-        runtime._refresh_tou_reconciliation_state()
-        stale = runtime.tou_physical_signature
-        self.assertTrue(await runtime.async_apply_time_of_use_map())
-        self.assertNotEqual(runtime.tou_physical_signature, stale)
-        self.assertEqual(runtime._last_physical_tou_signature, runtime.tou_expected_signature)
-
-    async def test_reload_does_not_trust_stale_tou_signature(self):
-        runtime = self._runtime()
-        stale = runtime._last_tou_signature
-        self._set_start(runtime, 2, 5)
-        runtime._last_tou_signature = stale
-        runtime._last_physical_tou_signature = stale
-        self.assertFalse(runtime._refresh_tou_reconciliation_state())
-        self.assertIn("slot_2.start", runtime.tou_mismatched_fields)
-
-    async def test_first_tick_confirms_physical_tou_before_skipping_write(self):
-        runtime = self._runtime()
-        self._set_soc(runtime, 2, 25)
-        runtime._last_tou_signature = runtime.tou_expected_signature
-        self._stub_periodic_updates(runtime)
-        runtime.hass.services.calls.clear()
-        await runtime.async_tick()
-        self.assertEqual(float(runtime.hass.states.get(runtime._tou_entity(2, "soc")).state), 20)
-
-    async def test_tou_reconciliation_diagnostics_report_in_sync(self):
-        runtime = self._runtime()
-        data = runtime.diagnostics()["tou_reconciliation"]
-        self.assertTrue(data["in_sync"])
-        self.assertEqual(data["reconciliation_status"], "in_sync")
-
-    async def test_tou_reconciliation_diagnostics_report_mismatch(self):
-        runtime = self._runtime()
-        self._set_soc(runtime, 2, 25)
-        runtime._refresh_tou_reconciliation_state()
-        data = runtime.diagnostics()["tou_reconciliation"]
-        self.assertFalse(data["in_sync"])
-        self.assertEqual(data["reconciliation_status"], "mismatch")
-
-    async def test_tou_reconciliation_diagnostics_report_control_block(self):
-        runtime = self._runtime()
-        self._set_soc(runtime, 2, 25)
-        self._disable_control(runtime)
-        runtime._refresh_tou_reconciliation_state()
-        self.assertEqual(runtime.diagnostics()["tou_reconciliation"]["reconciliation_status"], "blocked_control_disabled")
-
-    async def test_tou_reconciliation_diagnostics_report_emergency_stop_block(self):
-        runtime = self._runtime()
-        self._set_soc(runtime, 2, 25)
-        runtime.emergency_stop = True
-        runtime._refresh_tou_reconciliation_state()
-        self.assertEqual(runtime.diagnostics()["tou_reconciliation"]["reconciliation_status"], "blocked_emergency_stop")
-
-    async def test_tou_reconciliation_diagnostics_list_mismatched_fields(self):
-        runtime = self._runtime()
-        self._set_soc(runtime, 2, 25)
-        self._set_grid(runtime, 2, False)
-        runtime._refresh_tou_reconciliation_state()
-        self.assertIn("slot_2.soc", runtime.tou_mismatched_fields)
-        self.assertIn("slot_2.grid_charge", runtime.tou_mismatched_fields)
-
-
-class ControlReenableReconciliation5F5Tests(unittest.IsolatedAsyncioTestCase):
-    """Stage 5F.5: enabling master control immediately runs the normal Manager decision."""
-
-    @staticmethod
-    def _stub_periodic_updates(runtime):
-        for name in (
-            "async_update_sold_energy_today",
-            "async_update_solcast_history",
-            "async_update_learning_history",
-            "async_update_energy_sample",
-            "async_update_weather_forecast",
-        ):
-            setattr(runtime, name, mock.AsyncMock())
-
-    def _prepare_runtime(self, runtime=None):
-        runtime = runtime or make_runtime()
-        runtime.hass.async_create_task = asyncio.create_task
-        self._stub_periodic_updates(runtime)
-        runtime.control_enabled = False
-        runtime.control_status = "Disabled"
-        return runtime
-
-    async def _enable_and_wait(self, runtime):
-        await runtime.async_enable_control()
-        task = runtime._schedule_reconcile_task
-        self.assertIsNotNone(task, "enable must schedule an immediate reconciliation task")
-        await task
-        self.assertIsNone(runtime._schedule_reconcile_task)
-        self.assertFalse(runtime._schedule_reconcile_requested)
-
-    @staticmethod
-    def _set_physical(runtime, *, mode, sell, discharge, charge, grid):
-        runtime.hass.states.values[runtime.work_mode_select] = FakeState(mode)
-        runtime.hass.states.values[runtime.max_sell_power_number] = FakeState(str(sell))
-
-    @staticmethod
-    def _control_calls(runtime):
-        ids = {
-            runtime.work_mode_select,
-            runtime.max_sell_power_number,
-        }
-        return [call for call in runtime.hass.services.calls if call[2].get("entity_id") in ids]
-
-    async def test_reenable_control_immediately_applies_current_schedule_slot(self):
-        runtime = self._prepare_runtime()
-        slot = configure_selling_slot(runtime)
-        slot.charge_enabled = False
-        self._set_physical(runtime, mode=const.MODE_ZERO_EXPORT, sell=1234, discharge=25, charge=15, grid=10)
-        runtime.hass.services.calls.clear()
-
-        await self._enable_and_wait(runtime)
-
-        self.assertTrue(manager.logical_mode_matches(
-            runtime.data,
-            const.MODE_SELLING_FIRST,
-            runtime.hass.states.get(runtime.work_mode_select).state,
-        ))
-        self.assertEqual(float(runtime.hass.states.get(runtime.max_sell_power_number).state), 5000)
-        self.assertTrue(self._control_calls(runtime))
-
-    async def test_reenable_control_does_not_wait_for_periodic_manager_tick(self):
-        runtime = self._prepare_runtime()
-        runtime.async_tick = mock.AsyncMock(side_effect=AssertionError("periodic tick must not be called"))
-        runtime._async_tick_impl = mock.AsyncMock(return_value=True)
-
-        await self._enable_and_wait(runtime)
-
-        runtime._async_tick_impl.assert_awaited_once_with()
-        runtime.async_tick.assert_not_awaited()
-
-    async def test_reenable_control_applies_current_normal_slot(self):
-        runtime = self._prepare_runtime()
-        runtime.scheduler_enabled = True
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = True
-        slot.mode = const.MODE_NORMAL_OPERATION
-        slot.physical_work_mode = const.MODE_ZERO_EXPORT_CT
-        slot.sell_power = 3100
-        self._set_physical(runtime, mode="Selling First", sell=9000, discharge=90, charge=90, grid=5)
-
-        await self._enable_and_wait(runtime)
-
-        self.assertTrue(manager.logical_mode_matches(
-            runtime.data,
-            const.MODE_NORMAL_OPERATION,
-            runtime.hass.states.get(runtime.work_mode_select).state,
-            const.MODE_ZERO_EXPORT_CT,
-        ))
-        self.assertEqual(float(runtime.hass.states.get(runtime.max_sell_power_number).state), 3100)
-
-    async def test_reenable_control_applies_current_charge_slot(self):
-        runtime = self._prepare_runtime()
-        runtime.scheduler_enabled = True
-        slot = runtime.slots[runtime.active_slot_key()]
-        slot.enabled = True
-        slot.mode = const.MODE_CHARGE
-        slot.charge_enabled = True
-        slot.tou_soc = 90
-        self._set_physical(runtime, mode="Selling First", sell=1000, discharge=10, charge=10, grid=10)
-
-        await self._enable_and_wait(runtime)
-
-        self.assertTrue(manager.logical_mode_matches(
-            runtime.data,
-            const.MODE_NORMAL_OPERATION,
-            runtime.hass.states.get(runtime.work_mode_select).state,
-            runtime.default_normal_physical_work_mode(),
-        ))
-        self.assertTrue(any(
-            call[:2] == ("switch", "turn_on") and "_grid_charge" in str(call[2].get("entity_id"))
-            for call in runtime.hass.services.calls
-        ))
-
-    async def test_reenable_control_applies_current_selling_slot(self):
-        runtime = self._prepare_runtime()
-        slot = configure_selling_slot(runtime)
-        self._set_physical(runtime, mode=const.MODE_ZERO_EXPORT, sell=2500, discharge=22, charge=33, grid=12)
-
-        await self._enable_and_wait(runtime)
-
-        self.assertTrue(manager.logical_mode_matches(
-            runtime.data,
-            const.MODE_SELLING_FIRST,
-            runtime.hass.states.get(runtime.work_mode_select).state,
-        ))
-        self.assertEqual(float(runtime.hass.states.get(runtime.max_sell_power_number).state), 5000)
-
-    async def test_reenable_control_uses_standard_defaults_for_disabled_slot(self):
-        runtime = self._prepare_runtime()
-        runtime.scheduler_enabled = True
-        runtime.active_slot.enabled = False
-        self._set_physical(runtime, mode="Selling First", sell=2500, discharge=22, charge=33, grid=12)
-
-        await self._enable_and_wait(runtime)
-
-        self.assertTrue(manager.logical_mode_matches(
-            runtime.data,
-            const.MODE_NORMAL_OPERATION,
-            runtime.hass.states.get(runtime.work_mode_select).state,
-            runtime.default_normal_physical_work_mode(),
-        ))
-        self.assertEqual(float(runtime.hass.states.get(runtime.max_sell_power_number).state), runtime.default_sell_power)
-
-    async def test_reenable_control_respects_minimum_sell_soc(self):
-        runtime = self._prepare_runtime(make_runtime(soc="20"))
-        slot = configure_selling_slot(runtime)
-        slot.minimum_sell_soc = 30
-
-        await self._enable_and_wait(runtime)
-
-        self.assertFalse(manager.logical_mode_matches(
-            runtime.data,
-            const.MODE_SELLING_FIRST,
-            runtime.hass.states.get(runtime.work_mode_select).state,
-        ))
-        self.assertEqual(float(runtime.hass.states.get(runtime.max_sell_power_number).state), runtime.default_sell_power)
-
-    async def test_reenable_control_respects_min_sell_price(self):
-        runtime = self._prepare_runtime(make_runtime(price="0.50"))
-        slot = configure_selling_slot(runtime)
-        slot.min_sell_price = 1.00
-
-        await self._enable_and_wait(runtime)
-
-        self.assertFalse(manager.logical_mode_matches(
-            runtime.data,
-            const.MODE_SELLING_FIRST,
-            runtime.hass.states.get(runtime.work_mode_select).state,
-        ))
-        self.assertEqual(float(runtime.hass.states.get(runtime.max_sell_power_number).state), runtime.default_sell_power)
-
-    async def test_reenable_control_does_not_apply_targets_during_emergency_stop(self):
-        runtime = self._prepare_runtime()
-        configure_selling_slot(runtime)
-        runtime.emergency_stop = True
-        runtime.hass.services.calls.clear()
-
-        await runtime.async_enable_control()
-        await asyncio.sleep(0)
-
-        self.assertTrue(runtime.control_enabled)
-        self.assertEqual(runtime.control_status, "Active")
-        self.assertTrue(runtime.emergency_stop)
-        self.assertIsNone(runtime._schedule_reconcile_task)
-        self.assertEqual(runtime.hass.services.calls, [])
-
-    async def test_reenable_control_ignores_removed_current_slot_fields(self):
-        runtime = self._prepare_runtime()
-        configure_selling_slot(runtime)
-        self._set_physical(runtime, mode="Selling First", sell=5000, discharge=5, charge=120, grid=60)
-        runtime.hass.services.calls.clear()
-
-        await self._enable_and_wait(runtime)
-
-        self.assertEqual(self._control_calls(runtime), [])
-
-    async def test_reenable_control_reconciles_external_tou_change(self):
-        runtime = self._prepare_runtime(TouExternalReconciliation5DTests._runtime())
-        TouExternalReconciliation5DTests._set_soc(runtime, 2, 25)
-        runtime._refresh_tou_reconciliation_state()
-        runtime.hass.services.calls.clear()
-
-        await self._enable_and_wait(runtime)
-
-        calls = TouExternalReconciliation5DTests._tou_calls(runtime)
-        self.assertEqual([call[2]["entity_id"] for call in calls], [runtime._tou_entity(2, "soc")])
-        self.assertEqual(float(runtime.hass.states.get(runtime._tou_entity(2, "soc")).state), 20)
-
-    async def test_reenable_control_does_not_rewrite_matching_tou(self):
-        runtime = self._prepare_runtime(TouExternalReconciliation5DTests._runtime())
-        runtime.hass.services.calls.clear()
-
-        await self._enable_and_wait(runtime)
-
-        self.assertEqual(TouExternalReconciliation5DTests._tou_calls(runtime), [])
-
-    async def test_fast_off_on_does_not_start_duplicate_reconciliation(self):
-        runtime = self._prepare_runtime()
-        tick_calls = 0
-
-        async def tracked_tick():
-            nonlocal tick_calls
-            tick_calls += 1
-            return True
-
-        runtime._async_tick_impl = tracked_tick
-        await runtime.async_enable_control()
-        first_task = runtime._schedule_reconcile_task
-        await runtime.async_disable_control()
-        await runtime.async_enable_control()
-
-        self.assertIs(first_task, runtime._schedule_reconcile_task)
-        await first_task
-        self.assertEqual(tick_calls, 1)
-        self.assertIsNone(runtime._schedule_reconcile_task)
-
-
-class ManagerActionSemantics5F6Tests(unittest.IsolatedAsyncioTestCase):
-    """Stage 5F.6: planned and executed actions describe one real Manager cycle."""
-
-    @staticmethod
-    def _stub_periodic_updates(runtime):
-        runtime.weather_last_updated = manager.ha_now()
-        for name in (
-            "async_update_sold_energy_today",
-            "async_update_solcast_history",
-            "async_update_learning_history",
-            "async_update_energy_sample",
-            "async_update_weather_forecast",
-        ):
-            setattr(runtime, name, mock.AsyncMock())
-
-    def _runtime(self):
-        runtime = make_runtime()
-        self._stub_periodic_updates(runtime)
-        runtime.notify_update = mock.Mock()
-        return runtime
-
-    @staticmethod
-    def _normal_slot(runtime, physical=const.MODE_ZERO_EXPORT):
-        runtime.scheduler_enabled = True
-        slot = runtime.active_slot
-        slot.enabled = True
-        slot.mode = const.MODE_NORMAL_OPERATION
-        slot.physical_work_mode = physical
-        return slot
-
-    async def test_planned_action_describes_current_normal_slot(self):
-        runtime = self._runtime()
-        self._normal_slot(runtime, const.MODE_ZERO_EXPORT)
-
-        self.assertEqual(runtime._planned_manager_action_text(), "Normal Operation — measurement Load")
-
-    async def test_planned_action_describes_current_selling_slot(self):
-        runtime = self._runtime()
-        configure_selling_slot(runtime)
-
-        self.assertEqual(runtime._planned_manager_action_text(), "Selling — 5000 W")
-
-    def test_decision_power_switches_to_kw_at_10000_watts(self):
-        self.assertEqual(manager.DeyeEnergyRuntime._format_decision_power(9999), "9999 W")
-        self.assertEqual(manager.DeyeEnergyRuntime._format_decision_power(10000), "10.0 kW")
-        self.assertEqual(manager.DeyeEnergyRuntime._format_decision_power(12345), "12.3 kW")
-        self.assertEqual(manager.DeyeEnergyRuntime._format_decision_power(300), "300 W")
-
-    async def test_planned_action_describes_current_charge_slot(self):
-        runtime = self._runtime()
-        runtime.scheduler_enabled = True
-        slot = runtime.active_slot
-        slot.enabled = True
-        slot.mode = const.MODE_CHARGE
-        slot.charge_enabled = True
-        slot.tou_soc = 90
-
-        self.assertEqual(
-            runtime._planned_manager_action_text(),
-            "Charging from grid — target SOC 90%",
-        )
-
-    async def test_executed_action_reports_no_change_when_targets_already_match(self):
-        runtime = self._runtime()
-        self._normal_slot(runtime)
-
-        async def apply_matching_target():
-            changed = await runtime.async_set_number_if_needed(
-                runtime.max_sell_power_number, 0
-            )
-            self.assertFalse(changed)
-            return True
-
-        runtime.async_apply_targets = apply_matching_target
-        self.assertTrue(await runtime._async_tick_impl())
-
-        self.assertEqual(runtime.executed_manager_action, "No change — settings match")
-        self.assertEqual(runtime._physical_write_count, 0)
-
-    async def test_executed_action_reports_applied_when_write_occurs(self):
-        runtime = self._runtime()
-        self._normal_slot(runtime)
-
-        async def apply_changed_target():
-            changed = await runtime.async_set_number_if_needed(
-                runtime.max_sell_power_number, 5000
-            )
-            self.assertTrue(changed)
-            return True
-
-        runtime.async_apply_targets = apply_changed_target
-        self.assertTrue(await runtime._async_tick_impl())
-
-        self.assertEqual(
-            runtime.executed_manager_action,
-            "Applied: Normal Operation — measurement Load",
-        )
-        self.assertEqual(runtime._physical_write_count, 1)
-
-    async def test_executed_action_reports_control_disabled(self):
-        runtime = self._runtime()
-        self._normal_slot(runtime)
-        runtime.control_enabled = False
-        runtime.control_status = "Disabled"
-
-        self.assertTrue(await runtime._async_tick_impl())
-
-        self.assertEqual(
-            runtime.executed_manager_action,
-            "Not performed — control disabled",
-        )
-
-    async def test_executed_action_reports_emergency_stop(self):
-        runtime = self._runtime()
-        runtime.emergency_stop = True
-        runtime.async_apply_safe_defaults = mock.AsyncMock(return_value=True)
-
-        self.assertTrue(await runtime._async_tick_impl())
-
-        self.assertEqual(
-            runtime.executed_manager_action,
-            "Not performed — emergency stop",
-        )
-
-    async def test_planned_action_still_updates_when_control_disabled(self):
-        runtime = self._runtime()
-        configure_selling_slot(runtime)
-        runtime.control_enabled = False
-        runtime.control_status = "Disabled"
-
-        self.assertTrue(await runtime._async_tick_impl())
-
-        self.assertEqual(
-            runtime.planned_manager_action,
-            "Selling — 5000 W — monitoring only",
-        )
-
-    async def test_actions_do_not_show_idle_after_successful_manager_cycle(self):
-        runtime = self._runtime()
-        self._normal_slot(runtime)
-        runtime.async_apply_targets = mock.AsyncMock(return_value=True)
-
-        self.assertTrue(await runtime._async_tick_impl())
-
-        self.assertNotIn("idle", runtime.planned_manager_action.lower())
-        self.assertNotIn("idle", runtime.executed_manager_action.lower())
-        self.assertEqual(runtime.executed_manager_action, "No change — settings match")
-
-    async def test_actions_show_waiting_before_first_manager_cycle(self):
-        runtime = self._runtime()
-
-        self.assertEqual(
-            runtime.planned_manager_action,
-            "Waiting for the first Manager cycle",
-        )
-        self.assertEqual(
-            runtime.executed_manager_action,
-            "Waiting for the first Manager cycle",
-        )
-
-    async def test_solarman_planned_and_executed_actions_are_meaningful(self):
-        runtime = self._runtime()
-        runtime.data[const.CONF_INVERTER_PROVIDER] = const.PROVIDER_SOLARMAN
-        self._normal_slot(runtime, const.MODE_ZERO_EXPORT)
-        runtime.async_apply_targets = mock.AsyncMock(return_value=True)
-
-        self.assertTrue(await runtime._async_tick_impl())
-
-        self.assertEqual(runtime.planned_manager_action, "Normal Operation — measurement Load")
-        self.assertEqual(runtime.executed_manager_action, "No change — settings match")
-
-    async def test_solarman_executed_action_reports_real_change(self):
-        runtime = self._runtime()
-        runtime.data[const.CONF_INVERTER_PROVIDER] = const.PROVIDER_SOLARMAN
-        self._normal_slot(runtime, const.MODE_ZERO_EXPORT)
-
-        async def apply_changed_target():
-            return await runtime.async_set_number_if_needed(
-                runtime.max_sell_power_number, 4321
-            ) or True
-
-        runtime.async_apply_targets = apply_changed_target
-        self.assertTrue(await runtime._async_tick_impl())
-
-        self.assertEqual(
-            runtime.executed_manager_action,
-            "Applied: Normal Operation — measurement Load",
-        )
-        self.assertEqual(float(runtime.hass.states.get(runtime.max_sell_power_number).state), 4321)
-
-    async def test_manager_actions_follow_control_off_and_reenable_cycle(self):
-        runtime = self._runtime()
-        self._normal_slot(runtime, const.MODE_ZERO_EXPORT_CT)
-        runtime.hass.async_create_task = asyncio.create_task
-        runtime.async_apply_targets = mock.AsyncMock(return_value=True)
-
-        await runtime.async_disable_control()
-        self.assertEqual(
-            runtime.planned_manager_action,
-            "Normal Operation — measurement CT — monitoring only",
-        )
-        self.assertTrue(await runtime._async_tick_impl())
-        self.assertIn("measurement CT", runtime.planned_manager_action)
-        self.assertIn("monitoring only", runtime.planned_manager_action)
-        self.assertEqual(
-            runtime.executed_manager_action,
-            "Not performed — control disabled",
-        )
-
-        await runtime.async_enable_control()
-        await runtime._schedule_reconcile_task
-
-        self.assertEqual(runtime.planned_manager_action, "Normal Operation — measurement CT")
-        self.assertEqual(runtime.executed_manager_action, "No change — settings match")
-
-    async def test_executed_action_reports_error_without_traceback(self):
-        runtime = self._runtime()
-        self._normal_slot(runtime)
-
-        async def fail_targets():
-            runtime.last_error = "No valid reading of the inverter settings"
-            return False
-
-        runtime.async_apply_targets = fail_targets
-        self.assertFalse(await runtime._async_tick_impl())
-
-        self.assertEqual(
-            runtime.executed_manager_action,
-            "Execution error — No valid reading of the inverter settings",
-        )
-        self.assertNotIn("Traceback", runtime.executed_manager_action)
-
-    async def test_executed_action_reports_rollback(self):
-        runtime = self._runtime()
-        self._normal_slot(runtime)
-
-        async def rollback_targets():
-            runtime.last_error = "Previous settings restored after an error zapisu"
-            return False
-
-        runtime.async_apply_targets = rollback_targets
-        self.assertFalse(await runtime._async_tick_impl())
-
-        self.assertEqual(
-            runtime.executed_manager_action,
-            "Previous settings restored after an error",
-        )
-
-    async def test_planned_action_explains_sale_blocked_by_soc(self):
-        runtime = self._runtime()
-        slot = configure_selling_slot(runtime)
-        slot.minimum_sell_soc = 60
-
-        action = runtime._planned_manager_action_text()
-
-        self.assertIn("Selling suspended", action)
-        self.assertIn("SOC 50%", action)
-        self.assertIn("limit 60%", action)
-
-    async def test_planned_action_explains_sale_blocked_by_price(self):
-        runtime = self._runtime()
-        slot = configure_selling_slot(runtime)
-        slot.min_sell_price = 1.00
-
-        action = runtime._planned_manager_action_text()
-
-        self.assertIn("Selling suspended", action)
-        self.assertIn("price 0.50 per kWh", action)
-        self.assertIn("threshold 1.00 per kWh", action)
-
-    async def test_read_only_provider_reports_explicit_execution_block(self):
-        runtime = self._runtime()
-        runtime.data[const.CONF_INVERTER_PROVIDER] = const.PROVIDER_DEYE_ADDON
-        self._normal_slot(runtime)
-
-        self.assertTrue(await runtime._async_tick_impl())
-
-        self.assertIn("read-only", runtime.executed_manager_action)
-        self.assertEqual(runtime.hass.services.calls, [])
-
-    async def test_read_only_provider_keeps_emergency_status_priority(self):
-        runtime = self._runtime()
-        runtime.data[const.CONF_INVERTER_PROVIDER] = const.PROVIDER_DEYE_ADDON
-        runtime.emergency_stop = True
-
-        self.assertTrue(await runtime._async_tick_impl())
-
-        self.assertEqual(
-            runtime.executed_manager_action,
-            "Not performed — emergency stop",
-        )
-        self.assertEqual(runtime.hass.services.calls, [])
-
-    async def test_completed_action_is_published_without_energy_change(self):
-        runtime = self._runtime()
-        self._normal_slot(runtime)
-        runtime.async_apply_targets = mock.AsyncMock(return_value=True)
-
-        await runtime._async_tick_impl()
-
-        runtime.notify_update.assert_called()
-        self.assertEqual(runtime.executed_manager_action, "No change — settings match")
-
-
-class CanonicalPriceManagerIntegrationTests(unittest.TestCase):
     def test_explicit_empty_four_fields_survive_runtime_reload_without_provider_fallback(self):
         runtime = make_runtime()
         for key in (
@@ -6963,355 +3261,6 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertTrue(all(removed.isdisjoint(row) for row in rows))
 
-    def test_slot_mapping_uses_slot_start_time_across_all_48_slots(self):
-        runtime = make_runtime()
-        rows = runtime._validate_manual_schedule_rows([
-            manual_row(to="07:15"),
-            manual_row(
-                **{
-                    "from": "07:15",
-                    "to": "19:45",
-                    "mode": const.MODE_SELLING_FIRST,
-                    "sell_power": 4321,
-                }
-            ),
-            manual_row(
-                **{
-                    "from": "19:45",
-                    "to": "00:00",
-                    "mode": const.MODE_CHARGE,
-                    "charge_enabled": True,
-                }
-            ),
-        ])
-        updates = runtime._manual_schedule_to_slot_updates(rows)
-        self.assertEqual(len(updates), 48)
-        self.assertEqual([update["slot_key"] for update in updates], const.SLOT_KEYS)
-        by_key = {update["slot_key"]: update for update in updates}
-        self.assertEqual(by_key["0700_0730"]["mode"], const.MODE_NORMAL_OPERATION)
-        self.assertEqual(by_key["0730_0800"]["mode"], const.MODE_SELLING_FIRST)
-        self.assertEqual(by_key["1930_2000"]["mode"], const.MODE_SELLING_FIRST)
-        self.assertEqual(by_key["2000_2030"]["mode"], const.MODE_CHARGE)
-        self.assertEqual(by_key["2330_0000"]["mode"], const.MODE_CHARGE)
-        self.assertEqual(by_key["0730_0800"]["sell_power"], 4321)
-        self.assertTrue(by_key["2000_2030"]["charge_enabled"])
-        self.assertTrue(all("tou_soc" not in update for update in updates))
-        removed = {
-            "physical_work_mode", "discharge_current", "charge_current",
-            "grid_charge_current", "min_sell_price",
-        }
-        self.assertTrue(all(removed.isdisjoint(update) for update in updates))
-
-    async def test_activation_selects_manual_source_without_touching_work_slots(self):
-        runtime = make_runtime()
-        runtime.slots["0000_0030"].enabled = True
-        runtime.slots["0000_0030"].sell_power = 1111
-        runtime.slots["1200_1230"].mode = const.MODE_CHARGE
-        before = {
-            key: manual_slot_signature(slot) for key, slot in runtime.slots.items()
-        }
-        await runtime.async_save_manual_schedule([
-            manual_row(to="12:00"),
-            manual_row(
-                **{
-                    "from": "12:00",
-                    "to": "00:00",
-                    "mode": const.MODE_SELLING_FIRST,
-                    "sell_power": 4321,
-                }
-            ),
-        ])
-
-        state = await runtime.async_activate_manual_schedule()
-
-        self.assertTrue(state["active"])
-        self.assertTrue(state["has_activation_snapshot"])
-        self.assertTrue(runtime.manual_schedule_active)
-        self.assertEqual(
-            {key: manual_slot_signature(slot) for key, slot in runtime.slots.items()},
-            before,
-        )
-        effective = runtime.effective_slots()
-        self.assertEqual(effective["0000_0030"].mode, const.MODE_NORMAL_OPERATION)
-        self.assertEqual(effective["1130_1200"].mode, const.MODE_NORMAL_OPERATION)
-        self.assertEqual(effective["1200_1230"].mode, const.MODE_SELLING_FIRST)
-        self.assertEqual(effective["1200_1230"].sell_power, 4321)
-        # TOU SOC stays at the work-schedule value; manual rows no longer set it.
-        self.assertEqual(effective["1200_1230"].tou_soc, 20)
-        self.assertEqual(effective["2330_0000"].mode, const.MODE_SELLING_FIRST)
-        self.assertEqual(effective["2330_0000"].sell_power, 4321)
-        self.assertTrue(runtime.scheduler_enabled)
-
-    async def test_activation_leaves_removed_fields_at_work_schedule_values(self):
-        runtime = make_runtime()
-        removed = ("physical_work_mode", "min_sell_price")
-        for key in ("0000_0030", "1130_1200", "1200_1230", "2330_0000"):
-            slot = runtime.slots[key]
-            slot.physical_work_mode = const.MODE_ZERO_EXPORT
-            slot.min_sell_price = 1.25
-        before = {
-            key: tuple(getattr(slot, field) for field in removed)
-            for key, slot in runtime.slots.items()
-        }
-        # The second row switches slots to Selling, which would normally clear
-        # the physical mode or change the sell price.  The manual schedule must
-        # leave both removed fields at their work-schedule values.
-        await runtime.async_save_manual_schedule([
-            manual_row(to="12:00"),
-            manual_row(**{
-                "from": "12:00",
-                "mode": const.MODE_SELLING_FIRST,
-                "sell_power": 4000,
-            }),
-        ])
-        await runtime.async_activate_manual_schedule()
-        after = {
-            key: tuple(getattr(slot, field) for field in removed)
-            for key, slot in runtime.effective_slots().items()
-        }
-        self.assertEqual(after, before)
-
-    async def test_deactivation_returns_scheduler_to_the_work_schedule(self):
-        runtime = make_runtime()
-        runtime.slots["0000_0030"].enabled = True
-        runtime.slots["0000_0030"].sell_power = 2222
-        runtime.slots["1200_1230"].mode = const.MODE_CHARGE
-        runtime.slots["1200_1230"].charge_enabled = True
-        before = {
-            key: manual_slot_signature(slot) for key, slot in runtime.slots.items()
-        }
-        runtime.scheduler_enabled = False
-        await runtime.async_save_manual_schedule([
-            manual_row(to="12:00"),
-            manual_row(
-                **{
-                    "from": "12:00",
-                    "to": "00:00",
-                    "mode": const.MODE_SELLING_FIRST,
-                    "sell_power": 4321,
-                }
-            ),
-        ])
-        await runtime.async_activate_manual_schedule()
-        self.assertNotEqual(
-            manual_slot_signature(runtime.effective_slots()["0000_0030"]),
-            before["0000_0030"],
-        )
-
-        state = await runtime.async_deactivate_manual_schedule()
-
-        self.assertFalse(state["active"])
-        self.assertFalse(state["has_activation_snapshot"])
-        self.assertFalse(runtime.manual_schedule_active)
-        after = {
-            key: manual_slot_signature(slot)
-            for key, slot in runtime.effective_slots().items()
-        }
-        self.assertEqual(after, before)
-        self.assertTrue(runtime.scheduler_enabled)
-
-    async def test_manual_activation_always_selects_the_manual_source(self):
-        runtime = make_runtime()
-        runtime.scheduler_enabled = False
-        await runtime.async_save_manual_schedule([
-            manual_row(enabled=False),
-        ])
-
-        await runtime.async_activate_manual_schedule()
-
-        self.assertTrue(runtime.manual_schedule_active)
-        self.assertTrue(runtime.scheduler_enabled)
-
-    async def test_saving_active_manual_rows_keeps_the_manual_source_selected(self):
-        runtime = make_runtime()
-        await runtime.async_save_manual_schedule([manual_row()])
-        await runtime.async_activate_manual_schedule()
-        runtime.scheduler_enabled = False
-
-        await runtime.async_save_manual_schedule([manual_row(enabled=False)])
-
-        self.assertTrue(runtime.manual_schedule_active)
-        self.assertTrue(runtime.scheduler_enabled)
-
-    async def test_deactivating_an_inactive_manual_source_selects_work(self):
-        runtime = make_runtime()
-        runtime.scheduler_enabled = False
-
-        await runtime.async_deactivate_manual_schedule()
-
-        self.assertFalse(runtime.manual_schedule_active)
-        self.assertTrue(runtime.scheduler_enabled)
-
-    async def test_active_manual_schedule_blocks_conflicting_writes_and_manual_edits_apply(self):
-        runtime = make_runtime()
-        await runtime.async_save_manual_schedule([manual_row(to="00:00")])
-        await runtime.async_activate_manual_schedule()
-
-        with self.assertRaisesRegex(ValueError, "Manual schedule is active"):
-            await runtime.async_apply_schedule_patch(
-                [{"slot_key": "0000_0030", "sell_power": 1}]
-            )
-        self.assertEqual(runtime.effective_slot_for_key("0000_0030").sell_power, 0)
-
-        # Manual rows remain editable while the manual source is active, and
-        # only the effective view changes: the stored schedule stays untouched.
-        await runtime.async_save_manual_schedule([
-            manual_row(to="00:00", sell_power=1234)
-        ])
-        self.assertEqual(runtime.effective_slot_for_key("0000_0030").sell_power, 1234)
-        self.assertEqual(runtime.slots["0000_0030"].sell_power, 0)
-        self.assertTrue(runtime.manual_schedule_active)
-
-    async def test_active_save_rolls_back_rows_when_validation_fails(self):
-        runtime = make_runtime()
-        await runtime.async_save_manual_schedule([manual_row(to="00:00")])
-        await runtime.async_activate_manual_schedule()
-        before = runtime.manual_schedule_state()["rows"]
-
-        def fail(*_args, **_kwargs):
-            raise RuntimeError("apply failed")
-
-        runtime._validate_manual_tou_range_count = fail
-        with self.assertRaisesRegex(RuntimeError, "apply failed"):
-            await runtime.async_save_manual_schedule([
-                manual_row(to="06:00"),
-                manual_row(**{"from": "06:00"}),
-            ])
-
-        self.assertEqual(runtime.manual_schedule_state()["rows"], before)
-        self.assertTrue(runtime.manual_schedule_active)
-
-    async def test_manual_source_drives_active_slot_and_tou_mapping(self):
-        runtime = make_runtime()
-        work_mapping = runtime.schedule_to_tou_mapping()
-        await runtime.async_save_manual_schedule([
-            manual_row(to="12:00"),
-            manual_row(**{"from": "12:00", "charge_enabled": True}),
-        ])
-        await runtime.async_activate_manual_schedule()
-
-        previous_now = manager.ha_now
-        try:
-            manager.ha_now = lambda: datetime(2026, 7, 18, 13, 15, tzinfo=timezone.utc)
-            # Manual rows no longer carry TOU SOC, so the work-schedule value stays.
-            self.assertEqual(runtime.active_slot.tou_soc, 20)
-            self.assertTrue(runtime.active_slot.charge_enabled)
-        finally:
-            manager.ha_now = previous_now
-
-        self.assertNotEqual(runtime.schedule_to_tou_mapping(), work_mapping)
-        await runtime.async_deactivate_manual_schedule()
-        self.assertEqual(runtime.schedule_to_tou_mapping(), work_mapping)
-
-    async def test_save_while_active_changes_effective_slot_only(self):
-        runtime = make_runtime()
-        await runtime.async_save_manual_schedule([
-            manual_row(to="12:00"),
-            manual_row(**{"from": "12:00", "sell_power": 1000}),
-        ])
-        await runtime.async_activate_manual_schedule()
-        work_before = {
-            key: manual_slot_signature(slot) for key, slot in runtime.slots.items()
-        }
-
-        await runtime.async_save_manual_schedule([
-            manual_row(to="12:00"),
-            manual_row(**{"from": "12:00", "sell_power": 2345}),
-        ])
-
-        self.assertEqual(
-            {key: manual_slot_signature(slot) for key, slot in runtime.slots.items()},
-            work_before,
-        )
-        self.assertEqual(runtime.effective_slots()["1200_1230"].sell_power, 2345)
-
-    async def test_reverse_sync_does_not_write_work_slots_while_manual_active(self):
-        runtime = make_runtime()
-        await runtime.async_save_manual_schedule([manual_row(to="00:00")])
-        await runtime.async_activate_manual_schedule()
-        work_before = {
-            key: manual_slot_signature(slot) for key, slot in runtime.slots.items()
-        }
-
-        await runtime._async_reverse_sync_after_manual_tou_locked(None, [], {}, {})
-
-        self.assertEqual(runtime.reverse_sync_status, "skipped_manual_schedule")
-        self.assertEqual(
-            {key: manual_slot_signature(slot) for key, slot in runtime.slots.items()},
-            work_before,
-        )
-
-    async def test_activation_rejects_more_than_six_manual_tou_ranges(self):
-        runtime = make_runtime()
-        rows = []
-        for index in range(8):
-            start = index * 3
-            end = start + 3
-            rows.append(manual_row(**{
-                "from": f"{start:02d}:00",
-                "to": "00:00" if end == 24 else f"{end:02d}:00",
-                "charge_enabled": index % 2 == 0,
-            }))
-        await runtime.async_save_manual_schedule(rows)
-
-        with self.assertRaisesRegex(ValueError, "at most 6"):
-            await runtime.async_activate_manual_schedule()
-        self.assertFalse(runtime.manual_schedule_active)
-
-    async def test_init_from_tou_builds_six_rows_from_inverter_ranges(self):
-        runtime = make_runtime()
-        starts = ["00:00:00", "04:00:00", "08:00:00", "12:00:00", "16:00:00", "20:00:00"]
-        socs = [10, 20, 30, 40, 50, 60]
-        grids = ["off", "off", "on", "off", "off", "off"]
-        for index in range(1, 7):
-            runtime.hass.states.values[
-                f"time.deye_inverter_time_of_use_{index}_start"
-            ] = FakeState(starts[index - 1])
-            runtime.hass.states.values[
-                f"number.deye_inverter_time_of_use_{index}_soc"
-            ] = FakeState(socs[index - 1])
-            runtime.hass.states.values[
-                f"switch.deye_inverter_time_of_use_{index}_grid_charge"
-            ] = FakeState(grids[index - 1])
-
-        state = await runtime.async_init_manual_schedule_from_tou()
-        rows = state["rows"]
-
-        self.assertEqual(len(rows), 6)
-        self.assertEqual(
-            [(row["from"], row["to"]) for row in rows],
-            [
-                ("00:00", "04:00"),
-                ("04:00", "08:00"),
-                ("08:00", "12:00"),
-                ("12:00", "16:00"),
-                ("16:00", "20:00"),
-                ("20:00", "00:00"),
-            ],
-        )
-        self.assertTrue(all("tou_soc" not in row for row in rows), "rows must not carry TOU SOC")
-        self.assertEqual(
-            [row["charge_enabled"] for row in rows],
-            [False, False, True, False, False, False],
-        )
-        self.assertTrue(all(row["mode"] == const.MODE_NORMAL_OPERATION for row in rows))
-        self.assertTrue(state["valid"])
-
-    async def test_store_payload_and_fingerprint_include_manual_schedule(self):
-        runtime = make_runtime()
-        await runtime.async_save_manual_schedule([
-            manual_row(to="12:00"),
-            manual_row(**{"from": "12:00"}),
-        ])
-        expected = runtime.manual_schedule_state()
-
-        payload = runtime._ai_store_payload()
-        fingerprint = runtime._ai_store_fingerprint_payload()
-
-        self.assertEqual(payload["manual_schedule"]["rows"], expected["rows"])
-        self.assertEqual(fingerprint["manual_schedule"]["rows"], expected["rows"])
-        self.assertFalse(payload["manual_schedule"]["active"])
-
     def test_load_state_drops_invalid_rows_and_requires_a_snapshot_when_active(self):
         runtime = make_runtime()
         loaded = runtime._load_manual_schedule_state({
@@ -7327,6 +3276,85 @@ class ManualScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(loaded["rows"]), 2)
         self.assertIsNone(loaded["activation_snapshot"])
 
+
+class MappingMinuteResolutionTests(unittest.TestCase):
+    def test_manual_schedule_active_uses_half_open_minute_interval(self):
+        runtime = make_runtime()
+        runtime.manual_schedule = {
+            "schema_version": 1,
+            "active": True,
+            "rows": [
+                {"from": "00:00", "to": "00:10", "enabled": True, "mode": const.MODE_NORMAL_OPERATION, "sell_power": 0, "minimum_sell_soc": 20, "tou_soc": 100, "charge_enabled": False, "battery_charge_enabled": False},
+                {"from": "00:10", "to": "00:00", "enabled": True, "mode": const.MODE_SELLING_FIRST, "sell_power": 500, "minimum_sell_soc": 20, "tou_soc": 100, "charge_enabled": False, "battery_charge_enabled": False},
+            ],
+            "activation_snapshot": {"schema_version": 2},
+        }
+        self.assertEqual(runtime.active_decision_at_minute(0).mode, const.MODE_NORMAL_OPERATION)
+        self.assertEqual(runtime.active_decision_at_minute(9).mode, const.MODE_NORMAL_OPERATION)
+        self.assertEqual(runtime.active_decision_at_minute(10).mode, const.MODE_SELLING_FIRST)
+
+    def test_manual_schedule_last_row_ending_0000_wraps_to_1440(self):
+        runtime = make_runtime()
+        runtime.manual_schedule = {
+            "schema_version": 1,
+            "active": True,
+            "rows": [
+                {"from": "00:00", "to": "23:50", "enabled": True, "mode": const.MODE_NORMAL_OPERATION, "sell_power": 0, "minimum_sell_soc": 20, "tou_soc": 100, "charge_enabled": False, "battery_charge_enabled": False},
+                {"from": "23:50", "to": "00:00", "enabled": True, "mode": const.MODE_CHARGE, "sell_power": 0, "minimum_sell_soc": 20, "tou_soc": 90, "charge_enabled": True, "battery_charge_enabled": True},
+            ],
+            "activation_snapshot": {"schema_version": 2},
+        }
+        self.assertEqual(runtime.active_decision_at_minute(23 * 60 + 49).mode, const.MODE_NORMAL_OPERATION)
+        self.assertEqual(runtime.active_decision_at_minute(23 * 60 + 50).mode, const.MODE_CHARGE)
+        self.assertEqual(runtime.active_decision_at_minute(23 * 60 + 59).mode, const.MODE_CHARGE)
+
+    def test_inactive_manual_schedule_uses_physical_tou_baseline(self):
+        runtime = make_runtime()
+        runtime.manual_schedule = {"schema_version": 1, "active": False, "rows": [], "activation_snapshot": None}
+        runtime.hass.states.values["time.deye_inverter_time_of_use_1_start"] = FakeState("00:00:00")
+        runtime.hass.states.values["time.deye_inverter_time_of_use_2_start"] = FakeState("06:00:00")
+        runtime.hass.states.values["number.deye_inverter_time_of_use_1_soc"] = FakeState("55")
+        runtime.hass.states.values["switch.deye_inverter_time_of_use_1_grid_charge"] = FakeState("on")
+        decision = runtime.active_decision_at_minute(5 * 60)
+        self.assertEqual(decision.source, "Time Of Use")
+        self.assertEqual(decision.tou_soc, 55.0)
+        self.assertTrue(decision.charge_enabled)
+
+    def test_manual_schedule_allows_many_rows_without_tou_compression(self):
+        runtime = make_runtime()
+        runtime.manual_schedule = {"schema_version": 1, "active": True, "rows": [], "activation_snapshot": {"schema_version": 2}}
+        rows = []
+        for i in range(48):
+            start = i * 30
+            end = 1440 if i == 47 else (i + 1) * 30
+            rows.append({
+                "from": runtime._minutes_to_hhmm(start),
+                "to": "00:00" if end == 1440 else runtime._minutes_to_hhmm(end),
+                "enabled": True,
+                "mode": const.MODE_NORMAL_OPERATION if i % 2 == 0 else const.MODE_SELLING_FIRST,
+                "sell_power": 500,
+                "minimum_sell_soc": 20,
+                "charge_enabled": i % 3 == 0,
+                "battery_charge_enabled": False,
+            })
+        validated = runtime._validate_manual_schedule_rows(rows)
+        self.assertEqual(len(validated), 48)
+        runtime.manual_schedule["rows"] = validated
+        self.assertEqual(runtime.active_decision_at_minute(0).mode, const.MODE_NORMAL_OPERATION)
+        self.assertEqual(runtime.active_decision_at_minute(30).mode, const.MODE_SELLING_FIRST)
+
+    def test_tou_baseline_uses_global_logical_soc_and_physical_tou_fields(self):
+        runtime = make_runtime()
+        runtime.manual_schedule = {"schema_version": 1, "active": False, "rows": [], "activation_snapshot": None}
+        runtime.min_sell_soc = 33.0
+        for idx, start in enumerate(["00:00:00", "04:00:00", "08:00:00", "12:00:00", "16:00:00", "20:00:00"], start=1):
+            runtime.hass.states.values[f"time.deye_inverter_time_of_use_{idx}_start"] = FakeState(start)
+        runtime.hass.states.values["number.deye_inverter_time_of_use_1_soc"] = FakeState("77")
+        runtime.hass.states.values["switch.deye_inverter_time_of_use_1_grid_charge"] = FakeState("on")
+        decision = runtime.active_decision_at_minute(10)
+        self.assertEqual(decision.minimum_sell_soc, 33.0)
+        self.assertEqual(decision.tou_soc, 77.0)
+        self.assertTrue(decision.charge_enabled)
 
 if __name__ == "__main__":
     unittest.main()

@@ -204,10 +204,12 @@ def test_unload_cancels_optimizer_debounce_task():
     async def scenario():
         runtime = task_runtime()
         cancelled = []
-        runtime.unsub_input_debounce = lambda: cancelled.append(True)
+        runtime.unsub_input_listener = lambda: cancelled.append("input")
+        runtime.unsub_timer = lambda: cancelled.append("timer")
         await runtime.async_unload()
-        assert cancelled == [True]
-        assert runtime.unsub_input_debounce is None
+        assert cancelled == ["input", "timer"]
+        assert runtime.unsub_input_listener is None
+        assert runtime.unsub_timer is None
 
     asyncio.run(scenario())
 

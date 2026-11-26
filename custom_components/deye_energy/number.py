@@ -8,7 +8,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import ABSOLUTE_INVERTER_MAX_POWER_W, DEFAULT_INVERTER_MAX_POWER_W, DOMAIN, SLOTS
+from .const import ABSOLUTE_INVERTER_MAX_POWER_W, DEFAULT_INVERTER_MAX_POWER_W, DOMAIN
 from .entity import DeyeEnergyEntity
 
 
@@ -149,70 +149,6 @@ class DeyeManagerNumber(DeyeEnergyEntity, NumberEntity, RestoreEntity):
         await self.runtime.async_tick()
 
 
-class DeyeSlotNumber(DeyeEnergyEntity, NumberEntity, RestoreEntity):
-    def __init__(self, runtime, slot_key, label, attr, name, max_value, step, unit):
-        super().__init__(runtime, f"slot_{slot_key}_{attr}", f"{name} {label}")
-        self.slot_key = slot_key
-        self.attr = attr
-        self._attr_native_min_value = 0
-        self._attr_native_max_value = max_value
-        self._attr_native_step = step
-        self._attr_native_unit_of_measurement = unit
-        self._attr_mode = "box"
-
-    @property
-    def native_value(self):
-        value = getattr(self.runtime.slots[self.slot_key], self.attr)
-        if self.attr == "sell_power":
-            return min(value, self.runtime.effective_inverter_max_power_w)
-        return value
-
-    @property
-    def native_max_value(self):
-        if self.attr == "sell_power":
-            return self.runtime.effective_inverter_max_power_w
-        return self._attr_native_max_value
-
-    def _restore_max(self):
-        """Allow restoring old slot values above the current effective limit."""
-        if self.attr == "sell_power":
-            return ABSOLUTE_INVERTER_MAX_POWER_W
-        return self._attr_native_max_value
-
-    async def async_added_to_hass(self):
-        restored = False
-        if (last_state := await self.async_get_last_state()) is not None:
-            try:
-                value = float(last_state.state)
-                if math.isfinite(value) and self.native_min_value <= value <= self._restore_max():
-                    setattr(self.runtime.slots[self.slot_key], self.attr, value)
-                    restored = True
-            except (TypeError, ValueError):
-                pass
-        if self.attr == "tou_soc" and not restored:
-            physical_soc = self.runtime.physical_tou_soc_for_slot(self.slot_key)
-            if physical_soc is not None:
-                setattr(self.runtime.slots[self.slot_key], self.attr, physical_soc)
-        # Track per-slot restoration for the safe 5A.1 migration.
-        if self.attr == "tou_soc":
-            self.runtime.mark_slot_tou_soc_restored(self.slot_key)
-        elif self.attr == "minimum_sell_soc":
-            self.runtime.mark_slot_minimum_sell_soc_restored(self.slot_key)
-
-    async def async_set_native_value(self, value: float):
-        if not self.native_min_value <= value <= self.native_max_value:
-            raise ValueError(
-                f"{self.name} value {value} outside allowed range "
-                f"{self.native_min_value}–{self.native_max_value}"
-            )
-        if self.attr == "sell_power":
-            self.runtime.validate_manual_sell_power_w(self.name, value)
-        setattr(self.runtime.slots[self.slot_key], self.attr, value)
-        self.runtime.mark_config_saved()
-        self.runtime.notify_update()
-        await self.runtime.async_tick()
-
-
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback):
     runtime = hass.data[DOMAIN][entry.entry_id]
     entities = [
@@ -224,13 +160,4 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         DeyeManagerNumber(runtime, "normal_profile_sell_power", "Normal profile sell power", "normal_profile_sell_power", 0, DEFAULT_INVERTER_MAX_POWER_W, 100, "W"),
         DeyeManagerNumber(runtime, "normal_profile_tou_soc", "Normal profile Deye TOU SOC", "normal_profile_tou_soc", 0, 100, 1, "%"),
     ]
-    for key, label, *_ in SLOTS:
-        entities.extend(
-            [
-                DeyeSlotNumber(runtime, key, label, "sell_power", "Sell power", DEFAULT_INVERTER_MAX_POWER_W, 100, "W"),
-                DeyeSlotNumber(runtime, key, label, "minimum_sell_soc", "Minimum sell SOC", 100, 1, "%"),
-                DeyeSlotNumber(runtime, key, label, "tou_soc", "Deye TOU battery SOC", 100, 1, "%"),
-                DeyeSlotNumber(runtime, key, label, "min_sell_price", "Minimum sell price", 5, 0.01, "GBP/kWh"),
-            ]
-        )
     async_add_entities(entities)

@@ -55,11 +55,10 @@ class ProfileHelperEntityContractTests(unittest.TestCase):
         self.assertIn('"planned_manager_action",\n                "Planned Manager decision"', SENSOR_SOURCE)
         self.assertIn('"executed_manager_action",\n                "Executed Manager decision"', SENSOR_SOURCE)
 
-    def test_manager_status_exposes_canonical_schedule_slot_snapshot(self):
-        self.assertIn('"schedule_slots": {', SENSOR_SOURCE)
-        self.assertIn('"physical_work_mode": slot.physical_work_mode', SENSOR_SOURCE)
-        self.assertIn('"minimum_sell_soc": round(slot.minimum_sell_soc, 2)', SENSOR_SOURCE)
-        self.assertIn('"tou_soc": None if slot.tou_soc is None', SENSOR_SOURCE)
+    def test_manager_status_exposes_canonical_decision_snapshot(self):
+        self.assertIn('"active_decision": runtime.active_decision.key', SENSOR_SOURCE)
+        self.assertIn('"next_active_decision": runtime.next_active_decision_label', SENSOR_SOURCE)
+        self.assertIn('"active_decision": runtime.active_decision.key', SENSOR_SOURCE)
 
     def test_manager_status_exposes_control_entity_contract(self):
         self.assertIn('"control": {', SENSOR_SOURCE)
@@ -106,7 +105,7 @@ class ProfileHelperEntityContractTests(unittest.TestCase):
     def test_sell_power_numbers_use_effective_inverter_limit(self):
         self.assertIn("self.runtime.effective_inverter_max_power_w", NUMBER_SOURCE)
         self.assertIn("self.attr.endswith(\"sell_power\")", NUMBER_SOURCE)
-        self.assertIn("self.attr == \"sell_power\"", NUMBER_SOURCE)
+        self.assertIn("if not self.native_min_value <= value <= self.native_max_value:", NUMBER_SOURCE)
 
     def test_sell_power_numbers_reject_values_above_effective_limit(self):
         self.assertIn("raise ValueError(", NUMBER_SOURCE)

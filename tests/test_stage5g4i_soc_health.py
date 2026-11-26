@@ -11,7 +11,7 @@ import pytest
 
 from test_manager_logic import (
     FakeState,
-    configure_selling_slot,
+
     control_number_calls,
     const,
     make_runtime,
@@ -75,29 +75,6 @@ def test_silent_soc_remains_valid_for_three_hours_with_verified_sibling_health()
     assert control_number_calls(runtime) == []
 
 
-def test_all_health_stale_fails_closed_once_without_repeating_defaults():
-    runtime = make_runtime(soc="80", price="1.00")
-    started = datetime(2026, 8, 14, 5, 0, tzinfo=timezone.utc)
-    _soc, _sibling_id, sibling = _install_same_device_health(runtime, started)
-    with at(started):
-        slot = configure_selling_slot(runtime)
-        slot.minimum_sell_soc = 10
-        runtime._soc_quality_signature = runtime._soc_semantic_signature(runtime.soc_diagnostics())
-
-    stale_at = started + timedelta(seconds=901)
-    with at(stale_at):
-        assert runtime._refresh_soc_quality_signature() is True
-        assert runtime.current_soc_or_none() is None
-        assert asyncio.run(runtime.async_apply_targets()) is False
-        first_defaults = len(control_number_calls(runtime))
-        runtime.hass.services.calls.clear()
-        assert asyncio.run(runtime.async_apply_targets()) is False
-
-    assert sibling.last_reported == started
-    assert first_defaults > 0
-    assert control_number_calls(runtime) == []
-
-
 def test_zero_and_stable_measurements_are_valid_health_evidence():
     runtime = make_runtime(soc="100")
     started = datetime(2026, 8, 14, 5, 0, tzinfo=timezone.utc)
@@ -129,32 +106,6 @@ def test_soc_value_change_is_one_material_transition():
         ) is True
         assert runtime.current_soc_or_none() == 79
         assert runtime._refresh_soc_quality_signature() is False
-
-
-def test_same_soc_recovers_from_sibling_health_and_releases_latch():
-    runtime = make_runtime(soc="80", price="1.00")
-    started = datetime(2026, 8, 14, 5, 0, tzinfo=timezone.utc)
-    _soc, sibling_id, sibling = _install_same_device_health(runtime, started)
-    with at(started):
-        slot = configure_selling_slot(runtime)
-        slot.minimum_sell_soc = 10
-        runtime._soc_quality_signature = runtime._soc_semantic_signature(runtime.soc_diagnostics())
-    stale_at = started + timedelta(seconds=901)
-    with at(stale_at):
-        assert runtime._refresh_soc_quality_signature() is True
-        assert asyncio.run(runtime.async_apply_targets()) is False
-        stale_fingerprint = runtime._last_slot_failure_signature
-
-    recovered = stale_at + timedelta(seconds=1)
-    sibling.last_reported = recovered
-    with at(recovered):
-        assert runtime._observe_soc_sibling_event(
-            _health_event(sibling_id, sibling, recovered)
-        ) is True
-        assert runtime.current_soc_or_none() == 80
-        assert runtime._slot_failure_fingerprint("") != stale_fingerprint
-        assert asyncio.run(runtime.async_apply_targets()) is True
-    assert runtime._last_slot_failure_signature == ""
 
 
 def test_wrong_device_sibling_cannot_confirm_soc_health():

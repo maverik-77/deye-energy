@@ -60,9 +60,6 @@ DEFAULT_SETTINGS_SCHEMA = vol.Schema(
         vol.Required("sell_power"): vol.All(vol.Coerce(float), vol.Range(min=0, max=ABSOLUTE_INVERTER_MAX_POWER_W)),
     }
 )
-SCHEDULE_PATCH_SCHEMA = vol.Schema(
-    {vol.Required("data"): vol.All(cv.string, vol.Length(max=100000))}
-)
 TARIFF_SETTINGS_SCHEMA = vol.Schema(
     {vol.Required("data"): vol.All(cv.string, vol.Length(max=50000))}
 )
@@ -115,7 +112,6 @@ SERVICE_NAMES = (
     "restore_defaults",
     "resume_manager",
     "emergency_stop",
-    "apply_schedule_patch",
     "save_tariff_settings",
     "save_charge_profile",
     "save_normal_profile",
@@ -442,10 +438,6 @@ def _register_services(hass: HomeAssistant) -> None:
     async def handle_emergency_stop(call: ServiceCall) -> None:
         await _active_runtime().async_emergency_stop()
 
-    async def handle_apply_schedule_patch(call: ServiceCall) -> None:
-        payload = _parse_json_payload(call.data["data"], list)
-        await _active_runtime().async_apply_schedule_patch(payload)
-
     async def handle_save_tariff_settings(call: ServiceCall) -> None:
         runtime = _active_runtime()
         settings = _parse_json_payload(call.data["data"], dict)
@@ -538,12 +530,6 @@ def _register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, "restore_defaults", handle_restore_defaults)
     hass.services.async_register(DOMAIN, "resume_manager", handle_resume_manager)
     hass.services.async_register(DOMAIN, "emergency_stop", handle_emergency_stop)
-    hass.services.async_register(
-        DOMAIN,
-        "apply_schedule_patch",
-        handle_apply_schedule_patch,
-        schema=SCHEDULE_PATCH_SCHEMA,
-    )
     hass.services.async_register(
         DOMAIN,
         "save_tariff_settings",

@@ -435,9 +435,10 @@ class ServiceJsonValidationTests(unittest.TestCase):
         for name in removed:
             self.assertNotIn(name, services)
 
-    def test_schedule_patch_schema_accepts_valid_json_string(self):
-        result = init.SCHEDULE_PATCH_SCHEMA({"data": '[{"slot": "0000_0030"}]'})
-        self.assertEqual(result["data"], '[{"slot": "0000_0030"}]')
+    def test_apply_schedule_patch_service_was_removed(self):
+        services = yaml.safe_load((PACKAGE / "services.yaml").read_text(encoding="utf-8"))
+        self.assertNotIn("apply_schedule_patch", services)
+        self.assertNotIn("apply_schedule_patch", init.SERVICE_NAMES)
 
     def test_tariff_settings_schema_rejects_non_string(self):
         with self.assertRaises(Exception):

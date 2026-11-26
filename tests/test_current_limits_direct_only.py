@@ -73,9 +73,6 @@ class DirectCurrentLimitTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.subTest(attribute=name):
                 self.assertFalse(hasattr(runtime, name))
-        for slot in runtime.slots.values():
-            for name in ("charge_current", "discharge_current", "grid_charge_current"):
-                self.assertFalse(hasattr(slot, name))
 
     def test_direct_configuration_services_are_registered(self):
         source = (PACKAGE / "__init__.py").read_text(encoding="utf-8")

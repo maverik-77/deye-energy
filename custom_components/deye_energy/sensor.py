@@ -158,28 +158,8 @@ def manager_status_attrs(runtime):
             "sell_power": round(runtime.normal_profile_sell_power, 1),
             "tou_soc": None if runtime.normal_profile_tou_soc is None else round(runtime.normal_profile_tou_soc, 1),
         },
-        "slot_soc": {
-            key: {
-                "minimum_sell_soc": round(slot.minimum_sell_soc, 1),
-                "tou_soc": None if slot.tou_soc is None else round(slot.tou_soc, 1),
-            }
-            for key, slot in runtime.effective_slots().items()
-        },
-        # Canonical per-slot snapshot used by the transactional schedule editor.
-        # In particular, physical_work_mode has no dedicated per-slot entity.
-        "schedule_slots": {
-            key: {
-                "enabled": bool(slot.enabled),
-                "mode": slot.mode,
-                "physical_work_mode": slot.physical_work_mode,
-                "sell_power": round(slot.sell_power, 2),
-                "charge_enabled": bool(slot.charge_enabled),
-                "minimum_sell_soc": round(slot.minimum_sell_soc, 2),
-                "tou_soc": None if slot.tou_soc is None else round(slot.tou_soc, 2),
-                "min_sell_price": round(slot.min_sell_price, 4),
-            }
-            for key, slot in runtime.effective_slots().items()
-        },
+        "active_decision": runtime.active_decision.key,
+        "next_active_decision": runtime.next_active_decision_label,
     }
 
 
@@ -201,7 +181,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 lambda r: r.executed_manager_action,
             ),
             DeyeManagerSensor(runtime, "decision_reason", "Decision reason", lambda r: r.decision_reason),
-            DeyeManagerSensor(runtime, "next_active_slot", "Next active slot", lambda r: r.next_active_slot),
             DeyeManagerSensor(runtime, "last_applied_at", "Last settings applied", lambda r: r.last_applied_at or "never"),
             DeyeManagerSensor(runtime, "mapping_status", "Mapping status", lambda r: "ERROR" if r.mapping_error else "OK"),
             DeyeManagerSensor(
@@ -218,7 +197,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 lambda r: len(getattr(r, "trigger_log", []) or []),
                 attrs_fn=trigger_log_attrs,
             ),
-            DeyeManagerSensor(runtime, "active_slot", "Active slot", lambda r: r.active_slot_key()),
             DeyeManagerSensor(runtime, "target_mode", "Target mode", lambda r: r.target_mode),
             DeyeManagerSensor(runtime, "target_sell_power", "Target sell power", lambda r: r.target_sell_power, "W", SensorDeviceClass.POWER),
             DeyeManagerSensor(runtime, "battery_soc", "Battery SOC", lambda r: r.current_soc_or_none(), "%", SensorDeviceClass.BATTERY, source_fn=lambda r: r.battery_soc_sensor),

@@ -61,7 +61,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
 
     def test_tou_table_is_the_simple_24h_to_six_tou_ranges(self):
         for source in self.sources:
-            table = extract_method(source, "renderTouSettingsContent(slots)")
+            table = extract_method(source, "renderTouSettingsContent()")
             self.assertIn("Edit the six rows below", table)
             self.assertIn("The first From and last To are fixed at 00:00", table)
             self.assertIn("Values are loaded from the inverter", table)
@@ -205,7 +205,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
 
     def test_card_has_explicit_direct_edit_path_for_physical_tou_entities(self):
         source = self.sources[0]
-        tou_table = extract_method(source, "renderTouSettingsContent(slots)")
+        tou_table = extract_method(source, "renderTouSettingsContent()")
         for required in (
             'data-mapping-field="${field}"',
             'data-mapping-field="soc" data-mapping-slot=',
@@ -232,15 +232,13 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
 
     def test_tou_edit_and_rollback_controls_are_bound_on_the_page(self):
         for source in self.sources:
-            dialog = extract_method(source, "bindDialogControls(slots) {")
-            dashboard = extract_method(source, "bindDashboardControls(slots) {")
-            self.assertIn('root.querySelectorAll("[data-mapping-field]")', dashboard)
-            self.assertIn("this.collectMappingDraft()", dashboard)
-            self.assertIn('root.querySelectorAll("[data-save-mapping]")', dashboard)
-            self.assertIn("this.saveMappingToInverter()", dashboard)
-            self.assertIn('root.querySelectorAll("[data-refresh-mapping]")', dashboard)
-            self.assertIn("this.rollbackTouTable()", dashboard)
-            self.assertNotIn("[data-save-mapping]", dialog)
+            bind = extract_between(source, "bindDashboardControls()", "renderDialogOnly()")
+            self.assertIn('root.querySelectorAll("[data-mapping-field]")', bind)
+            self.assertIn("this.collectMappingDraft()", bind)
+            self.assertIn('root.querySelectorAll("[data-save-mapping]")', bind)
+            self.assertIn("this.saveMappingToInverter()", bind)
+            self.assertIn('root.querySelectorAll("[data-refresh-mapping]")', bind)
+            self.assertIn("this.rollbackTouTable()", bind)
 
             rollback = extract_method(source, "async rollbackTouTable()")
             self.assertIn("this.refreshMappingFromInverter()", rollback)
@@ -253,21 +251,11 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         source = self.sources[0]
         number_state = extract_method(source, "numberState(entityId, fallback = \"0\")")
         self.assertIn('value === "unknown" || value === "unavailable" ? fallback : value', number_state)
-        segments = extract_method(source, "  scheduleSegments(slots) {")
-        self.assertIn('this.numberState(entities.touSoc, "")', segments)
-        self.assertNotIn('this.numberState(entities.touSoc, 0)', segments)
-        self.assertNotIn('◇ ${touSoc}%', source)
-        dialog = extract_method(source, "renderDialog(slots, touStarts)")
-        self.assertIn('this.slotDraftInput("tou_soc", "%")', dialog)
-        self.assertNotIn("this.numberInput(entities.touSoc", dialog)
+        self.assertNotIn('this.numberState(entities.touSoc, 0)', source)
 
     def test_mapping_table_shows_only_physical_tou_fields(self):
         source = self.sources[0]
-        mapping = extract_method(source, "  scheduleSegments(slots) {")
-        dialog = extract_method(source, "renderDialog(slots, touStarts)")
-        self.assertIn("touSoc: this.asNumber(item.tou_soc)", mapping)
-        self.assertIn("chargeEnabled: Boolean(item.grid_charge)", mapping)
-        tou = extract_method(source, "renderTouSettingsContent(slots)")
+        tou = extract_method(source, "renderTouSettingsContent()")
         for header in ("<th>Mode</th>", "<th>Charge</th>", "<th>Sell</th>", "<th>Power</th>", "<th>Voltage</th>", "<th>SOC</th>"):
             self.assertIn(header, tou)
         self.assertIn('selectCell(row.slot, "mode"', tou)
@@ -275,12 +263,10 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertIn('data-mapping-field="sell"', tou)
         self.assertIn('numberCell("power")', tou)
         self.assertIn('numberCell("voltage")', tou)
-        self.assertNotIn('>Grid charging<', tou)
-        self.assertNotIn("<th>Function</th>", dialog)
 
     def test_settings_menu_has_only_tariff_and_system_tabs(self):
         source = self.sources[0]
-        dialog = extract_method(source, "renderDialog(slots, touStarts)")
+        dialog = extract_method(source, "renderDialog()")
         self.assertIn('tabButton("tariff", "Tariff and distribution")', dialog)
         self.assertIn('tabButton("system", "System and diagnostics")', dialog)
         for removed in (
@@ -300,54 +286,23 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
 
     def test_charge_slot_is_editable_and_profile_is_only_a_template(self):
         source = self.sources[0]
-        dialog = extract_method(source, "renderDialog(slots, touStarts)")
-        for required in (
-            'slotDraftInput("tou_soc"',
-            'slotDraftSelect("charge_enabled"',
-            'data-draft-charge-profile="1"',
-        ):
-            self.assertIn(required, dialog)
-        for forbidden in (
-            'slotDraftInput("charge_current"',
-            'slotDraftInput("discharge_current"',
-            'slotDraftInput("grid_charge_current"',
-        ):
-            self.assertNotIn(forbidden, dialog)
-        self.assertIn("const isSelling", dialog)
-        self.assertIn("const socField", dialog)
-        self.assertEqual(dialog.count("${socField}"), 1)
-        self.assertNotIn("this.callService(", dialog)
+        # Old slot draft dialog removed; charge profile is configured via backend/TOU controls, not slot editor.
+        self.assertNotIn('slotDraftInput("charge_current"', source)
+        self.assertNotIn('slotDraftInput("discharge_current"', source)
+        self.assertNotIn('slotDraftInput("grid_charge_current"', source)
 
     def test_card_uses_english_manager_modes(self):
         source = self.sources[0]
-        start = source.index("  slotWorkModes() {")
-        method = source[start : source.index("\n  }", start) + 4]
+        meta = extract_method(source, "modeMeta(mode, enabled = true)")
         for mode in (
             "Normal Operation",
             "Selling",
             "Charging",
         ):
-            self.assertIn(mode, method)
-        self.assertNotIn("Zero Export To Load", method)
-        self.assertNotIn("Zero Export To CT", method)
+            self.assertIn(mode, meta)
+        self.assertNotIn("slotWorkModes()", source)
 
-    def test_slot_modes_use_display_labels(self):
-        source = self.sources[0]
-        mode_meta = extract_method(source, "modeMeta(mode, enabled = true)")
-        self.assertIn('title: "Selling"', mode_meta)
-        self.assertIn('title: "Normal Operation"', mode_meta)
-        self.assertIn('title: "Charging"', mode_meta)
-        self.assertIn('title: "Disabled"', mode_meta)
-        self.assertIn('subtitle: "Normal operation mode"', mode_meta)
-        self.assertIn('subtitle: "Slot inactive"', mode_meta)
 
-    def test_slot_mode_selectors_use_canonical_english_values(self):
-        source = self.sources[0]
-        self.assertIn("slotModeLabel(mode)", source)
-        self.assertIn("slotModeOptions()", source)
-        self.assertIn("this.slotWorkModes().map((mode) => [mode, this.slotModeLabel(mode)])", source)
-        self.assertIn("this.slotModeOptions(), bulk.mode)", source)
-        self.assertNotIn('this.rawSelect("multi-mode", this.slotWorkModes(), bulk.mode)', source)
 
     def test_zero_export_physical_modes_display_as_normal_operation(self):
         normalizer = extract_method(self.sources[0], "  normalizeManagerMode(value) {")
@@ -367,34 +322,25 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
 
     def test_card_uses_backend_normal_profile_labels_in_slot_editor(self):
         source = self.sources[0]
-        dialog = extract_method(source, "renderDialog(slots, touStarts)")
-        self.assertIn(
-            'this.slotDraftSelect("physical_work_mode", this.normalProfileModeOptions())',
-            dialog,
-        )
-        self.assertNotIn('["Zero Export To Load", "Export disabled — Load measurement"]', dialog)
-        self.assertNotIn('["Zero Export To CT", "Export disabled — CT measurement"]', dialog)
+        # Slot editor removed with 48-slot model; normal profile labels remain available via backend/options.
+        self.assertIn('normalProfileModeOptions', source)
 
     def test_card_uses_english_charge_profile_label(self):
         self.assertIn("Charging profile target SOC", self.sources[0])
         self.assertNotIn("Docelowy SOC profilu Charge", self.sources[0])
 
     def test_card_does_not_expose_zero_export_provider_values_as_user_labels(self):
-        dialog = extract_method(self.sources[0], "renderDialog(slots, touStarts)")
-        self.assertNotIn('["Zero Export To Load", "Zero Export To Load"]', dialog)
-        self.assertNotIn('["Zero Export To CT", "Zero Export To CT"]', dialog)
+        source = self.sources[0]
+        self.assertNotIn('["Zero Export To Load", "Zero Export To Load"]', source)
+        self.assertNotIn('["Zero Export To CT", "Zero Export To CT"]', source)
 
     def test_card_mapping_does_not_depend_on_legacy_schedule_function(self):
-        mapping = extract_method(self.sources[0], "scheduleSegments(slots)")
-        dialog = extract_method(self.sources[0], "renderDialog(slots, touStarts)")
-        self.assertNotIn("schedule_function", mapping)
-        self.assertNotIn("<th>Function</th>", dialog)
+        source = self.sources[0]
+        self.assertNotIn("schedule_function", source)
 
     def test_disabled_state_is_not_a_work_mode_option(self):
         source = self.sources[0]
-        dialog = extract_method(source, "renderDialog(slots, touStarts)")
-        self.assertIn('slotDraftSelect("mode", this.slotModeOptions())', dialog)
-        self.assertNotIn("Disabled", dialog)
+        self.assertNotIn("slotWorkModes()", source)
 
     def test_schedule_table_displays_stored_grid_permission(self):
         source = self.sources[0]
@@ -402,22 +348,11 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         self.assertIn('data-label="Grid charging" class="metric grid"', row)
         self.assertIn('selectControl("charge_enabled", [["false", "No"], ["true", "Yes"]])', row)
         self.assertIn('row.charge_enabled ? "yes" : "no"', row)
-        self.assertNotIn("gridChargeLabel", source)
-        self.assertNotIn("gridChargeCurrent", source)
-        self.assertNotIn("not applicable", source)
-
-    def test_settings_dialog_scrolls_on_desktop_tablet_and_phone(self):
-        source = self.sources[0]
-        self.assertIn(".settings-content{min-width:0;overflow:auto", source)
-        self.assertIn("@media(max-width:980px)", source)
-        self.assertIn(".settings-layout{grid-template-columns:1fr", source)
-        self.assertIn("@media(max-width:620px)", source)
-        self.assertIn(".settings-content{padding:9px}", source)
 
     def test_diagnostics_show_logical_and_physical_soc_separately(self):
-        method = extract_method(self.sources[0], "renderDiagnostics(slots)")
+        method = extract_method(self.sources[0], "renderDiagnostics()")
         for required in (
-            "active_slot_control",
+            "active_decision_control",
             "physical_tou",
             "minimum_sell_soc",
             "tou_soc",
@@ -428,7 +363,14 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
             "grid_charge_actual",
         ):
             self.assertIn(required, method)
-        self.assertNotIn('"currents"', method)
+
+    def test_settings_dialog_scrolls_on_desktop_tablet_and_phone(self):
+        source = self.sources[0]
+        self.assertIn(".settings-content{min-width:0;overflow:auto", source)
+        self.assertIn("@media(max-width:980px)", source)
+        self.assertIn(".settings-layout{grid-template-columns:1fr", source)
+        self.assertIn("@media(max-width:620px)", source)
+        self.assertIn(".settings-content{padding:9px}", source)
 
     def test_layout_config_has_defaults_and_mobile_overrides(self):
         source = self.sources[0]
@@ -486,18 +428,16 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         source = self.sources[0]
         render = extract_method(source, "renderV073()")
         # Dialog host must be a sibling of .dem-v073, not inside it.
-        self.assertIn('</div>\n          <div class="dialog-host">${this.renderDialog(slots, touStarts)}</div>', render)
-        self.assertIn("this._lastSlots = slots;", render)
-        self.assertIn("this._lastTouStarts = touStarts;", render)
+        self.assertIn('</div>\n          <div class="dialog-host">${this.renderDialog()}</div>', render)
 
     def test_render_dialog_only_updates_dialog_independently(self):
         source = self.sources[0]
         method = extract_method(source, "renderDialogOnly() {")
         for required in (
-            "if (!this._lastSlots) return;",
             'const host = this.querySelector(".dialog-host");',
-            "host.innerHTML = this.renderDialog(this._lastSlots, this._lastTouStarts);",
-            "this.bindDialogControls(this._lastSlots);",
+            "this.captureScrollPositions();",
+            "host.innerHTML = this.renderDialog();",
+            "this.bindDialogControls();",
             "this.restoreScrollPositions();",
         ):
             self.assertIn(required, method)
@@ -643,25 +583,6 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
         render = extract_method(source, "renderV073()")
         self.assertIn('grid-template-columns:repeat(${layout.grid_columns},minmax(0,1fr))', render)
 
-    def test_control_master_is_shown_in_schedule_header_and_status_panel(self):
-        source = self.sources[0]
-        render = extract_method(source, "renderManualScheduleTab() {")
-        binding = extract_method(source, "bindDashboardControls(slots)")
-        update = extract_method(source, "updateDynamicValues() {")
-        self.assertIn('data-control-toggle="1"', render)
-        self.assertIn("Deye control — ${this.escapeHtml(control.status)}", render)
-        self.assertIn("const control = this.controlState()", render)
-        self.assertIn("[data-control-toggle]", binding)
-        self.assertIn("this.toggleControl()", binding)
-        self.assertIn("data-live='decision-reason'", update)
-        self.assertIn('this.entity("sensor", "decision_reason")', update)
-        for removed in (
-            "planned_manager_action",
-            "executed_manager_action",
-            "Planned decision",
-            "Executed decision",
-        ):
-            self.assertNotIn(removed, source)
 
     def test_manual_schedule_header_shares_settings_and_control_buttons(self):
         source = self.sources[0]
@@ -709,43 +630,6 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
             self.assertNotIn("@keyframes manual-time-current-row", source)
             self.assertNotIn("@keyframes manual-time-current-cell", source)
 
-    def test_schedule_source_captions_are_live_in_both_status_layouts(self):
-        source = self.sources[0]
-        helper = extract_method(source, "scheduleSourceLabel() {")
-        self.assertIn("schedule_source", helper)
-        self.assertIn('"Manual schedule"', helper)
-        self.assertIn('"Schedule slots"', helper)
-        dynamic = extract_method(source, "updateDynamicValues() {")
-        self.assertIn("const scheduleSourceLabel = this.scheduleSourceLabel();", dynamic)
-        self.assertEqual(dynamic.count("[data-live='executed-schedule-source']"), 1)
-        self.assertEqual(dynamic.count("[data-live='manager-schedule-source']"), 1)
-        self.assertNotIn("energyFlowPanel()", source)
-
-    def test_manager_mode_slot_follows_the_active_schedule_source(self):
-        source = self.sources[0]
-        helper = extract_method(source, "activeSlotTimeLabel(now = new Date()) {")
-        self.assertIn("schedule_source", helper)
-        self.assertIn('"manual"', helper)
-        self.assertIn("manualScheduleBackend().rows", helper)
-        self.assertIn("localMinuteOfDay(now)", helper)
-        self.assertIn("row.from", helper)
-        self.assertIn("row.to", helper)
-        minutes = extract_method(source, "localMinuteOfDay(value = new Date()) {")
-        self.assertIn('minute: "2-digit"', minutes)
-        self.assertIn("hour === 24 ? 0 : hour", minutes)
-        dynamic = extract_method(source, "updateDynamicValues() {")
-        self.assertIn("const activeSlotLabel = this.activeSlotTimeLabel();", dynamic)
-        self.assertIn('this.setText("[data-live=\'active-slot\']", activeSlotLabel);', dynamic)
-        self.assertNotIn("energyFlowPanel()", source)
-
-    def test_disabled_schedule_save_has_explicit_english_monitoring_message(self):
-        method = extract_method(self.sources[0], "async applySchedulePatch(updates, options = null)")
-        self.assertIn("this.slotControlEnabled()", method)
-        self.assertNotIn('this.entity("switch", "control")', method)
-        self.assertIn(
-            "Changes were saved in the schedule. Deye control is disabled — they were not sent to the inverter.",
-            method,
-        )
 
     def test_configuration_import_never_restores_external_physical_entities_directly(self):
         source = self.sources[0]
@@ -763,7 +647,7 @@ class FrontendDefaultRestoreTests(unittest.TestCase):
     def test_dialog_host_and_dashboard_render_unchanged(self):
         source = self.sources[0]
         render = extract_method(source, "renderV073()")
-        self.assertIn('</div>\n          <div class="dialog-host">${this.renderDialog(slots, touStarts)}</div>', render)
+        self.assertIn('</div>\n          <div class="dialog-host">${this.renderDialog()}</div>', render)
         self.assertIn("${infoGridSection}", render)
         self.assertIn("${scheduleSection}", render)
         self.assertIn("${salesSection}", render)

@@ -1,11 +1,9 @@
-// Resource revision: v=0.8.1.0
+// Resource revision: v=0.8.1.01
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
     this._interacting = false;
     this._pendingRender = false;
-    this._lastScheduleSignature = "";
-    this._scheduleEntityIds = [];
     this._dialog = null;
     this._lastTouDiagnosticsSignature = "";
     this._mappingDraft = null;
@@ -13,13 +11,6 @@ class DeyeEnergyCard extends HTMLElement {
     this._mappingSaveError = "";
     this._mappingStatus = "";
     this._mappingSaving = false;
-    this._slotEditOriginal = null;
-    this._slotEditDraft = null;
-    this._slotSaving = false;
-    this._slotSaveError = "";
-    this._slotSaveMessage = "";
-    this._slotDiscardPrompt = false;
-    this._slotAwaitingRefresh = null;
     this._inverterConfig = null;
     this._inverterConfigLoading = false;
     this._inverterConfigLoaded = false;
@@ -51,11 +42,6 @@ class DeyeEnergyCard extends HTMLElement {
     this._defaultsStatus = "idle";
     this._defaultsMessage = "";
     this._resumeApplying = false;
-    this._selectionMode = false;
-    this._selectedSlots = new Set();
-    this._bulkEditDraft = null;
-    this._bulkEditFields = null;
-    this._bulkApplying = false;
     this._settingsTab = "tariff";
     this._scheduleTab = "manual";
     this._updateFrame = null;
@@ -270,34 +256,32 @@ class DeyeEnergyCard extends HTMLElement {
 
   closeDialog() {
     if (!this._dialog) return;
-    if (this.isScheduleSlotDialog()) {
-      if (this._slotSaving) return false;
-      if (this.slotEditDirty() && !this._slotDiscardPrompt) {
-        this._slotDiscardPrompt = true;
-        this.renderDialogOnly();
-        return false;
-      }
-      this.resetSlotEditor();
-    }
     this._dialog = null;
     this._interacting = false;
     this.render();
     return true;
   }
 
+  scheduleStateSignature(hass = this._hass) {
+    const ids = Array.isArray(this._scheduleEntityIds) ? this._scheduleEntityIds : [];
+    return ids.map((id) => `${id}:${hass?.states?.[id]?.state ?? "missing"}`).join("|");
+  }
+
   set hass(hass) {
     this._hass = hass;
     this.maybeAutoLoadManualScheduleFromTou();
-    this.syncSlotEditorAfterHass();
+    const scheduleSignature = this.scheduleStateSignature(hass);
+    const scheduleChanged = this._isRendered && scheduleSignature !== this._lastScheduleSignature;
+    this._lastScheduleSignature = scheduleSignature;
     if (this._isRendered) {
       const touSignature = this.touDiagnosticsSignature();
       if (touSignature !== this._lastTouDiagnosticsSignature) {
         this._lastTouDiagnosticsSignature = touSignature;
         if (this._scheduleTab === "tou" && !this._dialog) this.requestScheduleRender();
       }
-      const scheduleSignature = this.scheduleStateSignature();
-      if (scheduleSignature !== this._lastScheduleSignature) {
-        if (this.requestScheduleRender()) return;
+      if (scheduleChanged) {
+        this.requestScheduleRender();
+        return;
       }
       if (this._updateFrame) cancelAnimationFrame(this._updateFrame);
       this._updateFrame = requestAnimationFrame(() => {
@@ -466,12 +450,9 @@ class DeyeEnergyCard extends HTMLElement {
   updateDynamicValues() {
     if (!this._hass || !this._isRendered) return;
     this.updateControlUi();
-    const slots = this.scheduleSlots();
     const statusEntity = this.entity("sensor", "manager_status");
     const rawStatus = this.state(statusEntity);
     const [modeText, modeClass] = this.readMode(rawStatus);
-    const scheduleSourceLabel = this.scheduleSourceLabel();
-    const activeSlotLabel = this.activeSlotTimeLabel();
     const batterySoc = this.entity("sensor", "battery_soc");
     const soldEnergyToday = this.entity("sensor", "sold_energy_today");
     const soldValueToday = this.entity("sensor", "sold_value_today");
@@ -573,9 +554,6 @@ class DeyeEnergyCard extends HTMLElement {
     this.setText("[data-live='sold-today-kwh']", `${fmtNum(soldKwh, 2)} kWh`);
     this.setText("[data-live='sold-today-gbp']", `${fmtNum(soldGbp, 2)} GBP`);
 
-    this.setText("[data-live='active-slot']", activeSlotLabel);
-    this.setText("[data-live='executed-schedule-source']", scheduleSourceLabel);
-    this.setText("[data-live='manager-schedule-source']", scheduleSourceLabel);
     this.setText("[data-live='manager-mode']", modeText);
     this.setText("[data-live='manager-active-mode']", modeText);
     this.setText("[data-live='decision-reason']", this.state(this.entity("sensor", "decision_reason"), "—"));
@@ -1198,86 +1176,6 @@ class DeyeEnergyCard extends HTMLElement {
     return ["unknown", "unavailable", "none", "null", "enabled", "disabled"].includes(value.toLowerCase()) ? "" : value;
   }
 
-  findEntity(domain, wanted, excluded = [], fallbackSuffixes = []) {
-    const fallbackList = Array.isArray(fallbackSuffixes) ? fallbackSuffixes : [fallbackSuffixes];
-    const byId = this.exactEntity(domain, fallbackList);
-    if (byId) return byId;
-    const wantedParts = wanted.map((value) => this.norm(value)).filter(Boolean);
-    const excludedParts = excluded.map((value) => this.norm(value)).filter(Boolean);
-    const found = Object.entries(this._hass.states).find(([id, entity]) => {
-      if (!id.startsWith(`${domain}.`)) return false;
-      const friendly = this.norm(entity.attributes?.friendly_name || "");
-      const flatId = this.norm(id);
-      const haystack = `${flatId} ${friendly}`;
-      return wantedParts.every((part) => haystack.includes(part))
-        && !excludedParts.some((part) => haystack.includes(part));
-    });
-    return found?.[0] || `${domain}.deye_energy_${fallbackList[0] || wantedParts.join("_")}`;
-  }
-
-  slotEntity(domain, key, label, suffixes, wanted, excluded = []) {
-    const fallbackList = Array.isArray(suffixes) ? suffixes : [suffixes];
-    const byId = this.exactEntity(domain, fallbackList);
-    if (byId) return byId;
-
-    const candidates = Object.entries(this._hass.states).filter(([id]) => id.startsWith(`${domain}.`));
-    const excludedParts = excluded.map((value) => this.norm(value)).filter(Boolean);
-    const keyToken = this.norm(`slot_${key}`);
-    const labelToken = this.norm(label);
-    const wantedParts = wanted.map((value) => this.norm(value)).filter(Boolean);
-
-    const matches = ([id, entity], requireKeyToken = true) => {
-      const flatId = this.norm(id);
-      const friendly = this.norm(entity.attributes?.friendly_name || "");
-      const haystack = `${flatId} ${friendly}`;
-      const hasSlot = requireKeyToken
-        ? flatId.includes(keyToken)
-        : flatId.includes(keyToken) || friendly.includes(labelToken);
-      return hasSlot
-        && wantedParts.every((part) => haystack.includes(part))
-        && !excludedParts.some((part) => haystack.includes(part));
-    };
-
-    return candidates.find((entry) => matches(entry, true))?.[0]
-      || candidates.find((entry) => matches(entry, false))?.[0]
-      || this.findEntity(domain, [keyToken, ...wantedParts], excluded, fallbackList);
-  }
-
-  slotEntities(key, label) {
-    return {
-      sellEnabled: this.slotEntity("switch", key, label, [`slot_${key}_enabled`, `${key}_enabled`, `slot_${key}`, key], [], ["charge"]),
-      mode: this.slotEntity("select", key, label, [`slot_${key}_mode`, `${key}_mode`], ["mode"]),
-      sellPower: this.slotEntity("number", key, label, [`slot_${key}_sell_power`, `${key}_sell_power`], ["sell", "power"]),
-      chargeEnabled: this.slotEntity("switch", key, label, [`slot_${key}_charge_enabled`, `${key}_charge_enabled`], ["charge"], ["slot", "enabled"]),
-      minimumSellSoc: this.slotEntity("number", key, label, [`slot_${key}_minimum_sell_soc`, `${key}_minimum_sell_soc`], ["minimum", "sell", "soc"]),
-      touSoc: this.slotEntity("number", key, label, [`slot_${key}_tou_soc`, `${key}_tou_soc`], ["tou", "battery", "soc"]),
-      minSellPrice: this.slotEntity("number", key, label, [`slot_${key}_min_sell_price`, `${key}_min_sell_price`], ["minimum", "sell", "price"]),
-    };
-  }
-
-  scheduleEntityIds(slots = this.scheduleSlots()) {
-    const ids = [];
-    slots.forEach(([key, label]) => {
-      Object.values(this.slotEntities(key, label)).forEach((entityId) => {
-        if (entityId && !ids.includes(entityId)) ids.push(entityId);
-      });
-    });
-    return ids;
-  }
-
-  scheduleStateSignature() {
-    const ids = this._scheduleEntityIds?.length ? this._scheduleEntityIds : this.scheduleEntityIds();
-    return ids.map((entityId) => `${entityId}:${this._hass?.states?.[entityId]?.state ?? ""}`).join("|");
-  }
-
-  chargeProfileStoredValues() {
-    const statusId = this.entity("sensor", "manager_status");
-    const profile = this._hass?.states?.[statusId]?.attributes?.charge_profile;
-    return profile && typeof profile === "object" ? profile : {};
-  }
-
-
-
   normalProfileStoredValues() {
     const statusId = this.entity("sensor", "manager_status");
     const profile = this._hass?.states?.[statusId]?.attributes?.normal_profile;
@@ -1286,44 +1184,6 @@ class DeyeEnergyCard extends HTMLElement {
 
   managerStatusAttributes() {
     return this._hass?.states?.[this.entity("sensor", "manager_status")]?.attributes || {};
-  }
-
-  scheduleSourceLabel() {
-    return String(this.managerStatusAttributes().schedule_source || "") === "manual"
-      ? "Manual schedule"
-      : "Schedule slots";
-  }
-
-  activeSlotTimeLabel(now = new Date()) {
-    const workLabel = () => {
-      const activeSlot = this.state(this.entity("sensor", "active_slot"), "");
-      return this.scheduleSlots().find(([key]) => key === activeSlot)?.[1] || activeSlot;
-    };
-    if (String(this.managerStatusAttributes().schedule_source || "") !== "manual") {
-      return workLabel();
-    }
-    const rows = this.manualScheduleBackend().rows;
-    if (!Array.isArray(rows) || !rows.length) return workLabel();
-    const minuteOfDay = this.localMinuteOfDay(now);
-    if (minuteOfDay === null) return workLabel();
-    const toMinutes = (text) => {
-      const match = /^(\d{1,2}):(\d{2})$/.exec(String(text || ""));
-      if (!match) return null;
-      const hours = Number(match[1]);
-      const minutes = Number(match[2]);
-      return hours <= 23 && minutes <= 59 ? hours * 60 + minutes : null;
-    };
-    for (let index = 0; index < rows.length; index += 1) {
-      const row = rows[index];
-      const start = toMinutes(row.from);
-      let end = toMinutes(row.to);
-      if (start === null || end === null) continue;
-      if (index === rows.length - 1 && end === 0) end = 1440;
-      if (start <= minuteOfDay && minuteOfDay < end) {
-        return `${String(row.from).slice(0, 5)}-${String(row.to).slice(0, 5)}`;
-      }
-    }
-    return workLabel();
   }
 
   manualScheduleCurrentRowIndex(rows, now = new Date()) {
@@ -1393,49 +1253,13 @@ class DeyeEnergyCard extends HTMLElement {
       .map((row) => [String(row.value), String(row.label)]);
   }
 
-  scheduleSlotSnapshot(key, label = "") {
-    const canonical = this.managerStatusAttributes()?.schedule_slots?.[key];
-    if (canonical && typeof canonical === "object") {
-      return { slot_key: key, ...canonical, mode: this.normalizeManagerMode(canonical.mode) };
-    }
-    const entities = this.slotEntities(key, label);
-    const mode = this.normalizeManagerMode(this.displayState(entities.mode, "Normal Operation"));
-    const physicalMode = mode === "Normal Operation"
-      ? (this.normalProfileStoredValues().physical_work_mode || null)
-      : null;
-    return {
-      slot_key: key,
-      enabled: this.displayState(entities.sellEnabled, "off") === "on",
-      mode,
-      physical_work_mode: physicalMode,
-      sell_power: this.asNumber(this.numberState(entities.sellPower, 0)) ?? 0,
-      charge_enabled: this.displayState(entities.chargeEnabled, "off") === "on",
-      minimum_sell_soc: this.asNumber(this.numberState(entities.minimumSellSoc, 0)) ?? 0,
-      tou_soc: this.asNumber(this.numberState(entities.touSoc, "")),
-      min_sell_price: this.asNumber(this.numberState(entities.minSellPrice, 0)) ?? 0,
-    };
-  }
-
-  slotEditFields() {
-    return [
-      "enabled", "mode", "physical_work_mode", "sell_power", "charge_enabled",
-      "minimum_sell_soc", "tou_soc", "min_sell_price",
-    ];
-  }
-
-  slotNumericFields() {
-    return [
-      "sell_power", "minimum_sell_soc", "tou_soc", "min_sell_price",
-    ];
-  }
-
   normalizeSlotEditValue(field, value) {
     if (field === "mode") return this.normalizeManagerMode(value);
     if (field === "enabled" || field === "charge_enabled" || field === "battery_charge_enabled") {
       if (typeof value === "string") return ["true", "on", "1", "yes", "yes"].includes(value.trim().toLowerCase());
       return Boolean(value);
     }
-    if (this.slotNumericFields().includes(field)) {
+    if (["sell_power", "minimum_sell_soc", "tou_soc", "min_sell_price"].includes(field)) {
       if (value === null || value === undefined || String(value).trim() === "") return null;
       const numeric = Number(String(value).replace(",", "."));
       return Number.isFinite(numeric) ? numeric : value;
@@ -1443,234 +1267,8 @@ class DeyeEnergyCard extends HTMLElement {
     return value === null || value === undefined ? null : String(value).trim();
   }
 
-  normalizedSlotEdit(values) {
-    return Object.fromEntries(this.slotEditFields().map((field) => [field, this.normalizeSlotEditValue(field, values?.[field])]));
-  }
-
-  isScheduleSlotDialog() {
-    return this._dialog?.type === "sell" || this._dialog?.type === "slot";
-  }
-
-  openScheduleSlotEditor(key, label = "", type = "sell") {
-    const snapshot = this.scheduleSlotSnapshot(key, label);
-    this._slotEditOriginal = { key, label, values: { ...snapshot } };
-    this._slotEditDraft = { key, label, values: { ...snapshot } };
-    this._slotSaving = false;
-    this._slotSaveError = "";
-    this._slotSaveMessage = "";
-    this._slotDiscardPrompt = false;
-    this._slotAwaitingRefresh = null;
-    this._dialog = { type, key };
-  }
-
-  ensureSlotEditor(key, label = "") {
-    if (this._slotEditDraft?.key === key && this._slotEditOriginal?.key === key) return;
-    const snapshot = this.scheduleSlotSnapshot(key, label);
-    this._slotEditOriginal = { key, label, values: { ...snapshot } };
-    this._slotEditDraft = { key, label, values: { ...snapshot } };
-  }
-
-  resetSlotEditor() {
-    this._slotEditOriginal = null;
-    this._slotEditDraft = null;
-    this._slotSaving = false;
-    this._slotSaveError = "";
-    this._slotSaveMessage = "";
-    this._slotDiscardPrompt = false;
-    this._slotAwaitingRefresh = null;
-  }
-
-  slotEditDirty() {
-    if (!this._slotEditOriginal || !this._slotEditDraft) return false;
-    const original = this.normalizedSlotEdit(this._slotEditOriginal.values);
-    const draft = this.normalizedSlotEdit(this._slotEditDraft.values);
-    return this.slotEditFields().some((field) => original[field] !== draft[field]);
-  }
-
-  updateSlotDraftField(field, value) {
-    if (!this._slotEditDraft || !this.slotEditFields().includes(field)) return;
-    const previousMode = this._slotEditDraft.values.mode;
-    this._slotEditDraft.values[field] = this.normalizeSlotEditValue(field, value);
-    this._slotSaveError = "";
-    if (field === "mode" && previousMode !== this._slotEditDraft.values.mode) {
-      this._slotEditDraft.values.enabled = true;
-      this.applyProfileToSlotDraft(this._slotEditDraft.values.mode, false);
-    }
-  }
-
-  applyProfileToSlotDraft(mode, explicitReload = false) {
-    if (!this._slotEditDraft) return;
-    const values = this._slotEditDraft.values;
-    if (mode === "Normal Operation") {
-      const profile = this.normalProfileStoredValues();
-      ["physical_work_mode", "sell_power", "tou_soc"].forEach((field) => {
-        if (profile[field] !== undefined && profile[field] !== null) values[field] = this.normalizeSlotEditValue(field, profile[field]);
-      });
-    } else if (mode === "Charging") {
-      const profile = this.chargeProfileStoredValues();
-      const mapping = { target_soc: "tou_soc" };
-      Object.entries(mapping).forEach(([source, target]) => {
-        if (profile[source] !== undefined && profile[source] !== null) values[target] = this.normalizeSlotEditValue(target, profile[source]);
-      });
-      if (explicitReload && profile.grid_charge_enabled !== undefined) {
-        values.charge_enabled = Boolean(profile.grid_charge_enabled);
-      }
-    }
-  }
-
-  slotDraftInput(field, unit = "") {
-    const value = this._slotEditDraft?.values?.[field];
-    return `<label class="field"><input data-slot-draft-field="${field}" type="text" inputmode="decimal" value="${this.escapeHtml(value ?? "")}"><span>${this.escapeHtml(unit)}</span></label>`;
-  }
-
-  slotDraftSelect(field, options) {
-    const current = this.normalizeSlotEditValue(field, this._slotEditDraft?.values?.[field]);
-    return `<select data-slot-draft-field="${field}">${options.map(([value, label]) => `<option value="${this.escapeHtml(value)}" ${this.normalizeSlotEditValue(field, value) === current ? "selected" : ""}>${this.escapeHtml(label)}</option>`).join("")}</select>`;
-  }
-
-  validateSlotEditDraft() {
-    if (!this._slotEditDraft) return "No data for the edited slot.";
-    const values = this.normalizedSlotEdit(this._slotEditDraft.values);
-    if (!this.slotWorkModes().includes(values.mode)) return "Select a valid schedule mode.";
-    if (values.mode === "Normal Operation" && !["Zero Export To Load", "Zero Export To CT"].includes(values.physical_work_mode)) {
-      return "Select the physical Deye mode for Normal Operation.";
-    }
-    const limits = {
-      sell_power: [0, 100000], minimum_sell_soc: [0, 100], tou_soc: [0, 100],
-      min_sell_price: [0, 5],
-    };
-    for (const [field, [minimum, maximum]] of Object.entries(limits)) {
-      const value = values[field];
-      if (value === null && field === "tou_soc") continue;
-      if (!Number.isFinite(value) || value < minimum || value > maximum) {
-        return `Field ${field} must be between ${minimum} and ${maximum}.`;
-      }
-    }
-    return "";
-  }
-
-  buildSlotEditPatch() {
-    if (!this._slotEditOriginal || !this._slotEditDraft) return null;
-    const original = this.normalizedSlotEdit(this._slotEditOriginal.values);
-    const draft = this.normalizedSlotEdit(this._slotEditDraft.values);
-    const patch = { slot_key: this._slotEditDraft.key };
-    this.slotEditFields().forEach((field) => {
-      if (original[field] === draft[field]) return;
-      if (field === "physical_work_mode" && draft.mode !== "Normal Operation") return;
-      if (field === "tou_soc" && draft[field] === null) return;
-      patch[field] = draft[field];
-    });
-    // Every real save reasserts the canonical mode.  This migrates a
-    // legacy card snapshot on the user's next edit without a separate write.
-    if (Object.keys(patch).length > 1) patch.mode = draft.mode;
-    return patch;
-  }
-
-  slotSnapshotMatchesPatch(key, patch) {
-    const label = this._slotEditDraft?.label || this._slotEditOriginal?.label || "";
-    const actual = this.normalizedSlotEdit(this.scheduleSlotSnapshot(key, label));
-    return Object.entries(patch).every(([field, value]) => field === "slot_key" || actual[field] === this.normalizeSlotEditValue(field, value));
-  }
-
-  slotControlEnabled() {
-    return this.controlEnabled() && this.controlStatus() !== "Disabling";
-  }
-
-  finishSlotSaveAfterRefresh() {
-    const localOnly = !this.slotControlEnabled();
-    this._slotSaving = false;
-    this._saveStatus = "saved";
-    this._saveMessage = localOnly
-      ? "Changes were saved in the schedule. Deye control is disabled — they were not sent to the inverter."
-      : "Changes saved in the schedule.";
-    this._slotEditOriginal = null;
-    this._slotEditDraft = null;
-    this._slotAwaitingRefresh = null;
-    this._slotDiscardPrompt = false;
-    this._dialog = null;
-    this._interacting = false;
-    if (this.isConnected) this.render();
-  }
-
-  syncSlotEditorAfterHass() {
-    const pending = this._slotAwaitingRefresh;
-    if (!pending || !this.slotSnapshotMatchesPatch(pending.key, pending.patch)) return false;
-    this.finishSlotSaveAfterRefresh();
-    return true;
-  }
-
-  async saveScheduleSlotDraft() {
-    if (this._slotSaving || !this._slotEditDraft) return false;
-    if (!this.slotEditDirty()) {
-      this.resetSlotEditor();
-      this._dialog = null;
-      this.render();
-      return true;
-    }
-    const validationError = this.validateSlotEditDraft();
-    if (validationError) {
-      this._slotSaveError = validationError;
-      this.renderDialogOnly();
-      return false;
-    }
-    const patch = this.buildSlotEditPatch();
-    if (!patch || Object.keys(patch).length === 1) return false;
-    this._slotSaving = true;
-    this._slotSaveError = "";
-    this._slotSaveMessage = "";
-    this.renderDialogOnly();
-    const success = await this.applySchedulePatch([patch]);
-    if (!success) {
-      this._slotSaving = false;
-      this._slotSaveError = this._saveMessage || "Could not save the schedule";
-      if (this.isConnected) this.renderDialogOnly();
-      return false;
-    }
-    this._slotAwaitingRefresh = { key: this._slotEditDraft.key, patch };
-    if (!this.syncSlotEditorAfterHass() && this.isConnected) this.renderDialogOnly();
-    return true;
-  }
-
-  cancelScheduleSlotEdit() {
-    if (this._slotSaving) return false;
-    this.resetSlotEditor();
-    this._dialog = null;
-    this.render();
-    return true;
-  }
-
-  discardScheduleSlotChanges() {
-    return this.cancelScheduleSlotEdit();
-  }
-
-  returnToScheduleSlotEditing() {
-    this._slotDiscardPrompt = false;
-    this.renderDialogOnly();
-  }
-
   callService(domain, service, data = {}) {
     return this._hass.callService(domain, service, data);
-  }
-
-  async applySchedulePatch(updates, options = null) {
-    if (!Array.isArray(updates) || !updates.length) return false;
-    options = options || {};
-    if (!this.hasService("deye_energy", "apply_schedule_patch")) {
-      this.failSave("schedule_patch", new Error("The apply_schedule_patch service is unavailable"));
-      return false;
-    }
-    this.beginSave();
-    try {
-      await this.callService("deye_energy", "apply_schedule_patch", { data: JSON.stringify(updates) });
-      if (!this.slotControlEnabled()) {
-        this._saveMessage = "Changes were saved in the schedule. Deye control is disabled — they were not sent to the inverter.";
-      }
-      this.finishSave();
-      return true;
-    } catch (error) {
-      this.failSave("schedule_patch", error);
-      return false;
-    }
   }
 
   hasService(domain, service) {
@@ -1813,12 +1411,10 @@ class DeyeEnergyCard extends HTMLElement {
     // The mode never implies permission to charge from the grid.  That
     // permission is controlled solely by "Grid charging" in the shared
     // Charging Profile.
-    const request = this.optimisticService(entityId, option, "select", "select_option", { entity_id: entityId, option });
-    if (this._scheduleEntityIds?.includes(entityId)) {
-      this.captureScrollPositions();
-      this.render();
-    }
-    return request;
+    const result = this.optimisticService(entityId, option, "select", "select_option", { entity_id: entityId, option });
+    this.captureScrollPositions();
+    this.render();
+    return result;
   }
 
   turnSwitch(entityId, value) {
@@ -1910,23 +1506,6 @@ class DeyeEnergyCard extends HTMLElement {
     const cls = state === "on" ? "on" : state === "off" ? "off" : "missing";
     const label = text || (state === "on" ? "yes" : state === "off" ? "no" : "missing");
     return `<button class="pill ${cls}" data-toggle="${entityId}" ${this.exists(entityId) ? "" : "disabled"}>${label}</button>`;
-  }
-
-  rawSelect(name, options = [], value = "") {
-    return `<select data-raw="${name}">
-      ${options.map((option) => {
-        const optionValue = Array.isArray(option) ? option[0] : option;
-        const optionLabel = Array.isArray(option) ? option[1] : option;
-        return `<option value="${this.escapeHtml(optionValue)}" ${optionValue === value ? "selected" : ""}>${this.escapeHtml(optionLabel)}</option>`;
-      }).join("")}
-    </select>`;
-  }
-
-  rawNumber(name, value = 0, unit = "") {
-    return `<label class="field">
-      <input data-raw="${this.escapeHtml(name)}" type="text" inputmode="decimal" value="${this.escapeHtml(value)}">
-      <span>${this.escapeHtml(unit)}</span>
-    </label>`;
   }
 
   escapeHtml(value) {
@@ -2059,19 +1638,19 @@ class DeyeEnergyCard extends HTMLElement {
     if (entityIds.length) this.callService("homeassistant", "update_entity", { entity_id: entityIds });
   }
 
-  renderDiagnostics(slots) {
+  renderDiagnostics() {
     const entity = this._hass?.states?.[this.entity("sensor", "diagnostics")];
     const attrs = entity?.attributes || {};
     const required = Array.isArray(attrs.entities) ? attrs.entities : [];
     const entityRows = required.length ? required.map((item) => `<tr><td>${this.escapeHtml(item.entity_id)}</td><td><span class="diag-badge ${item.ok ? "ok" : "error"}">${item.ok ? "OK" : this.escapeHtml(item.state)}</span></td></tr>`).join("") : `<tr><td colspan="2">No diagnostic data. Restart Home Assistant.</td></tr>`;
     const connected = attrs.connected === true;
-    const mappingSegments = attrs.mapping_segments ?? this.scheduleSegments(slots).length;
+    const mappingSegments = this.mappingSegmentCount();
     const tou = attrs.tou || {};
     const capabilities = attrs.capabilities && typeof attrs.capabilities === "object" ? attrs.capabilities : {};
     const provider = capabilities.provider && typeof capabilities.provider === "object" ? capabilities.provider : {};
     const missingTou = Array.isArray(tou.missing) ? tou.missing : [];
     const attempt = attrs.last_schedule_attempt && typeof attrs.last_schedule_attempt === "object" ? attrs.last_schedule_attempt : null;
-    const activeControl = attrs.active_slot_control && typeof attrs.active_slot_control === "object" ? attrs.active_slot_control : {};
+    const activeControl = attrs.active_decision_control && typeof attrs.active_decision_control === "object" ? attrs.active_decision_control : {};
     const physicalTou = Array.isArray(attrs.physical_tou) ? attrs.physical_tou : [];
     const diagnosticValue = (value) => value === null || value === undefined || value === "" ? "missing" : String(value);
     const renderValues = (values) => Object.entries(values || {}).map(([label, value]) => `<li><span>${this.escapeHtml(label)}</span><strong>${this.escapeHtml(String(value))}</strong></li>`).join("") || "<li>No data</li>";
@@ -2106,12 +1685,12 @@ class DeyeEnergyCard extends HTMLElement {
     return `<div class="diagnostic-summary">
       <div><span>Inverter connection</span><strong class="${connected ? "good" : "bad"}">${connected ? "Connected" : "Problem"}</strong></div>
       <div><span>Manager state</span><strong class="${this.readMode(attrs.manager_status || "NO DATA")[1]}">${this.readMode(attrs.manager_status || "NO DATA")[0]}</strong></div>
-      <div><span>Schedule slot</span><strong>${attrs.active_slot || "missing"} \u00b7 next ${attrs.next_active_slot || "missing"}</strong></div>
+      <div><span>Active decision</span><strong>${this.escapeHtml(attrs.active_decision || "missing")} \u00b7 next ${this.escapeHtml(attrs.next_active_decision || "missing")}</strong></div>
       <div><span>Schedule and mapping</span><strong class="${attrs.mapping_status === "OK" ? "good" : "bad"}">${attrs.mapping_status || "missing"} \u00b7 ${mappingSegments}/6</strong></div>
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.1.0 (resource revision v=0.8.1.0)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.1.01 (resource revision v=0.8.1.01)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -2421,29 +2000,6 @@ class DeyeEnergyCard extends HTMLElement {
       <section class="diagnostic-section"><h3>Distribution cost profile — today and tomorrow</h3><div class="diagnostic-entities"><table class="settings-table"><thead><tr><th>Date</th><th>Hour</th><th>Zone</th><th>Grid</th><th>Variable charges</th><th>Total</th><th>Day type</th></tr></thead><tbody>${profileRows || '<tr><td colspan="7">No profile. Select an operator and tariff, then save.</td></tr>'}</tbody></table></div></section>`;
   }
 
-  collectBulkEditState() {
-    const panel = this.querySelector(".multi-dialog") || this.querySelector(".bulk-panel");
-    if (!panel) return null;
-    const value = (name, fallback = "") => panel.querySelector(`[data-raw="${name}"]`)?.value ?? fallback;
-    const checked = (name) => Boolean(panel.querySelector(`[data-apply-field="${name}"]`)?.checked);
-    const state = {
-      values: {
-        active: value("multi-active", "on"),
-        mode: this.normalizeManagerMode(value("multi-mode", "Selling")),
-        sellPower: value("multi-sell-power", 5000),
-        minSoc: value("multi-min-soc", 40),
-        minSellPrice: value("multi-min-sell-price", 0),
-      },
-      fields: {},
-    };
-    ["active", "mode", "sellPower", "minSoc", "minSellPrice"].forEach((name) => {
-      state.fields[name] = checked(name);
-    });
-    this._bulkEditDraft = { ...state.values };
-    this._bulkEditFields = { ...state.fields };
-    return state;
-  }
-
   physicalTouDiagnostics() {
     const attrs = this.diagnosticsAttributes();
     return Array.isArray(attrs.physical_tou) ? attrs.physical_tou : [];
@@ -2530,6 +2086,12 @@ class DeyeEnergyCard extends HTMLElement {
   mappingPlanDiagnostics() {
     const plan = this.diagnosticsAttributes()?.mapping_plan;
     return Array.isArray(plan) ? plan : [];
+  }
+
+  mappingSegmentCount() {
+    const segments = this.diagnosticsAttributes()?.mapping_segments;
+    if (Array.isArray(segments)) return segments.length;
+    return this.mappingPlanDiagnostics().length || this.physicalTouDiagnostics().length;
   }
 
   // ---- Deye Time Of Use table editor ---------------------------------------
@@ -3116,7 +2678,7 @@ class DeyeEnergyCard extends HTMLElement {
     for (let index = 0; index < rows.length; index += 1) {
       const row = rows[index];
       const mode = this.normalizeManagerMode(row.mode);
-      if (!this.slotWorkModes().includes(mode)) return `Row ${index + 1}: select a valid mode.`;
+      if (!["Normal Operation","Selling","Charging"].includes(mode)) return `Row ${index + 1}: select a valid mode.`;
       for (const [field, [minimum, maximum]] of Object.entries(limits)) {
         const value = Number(row[field]);
         if (!Number.isFinite(value) || value < minimum || value > maximum) {
@@ -3205,8 +2767,8 @@ class DeyeEnergyCard extends HTMLElement {
       "save_manual_schedule",
       { data: JSON.stringify(this.manualSchedulePayloadRows(rows)) },
       this._manualScheduleActive
-        ? "Manual schedule saved and re-applied to the schedule slots."
-        : "Manual schedule saved. Activate it to apply it to the schedule slots.",
+        ? "Manual schedule saved and re-applied to the six physical TOU ranges."
+        : "Manual schedule saved. Activate it to override the six physical TOU ranges.",
       true,
     );
   }
@@ -3231,7 +2793,7 @@ class DeyeEnergyCard extends HTMLElement {
     return this.runManualScheduleService(
       "activate_manual_schedule",
       {},
-      "Manual schedule activated. Its values are final on the schedule slots until deactivated.",
+      "Manual schedule activated. Its rows override the six physical TOU ranges until deactivated.",
     );
   }
 
@@ -3239,7 +2801,7 @@ class DeyeEnergyCard extends HTMLElement {
     return this.runManualScheduleService(
       "deactivate_manual_schedule",
       {},
-      "Manual schedule deactivated. The scheduler is following the schedule slots again.",
+      "Manual schedule deactivated. The physical TOU ranges are active again.",
     );
   }
 
@@ -3248,7 +2810,7 @@ class DeyeEnergyCard extends HTMLElement {
     const scheduleTabButton = (key, label) => `<button type="button" class="${tab === key ? "active" : ""}" data-schedule-tab="${key}">${label}</button>`;
     const panel = (key, content) => `<div class="schedule-tab-panel" data-schedule-panel="${key}" ${tab === key ? "" : "hidden"}>${content}</div>`;
     const sourceBanner = this.manualScheduleIsActive()
-      ? `<div class="good schedule-source-banner" data-schedule-source-banner>Manual schedule is active — the scheduler is following the manual rows. The stored schedule slots are saved but paused; use Disable here to switch back.</div>`
+      ? `<div class="good schedule-source-banner" data-schedule-source-banner>Manual schedule is active — its rows override the six physical TOU ranges. Use Disable here to return to the physical TOU ranges.</div>`
       : "";
     return `<section class="schedule-shell">
       <div class="schedule-tabs">${scheduleTabButton("manual", "Manual schedule")}${touPanel ? scheduleTabButton("tou", "Deye Time Of Use") : ""}</div>
@@ -3317,7 +2879,7 @@ class DeyeEnergyCard extends HTMLElement {
     return `<div class="schedule-head manual-panel-head">
         <div class="schedule-title">
           <h2>Manual schedule</h2>
-          <p>Define time ranges for each row. The stored schedule slots are saved separately and are not changed here.</p>
+          <p>Define time ranges for each row. The six physical TOU ranges are the baseline; these manual rows override them while the manual schedule is enabled.</p>
         </div>
         <div class="schedule-tools">${toggle}${controlButton}${settingsButton}</div>
       </div>
@@ -3363,8 +2925,9 @@ class DeyeEnergyCard extends HTMLElement {
     </div>`;
   }
 
-  renderTouSettingsContent(slots) {
+  renderTouSettingsContent() {
     const editing = Boolean(this._mappingEditing);
+    const backendPlan = this.mappingPlanDiagnostics();
     const rows = editing ? this.ensureMappingDraft() : this.mappingRowsFromDiagnostics();
     const boundaryField = (row, field) => (field === "start" && Number(row.slot) === 1)
       || (field === "end" && Number(row.slot) === rows.length);
@@ -3424,8 +2987,8 @@ class DeyeEnergyCard extends HTMLElement {
     const blockedHint = this.touControlBlocked() ? `<div class="hint">Deye control is disabled.</div>` : "";
     const pendingHint = this.touWritePending() ? `<div class="hint">Saving Deye Time Of Use</div>` : "";
     const hint = editing
-      ? `<div class="hint">${this.mapWarning(slots)}. Edit the six rows below. The first From and last To are fixed at 00:00; each To follows the next row's From. Save validates that the day starts at 00:00, ends at 00:00 and has no gaps or overlaps.</div>`
-      : `<div class="hint">Values are loaded from the inverter. ${this.mapWarning(slots)}. Use Edit to change TOU slots.</div>`;
+      ? `<div class="hint">${this.mapWarning()}. Edit the six rows below. The first From and last To are fixed at 00:00; each To follows the next row's From. Save validates that the day starts at 00:00, ends at 00:00 and has no gaps or overlaps.</div>`
+      : `<div class="hint">Values are loaded from the inverter. ${this.mapWarning()}. Use Edit to change TOU slots.</div>`;
     const header = `<div class="schedule-head tou-panel-head">
         <div class="schedule-title">
           <h2>Deye Time Of Use</h2>
@@ -3449,55 +3012,6 @@ class DeyeEnergyCard extends HTMLElement {
       ${this.renderTouReverseSyncSummary()}
       ${footer}
       ${message}`;
-  }
-
-  resetBulkEditState() {
-    this._bulkEditDraft = null;
-    this._bulkEditFields = null;
-  }
-
-  updateBulkApplyState() {
-    this.querySelectorAll("[data-apply-multi]").forEach((button) => {
-      button.disabled = this._bulkApplying || !this._selectedSlots?.size;
-      button.setAttribute("aria-busy", this._bulkApplying ? "true" : "false");
-    });
-  }
-
-  async applyMultiEdit(slots) {
-    if (this._bulkApplying) return false;
-    const selected = this.selectedSlotList(slots);
-    if (!selected.length) return false;
-    const form = this.collectBulkEditState();
-    if (!form) return false;
-    const checked = (name) => Boolean(form.fields[name]);
-    const activeValue = form.values.active === "on";
-    const mode = this.normalizeManagerMode(form.values.mode);
-    const sellPower = form.values.sellPower;
-    const minSoc = form.values.minSoc;
-    const minSellPrice = form.values.minSellPrice;
-
-    const updates = selected.map(([key]) => {
-      const update = { slot_key: key };
-      if (checked("sellPower")) update.sell_power = sellPower;
-      if (checked("minSoc")) update.minimum_sell_soc = minSoc;
-      if (checked("minSellPrice")) update.min_sell_price = minSellPrice;
-      if (checked("mode")) update.mode = mode;
-      if (checked("active")) update.enabled = activeValue;
-      return update;
-    });
-    this._bulkApplying = true;
-    this.updateBulkApplyState();
-    if (!await this.applySchedulePatch(updates)) {
-      this._bulkApplying = false;
-      this.updateBulkApplyState();
-      return false;
-    }
-    this._bulkApplying = false;
-    this.resetBulkEditState();
-    this._dialog = null;
-    this.captureScrollPositions();
-    this.render();
-    return true;
   }
 
   stat(label, value, cls = "", liveKey = "", icon = "") {
@@ -3549,20 +3063,6 @@ class DeyeEnergyCard extends HTMLElement {
   clockFromMinutes(minutes) {
     const value = ((Number(minutes) % 1440) + 1440) % 1440;
     return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
-  }
-
-  scheduleSlots() {
-    const stepMinutes = 30;
-    return Array.from({ length: 1440 / stepMinutes }, (_, index) => {
-      const start = index * stepMinutes;
-      const end = start + stepMinutes;
-      const digits = (minutes) => this.clockFromMinutes(minutes).replace(":", "");
-      const key = `${digits(start)}_${digits(end)}`;
-      const label = `${this.clockFromMinutes(start)}-${this.clockFromMinutes(end)}`;
-      const hour = Math.floor(start / 60);
-      const touSlot = hour < 4 ? 1 : hour < 8 ? 2 : hour < 12 ? 3 : hour < 16 ? 4 : hour < 20 ? 5 : 6;
-      return [key, label, touSlot];
-    });
   }
 
   async restoreDefaults() {
@@ -3644,16 +3144,16 @@ class DeyeEnergyCard extends HTMLElement {
     })[raw] || raw;
   }
 
-  slotWorkModes() {
-    return ["Normal Operation", "Selling", "Charging"];
-  }
-
   slotModeLabel(mode) {
     return this.normalizeManagerMode(mode);
   }
 
   slotModeOptions() {
-    return this.slotWorkModes().map((mode) => [mode, this.slotModeLabel(mode)]);
+    return [
+      ["Normal Operation", "Normal Operation"],
+      ["Selling", "Selling"],
+      ["Charging", "Charging"],
+    ];
   }
 
   modeMeta(mode, enabled = true) {
@@ -3725,132 +3225,8 @@ class DeyeEnergyCard extends HTMLElement {
     return `<span class="mode-pill ${meta.cls}">${meta.title}</span>`;
   }
 
-  selectedSlotList(slots) {
-    return slots.filter(([key]) => this._selectedSlots?.has(key));
-  }
-
-  selectedRangeText(slots) {
-    const selected = this.selectedSlotList(slots);
-    if (!selected.length) return "No hours selected";
-    const labels = selected.map(([, label]) => label);
-    if (selected.length === 1) return labels[0];
-    const first = labels[0].slice(0, 5);
-    const last = labels[labels.length - 1].slice(6, 11);
-    return `${first} - ${last}`;
-  }
-
-  bulkValues(slots) {
-    const selected = this.selectedSlotList(slots);
-    const [key, label] = selected[0] || slots[0] || [];
-    if (!key) {
-      return {
-        active: "off",
-        mode: "Selling",
-        sellPower: 0,
-        minimumSellSoc: 0,
-        minSellPrice: 0,
-      };
-    }
-    const entities = this.slotEntities(key, label);
-    return {
-      active: this.displayState(entities.sellEnabled, "off") === "on" ? "on" : "off",
-      mode: this.normalizeManagerMode(this.displayState(entities.mode, "Selling")),
-      sellPower: this.numberState(entities.sellPower, 0),
-      minimumSellSoc: this.numberState(entities.minimumSellSoc, 0),
-      minSellPrice: this.numberState(entities.minSellPrice, 0),
-    };
-  }
-
-  syncBulkPanelValues(slots) {
-    if (!this._selectionMode || !this.selectedSlotList(slots).length || this.isInteracting()) return;
-    const bulk = this.bulkValues(slots);
-    const values = {
-      "multi-active": bulk.active,
-      "multi-mode": bulk.mode,
-      "multi-sell-power": bulk.sellPower,
-      "multi-min-soc": bulk.minimumSellSoc,
-      "multi-min-sell-price": bulk.minSellPrice,
-    };
-    Object.entries(values).forEach(([name, value]) => {
-      this.querySelectorAll(`[data-raw="${name}"]`).forEach((el) => {
-        if (this.ownerDocument?.activeElement !== el) el.value = value;
-      });
-    });
-  }
-
-  scheduleSegments(slots) {
-    const backendPlan = this.mappingPlanDiagnostics();
-    if (backendPlan.length) {
-      return backendPlan.map((item) => ({
-        start: Number(item.start),
-        end: Number(item.end),
-        touSoc: this.asNumber(item.tou_soc),
-        chargeEnabled: Boolean(item.grid_charge),
-      }));
-    }
-    const rows = slots.map(([key, label]) => {
-      const entities = this.slotEntities(key, label);
-      const enabled = this.displayState(entities.sellEnabled) === "on";
-      const mode = enabled ? this.normalizeManagerMode(this.displayState(entities.mode, "Normal Operation")) : "Disabled";
-      const isCharge = enabled && mode === "Charging";
-        const slotTouSoc = this.asNumber(this.numberState(entities.touSoc, ""));
-        const data = {
-          key,
-          label,
-          start: Number(key.slice(0, 2)) * 60 + Number(key.slice(2, 4)),
-          end: key.endsWith("_0000") ? 0 : Number(key.slice(5, 7)) * 60 + Number(key.slice(7, 9)),
-          enabled,
-          mode,
-          sellPower: this.asNumber(this.numberState(entities.sellPower, 0)) || 0,
-          minimumSellSoc: this.asNumber(this.numberState(entities.minimumSellSoc, 0)) || 0,
-          minSellPrice: this.asNumber(this.numberState(entities.minSellPrice, 0)) || 0,
-          // Physical Deye TOU SOC is always tou_soc, independent of the logical mode.
-          touSoc: slotTouSoc,
-          chargeMode: isCharge,
-          chargeEnabled: isCharge && this.displayState(entities.chargeEnabled, "off") === "on",
-        };
-        return data;
-      });
-      // Emergency preview for an older backend. The source of truth is mapping_plan
-      // from the Manager diagnostics, also used for the physical Deye TOU write.
-      // The physical 24h -> 6/6 key is (touSoc, chargeEnabled) only; mode and the
-      // logical sale guard minimumSellSoc never affect the physical mapping.
-      const same = (a, b) => ["touSoc", "chargeEnabled"].every((key) => a[key] === b[key]);
-    const segments = [];
-    rows.forEach((row) => {
-      if (segments.length && same(segments[segments.length - 1], row)) {
-        segments[segments.length - 1].end = row.end;
-      } else {
-        segments.push({ ...row });
-      }
-    });
-    while (segments.length < 6) {
-      let splitIndex = -1;
-      let longest = 0;
-      segments.forEach((segment, index) => {
-        const end = segment.end === 0 ? 1440 : segment.end;
-        const duration = end - segment.start;
-        if (duration > longest && duration > 30) {
-          longest = duration;
-          splitIndex = index;
-        }
-      });
-      if (splitIndex < 0) break;
-      const segment = segments[splitIndex];
-      const end = segment.end === 0 ? 1440 : segment.end;
-      const middle = segment.start + Math.floor((end - segment.start) / 30 / 2) * 30;
-      segments.splice(
-        splitIndex,
-        1,
-        { ...segment, end: middle },
-        { ...segment, start: middle },
-      );
-    }
-    return segments;
-  }
-
-  mapWarning(slots) {
-    const count = this.scheduleSegments(slots).length;
+  mapWarning() {
+    const count = this.mappingSegmentCount();
     const capability = this.fullTouCapability();
     if (capability.ok !== true) {
       return `<span class="bad">No complete Deye Time Of Use mapping</span>`;
@@ -3860,7 +3236,7 @@ class DeyeEnergyCard extends HTMLElement {
     return `<span class="bad">Incomplete mapping: ${count}/6 Deye ranges</span>`;
   }
 
-  renderDialog(slots, touStarts) {
+  renderDialog() {
     if (!this._dialog) return "";
 
     if (this._dialog.type === "settings") {
@@ -3870,7 +3246,7 @@ class DeyeEnergyCard extends HTMLElement {
       if (tab === "tariff") {
         body = this.renderTariffTab();
       } else if (tab === "system") {
-        body = this.renderDiagnostics(slots);
+        body = this.renderDiagnostics();
       }
 
       return `<div class="overlay" data-close-dialog="1">
@@ -3886,73 +3262,7 @@ class DeyeEnergyCard extends HTMLElement {
         </section>
       </div>`;
     }
-
-    if (this._dialog.type === "multi") {
-      const selectedCount = this.selectedSlotList(slots).length;
-      const bulk = this.bulkValues(slots);
-      return `<div class="overlay" data-close-dialog="1">
-        <section class="dialog multi-dialog" data-dialog-box="1">
-          <div class="dialog-head"><strong>Edit selected hours</strong><button type="button" data-close-dialog="1">${this.iconSvg("close")}</button></div>
-          <div class="dialog-body">
-            <div class="range-box">Range: ${this.selectedRangeText(slots)}<br>Number of hours: ${selectedCount}</div>
-            <label class="apply-row"><input type="checkbox" data-apply-field="active" checked> Active ${this.rawSelect("multi-active", [["on", "Yes"], ["off", "No"]], bulk.active)}</label>
-              <label class="apply-row"><input type="checkbox" data-apply-field="mode" checked> Operation mode ${this.rawSelect("multi-mode", this.slotModeOptions(), bulk.mode)}</label>
-            <label class="apply-row"><input type="checkbox" data-apply-field="sellPower" checked> Sell power ${this.rawNumber("multi-sell-power", bulk.sellPower, "W")}</label>
-            <label class="apply-row"><input type="checkbox" data-apply-field="minSoc" checked> Minimum sell SOC ${this.rawNumber("multi-min-soc", bulk.minimumSellSoc, "%")}</label>
-            <label class="apply-row"><input type="checkbox" data-apply-field="minSellPrice" checked> Sell from price ${this.rawNumber("multi-min-sell-price", bulk.minSellPrice, "GBP")}</label>
-            <div class="preview-box"><strong>Preview changes</strong><br>Starting values are taken from the first selected hour. Uncheck any field you do not want to change.</div>
-          </div>
-          <div class="dialog-actions"><button type="button" data-close-dialog="1">Cancel</button><button class="primary" data-apply-multi="1">Apply changes</button></div>
-        </section>
-      </div>`;
-    }
-
-    const slot = slots.find(([key]) => key === this._dialog.key);
-    if (!slot) return "";
-    const [key, label] = slot;
-    this.ensureSlotEditor(key, label);
-    if (this._slotDiscardPrompt) {
-      return `<div class="overlay">
-        <section class="dialog" data-dialog-box="1">
-          <div class="dialog-head"><strong>Unsaved changes</strong></div>
-          <div class="dialog-body"><div class="hint">You have unsaved changes. Are you sure you want to discard them?</div></div>
-          <div class="dialog-actions"><button type="button" data-return-slot-edit="1">Back to editing</button><button class="primary" type="button" data-discard-slot-edit="1">Discard changes</button></div>
-        </section>
-      </div>`;
-    }
-    const draft = this._slotEditDraft.values;
-    const mode = this.normalizeManagerMode(draft.mode || "Normal Operation");
-    const isCharge = mode === "Charging";
-    const isSelling = mode === "Selling";
-    const isNormal = mode === "Normal Operation";
-    const physicalSocLabel = isCharge ? "Target SOC" : "Deye battery SOC (TOU)";
-    const yesNo = [["false", "No"], ["true", "Yes"]];
-    const socField = isSelling
-      ? `${this.row("Stop selling at SOC", this.slotDraftInput("minimum_sell_soc", "%"))}${this.row("Deye TOU SOC / battery reserve", this.slotDraftInput("tou_soc", "%"))}`
-      : this.row(physicalSocLabel, this.slotDraftInput("tou_soc", "%"));
-    const slotFields = `
-          ${isCharge ? '<div class="hint">Charging profile values were filled into the local draft only. They are saved only after choosing "Save".</div>' : ""}
-          ${isCharge ? `<button class="primary" type="button" data-draft-charge-profile="1" style="margin-bottom:8px">Reload charging settings</button>` : ""}
-          ${isNormal ? '<div class="hint">Normal Operation profile values are edited locally until saved.</div>' : ""}
-          ${isNormal ? `<button class="primary" type="button" data-draft-normal-profile="1" style="margin-bottom:8px">Reload Normal Operation settings</button>` : ""}
-          ${isNormal ? this.row("Physical Deye mode", this.slotDraftSelect("physical_work_mode", this.normalProfileModeOptions())) : ""}
-          ${this.row("Sell power", this.slotDraftInput("sell_power", "W"))}
-          ${this.row("Grid charging", this.slotDraftSelect("charge_enabled", yesNo))}
-          ${socField}
-          ${this.row("Sell from price", this.slotDraftInput("min_sell_price", "GBP"))}`;
-    return `<div class="overlay" data-close-dialog="1">
-      <section class="dialog" data-dialog-box="1">
-        <div class="dialog-head"><strong>Hour ${label}</strong><button type="button" data-close-dialog="1">${this.iconSvg("close")}</button></div>
-        <div class="dialog-body">
-          ${this.row("Active", this.slotDraftSelect("enabled", yesNo))}
-          ${this.row("Mode", this.slotDraftSelect("mode", this.slotModeOptions()))}
-          ${slotFields}
-          ${this._slotSaveError ? `<div class="bad" data-slot-save-error>${this.escapeHtml(this._slotSaveError)}</div>` : ""}
-          ${this._slotSaveMessage ? `<div class="hint">${this.escapeHtml(this._slotSaveMessage)}</div>` : ""}
-        </div>
-        <div class="dialog-actions"><button type="button" data-cancel-slot-edit="1" ${this._slotSaving ? "disabled" : ""}>Cancel</button><button class="primary" type="button" data-save-slot-edit="1" ${this._slotSaving ? "disabled" : ""}>${this._slotSaving ? "Saving…" : "Save"}</button></div>
-      </section>
-    </div>`; 
+    return "";
   }
 
   renderV073() {
@@ -3960,7 +3270,6 @@ class DeyeEnergyCard extends HTMLElement {
     this._pendingRender = false;
     this.captureScrollPositions();
 
-    const slots = this.scheduleSlots();
     const sellPriceToday = this.entity("sensor", ["sell_price_today", "energy_price"]);
     const sellPriceTomorrow = this.entity("sensor", "sell_price_tomorrow");
     const buyPriceToday = this.entity("sensor", "buy_price_today");
@@ -3987,13 +3296,6 @@ class DeyeEnergyCard extends HTMLElement {
       ?? this.asNumber(this.state(solcastAccuracy));
     const remainingForecastValue = this.asNumber(solcastAccuracyAttrs.remaining_forecast_kwh);
     const forecastTomorrowValue = this.asNumber(solcastAccuracyAttrs.forecast_tomorrow_kwh);
-
-    const physicalTou = this.physicalTouDiagnostics();
-    const touStarts = [1, 2, 3, 4, 5, 6].map((idx) => {
-      const diagnostic = physicalTou.find((row) => Number(row.range) === idx);
-      const raw = diagnostic?.actual_start || "00:00:00";
-      return String(raw).length >= 5 ? String(raw).slice(0, 5) : String(raw);
-    });
 
     const layout = this.effectiveLayout();
     const dashStyle = [];
@@ -4074,7 +3376,7 @@ class DeyeEnergyCard extends HTMLElement {
             ${solcastSection}
            </div>` : "";
     const scheduleSection = showSchedule
-      ? this.renderScheduleTabs(this.renderManualScheduleTab(), this.renderTouSettingsContent(slots))
+      ? this.renderScheduleTabs(this.renderManualScheduleTab(), this.renderTouSettingsContent())
       : "";
     const salesSection = showSales ? `
            <section class="panel sales-panel"><h2 class="panel-title">${this.iconSvg("chart")} Selling statistics</h2><div data-live-html="sales-stats">${this.salesStatsPanel()}</div></section>` : "";
@@ -4135,26 +3437,20 @@ class DeyeEnergyCard extends HTMLElement {
             ${scheduleSection}
             ${salesSection}
           </div>
-          <div class="dialog-host">${this.renderDialog(slots, touStarts)}</div>
+          <div class="dialog-host">${this.renderDialog()}</div>
       </ha-card>`;
 
-    this._lastSlots = slots;
-    this._lastTouStarts = touStarts;
-    this._scheduleEntityIds = this.scheduleEntityIds(slots);
-    this._lastScheduleSignature = this.scheduleStateSignature();
-
-    this.bindControlsV073(slots);
+    this.bindControlsV073();
     this._isRendered = true;
-    this.syncBulkPanelValues(slots);
     this.restoreScrollPositions();
   }
 
-  bindControlsV073(slots) {
-    this.bindDashboardControls(slots);
-    this.bindDialogControls(slots);
+  bindControlsV073() {
+    this.bindDashboardControls();
+    this.bindDialogControls();
   }
 
-  bindDashboardControls(slots) {
+  bindDashboardControls() {
     const root = this.querySelector(".dem-v073") || this;
     root.querySelectorAll("[data-control-toggle]").forEach((el) => {
       el.addEventListener("click", (event) => {
@@ -4186,42 +3482,6 @@ class DeyeEnergyCard extends HTMLElement {
     root.querySelectorAll("[data-time]").forEach((el) => {
       el.onchange = () => this.setTime(el.dataset.time, el.value);
     });
-    root.querySelectorAll("[data-slot-check]").forEach((el) => {
-      el.addEventListener("click", (event) => event.stopPropagation());
-      el.addEventListener("change", () => {
-        if (!this._selectionMode) this._selectedSlots.clear();
-        if (el.checked) this._selectedSlots.add(el.dataset.slotCheck);
-        else this._selectedSlots.delete(el.dataset.slotCheck);
-        this._selectionMode = true;
-        this.resetBulkEditState();
-        this.render();
-      });
-    });
-    root.querySelectorAll("[data-slot-row]").forEach((el) => el.addEventListener("click", (event) => {
-      if (event.target.closest("button,input,select,label")) return;
-      const key = el.dataset.slotRow;
-      if (this._selectionMode) {
-        if (this._selectedSlots.has(key)) this._selectedSlots.delete(key);
-        else this._selectedSlots.add(key);
-        this.resetBulkEditState();
-        this.render();
-        return;
-      }
-      event.preventDefault();
-      this.captureScrollPositions();
-      const label = slots.find(([slotKey]) => slotKey === key)?.[1] || "";
-      this.openScheduleSlotEditor(key, label, "sell");
-      this.render();
-    }));
-    root.querySelectorAll("[data-open-slot]").forEach((el) => el.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      this.captureScrollPositions();
-      const [type, key] = el.dataset.openSlot.split(":");
-      const label = slots.find(([slotKey]) => slotKey === key)?.[1] || "";
-      this.openScheduleSlotEditor(key, label, type);
-      this.render();
-    }));
     root.querySelectorAll("[data-open-settings]").forEach((el) => el.addEventListener("click", (event) => {
       event.preventDefault();
       this.captureScrollPositions();
@@ -4230,35 +3490,6 @@ class DeyeEnergyCard extends HTMLElement {
       this._dialog = { type: "settings" };
       this.render();
     }));
-    root.querySelectorAll("[data-toggle-selection]").forEach((el) => el.addEventListener("click", () => {
-      this._selectionMode = !this._selectionMode;
-      this._selectedSlots.clear();
-      this.resetBulkEditState();
-      this.render();
-    }));
-    root.querySelectorAll("[data-schedule-select-all]").forEach((el) => el.addEventListener("click", () => {
-      slots.forEach(([key]) => this._selectedSlots.add(key));
-      this._selectionMode = true;
-      this.resetBulkEditState();
-      this.render();
-    }));
-    root.querySelectorAll("[data-schedule-clear]").forEach((el) => el.addEventListener("click", () => {
-      this._selectedSlots.clear();
-      this._dialog = null;
-      this.resetBulkEditState();
-      this.render();
-    }));
-    root.querySelectorAll("[data-open-multi]").forEach((el) => el.addEventListener("click", () => {
-      if (!this.selectedSlotList(slots).length) return;
-      this._selectionMode = true;
-      this.render();
-    }));
-    root.querySelectorAll("[data-apply-field],[data-raw^='multi-']").forEach((el) => {
-      const saveBulkDraft = () => this.collectBulkEditState();
-      el.addEventListener("change", saveBulkDraft);
-      if (el.tagName !== "SELECT" && el.type !== "checkbox") el.addEventListener("input", saveBulkDraft);
-    });
-    root.querySelectorAll("[data-apply-multi]").forEach((el) => el.addEventListener("click", () => this.applyMultiEdit(slots)));
     root.querySelectorAll("[data-schedule-tab]").forEach((el) => el.addEventListener("click", (event) => {
       event.preventDefault();
       const tab = el.dataset.scheduleTab;
@@ -4314,7 +3545,7 @@ class DeyeEnergyCard extends HTMLElement {
     root.querySelectorAll("[data-manual-deactivate]").forEach((el) => el.addEventListener("click", () => this.deactivateManualSchedule()));
   }
 
-  bindDialogControls(slots) {
+  bindDialogControls() {
     const root = this.querySelector(".dialog-host") || this;
     root.querySelectorAll("[data-close-dialog]").forEach((el) => {
       el.addEventListener("click", (event) => {
@@ -4348,26 +3579,6 @@ class DeyeEnergyCard extends HTMLElement {
     root.querySelectorAll("[data-time]").forEach((el) => {
       el.onchange = () => this.setTime(el.dataset.time, el.value);
     });
-    root.querySelectorAll("[data-slot-draft-field]").forEach((el) => {
-      const update = () => {
-        this.updateSlotDraftField(el.dataset.slotDraftField, el.value);
-        if (el.dataset.slotDraftField === "mode") this.renderDialogOnly();
-      };
-      el.addEventListener("change", update);
-      if (el.tagName !== "SELECT") el.addEventListener("input", update);
-    });
-    root.querySelectorAll("[data-save-slot-edit]").forEach((el) => el.addEventListener("click", () => this.saveScheduleSlotDraft()));
-    root.querySelectorAll("[data-cancel-slot-edit]").forEach((el) => el.addEventListener("click", () => this.cancelScheduleSlotEdit()));
-    root.querySelectorAll("[data-discard-slot-edit]").forEach((el) => el.addEventListener("click", () => this.discardScheduleSlotChanges()));
-    root.querySelectorAll("[data-return-slot-edit]").forEach((el) => el.addEventListener("click", () => this.returnToScheduleSlotEditing()));
-    root.querySelectorAll("[data-draft-normal-profile]").forEach((el) => el.addEventListener("click", () => {
-      this.applyProfileToSlotDraft("Normal Operation", true);
-      this.renderDialogOnly();
-    }));
-    root.querySelectorAll("[data-draft-charge-profile]").forEach((el) => el.addEventListener("click", () => {
-      this.applyProfileToSlotDraft("Charging", true);
-      this.renderDialogOnly();
-    }));
     root.querySelectorAll("[data-settings-tab]").forEach((el) => el.addEventListener("click", () => {
       this._settingsTab = el.dataset.settingsTab;
       this._tariffDraft = null;
@@ -4396,17 +3607,7 @@ class DeyeEnergyCard extends HTMLElement {
       }
       this.render();
     }));
-    root.querySelectorAll("[data-apply-multi]").forEach((el) => el.addEventListener("click", () => this.applyMultiEdit(slots)));
     root.querySelectorAll("[data-action='apply-defaults']").forEach((el) => el.addEventListener("click", () => this.restoreDefaults()));
-    root.querySelectorAll("[data-action='select-all']").forEach((el) => el.addEventListener("click", () => {
-      slots.forEach(([key]) => this._selectedSlots.add(key));
-      this._selectionMode = true;
-      this.renderDialogOnly();
-    }));
-    root.querySelectorAll("[data-action='clear-selected']").forEach((el) => el.addEventListener("click", () => {
-      this._selectedSlots.clear();
-      this.renderDialogOnly();
-    }));
     root.querySelectorAll("[data-resume-manager]").forEach((el) => el.addEventListener("click", () => {
       if (window.confirm("Enable the Manager and schedule? This will not enable a grid-charge schedule.")) this.resumeManager();
     }));
@@ -4443,12 +3644,11 @@ class DeyeEnergyCard extends HTMLElement {
   }
 
   renderDialogOnly() {
-    if (!this._lastSlots) return;
     const host = this.querySelector(".dialog-host");
     if (!host) return;
     this.captureScrollPositions();
-    host.innerHTML = this.renderDialog(this._lastSlots, this._lastTouStarts);
-    this.bindDialogControls(this._lastSlots);
+    host.innerHTML = this.renderDialog();
+    this.bindDialogControls();
     this.restoreScrollPositions();
   }
 
@@ -7151,7 +6351,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.1.0",
+  description: "Deye Energy 0.8.1.01",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",
