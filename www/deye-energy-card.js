@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.1.02
+// Resource revision: v=0.8.1.03
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -1690,7 +1690,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.1.02 (resource revision v=0.8.1.02)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.1.03 (resource revision v=0.8.1.03)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -4836,7 +4836,6 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
       const draft = this.powerFlowDraft();
       draft.layout = el.value === "left_right" ? "left_right" : "cross";
       this._powerFlowDraftDirty = true;
-      this._render();
     }));
     this.querySelectorAll("[data-pf-add-detail]").forEach((el) => el.addEventListener("click", () => {
       const group = el.dataset.pfAddDetail;
@@ -6231,10 +6230,10 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       ? { pv:[220,240], grid:[220,760], inv:[600,500], home:[980,760], batt:[980,240] }
       : { pv:[600,188.5], grid:[254.5,470], inv:[600,470], home:[945.5,470], batt:[600,825.5] };
     const PF_BOUNDS = {
-      left: Math.min(N.pv[0]-SZ.pv.w/2-HALO_PAD, N.grid[0]-SZ.grid.w/2-HALO_PAD, N.inv[0]-RING_R-RING_SW/2),
-      right: Math.max(N.home[0]+SZ.home.w/2+HALO_PAD, N.batt[0]+SZ.batt.w/2+HALO_PAD, N.inv[0]+RING_R+RING_SW/2),
-      top: Math.min(N.pv[1]-SZ.pv.h/2-HALO_PAD, N.batt[1]-SZ.batt.h/2-HALO_PAD, N.inv[1]-RING_R-RING_SW/2),
-      bottom: Math.max(N.grid[1]+SZ.grid.h/2+HALO_PAD, N.home[1]+SZ.home.h/2+HALO_PAD, N.inv[1]+RING_R+RING_SW/2),
+      left: Math.min(N.pv[0]-SZ.pv.w/2-HALO_PAD, N.grid[0]-SZ.grid.w/2-HALO_PAD, N.inv[0]-RING_R-RING_SW/2, N.batt[0]-SZ.batt.w/2-HALO_PAD),
+      right: Math.max(N.home[0]+SZ.home.w/2+HALO_PAD, N.batt[0]+SZ.batt.w/2+HALO_PAD, N.inv[0]+RING_R+RING_SW/2, N.pv[0]+SZ.pv.w/2+HALO_PAD, N.grid[0]+SZ.grid.w/2+HALO_PAD),
+      top: Math.min(N.pv[1]-SZ.pv.h/2-HALO_PAD, N.batt[1]-SZ.batt.h/2-HALO_PAD, N.inv[1]-RING_R-RING_SW/2, N.home[1]-SZ.home.h/2-HALO_PAD, N.grid[1]-SZ.grid.h/2-HALO_PAD),
+      bottom: Math.max(N.grid[1]+SZ.grid.h/2+HALO_PAD, N.home[1]+SZ.home.h/2+HALO_PAD, N.inv[1]+RING_R+RING_SW/2, N.batt[1]+SZ.batt.h/2+HALO_PAD, N.pv[1]+SZ.pv.h/2+HALO_PAD),
     };
     const PF_SCALE = (W - PF_MARGIN * 2) / (PF_BOUNDS.right - PF_BOUNDS.left);
     const PF_TX = PF_MARGIN - PF_BOUNDS.left * PF_SCALE;
@@ -6447,7 +6446,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.1.02",
+  description: "Deye Energy 0.8.1.03",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

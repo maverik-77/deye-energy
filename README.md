@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.1.02-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.1.03-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -14,12 +14,13 @@ statistics in a family of Lovelace cards. It is adapted to a Deye inverter
 exposed through MQTT (the Sunsynk / Deye add-on profile) and to a UK-style
 tariff.
 
-> **Release 0.8.1.02:** adds configurable Power Flow layout (`cross` or
-> `left_right`) selectable in Inverter Configuration > Power Flow, with curved
-> connections in left-right mode and the same glow-ball logic. Manual Schedule
-> remains independent from physical Deye TOU (whole-minute `HH:MM`, full 24h
-> coverage, no auto-write to physical TOU), and the unused stored 48-slot model
-> remains removed.
+> **Release 0.8.1.03:** fixes Power Flow cross-layout clipping (Battery no
+> longer cut off), makes the Power Flow layout selector stable, and keeps layout
+> changes persisted through **Save power flow mapping**. Configurable Power Flow
+> layout (`cross` / `left_right`) remains available in Inverter Configuration >
+> Power Flow, with curved left-right links and the same glow-ball logic. Manual
+> Schedule remains independent from physical Deye TOU and the unused stored
+> 48-slot model remains removed.
 
 ## Key features
 
@@ -231,7 +232,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.1.02
+    - url: /deye_energy/deye-energy-card.js?v=0.8.1.03
       type: module
 ```
 

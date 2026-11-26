@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0 — installation and upgrade
 
-This guide covers a first installation and an upgrade of Deye Energy 0.8.1.02.
+This guide covers a first installation and an upgrade of Deye Energy 0.8.1.03.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 ## 1. Before you start
@@ -44,7 +44,7 @@ integration registers the bundled card resource by itself; nothing to add.
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.1.02
+    - url: /deye_energy/deye-energy-card.js?v=0.8.1.03
       type: module
 ```
 
@@ -55,7 +55,7 @@ type: custom:deye-energy-card
 ```
 
 A sample dashboard is in `dashboard/energy_manager.yaml` (card revision
-`v=0.8.1.02`). After an upgrade, hard-refresh the browser (or clear the app
+`v=0.8.1.03`). After an upgrade, hard-refresh the browser (or clear the app
 cache) so that the new card revision is loaded.
 
 ## 5. First-run checklist
@@ -74,18 +74,16 @@ cache) so that the new card revision is loaded.
 1. Back up Home Assistant.
 2. Update through HACS (or replace the folder) and restart.
 3. Hard-refresh the browser. The resource revision is updated automatically in
-   UI/storage mode; in YAML mode change `v=` to `0.8.1.02`.
+   UI/storage mode; in YAML mode change `v=` to `0.8.1.03`.
 
-**0.8.1.02 behavior update — Power Flow layout + Manual Schedule/TOU.** Power
-Flow layout is configurable in Inverter Configuration > Power Flow (`cross` or
-`left_right`, default `cross`); left-right uses curved links and the same
-glow-ball logic. Manual Schedule remains independent from physical Deye TOU: any
-number of whole-minute `HH:MM` rows covering 24 hours are accepted, and only an
-active Manual Schedule triggers integration-controlled timed application.
-Physical Deye TOU is direct inverter editing/baseline (six physical ranges) and
-is not auto-triggered by the integration. The removed 48-slot stored-slot model
-and `deye_energy.apply_schedule_patch` remain removed with no compatibility
-aliases.
+**0.8.1.03 behavior update — Power Flow layout fixes.** Power Flow cross
+layout bounds now include all nodes so Battery is no longer clipped. The layout
+dropdown in Inverter Configuration > Power Flow no longer re-renders on change;
+select the layout and click **Save power flow mapping** to persist it. Configurable
+Power Flow layout (`cross` / `left_right`, default `cross`) remains available,
+with left-right curved links and the same glow-ball logic. Manual Schedule
+remains independent from physical Deye TOU and the removed 48-slot stored-slot
+model / `deye_energy.apply_schedule_patch` remain removed.
 
 ## 7. Uninstall
 

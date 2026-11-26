@@ -4,6 +4,17 @@ All notable changes to Deye Energy. Versions before 0.8.0 are the history of the
 upstream Deye Energy Manager project and are not repeated here. Attribution is
 recorded at the bottom of README.md.
 
+## [0.8.1.03] - 2026-11-26
+
+### Fixed
+
+- **Power Flow cross layout clipping**: expanded Power Flow bounds calculation to include all node extents in cross and left-right layouts, preventing the Battery node from being cut off in cross mode.
+- **Power Flow layout selector behavior**: changing the Power Flow layout dropdown in Inverter Configuration no longer forces an immediate re-render, avoiding jumpy selection behavior. The selected layout is saved when **Save power flow mapping** is clicked and then reflected by the Power Flow display configuration.
+
+### Changed
+
+- **Documentation and versioning**: bumped integration/card/resource revision to `0.8.1.03` and updated README/INSTALL/CHANGELOG to describe the Power Flow layout fixes.
+
 ## [0.8.1.02] - 2026-11-26
 
 ### Added
