@@ -5,6 +5,19 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+def _read_all_card_sources():
+    root = Path(__file__).resolve().parents[1]
+    files = [
+        "custom_components/deye_energy/www/deye-energy-card.js",
+        "custom_components/deye_energy/www/deye-energy-main-card.js",
+        "custom_components/deye_energy/www/deye-energy-inverter-config-card.js",
+        "custom_components/deye_energy/www/deye-energy-trigger-logs-card.js",
+        "custom_components/deye_energy/www/deye-energy-graphs-card.js",
+        "custom_components/deye_energy/www/deye-energy-power-flow-card.js",
+    ]
+    return "\n".join((root / f).read_text(encoding="utf-8") for f in files)
+
 NUMBER_SOURCE = (ROOT / "custom_components" / "deye_energy" / "number.py").read_text(encoding="utf-8")
 SWITCH_SOURCE = (ROOT / "custom_components" / "deye_energy" / "switch.py").read_text(encoding="utf-8")
 SENSOR_SOURCE = (ROOT / "custom_components" / "deye_energy" / "sensor.py").read_text(encoding="utf-8")
@@ -174,10 +187,11 @@ class ProfileHelperEntityContractTests(unittest.TestCase):
 
     def test_card_js_copy_matches_www_root(self):
         """The Lovelace card must be byte-identical in both delivery locations."""
-        component_copy = ROOT / "custom_components" / "deye_energy" / "www" / "deye-energy-card.js"
-        root_copy = ROOT / "www" / "deye-energy-card.js"
-        self.assertEqual(component_copy.read_bytes(), root_copy.read_bytes())
-        self.assertIn("inverter_max_power_w", component_copy.read_text(encoding="utf-8"))
+        for f in ["deye-energy-card.js","deye-energy-main-card.js","deye-energy-inverter-config-card.js","deye-energy-trigger-logs-card.js","deye-energy-graphs-card.js","deye-energy-power-flow-card.js"]:
+            component_copy = ROOT / "custom_components" / "deye_energy" / "www" / f
+            root_copy = ROOT / "www" / f
+            self.assertEqual(component_copy.read_bytes(), root_copy.read_bytes(), f)
+        self.assertIn("inverter_max_power_w", _read_all_card_sources())
 
 
 if __name__ == "__main__":

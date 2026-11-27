@@ -16,8 +16,8 @@ global.customElements = { define: () => {} };
 
 const componentCard = path.join(__dirname, "..", "custom_components", "deye_energy", "www", "deye-energy-card.js");
 const rootCard = path.join(__dirname, "..", "www", "deye-energy-card.js");
-const source = fs.readFileSync(componentCard, "utf8");
-eval(source + "\nglobal.DeyeEnergyCard = DeyeEnergyCard;");
+const source = ["deye-energy-card.js","deye-energy-main-card.js","deye-energy-inverter-config-card.js","deye-energy-trigger-logs-card.js","deye-energy-graphs-card.js","deye-energy-power-flow-card.js"].map(f=>fs.readFileSync(path.join(__dirname,"..","custom_components","deye_energy","www",f),"utf8")).join("\n");
+eval(loadDeyeCardClass("DeyeEnergyCard") + "\nglobal.DeyeEnergyCard = DeyeEnergyCard;");
 
 let failures = 0;
 function assertTrue(value, message) {
@@ -330,7 +330,35 @@ function test_both_card_copies_remain_identical() {
   assertEqual(fs.readFileSync(componentCard), fs.readFileSync(rootCard), "both card copies must remain identical");
 }
 
+function loadDeyeCardSource(file = "deye-energy-card.js") {
+  const fs = require("fs");
+  const path = require("path");
+  const src = fs.readFileSync(path.join(__dirname, "..", "custom_components", "deye_energy", "www", file), "utf8");
+  if (file === "deye-energy-card.js" && src.includes("import {")) {
+    return src.replace(/import \{ (\w+) \} from "\.\/(.*?)\?v=[^"]+";/g, (_, cls, mod) => {
+      return fs.readFileSync(path.join(__dirname, "..", "custom_components", "deye_energy", "www", mod), "utf8").replace(/^\/\/ Resource revision:.*\n/, "").replace(/^export class /m, "class ");
+    });
+  }
+  if (/^deye-energy-.*-card\.js$/.test(file)) {
+    return src.replace(/^\/\/ Resource revision:.*\n/, "").replace(/^export class /m, "class ");
+  }
+  return src;
+}
+
+function loadDeyeCardClass(className) {
+  const map = {
+    DeyeEnergyCard: "deye-energy-main-card.js",
+    DeyeEnergyInverterConfigCard: "deye-energy-inverter-config-card.js",
+    DeyeEnergyTriggerLogsCard: "deye-energy-trigger-logs-card.js",
+    DeyeEnergyGraphsCard: "deye-energy-graphs-card.js",
+    DeyeEnergyPowerFlowCard: "deye-energy-power-flow-card.js",
+  };
+  const src = loadDeyeCardSource(map[className] || "deye-energy-card.js").replace(/^export class /m, "class ");
+  return src;
+}
+
 const tests = [
+
   test_tou_table_is_inline_editable_without_overlay_controls,
   test_tou_table_has_header_tools_and_bottom_save,
   test_tou_table_explains_full_day_validation,

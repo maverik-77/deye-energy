@@ -1,14 +1,12 @@
 const fs = require("fs");
+const path = require("path");
 const vm = require("vm");
 
-const source = fs.readFileSync(
-  "custom_components/deye_energy/www/deye-energy-card.js",
-  "utf8",
-);
+const source = loadDeyeCardClass("DeyeEnergyCard");
 const sandbox = {
   console,
   HTMLElement: class {},
-  customElements: { define() {} },
+  customElements: { _defs:{}, get(n){return this._defs[n];}, define(n,c){this._defs[n]=c;} },
   setTimeout,
   clearTimeout,
 };
@@ -21,6 +19,33 @@ function check(condition, message) {
 }
 
 const card = new sandbox.Card();
+
+function loadDeyeCardSource(file = "deye-energy-card.js") {
+  const fs = require("fs");
+  const path = require("path");
+  const src = fs.readFileSync(path.join(__dirname, "..", "custom_components", "deye_energy", "www", file), "utf8");
+  if (file === "deye-energy-card.js" && src.includes("import {")) {
+    return src.replace(/import \{ (\w+) \} from "\.\/(.*?)\?v=[^"]+";/g, (_, cls, mod) => {
+      return fs.readFileSync(path.join(__dirname, "..", "custom_components", "deye_energy", "www", mod), "utf8").replace(/^\/\/ Resource revision:.*\n/, "").replace(/^export class /m, "class ");
+    });
+  }
+  if (/^deye-energy-.*-card\.js$/.test(file)) {
+    return src.replace(/^\/\/ Resource revision:.*\n/, "").replace(/^export class /m, "class ");
+  }
+  return src;
+}
+function loadDeyeCardClass(className) {
+  const map = {
+    DeyeEnergyCard: "deye-energy-main-card.js",
+    DeyeEnergyInverterConfigCard: "deye-energy-inverter-config-card.js",
+    DeyeEnergyTriggerLogsCard: "deye-energy-trigger-logs-card.js",
+    DeyeEnergyGraphsCard: "deye-energy-graphs-card.js",
+    DeyeEnergyPowerFlowCard: "deye-energy-power-flow-card.js",
+  };
+  const src = loadDeyeCardSource(map[className] || "deye-energy-card.js").replace(/^export class /m, "class ");
+  return src;
+}
+
 // Issue #2: static layout contract at the required representative widths.
 for (const mode of ["auto", "full"]) {
   card.config = {
@@ -57,7 +82,7 @@ check(card.asNumber("12 / 24") === null, "multiple numeric fragments must be rej
 check(card.formatNumber("unknown", 1) === "missing", "unknown must be displayed as missing");
 check(card.formatNumber("unavailable", 1) === "missing", "unavailable must be displayed as missing");
 check(card.formatNumber(0, 1) === "0.0", "a real zero must still be displayed as zero");
-check(/^\/\/ Resource revision: v=\d+\.\d+\.\d+(\.\d+)?\n/.test(source), "resource revision header missing/invalid");
+check(/^\/\/ Resource revision: v=\d+\.\d+\.\d+(\.\d+)?\n/.test(fs.readFileSync(path.join(__dirname,"..","custom_components","deye_energy","www","deye-energy-main-card.js"),"utf8")), "resource revision header missing/invalid");
 check(!source.includes("deye_inverter_time_of_use_"), "card must not hardcode the legacy TOU prefix");
 
 console.log("Stage 5G.4K.5 card parser checks passed");

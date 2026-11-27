@@ -1,8 +1,9 @@
 const fs = require("fs");
+const path = require("path");
 const vm = require("vm");
 
-const source = fs.readFileSync("custom_components/deye_energy/www/deye-energy-card.js", "utf8");
-const sandbox = { console, HTMLElement: class {}, customElements: { define() {} }, setTimeout, clearTimeout };
+const source = loadDeyeCardClass("DeyeEnergyCard");
+const sandbox = { console, HTMLElement: class {}, customElements: { _defs:{}, get(n){return this._defs[n];}, define(n,c){this._defs[n]=c;} }, setTimeout, clearTimeout };
 sandbox.window = sandbox;
 vm.createContext(sandbox);
 vm.runInContext(`${source}\nthis.Card = DeyeEnergyCard;`, sandbox);
@@ -70,6 +71,33 @@ check(buy[0].get(7) === 0.31 && buy[1].get(7) === 0.32, "BUY days must remain in
 check(sell[0].get(7) === 0.81 && sell[1].get(7) === 0.82, "SELL must remain independent from BUY");
 
 const html = card.renderPriceDiagnostics({ price_diagnostics: canonical, price_contracts: {} });
+
+function loadDeyeCardSource(file = "deye-energy-card.js") {
+  const fs = require("fs");
+  const path = require("path");
+  const src = fs.readFileSync(path.join(__dirname, "..", "custom_components", "deye_energy", "www", file), "utf8");
+  if (file === "deye-energy-card.js" && src.includes("import {")) {
+    return src.replace(/import \{ (\w+) \} from "\.\/(.*?)\?v=[^"]+";/g, (_, cls, mod) => {
+      return fs.readFileSync(path.join(__dirname, "..", "custom_components", "deye_energy", "www", mod), "utf8").replace(/^\/\/ Resource revision:.*\n/, "").replace(/^export class /m, "class ");
+    });
+  }
+  if (/^deye-energy-.*-card\.js$/.test(file)) {
+    return src.replace(/^\/\/ Resource revision:.*\n/, "").replace(/^export class /m, "class ");
+  }
+  return src;
+}
+function loadDeyeCardClass(className) {
+  const map = {
+    DeyeEnergyCard: "deye-energy-main-card.js",
+    DeyeEnergyInverterConfigCard: "deye-energy-inverter-config-card.js",
+    DeyeEnergyTriggerLogsCard: "deye-energy-trigger-logs-card.js",
+    DeyeEnergyGraphsCard: "deye-energy-graphs-card.js",
+    DeyeEnergyPowerFlowCard: "deye-energy-power-flow-card.js",
+  };
+  const src = loadDeyeCardSource(map[className] || "deye-energy-card.js").replace(/^export class /m, "class ");
+  return src;
+}
+
 check(html.includes("Resolver for mapped entities"), "resolver diagnostics heading missing");
 check(html.includes("sensor.old_buy") && html.includes("sensor.moja_cena"), "mapped/resolved rename status must be visible");
 check(html.includes("octopus_rates_v1") && html.includes("octopus_rates_v1"), "resolved schemas must be visible");
@@ -77,5 +105,5 @@ check(html.includes("rates") && html.includes("rates"), "Octopus Energy list att
 check(html.includes("24/24"), "coverage must be visible");
 check(!html.includes("stable-entry") && !html.includes("config_entry_id"), "technical registry IDs must stay hidden");
 check(source.includes("The frontend does not read or guess the schema"), "backend-only parsing contract missing");
-check(/^\/\/ Resource revision: v=\d+\.\d+\.\d+(\.\d+)?\n/.test(source), "resource revision header missing/invalid");
+check(/^\/\/ Resource revision: v=\d+\.\d+\.\d+(\.\d+)?\n/.test(fs.readFileSync(path.join(__dirname,"..","custom_components","deye_energy","www","deye-energy-main-card.js"),"utf8")), "resource revision header missing/invalid");
 console.log("stage5g4k3a card contract OK");

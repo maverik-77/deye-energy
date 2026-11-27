@@ -16,7 +16,7 @@ global.customElements = { define: () => {} };
 
 const componentCard = path.join(__dirname, "..", "custom_components", "deye_energy", "www", "deye-energy-card.js");
 const rootCard = path.join(__dirname, "..", "www", "deye-energy-card.js");
-eval(fs.readFileSync(componentCard, "utf8") + "\nglobal.DeyeEnergyCard = DeyeEnergyCard;");
+eval(loadDeyeCardClass("DeyeEnergyCard") + "\nglobal.DeyeEnergyCard = DeyeEnergyCard;");
 
 let failures = 0;
 function assertTrue(value, message) {
@@ -334,10 +334,41 @@ function test_tou_table_renders_editable_fields_and_fixed_boundaries() {
 }
 
 function test_both_card_copies_remain_identical() {
-  assertTrue(fs.readFileSync(componentCard).equals(fs.readFileSync(rootCard)), "both card copies must remain identical");
+  for (const f of ["deye-energy-card.js","deye-energy-main-card.js","deye-energy-inverter-config-card.js","deye-energy-trigger-logs-card.js","deye-energy-graphs-card.js","deye-energy-power-flow-card.js"]) {
+    assertTrue(fs.readFileSync(path.join(__dirname,"..","custom_components","deye_energy","www",f)).equals(fs.readFileSync(path.join(__dirname,"..","www",f))), `both card copies must remain identical: ${f}`);
+  }
+}
+
+function loadDeyeCardSource(file = "deye-energy-card.js") {
+  const fs = require("fs");
+  const path = require("path");
+  const src = fs.readFileSync(path.join(__dirname, "..", "custom_components", "deye_energy", "www", file), "utf8");
+  if (file === "deye-energy-card.js" && src.includes("import {")) {
+    return src.replace(/import \{ (\w+) \} from "\.\/(.*?)\?v=[^"]+";/g, (_, cls, mod) => {
+      return fs.readFileSync(path.join(__dirname, "..", "custom_components", "deye_energy", "www", mod), "utf8").replace(/^\/\/ Resource revision:.*\n/, "").replace(/^export class /m, "class ");
+    });
+  }
+  if (/^deye-energy-.*-card\.js$/.test(file)) {
+    return src.replace(/^\/\/ Resource revision:.*\n/, "").replace(/^export class /m, "class ");
+  }
+  return src;
+}
+
+function loadDeyeCardClass(className) {
+  const map = {
+    DeyeEnergyCard: "deye-energy-main-card.js",
+    DeyeEnergyInverterConfigCard: "deye-energy-inverter-config-card.js",
+    DeyeEnergyTriggerLogsCard: "deye-energy-trigger-logs-card.js",
+    DeyeEnergyGraphsCard: "deye-energy-graphs-card.js",
+    DeyeEnergyPowerFlowCard: "deye-energy-power-flow-card.js",
+  };
+  const src = loadDeyeCardSource(map[className] || "deye-energy-card.js").replace(/^export class /m, "class ");
+  return src;
 }
 
 const tests = [
+
+
   test_mapping_rows_come_from_live_inverter_states,
   test_mapping_refresh_collects_only_present_physical_entity_ids,
   test_mapping_refresh_forces_update_and_rebuilds_draft,

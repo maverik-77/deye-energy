@@ -5,6 +5,19 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+def _read_all_card_sources():
+    root = Path(__file__).resolve().parents[1]
+    files = [
+        "custom_components/deye_energy/www/deye-energy-card.js",
+        "custom_components/deye_energy/www/deye-energy-main-card.js",
+        "custom_components/deye_energy/www/deye-energy-inverter-config-card.js",
+        "custom_components/deye_energy/www/deye-energy-trigger-logs-card.js",
+        "custom_components/deye_energy/www/deye-energy-graphs-card.js",
+        "custom_components/deye_energy/www/deye-energy-power-flow-card.js",
+    ]
+    return "\n".join((root / f).read_text(encoding="utf-8") for f in files)
+
 CARD_PATHS = (
     ROOT / "custom_components" / "deye_energy" / "www" / "deye-energy-card.js",
     ROOT / "www" / "deye-energy-card.js",
@@ -47,7 +60,7 @@ def extract_between(source: str, start_signature: str, end_signature: str) -> st
 class FrontendDefaultRestoreTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.sources = [path.read_text(encoding="utf-8") for path in CARD_PATHS]
+        cls.sources = [_read_all_card_sources()]
 
     def test_distributed_card_copies_are_identical(self):
         self.assertEqual(CARD_PATHS[0].read_bytes(), CARD_PATHS[1].read_bytes())

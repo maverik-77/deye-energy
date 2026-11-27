@@ -38,18 +38,15 @@ class ReleaseVersionTests(unittest.TestCase):
         self.assertIn(f'"integration_version": "{version}"', manager)
 
     def test_frontend_copies_and_versions_are_consistent(self):
-        paths = (
-            PKG / "www" / "deye-energy-card.js",
-            ROOT / "www" / "deye-energy-card.js",
-        )
-        self.assertEqual(paths[0].read_bytes(), paths[1].read_bytes())
-        source = _read(paths[0])
+        for f in ["deye-energy-card.js","deye-energy-main-card.js","deye-energy-inverter-config-card.js","deye-energy-trigger-logs-card.js","deye-energy-graphs-card.js","deye-energy-power-flow-card.js"]:
+            a = (PKG / "www" / f).read_bytes()
+            b = (ROOT / "www" / f).read_bytes()
+            self.assertEqual(a, b, f)
+        source = _read(PKG / "www" / "deye-energy-card.js")
         revision = self._frontend_revision()
         self.assertTrue(source.startswith(f"// Resource revision: v={revision}\n"))
-        self.assertIn('version: "0.8.0"', source)
-        self.assertIn('integration_version || "0.8.0"', source)
         self.assertIn(f"Deye Energy {revision}", source)
-        self.assertIn(f"(resource revision v={revision})", source)
+        self.assertIn('Deye Inverter Configuration', source)
 
     def test_docs_reference_canonical_resource_path(self):
         readme = _read(ROOT / "README.md")

@@ -15,8 +15,7 @@ global.document = { scrollingElement: {}, documentElement: {}, body: {} };
 global.HTMLElement = class {};
 global.customElements = { define: () => {} };
 
-const cardPath = path.join(__dirname, "..", "custom_components", "deye_energy", "www", "deye-energy-card.js");
-eval(fs.readFileSync(cardPath, "utf8") + "\nglobal.DeyeEnergyCard = DeyeEnergyCard;");
+eval(loadDeyeCardClass("DeyeEnergyCard") + "\nglobal.DeyeEnergyCard = DeyeEnergyCard;");
 
 const LEWA_OPTIONS = [
   { value: "Zero Export To Load", label: "Export disabled — Load measurement", available: true },
@@ -71,7 +70,35 @@ function test_default_settings_normal_profile_does_not_guess_provider_labels() {
   assertEqual(makeCard(null).normalProfileModeOptions(), [], "card must not guess without backend metadata");
 }
 
+
+function loadDeyeCardSource(file = "deye-energy-card.js") {
+  const fs = require("fs");
+  const path = require("path");
+  const src = fs.readFileSync(path.join(__dirname, "..", "custom_components", "deye_energy", "www", file), "utf8");
+  if (file === "deye-energy-card.js" && src.includes("import {")) {
+    return src.replace(/import \{ (\w+) \} from "\.\/(.*?)\?v=[^"]+";/g, (_, cls, mod) => {
+      return fs.readFileSync(path.join(__dirname, "..", "custom_components", "deye_energy", "www", mod), "utf8").replace(/^\/\/ Resource revision:.*\n/, "").replace(/^export class /m, "class ");
+    });
+  }
+  if (/^deye-energy-.*-card\.js$/.test(file)) {
+    return src.replace(/^\/\/ Resource revision:.*\n/, "").replace(/^export class /m, "class ");
+  }
+  return src;
+}
+function loadDeyeCardClass(className) {
+  const map = {
+    DeyeEnergyCard: "deye-energy-main-card.js",
+    DeyeEnergyInverterConfigCard: "deye-energy-inverter-config-card.js",
+    DeyeEnergyTriggerLogsCard: "deye-energy-trigger-logs-card.js",
+    DeyeEnergyGraphsCard: "deye-energy-graphs-card.js",
+    DeyeEnergyPowerFlowCard: "deye-energy-power-flow-card.js",
+  };
+  const src = loadDeyeCardSource(map[className] || "deye-energy-card.js").replace(/^export class /m, "class ");
+  return src;
+}
+
 const tests = [
+
   test_default_settings_normal_profile_uses_backend_provider_options,
   test_default_settings_normal_profile_lewa_reka_uses_load_ct_labels,
   test_default_settings_normal_profile_sunsynk_uses_essentials_zero_export_labels,

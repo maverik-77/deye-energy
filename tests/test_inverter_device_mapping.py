@@ -5,6 +5,19 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+def _read_all_card_sources():
+    root = Path(__file__).resolve().parents[1]
+    files = [
+        "custom_components/deye_energy/www/deye-energy-card.js",
+        "custom_components/deye_energy/www/deye-energy-main-card.js",
+        "custom_components/deye_energy/www/deye-energy-inverter-config-card.js",
+        "custom_components/deye_energy/www/deye-energy-trigger-logs-card.js",
+        "custom_components/deye_energy/www/deye-energy-graphs-card.js",
+        "custom_components/deye_energy/www/deye-energy-power-flow-card.js",
+    ]
+    return "\n".join((root / f).read_text(encoding="utf-8") for f in files)
+
 CONFIG_FLOW = ROOT / "custom_components" / "deye_energy" / "config_flow.py"
 PROVIDER = ROOT / "custom_components" / "deye_energy" / "inverter_provider.py"
 CARD_SOURCE = ROOT / "custom_components" / "deye_energy" / "www" / "deye-energy-card.js"
@@ -96,7 +109,7 @@ class InverterDeviceMappingSourceTests(unittest.TestCase):
 
 class CardSourceContractTests(unittest.TestCase):
     def test_card_source_has_no_global_tou_dependency(self):
-        source = CARD_SOURCE.read_text(encoding="utf-8")
+        source = _read_all_card_sources()
         self.assertNotIn("tou_enable_entity", source)
         self.assertIsNone(re.search(r"switch\.deye_inverter_time_of_use\b", source))
         self.assertIsNone(re.search(r"\buse_timer\b", source))
@@ -105,7 +118,7 @@ class CardSourceContractTests(unittest.TestCase):
 
     def test_card_source_copies_are_identical(self):
         self.assertEqual(
-            hashlib.sha256(CARD_SOURCE.read_bytes()).hexdigest(),
+            hashlib.sha256((ROOT / "custom_components/deye_energy/www/deye-energy-card.js").read_bytes()).hexdigest(),
             hashlib.sha256(CARD_COPY.read_bytes()).hexdigest(),
         )
 

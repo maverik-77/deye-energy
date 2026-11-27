@@ -1,8 +1,8 @@
 const fs = require("fs");
 const vm = require("vm");
 
-const source = fs.readFileSync("custom_components/deye_energy/www/deye-energy-card.js", "utf8");
-const sandbox = { console, HTMLElement: class {}, customElements: { define() {} }, setTimeout, clearTimeout };
+const source = loadDeyeCardSource("deye-energy-card.js");
+const sandbox = { console, HTMLElement: class {}, customElements: { _defs:{}, get(n){return this._defs[n];}, define(n,c){this._defs[n]=c;} }, setTimeout, clearTimeout };
 sandbox.window = sandbox;
 vm.createContext(sandbox);
 vm.runInContext(`${source}\nthis.Card = DeyeEnergyCard;`, sandbox);
@@ -65,6 +65,33 @@ check(selected.includes("validity:"), "manual update status must show current va
 card._tariffDraft = { tariff_plan: "flexible", buy_seller_id: "octopus" };
 card.tariffData = () => data({ today_entity: "", tomorrow_entity: "", source_adapter: "generic" }, "octopus");
 const unsupported = card.renderTariffTab();
+
+function loadDeyeCardSource(file = "deye-energy-card.js") {
+  const fs = require("fs");
+  const path = require("path");
+  const src = fs.readFileSync(path.join(__dirname, "..", "custom_components", "deye_energy", "www", file), "utf8");
+  if (file === "deye-energy-card.js" && src.includes("import {")) {
+    return src.replace(/import \{ (\w+) \} from "\.\/(.*?)\?v=[^"]+";/g, (_, cls, mod) => {
+      return fs.readFileSync(path.join(__dirname, "..", "custom_components", "deye_energy", "www", mod), "utf8").replace(/^\/\/ Resource revision:.*\n/, "").replace(/^export class /m, "class ");
+    });
+  }
+  if (/^deye-energy-.*-card\.js$/.test(file)) {
+    return src.replace(/^\/\/ Resource revision:.*\n/, "").replace(/^export class /m, "class ");
+  }
+  return src;
+}
+function loadDeyeCardClass(className) {
+  const map = {
+    DeyeEnergyCard: "deye-energy-main-card.js",
+    DeyeEnergyInverterConfigCard: "deye-energy-inverter-config-card.js",
+    DeyeEnergyTriggerLogsCard: "deye-energy-trigger-logs-card.js",
+    DeyeEnergyGraphsCard: "deye-energy-graphs-card.js",
+    DeyeEnergyPowerFlowCard: "deye-energy-power-flow-card.js",
+  };
+  const src = loadDeyeCardSource(map[className] || "deye-energy-card.js").replace(/^export class /m, "class ");
+  return src;
+}
+
 check(unsupported.includes("The system remains fail-closed"), "unsupported special tariff needs a clear fail-closed status");
 
 check(/^\/\/ Resource revision: v=\d+\.\d+\.\d+(\.\d+)?\n/.test(source), "resource revision header missing/invalid");

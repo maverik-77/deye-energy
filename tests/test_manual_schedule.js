@@ -14,9 +14,10 @@ class HTMLElement {}
 global.HTMLElement = HTMLElement;
 global.customElements = { define: () => {} };
 
+const root = path.resolve(__dirname, "..");
 const componentCard = path.join(__dirname, "..", "custom_components", "deye_energy", "www", "deye-energy-card.js");
 const rootCard = path.join(__dirname, "..", "www", "deye-energy-card.js");
-eval(fs.readFileSync(componentCard, "utf8") + "\nglobal.DeyeEnergyCard = DeyeEnergyCard;");
+eval(loadDeyeCardClass("DeyeEnergyCard") + "\nglobal.DeyeEnergyCard = DeyeEnergyCard;");
 
 let failures = 0;
 function assertTrue(value, message) {
@@ -322,7 +323,7 @@ function test_manual_existing_row_does_not_auto_load_tou_rows() {
 }
 
 function test_manual_tou_init_button_and_handler_are_removed_from_the_card() {
-  const source = fs.readFileSync(componentCard, "utf8");
+  const source = ["deye-energy-card.js","deye-energy-main-card.js","deye-energy-inverter-config-card.js","deye-energy-trigger-logs-card.js","deye-energy-graphs-card.js","deye-energy-power-flow-card.js"].map(f=>fs.readFileSync(path.join(root,"custom_components","deye_energy","www",f),"utf8")).join("\n");
   assertTrue(!source.includes("initManualScheduleFromTou"), "manual init handler must be removed");
   assertTrue(!source.includes("data-manual-init"), "manual init button binding must be removed");
   assertTrue(!source.includes("Initialize from Deye Time Of Use"), "manual init button must be removed");
@@ -492,7 +493,7 @@ function test_manual_tab_uses_the_schedule_page_styling() {
 }
 
 function test_manual_schedule_is_removed_from_the_settings_overlay() {
-  const source = fs.readFileSync(componentCard, "utf8");
+  const source = ["deye-energy-card.js","deye-energy-main-card.js","deye-energy-inverter-config-card.js","deye-energy-trigger-logs-card.js","deye-energy-graphs-card.js","deye-energy-power-flow-card.js"].map(f=>fs.readFileSync(path.join(root,"custom_components","deye_energy","www",f),"utf8")).join("\n");
   assertTrue(!source.includes('tabButton("manual"'), "Manual schedule must not be a settings nav item");
   assertTrue(!source.includes('else if (tab === "manual")'), "Manual schedule must not be a settings dialog branch");
   assertTrue(!source.includes('data-open-settings="manual"'), "Manual schedule must not be opened from the page toolbar");
@@ -500,7 +501,7 @@ function test_manual_schedule_is_removed_from_the_settings_overlay() {
 }
 
 function test_page_schedule_controls_are_bound_in_the_dashboard_binder() {
-  const source = fs.readFileSync(componentCard, "utf8");
+  const source = ["deye-energy-card.js","deye-energy-main-card.js","deye-energy-inverter-config-card.js","deye-energy-trigger-logs-card.js","deye-energy-graphs-card.js","deye-energy-power-flow-card.js"].map(f=>fs.readFileSync(path.join(root,"custom_components","deye_energy","www",f),"utf8")).join("\n");
   const dashboard = methodBody(source, "bindDashboardControls() {") || methodBody(source, "bindDashboardControls(slots) {");
   const dialog = methodBody(source, "bindDialogControls() {") || methodBody(source, "bindDialogControls(slots) {");
   assertTrue(dashboard.length > 0 && dialog.length > 0, "both bind methods must be present");
@@ -522,7 +523,7 @@ function test_page_schedule_controls_are_bound_in_the_dashboard_binder() {
 }
 
 function test_tou_page_tab_is_bound_on_the_dashboard_not_in_the_dialog() {
-  const source = fs.readFileSync(componentCard, "utf8");
+  const source = ["deye-energy-card.js","deye-energy-main-card.js","deye-energy-inverter-config-card.js","deye-energy-trigger-logs-card.js","deye-energy-graphs-card.js","deye-energy-power-flow-card.js"].map(f=>fs.readFileSync(path.join(root,"custom_components","deye_energy","www",f),"utf8")).join("\n");
   const dashboard = methodBody(source, "bindDashboardControls() {") || methodBody(source, "bindDashboardControls(slots) {");
   const dialog = methodBody(source, "bindDialogControls() {") || methodBody(source, "bindDialogControls(slots) {");
   assertTrue(dashboard.includes("schedule-tab") || dashboard.includes('"tou"'), "schedule tab handler must accept the TOU tab");
@@ -567,7 +568,7 @@ function test_deye_control_toggle_is_independent_of_manual_schedule() {
 }
 
 function test_work_schedule_ui_is_removed_from_the_card() {
-  const source = fs.readFileSync(componentCard, "utf8");
+  const source = ["deye-energy-card.js","deye-energy-main-card.js","deye-energy-inverter-config-card.js","deye-energy-trigger-logs-card.js","deye-energy-graphs-card.js","deye-energy-power-flow-card.js"].map(f=>fs.readFileSync(path.join(root,"custom_components","deye_energy","www",f),"utf8")).join("\n");
   assertTrue(!source.includes('data-work-schedule-toggle="1"'), "work schedule toggle must be removed");
   assertTrue(!source.includes("Work schedule —"), "work toggle label must be removed");
   assertTrue(!source.includes("toggleWorkSchedule"), "work schedule toggle method must be removed");
@@ -576,7 +577,7 @@ function test_work_schedule_ui_is_removed_from_the_card() {
 }
 
 function test_work_schedule_source_switching_is_removed() {
-  const source = fs.readFileSync(componentCard, "utf8");
+  const source = ["deye-energy-card.js","deye-energy-main-card.js","deye-energy-inverter-config-card.js","deye-energy-trigger-logs-card.js","deye-energy-graphs-card.js","deye-energy-power-flow-card.js"].map(f=>fs.readFileSync(path.join(root,"custom_components","deye_energy","www",f),"utf8")).join("\n");
   assertTrue(!source.includes("async toggleWorkSchedule"), "work schedule source switching must be removed");
   assertTrue(!source.includes('schedule_source === "work"'), "work schedule source branch must be removed");
   assertTrue(source.includes('data-manual-activate="1"'), "manual Enable control must remain");
@@ -665,7 +666,35 @@ function test_both_card_copies_remain_identical() {
   assertTrue(fs.readFileSync(componentCard).equals(fs.readFileSync(rootCard)), "both card copies must remain identical");
 }
 
+
+function loadDeyeCardSource(file = "deye-energy-card.js") {
+  const fs = require("fs");
+  const path = require("path");
+  const src = fs.readFileSync(path.join(__dirname, "..", "custom_components", "deye_energy", "www", file), "utf8");
+  if (file === "deye-energy-card.js" && src.includes("import {")) {
+    return src.replace(/import \{ (\w+) \} from "\.\/(.*?)\?v=[^"]+";/g, (_, cls, mod) => {
+      return fs.readFileSync(path.join(__dirname, "..", "custom_components", "deye_energy", "www", mod), "utf8").replace(/^\/\/ Resource revision:.*\n/, "").replace(/^export class /m, "class ");
+    });
+  }
+  if (/^deye-energy-.*-card\.js$/.test(file)) {
+    return src.replace(/^\/\/ Resource revision:.*\n/, "").replace(/^export class /m, "class ");
+  }
+  return src;
+}
+function loadDeyeCardClass(className) {
+  const map = {
+    DeyeEnergyCard: "deye-energy-main-card.js",
+    DeyeEnergyInverterConfigCard: "deye-energy-inverter-config-card.js",
+    DeyeEnergyTriggerLogsCard: "deye-energy-trigger-logs-card.js",
+    DeyeEnergyGraphsCard: "deye-energy-graphs-card.js",
+    DeyeEnergyPowerFlowCard: "deye-energy-power-flow-card.js",
+  };
+  const src = loadDeyeCardSource(map[className] || "deye-energy-card.js").replace(/^export class /m, "class ");
+  return src;
+}
+
 const tests = [
+
   test_manual_backend_state_populates_draft,
   test_manual_empty_backend_starts_with_no_rows,
   test_manual_validation_rejects_gaps_overlaps_and_boundaries,

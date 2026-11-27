@@ -5,12 +5,37 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("path");
 
-const CARD = fs.readFileSync(
-  path.join(__dirname, "..", "custom_components", "deye_energy", "www", "deye-energy-card.js"),
-  "utf8"
-);
+const CARD = ["deye-energy-main-card.js","deye-energy-inverter-config-card.js","deye-energy-trigger-logs-card.js","deye-energy-graphs-card.js","deye-energy-power-flow-card.js"].map(f=>fs.readFileSync(path.join(__dirname, "..", "custom_components", "deye_energy", "www", f),"utf8").replace(/^\/\/ Resource revision:.*\n/,"").replace(/^export class /m,"class ")).join("\n");
+
+
+function loadDeyeCardSource(file = "deye-energy-card.js") {
+  const fs = require("fs");
+  const path = require("path");
+  const src = fs.readFileSync(path.join(__dirname, "..", "custom_components", "deye_energy", "www", file), "utf8");
+  if (file === "deye-energy-card.js" && src.includes("import {")) {
+    return src.replace(/import \{ (\w+) \} from "\.\/(.*?)\?v=[^"]+";/g, (_, cls, mod) => {
+      return fs.readFileSync(path.join(__dirname, "..", "custom_components", "deye_energy", "www", mod), "utf8").replace(/^\/\/ Resource revision:.*\n/, "").replace(/^export class /m, "class ");
+    });
+  }
+  if (/^deye-energy-.*-card\.js$/.test(file)) {
+    return src.replace(/^\/\/ Resource revision:.*\n/, "").replace(/^export class /m, "class ");
+  }
+  return src;
+}
+function loadDeyeCardClass(className) {
+  const map = {
+    DeyeEnergyCard: "deye-energy-main-card.js",
+    DeyeEnergyInverterConfigCard: "deye-energy-inverter-config-card.js",
+    DeyeEnergyTriggerLogsCard: "deye-energy-trigger-logs-card.js",
+    DeyeEnergyGraphsCard: "deye-energy-graphs-card.js",
+    DeyeEnergyPowerFlowCard: "deye-energy-power-flow-card.js",
+  };
+  const src = loadDeyeCardSource(map[className] || "deye-energy-card.js").replace(/^export class /m, "class ");
+  return src;
+}
 
 const ALL_GROUPS = [
+
   "specification",
   "grid",
   "battery_charging",
@@ -44,7 +69,7 @@ function installDom() {
   };
   global.requestAnimationFrame = (fn) => setTimeout(fn, 0);
   global.cancelAnimationFrame = (id) => clearTimeout(id);
-  global.customElements = global.window.customElements;
+  global.customElements = { _defs: {}, get(n){return this._defs[n];}, define(n,c){this._defs[n]=c;} }; global.window.customElements = global.customElements;
   global.CSSStyleSheet = function () {};
   global.ShadowRoot = function () {};
   window.customCards = [];
@@ -52,7 +77,23 @@ function installDom() {
 
 function evalCard() {
   installDom();
-  eval(CARD + "\n" +
+  const reg = `
+    const defs = [
+      ["deye-energy-card", DeyeEnergyCard],
+      ["deye-energy-inverter-config-card", DeyeEnergyInverterConfigCard],
+      ["deye-energy-trigger-logs-card", DeyeEnergyTriggerLogsCard],
+      ["deye-energy-graphs-card", DeyeEnergyGraphsCard],
+      ["deye-energy-power-flow-card", DeyeEnergyPowerFlowCard],
+    ];
+    for (const [name, cls] of defs) { if (!customElements.get(name)) customElements.define(name, cls); }
+    window.customCards = window.customCards || [];
+    window.customCards.push({type:"deye-energy-card",name:"Deye Energy",description:"Deye Energy 0.8.1.09"});
+    window.customCards.push({type:"deye-energy-inverter-config-card",name:"Deye Inverter Configuration",description:"Live inverter configuration with confirmation before upload"});
+    window.customCards.push({type:"deye-energy-trigger-logs-card",name:"Trigger logs",description:"Logs inverter inputs/triggers with success/failure status"});
+    window.customCards.push({type:"deye-energy-graphs-card",name:"Deye Energy Graphs",description:"History graphs for inverter, grid, load, and battery metrics"});
+    window.customCards.push({type:"deye-energy-power-flow-card",name:"Deye Energy Power Flow",description:"Live power flow between PV, Grid, Inverter, Battery, and Home"});
+  `;
+  eval(CARD + "\n" + reg + "\n" +
     "global.DeyeEnergyCard = typeof DeyeEnergyCard !== 'undefined' ? DeyeEnergyCard : undefined;\n" +
     "global.DeyeEnergyInverterConfigCard = typeof DeyeEnergyInverterConfigCard !== 'undefined' ? DeyeEnergyInverterConfigCard : undefined;\n" +
     "global.DeyeEnergyTriggerLogsCard = typeof DeyeEnergyTriggerLogsCard !== 'undefined' ? DeyeEnergyTriggerLogsCard : undefined;");
@@ -373,11 +414,21 @@ function withPowerFlowState(card) {
 function testPowerFlowTabRendersGroupsAndControls() {
   const card = makeCard();
   withPowerFlowState(card);
-  card._inverterConfigSubTab = "power_flow";
-  const html = renderHtml(card);
-  assert.match(html, /data-inverter-config-subtab="power_flow"/);
-  assert.match(html, /data-inverter-config-subtab="graph_config"/);
+  card._topTab = "power_flow";
+  card._powerFlowSubTab = "general";
+  let html = renderHtml(card);
+  assert.match(html, /data-ic-top-tab="power_flow"/);
+  assert.match(html, /data-ic-top-tab="graph_config"/);
+  assert.match(html, /data-power-flow-subtab="general"/);
+  assert.match(html, /data-power-flow-subtab="pv"/);
   assert.match(html, /Power flow mapping/);
+  assert.match(html, /Power flow layout/);
+  assert.match(html, /Top chips — summary row/);
+  assert.match(html, /data-pf-add-chip="summary"/);
+  assert.match(html, /data-pf-save="1"/);
+
+  card._powerFlowSubTab = "pv";
+  html = renderHtml(card);
   assert.match(html, /data-pf-entity="pv"/);
   assert.match(html, /sensor\.custom_pv/);
   assert.match(html, /1234 W/);
@@ -386,20 +437,18 @@ function testPowerFlowTabRendersGroupsAndControls() {
   assert.match(html, /data-pf-move-detail="pv:0:down"/);
   assert.match(html, /data-pf-remove-detail="pv:0"/);
   assert.match(html, /class="pf-entity-input"/);
-  assert.ok(CARD.includes(`.ic-field input, .ic-select, .pf-group .pf-entity-input, .pf-edit input[type="text"] { background:`));
-  assert.ok(CARD.includes(`.pf-group .pf-entity-input, .pf-edit .pf-detail-entity-input, .pf-edit input[data-pf-summary$=":entity"] { min-width: 480px; width: 480px;`));
+  assert.ok(CARD.includes(`.ic-field input, .ic-select, .ic-input, .pf-group .pf-entity-input, .pf-edit input[type="text"] { background:`));
+  assert.ok(CARD.includes(`.pf-group .pf-entity-input, .pf-edit .pf-detail-entity-input, .pf-edit input[data-pf-summary$=":entity"], .ic-table input.ic-input[data-gc-series$=":entity"] { min-width: 480px; width: 480px;`));
   assert.doesNotMatch(html, /Top chips — main row/);
   assert.doesNotMatch(html, /data-pf-add-chip="main"/);
   assert.doesNotMatch(html, /data-pf-chip="main:/);
-  assert.match(html, /Top chips — summary row/);
-  assert.match(html, /data-pf-add-chip="summary"/);
-  assert.match(html, /data-pf-save="1"/);
 }
 
 async function testPowerFlowSaveSendsDraftPayload() {
   const card = makeCard();
   withPowerFlowState(card);
-  card._inverterConfigSubTab = "power_flow";
+  card._topTab = "power_flow";
+  card._powerFlowSubTab = "pv";
   renderHtml(card);
   const draft = card.powerFlowDraft();
   draft.node_detail_layout.pv = [
@@ -452,7 +501,8 @@ async function testPowerFlowSaveSendsDraftPayload() {
 function testPowerFlowDetailReorderAndRemove() {
   const card = makeCard();
   withPowerFlowState(card);
-  card._inverterConfigSubTab = "power_flow";
+  card._topTab = "power_flow";
+  card._powerFlowSubTab = "pv";
   renderHtml(card);
   const draft = card.powerFlowDraft();
   assert.deepEqual(draft.node_detail_layout.pv, [{ builtin: "pv_energy" }]);
@@ -476,9 +526,11 @@ function testGraphConfigTabRendersAndSaves() {
     attributes: { graphs_display: { schema_version:1, groups:[{key:"g1",label:"Group 1",enabled:true,charts:[{key:"c1",title:"Chart 1",unit:"W",enabled:true,series:[{key:"s1","label":"S1","entity":"sensor.test","color":"#5bc0ff","enabled":true}]}]}] } },
   };
   card._hass.services.deye_energy.save_graphs_display = {};
-  card._inverterConfigSubTab = "graph_config";
+  card._topTab = "graph_config";
+  card._graphConfigSubTab = "g1";
   const html = renderHtml(card);
   assert.match(html, /Deye Energy Graphs configuration/);
+  assert.match(html, /data-graph-config-subtab="g1"/);
   assert.match(html, /data-gc-save="1"/);
   assert.match(html, /data-gc-add-group="1"/);
   assert.match(html, /Group 1/);
@@ -493,7 +545,7 @@ async function testGraphConfigSaveSendsPayload() {
     attributes: { graphs_display: { schema_version:1, groups:[] } },
   };
   card._hass.services.deye_energy.save_graphs_display = {};
-  card._inverterConfigSubTab = "graph_config";
+  card._topTab = "graph_config";
   renderHtml(card);
   const draft = card.graphsDraft();
   draft.groups = [{key:"g1",label:"G1",enabled:true,charts:[{key:"c1",title:"C1",unit:"W",enabled:true,series:[{key:"s1","label":"S1","entity":"sensor.x","color":"#5bc0ff","enabled":true}]}]}];
@@ -509,7 +561,8 @@ async function testGraphConfigSaveSendsPayload() {
 function testRenderKeepsFocusedTextField() {
   const card = makeCard();
   withPowerFlowState(card);
-  card._inverterConfigSubTab = "power_flow";
+  card._topTab = "power_flow";
+  card._powerFlowSubTab = "pv";
   const before = renderHtml(card);
   const focused = { tagName: "INPUT" };
   const previousActive = global.document.activeElement;

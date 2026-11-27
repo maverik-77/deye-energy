@@ -19,6 +19,19 @@ SPEC.loader.exec_module(price_sources)
 
 NOW = datetime(2026, 8, 23, 12, 0, tzinfo=timezone(timedelta(hours=2)))
 
+def _read_all_card_sources():
+    root = Path(__file__).resolve().parents[1]
+    files = [
+        "custom_components/deye_energy/www/deye-energy-card.js",
+        "custom_components/deye_energy/www/deye-energy-main-card.js",
+        "custom_components/deye_energy/www/deye-energy-inverter-config-card.js",
+        "custom_components/deye_energy/www/deye-energy-trigger-logs-card.js",
+        "custom_components/deye_energy/www/deye-energy-graphs-card.js",
+        "custom_components/deye_energy/www/deye-energy-power-flow-card.js",
+    ]
+    return "\n".join((root / f).read_text(encoding="utf-8") for f in files)
+
+
 
 @dataclass
 class State:
@@ -187,7 +200,7 @@ def test_unsupported_series_fails_closed_instead_of_using_numeric_state() -> Non
 
 def test_config_and_frontend_contracts_expose_validation_and_backend_only_diagnostics() -> None:
     config = (ROOT / "custom_components" / "deye_energy" / "config_flow.py").read_text(encoding="utf-8")
-    card = (ROOT / "custom_components" / "deye_energy" / "www" / "deye-energy-card.js").read_text(encoding="utf-8")
+    card = _read_all_card_sources()
     assert "_resolve_price_mapping_contracts" in config
     assert "unsupported_price_schema" in config
     assert "mapped_entity_missing" in config

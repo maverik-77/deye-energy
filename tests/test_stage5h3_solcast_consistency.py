@@ -15,6 +15,19 @@ from test_manager_logic import FakeState, make_runtime, manager
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+def _read_all_card_sources():
+    root = Path(__file__).resolve().parents[1]
+    files = [
+        "custom_components/deye_energy/www/deye-energy-card.js",
+        "custom_components/deye_energy/www/deye-energy-main-card.js",
+        "custom_components/deye_energy/www/deye-energy-inverter-config-card.js",
+        "custom_components/deye_energy/www/deye-energy-trigger-logs-card.js",
+        "custom_components/deye_energy/www/deye-energy-graphs-card.js",
+        "custom_components/deye_energy/www/deye-energy-power-flow-card.js",
+    ]
+    return "\n".join((root / f).read_text(encoding="utf-8") for f in files)
+
 CARD = ROOT / "custom_components" / "deye_energy" / "www" / "deye-energy-card.js"
 
 
@@ -157,7 +170,7 @@ def test_t6_history_uses_the_same_canonical_current_day_value(monkeypatch):
 
     assert row["realization_today_pct"] == metrics["realization_today_pct"] == 94.0
     assert row["forecast_progress_percent"] == metrics["realization_today_pct"]
-    card_source = CARD.read_text(encoding="utf-8")
+    card_source = _read_all_card_sources()
     assert "solcastAccuracyAttrs.realization_today_pct" in card_source
     assert "item.realization_today_pct ?? item.forecast_progress_percent" not in card_source
     assert "renderHistoryTab" not in card_source
@@ -169,7 +182,7 @@ def test_t6_history_uses_the_same_canonical_current_day_value(monkeypatch):
 
 def test_t9_no_independent_legacy_formula_remains_in_sensor_or_card():
     sensor_source = (ROOT / "custom_components" / "deye_energy" / "sensor.py").read_text(encoding="utf-8")
-    card_source = CARD.read_text(encoding="utf-8")
+    card_source = _read_all_card_sources()
 
     assert 'tracking.get("forecast")' not in sensor_source
     assert "min(100, actual / forecast * 100)" not in sensor_source

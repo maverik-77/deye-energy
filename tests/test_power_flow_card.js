@@ -1,10 +1,7 @@
 const fs = require("fs");
 const vm = require("vm");
 
-const source = fs.readFileSync(
-  "custom_components/deye_energy/www/deye-energy-card.js",
-  "utf8",
-);
+const source = ["deye-energy-card.js","deye-energy-main-card.js","deye-energy-inverter-config-card.js","deye-energy-trigger-logs-card.js","deye-energy-graphs-card.js","deye-energy-power-flow-card.js"].map(f => loadDeyeCardSource(f)).join("\n");
 const sandbox = {
   console,
   HTMLElement: class {
@@ -15,14 +12,19 @@ const sandbox = {
     removeEventListener(type, fn) { const list = this._listeners[type] || []; const at = list.indexOf(fn); if (at >= 0) list.splice(at, 1); }
     dispatchEvent(ev) { (this._listeners[ev.type] || []).forEach(fn => fn(ev)); return true; }
   },
-  customElements: { define(name, cls) { this._defs = this._defs || {}; this._defs[name] = cls; } },
+  customElements: { _defs: {}, get(name) { return this._defs[name]; }, define(name, cls) { this._defs[name] = cls; } },
   setTimeout: () => 1,
   clearTimeout: () => {},
 };
 sandbox.window = sandbox;
 sandbox.window.customCards = [];
 vm.createContext(sandbox);
-vm.runInContext(`${source}\nthis.PowerFlowCard = DeyeEnergyPowerFlowCard;`, sandbox);
+// Load entry module with imports resolved inline for VM testing
+const entrySrc = loadDeyeCardSource("deye-energy-card.js");
+const resolved = entrySrc.replace(/import \{ (\w+) \} from "\.\/(.*?)\?v=[^"]+";/g, (_, cls, file) => {
+  return loadDeyeCardSource(file).replace(/^export class /m, "class ");
+});
+vm.runInContext(resolved + "\nthis.PowerFlowCard = DeyeEnergyPowerFlowCard;", sandbox);
 
 function check(condition, message) {
   if (!condition) throw new Error(message);
@@ -693,6 +695,33 @@ check(/filter id="pf-line-glow" filterUnits="userSpaceOnUse" x="0" y="0" width="
 check((grownHtml.match(/<foreignObject[^>]* width="248" height="220"/g) || []).length === 1, "inverter card should keep its fixed height");
 
 const shrunkHtml = dynamicHeightHtml({ pv: [], grid: [], home: [], battery: [] });
+
+function loadDeyeCardSource(file = "deye-energy-card.js") {
+  const fs = require("fs");
+  const path = require("path");
+  const src = fs.readFileSync(path.join(__dirname, "..", "custom_components", "deye_energy", "www", file), "utf8");
+  if (file === "deye-energy-card.js" && src.includes("import {")) {
+    return src.replace(/import \{ (\w+) \} from "\.\/(.*?)\?v=[^"]+";/g, (_, cls, mod) => {
+      return fs.readFileSync(path.join(__dirname, "..", "custom_components", "deye_energy", "www", mod), "utf8").replace(/^\/\/ Resource revision:.*\n/, "").replace(/^export class /m, "class ");
+    });
+  }
+  if (/^deye-energy-.*-card\.js$/.test(file)) {
+    return src.replace(/^\/\/ Resource revision:.*\n/, "").replace(/^export class /m, "class ");
+  }
+  return src;
+}
+function loadDeyeCardClass(className) {
+  const map = {
+    DeyeEnergyCard: "deye-energy-main-card.js",
+    DeyeEnergyInverterConfigCard: "deye-energy-inverter-config-card.js",
+    DeyeEnergyTriggerLogsCard: "deye-energy-trigger-logs-card.js",
+    DeyeEnergyGraphsCard: "deye-energy-graphs-card.js",
+    DeyeEnergyPowerFlowCard: "deye-energy-power-flow-card.js",
+  };
+  const src = loadDeyeCardSource(map[className] || "deye-energy-card.js").replace(/^export class /m, "class ");
+  return src;
+}
+
 for (const [x, y, w, h, label] of [
   ["488.5", "132.5", 174, 112, "PV"],
   ["143", "422", 174, 96, "Grid"],
