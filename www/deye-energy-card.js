@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.1.05
+// Resource revision: v=0.8.1.06
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -1690,7 +1690,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.1.05 (resource revision v=0.8.1.05)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.1.06 (resource revision v=0.8.1.06)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -5405,7 +5405,7 @@ class DeyeEnergyGraphsCard extends HTMLElement {
     seriesData.forEach((s, idx) => {
       if (!s.points.length) return;
       const d = s.points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p[0]).toFixed(2)} ${y(p[1]).toFixed(2)}`).join(' ');
-      paths += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>`;
+      paths += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"/>`;
       const lv = s.points[s.points.length - 1][1];
       lastVals.push(`<span style="color:${s.color};white-space:nowrap;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${s.color};margin-right:4px;vertical-align:middle;"></span>${this._esc(s.label)}: <strong>${this._esc(lv.toFixed(2))}${this._esc(chart.unit)}</strong></span>`);
       hoverDots += `<circle class="g-hover-dot" data-series="${idx}" r="4" fill="${s.color}" stroke="#eef7ff" stroke-width="1.5" visibility="hidden"></circle>`;
@@ -6006,29 +6006,31 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const arrowOpacity = transition ? Number(transition.newArrow.toFixed(2)) : 0.95;
     const oldArrowOpacity = transition ? Number(transition.oldArrow.toFixed(2)) : 0;
     const markerAttrs = active ? `${transition ? `marker-start="url(#pf-arrow-${id}-old)" ` : ''}marker-end="url(#pf-arrow-${id})"` : '';
-    const arrowHead = (cx, cy, tan, fill, opacity, key) => {
+    const arrowHead = (tipX, tipY, tan, fill, opacity, key) => {
       const nx = -tan.y, ny = tan.x;
-      const tipX = cx + tan.x * 7;
-      const tipY = cy + tan.y * 7;
-      const baseX = cx - tan.x * 5;
-      const baseY = cy - tan.y * 5;
+      // Tip at the end of the line (target entity). Notch is centered on the line thickness.
+      const len = 12;
       const w = 6.2;
-      const notchX = cx - tan.x * 1.5;
-      const notchY = cy - tan.y * 1.5;
+      const baseX = tipX - tan.x * len;
+      const baseY = tipY - tan.y * len;
+      const notchX = tipX - tan.x * (len * 0.55);
+      const notchY = tipY - tan.y * (len * 0.55);
       const p1 = `${tipX.toFixed(2)} ${tipY.toFixed(2)}`;
       const p2 = `${(baseX + nx * w).toFixed(2)} ${(baseY + ny * w).toFixed(2)}`;
-      const p3 = `${notchX.toFixed(2)} ${notchY.toFixed(2)}`;
+      const p3 = `${notchX.toFixed(2)} ${notchY.toFixed(2)}`; // on centerline
       const p4 = `${(baseX - nx * w).toFixed(2)} ${(baseY - ny * w).toFixed(2)}`;
       return `<path data-flow-arrow="${key}" d="M ${p1} L ${p2} L ${p3} L ${p4} Z" fill="${fill}" opacity="${opacity}"/>`;
     };
     let centerArrows = '';
     if (active && geometry) {
-      const mid = geometry.length / 2;
-      const pt = this._pointAt(geometry, mid);
-      const tan = this._tangentAt(geometry, mid);
+      const tipOffset = Math.max(0, geometry.length - 2);
+      const pt = this._pointAt(geometry, tipOffset);
+      const tan = this._tangentAt(geometry, tipOffset);
       if (transition) {
-        const oldTan = { x: -tan.x, y: -tan.y };
-        centerArrows += arrowHead(pt.x, pt.y, oldTan, color, oldArrowOpacity, `${id}-old`);
+        const oldPt = this._pointAt(geometry, 2);
+        const oldTanRaw = this._tangentAt(geometry, 2);
+        const oldTan = { x: -oldTanRaw.x, y: -oldTanRaw.y };
+        centerArrows += arrowHead(oldPt.x, oldPt.y, oldTan, color, oldArrowOpacity, `${id}-old`);
         centerArrows += arrowHead(pt.x, pt.y, tan, color, arrowOpacity, `${id}`);
       } else {
         centerArrows += arrowHead(pt.x, pt.y, tan, color, arrowOpacity, `${id}`);
@@ -6048,15 +6050,14 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       ${centerArrows ? `<g data-flow-arrows="${id}">${centerArrows}</g>` : ''}
       ${balls ? `<g class="pf-balls" data-flow-balls="${id}">${balls}</g>` : ''}`;
   }
-  _arrowPath(cx, cy, tan) {
+  _arrowPath(tipX, tipY, tan) {
     const nx = -tan.y, ny = tan.x;
-    const tipX = cx + tan.x * 7;
-    const tipY = cy + tan.y * 7;
-    const baseX = cx - tan.x * 5;
-    const baseY = cy - tan.y * 5;
+    const len = 12;
     const w = 6.2;
-    const notchX = cx - tan.x * 1.5;
-    const notchY = cy - tan.y * 1.5;
+    const baseX = tipX - tan.x * len;
+    const baseY = tipY - tan.y * len;
+    const notchX = tipX - tan.x * (len * 0.55);
+    const notchY = tipY - tan.y * (len * 0.55);
     const p1 = `${tipX.toFixed(2)} ${tipY.toFixed(2)}`;
     const p2 = `${(baseX + nx * w).toFixed(2)} ${(baseY + ny * w).toFixed(2)}`;
     const p3 = `${notchX.toFixed(2)} ${notchY.toFixed(2)}`;
@@ -6107,19 +6108,18 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
         if (els && els.arrow) {
           els.arrow.setAttribute('opacity', transition ? transition.newArrow.toFixed(2) : '0.95');
           if (state.geometry) {
-            const mid = state.geometry.length / 2;
-            const pt = this._pointAt(state.geometry, mid);
-            const tan = this._tangentAt(state.geometry, mid);
+            const tipOffset = Math.max(0, state.geometry.length - 2);
+            const pt = this._pointAt(state.geometry, tipOffset);
+            const tan = this._tangentAt(state.geometry, tipOffset);
             els.arrow.setAttribute('d', this._arrowPath(pt.x, pt.y, tan));
           }
         }
         if (els && els.oldArrow) {
           els.oldArrow.setAttribute('opacity', transition ? transition.oldArrow.toFixed(2) : '0');
           if (state.geometry) {
-            const mid = state.geometry.length / 2;
-            const pt = this._pointAt(state.geometry, mid);
-            const tan = this._tangentAt(state.geometry, mid);
-            els.oldArrow.setAttribute('d', this._arrowPath(pt.x, pt.y, { x: -tan.x, y: -tan.y }));
+            const oldPt = this._pointAt(state.geometry, 2);
+            const oldTanRaw = this._tangentAt(state.geometry, 2);
+            els.oldArrow.setAttribute('d', this._arrowPath(oldPt.x, oldPt.y, { x: -oldTanRaw.x, y: -oldTanRaw.y }));
           }
         }
         if (els) {
@@ -6304,7 +6304,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       batt: { w:223, h:dynamicNodeH('batt',220,battDetails) },
     };
     const N = layout === 'left_right'
-      ? { pv:[220,230], grid:[220,640], inv:[600,435], home:[980,640], batt:[980,230] }
+      ? { pv:[220,230], grid:[220,590], inv:[600,400], home:[980,590], batt:[980,230] }
       : { pv:[600,188.5], grid:[254.5,470], inv:[600,470], home:[945.5,470], batt:[600,825.5] };
     const PF_BOUNDS = {
       left: Math.min(N.pv[0]-SZ.pv.w/2-HALO_PAD, N.grid[0]-SZ.grid.w/2-HALO_PAD, N.inv[0]-RING_R-RING_SW/2, N.batt[0]-SZ.batt.w/2-HALO_PAD),
@@ -6342,9 +6342,9 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       const dx = x2 - x1;
       const dy = y2 - y1;
       const cx1 = x1 + dx * bend;
-      const cy1 = y1 + dy * 0.3;
+      const cy1 = y1 + dy * 0.55;
       const cx2 = x2 - dx * bend;
-      const cy2 = y2 - dy * 0.3;
+      const cy2 = y2 - dy * 0.55;
       return `M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
     };
     const angled = (x1, y1, x2, y2, tilt = 18) => {
@@ -6539,7 +6539,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.1.05",
+  description: "Deye Energy 0.8.1.06",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

@@ -4,6 +4,18 @@ All notable changes to Deye Energy. Versions before 0.8.0 are the history of the
 upstream Deye Energy Manager project and are not repeated here. Attribution is
 recorded at the bottom of README.md.
 
+## [0.8.1.06] - 2026-11-27
+
+### Changed
+
+- **Power Flow arrow placement**: arrowheads are rendered at the end of each active flow line with the tip at the target entity; the notch stays on the line centerline (middle of line thickness) so direction reads clearly on straight and curved paths.
+- **Power Flow left-right layout**: increased curve depth and moved Inverter/Grid/Home nodes upward for a more compact, balanced layout.
+- **Deye Energy Graphs**: reduced plotted line stroke width by ~50% for finer, more defined edges while keeping hover/legend/range behavior unchanged.
+
+### Fixed
+
+- **Power Flow arrow direction clarity**: corrected the earlier mid-line arrow implementation so arrows no longer sit in the middle of line length.
+
 ## [0.8.1.05] - 2026-11-27
 
 ### Changed
