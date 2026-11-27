@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.1.09
+// Resource revision: v=0.8.1.10
 export class DeyeEnergyGraphsCard extends HTMLElement {
   constructor() {
     super();

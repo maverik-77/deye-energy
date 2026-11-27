@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0 — installation and upgrade
 
-This guide covers a first installation and an upgrade of Deye Energy 0.8.1.09.
+This guide covers a first installation and an upgrade of Deye Energy 0.8.1.10.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 ## 1. Before you start
@@ -44,7 +44,7 @@ integration registers the bundled card resource by itself; nothing to add.
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.1.09
+    - url: /deye_energy/deye-energy-card.js?v=0.8.1.10
       type: module
 ```
 
@@ -55,7 +55,7 @@ type: custom:deye-energy-card
 ```
 
 A sample dashboard is in `dashboard/energy_manager.yaml` (card revision
-`v=0.8.1.09`). After an upgrade, hard-refresh the browser (or clear the app
+`v=0.8.1.10`). After an upgrade, hard-refresh the browser (or clear the app
 cache) so that the new card revision is loaded.
 
 ## 5. First-run checklist
@@ -74,9 +74,9 @@ cache) so that the new card revision is loaded.
 1. Back up Home Assistant.
 2. Update through HACS (or replace the folder) and restart.
 3. Hard-refresh the browser. The resource revision is updated automatically in
-   UI/storage mode; in YAML mode change `v=` to `0.8.1.09`.
+   UI/storage mode; in YAML mode change `v=` to `0.8.1.10`.
 
-**0.8.1.09 behavior update — Graph config and Power Flow polish.** Inverter
+**0.8.1.10 behavior update — Graph config and Power Flow polish.** Inverter
 Config adds a **Graph config** tab for editing, adding, removing and
 enabling/disabling Deye Energy Graphs groups/charts/series (title, unit, sensor
 entity, color, visibility), saved via `deye_energy.save_graphs_display` in the

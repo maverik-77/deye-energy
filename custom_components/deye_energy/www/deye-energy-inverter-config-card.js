@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.1.09
+// Resource revision: v=0.8.1.10
 export class DeyeEnergyInverterConfigCard extends HTMLElement {
   constructor() {
     super();
@@ -830,9 +830,6 @@ export class DeyeEnergyInverterConfigCard extends HTMLElement {
         <h4>Power flow mapping</h4>
         <p class="ic-hint">Edit the entity IDs used by the Power Flow card, add extra detail rows to each node, and extend the summary chip row. Save writes the shared entity-map override; the Power Flow card then updates without a restart.</p>
       </section>
-      <div class="ic-tabs" role="tablist" aria-label="Power flow sections">
-        ${subTabs.map((tab) => `<button type="button" role="tab" aria-selected="${active === tab.key ? "true" : "false"}" class="ic-tab ${active === tab.key ? "active" : ""}" data-power-flow-subtab="${tab.key}">${this.escapeHtml(tab.label)}</button>`).join("")}
-      </div>
       ${body}
       <section class="ic-section">
         <button class="ic-action" data-pf-save="1" ${this._powerFlowSaving ? "disabled" : ""}>${this._powerFlowSaving ? "Saving…" : "Save power flow mapping"}</button>
@@ -1005,7 +1002,6 @@ export class DeyeEnergyInverterConfigCard extends HTMLElement {
       </div>
       ${message}
     </section>
-    ${subTabs.length ? `<div class="ic-tabs" role="tablist" aria-label="Graph config groups">${subTabs.map((tab) => `<button type="button" role="tab" aria-selected="${activeKey === tab.key ? "true" : "false"}" class="ic-tab ${activeKey === tab.key ? "active" : ""}" data-graph-config-subtab="${tab.key}">${this.escapeHtml(tab.label)}</button>`).join("")}</div>` : ""}
     ${groupHtml}`;
   }
 
@@ -1258,9 +1254,12 @@ export class DeyeEnergyInverterConfigCard extends HTMLElement {
           .ic-btn:hover, .ic-action:hover { border-color: var(--ic-accent); }
           .ic-btn:disabled, .ic-action:disabled { opacity: .55; cursor: default; }
           .ic-btn-primary, .ic-action { background: color-mix(in srgb, var(--ic-accent) 22%, var(--ic-surface2)); border-color: color-mix(in srgb, var(--ic-accent) 45%, var(--ic-line)); }
-          .ic-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
-          .ic-tab { appearance: none; border: 1px solid var(--ic-line); background: transparent; color: var(--ic-muted); border-radius: 999px; padding: 7px 12px; font: inherit; cursor: pointer; }
-          .ic-tab.active { color: var(--ic-text); background: color-mix(in srgb, var(--ic-accent) 18%, transparent); border-color: color-mix(in srgb, var(--ic-accent) 45%, var(--ic-line)); }
+          .ic-tabs { display: flex; gap: 0; flex-wrap: wrap; border-bottom: 1px solid var(--ic-line); margin-bottom: 2px; }
+          .ic-tabs-sub { gap: 0; margin-top: -4px; }
+          .ic-tab { appearance: none; border: 1px solid transparent; border-bottom: none; background: transparent; color: var(--ic-muted); border-radius: 10px 10px 0 0; padding: 9px 14px; font: inherit; cursor: pointer; margin-bottom: -1px; position: relative; }
+          .ic-tab:hover { color: var(--ic-text); background: rgba(255,255,255,.03); }
+          .ic-tab.active { color: var(--ic-text); background: rgba(12,34,49,.95); border-color: var(--ic-line); border-bottom-color: rgba(12,34,49,.95); font-weight: 600; }
+          .ic-tab.active::after { content: ""; position: absolute; left: 10px; right: 10px; top: 0; height: 2px; border-radius: 2px; background: var(--ic-accent); }
           .ic-body { display: flex; flex-direction: column; gap: 12px; }
           .ic-section { background: rgba(255,255,255,.02); border: 1px solid var(--ic-line); border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
           .ic-section h4 { margin: 0; font-size: 1rem; }
@@ -1324,10 +1323,10 @@ export class DeyeEnergyInverterConfigCard extends HTMLElement {
             </div>
           </div>
           ${err}
-          <div class="ic-tabs" role="tablist" aria-label="Configuration sections">
+          <div class="ic-tabs ic-tabs-top" role="tablist" aria-label="Configuration sections">
             ${topTabs.map((tab) => `<button type="button" role="tab" aria-selected="${topActive === tab.key ? "true" : "false"}" class="ic-tab ${topActive === tab.key ? "active" : ""}" data-ic-top-tab="${tab.key}">${this.escapeHtml(tab.label)}</button>`).join("")}
           </div>
-          ${subTabs.length ? `<div class="ic-tabs" role="tablist" aria-label="${this.escapeHtml(subAria)}">${subTabs.map((tab) => `<button type="button" role="tab" aria-selected="${subActive === tab.key ? "true" : "false"}" class="ic-tab ${subActive === tab.key ? "active" : ""}" ${subAttr}="${tab.key}">${this.escapeHtml(tab.label)}</button>`).join("")}</div>` : ""}
+          ${subTabs.length ? `<div class="ic-tabs ic-tabs-sub" role="tablist" aria-label="${this.escapeHtml(subAria)}">${subTabs.map((tab) => `<button type="button" role="tab" aria-selected="${subActive === tab.key ? "true" : "false"}" class="ic-tab ${subActive === tab.key ? "active" : ""}" ${subAttr}="${tab.key}">${this.escapeHtml(tab.label)}</button>`).join("")}</div>` : ""}
           <div class="ic-body">${body}</div>
         </div>
         ${this.renderConfirmOverlay()}

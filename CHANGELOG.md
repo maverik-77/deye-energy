@@ -4,7 +4,7 @@ All notable changes to Deye Energy. Versions before 0.8.0 are the history of the
 upstream Deye Energy Manager project and are not repeated here. Attribution is
 recorded at the bottom of README.md.
 
-## [0.8.1.09] - 2026-11-27
+## [0.8.1.10] - 2026-11-27
 
 ### Added
 

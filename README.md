@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.1.09-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.1.10-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -14,7 +14,7 @@ statistics in a family of Lovelace cards. It is adapted to a Deye inverter
 exposed through MQTT (the Sunsynk / Deye add-on profile) and to a UK-style
 tariff.
 
-> **Release 0.8.1.09:** splits the Lovelace card into maintainable ES modules, adds sortable Trigger Logs headers, and compacts Trigger Logs rows by keeping trigger/source details on the same row. Manual Schedule remains independent from physical Deye TOU and the unused stored 48-slot model remains removed.
+> **Release 0.8.1.10:** refines Inverter Config navigation with tab-style top/level-2 tabs and removes duplicate Power Flow/Graph config subtab rows, while keeping the 0.8.1.09 card split and Trigger Logs sorting/compact-row improvements. Manual Schedule remains independent from physical Deye TOU and the unused stored 48-slot model remains removed.
 
 ## Key features
 
@@ -227,7 +227,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.1.09
+    - url: /deye_energy/deye-energy-card.js?v=0.8.1.10
       type: module
 ```
 

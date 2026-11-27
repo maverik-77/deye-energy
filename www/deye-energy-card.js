@@ -1,9 +1,9 @@
-// Resource revision: v=0.8.1.09
-import { DeyeEnergyCard } from "./deye-energy-main-card.js?v=0.8.1.09";
-import { DeyeEnergyInverterConfigCard } from "./deye-energy-inverter-config-card.js?v=0.8.1.09";
-import { DeyeEnergyTriggerLogsCard } from "./deye-energy-trigger-logs-card.js?v=0.8.1.09";
-import { DeyeEnergyGraphsCard } from "./deye-energy-graphs-card.js?v=0.8.1.09";
-import { DeyeEnergyPowerFlowCard } from "./deye-energy-power-flow-card.js?v=0.8.1.09";
+// Resource revision: v=0.8.1.10
+import { DeyeEnergyCard } from "./deye-energy-main-card.js?v=0.8.1.10";
+import { DeyeEnergyInverterConfigCard } from "./deye-energy-inverter-config-card.js?v=0.8.1.10";
+import { DeyeEnergyTriggerLogsCard } from "./deye-energy-trigger-logs-card.js?v=0.8.1.10";
+import { DeyeEnergyGraphsCard } from "./deye-energy-graphs-card.js?v=0.8.1.10";
+import { DeyeEnergyPowerFlowCard } from "./deye-energy-power-flow-card.js?v=0.8.1.10";
 
 const defs = [
   ["deye-energy-card", DeyeEnergyCard],
@@ -20,7 +20,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.1.09",
+  description: "Deye Energy 0.8.1.10",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

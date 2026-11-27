@@ -87,7 +87,7 @@ function evalCard() {
     ];
     for (const [name, cls] of defs) { if (!customElements.get(name)) customElements.define(name, cls); }
     window.customCards = window.customCards || [];
-    window.customCards.push({type:"deye-energy-card",name:"Deye Energy",description:"Deye Energy 0.8.1.09"});
+    window.customCards.push({type:"deye-energy-card",name:"Deye Energy",description:"Deye Energy 0.8.1.10"});
     window.customCards.push({type:"deye-energy-inverter-config-card",name:"Deye Inverter Configuration",description:"Live inverter configuration with confirmation before upload"});
     window.customCards.push({type:"deye-energy-trigger-logs-card",name:"Trigger logs",description:"Logs inverter inputs/triggers with success/failure status"});
     window.customCards.push({type:"deye-energy-graphs-card",name:"Deye Energy Graphs",description:"History graphs for inverter, grid, load, and battery metrics"});
