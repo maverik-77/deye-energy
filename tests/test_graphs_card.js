@@ -78,6 +78,12 @@ check(html.includes('grid-template-columns:1fr'), "charts should be full width")
 check(html.includes('type="datetime-local"'), "missing datetime-local inputs");
 check(html.includes('g-apply'), "missing apply range button");
 check(html.includes('Apply range'), "missing Apply range label");
+check(html.includes('g-clear'), "missing clear button");
+card._loading = true;
+card._lastSig = '';
+card._render();
+const loadingHtml = card.innerHTML;
+check(loadingHtml.includes('Loading data…') || loadingHtml.includes('Loading history…'), "missing loading state");
 check(html.includes('g-hover-x'), "missing hover X line");
 check(html.includes('g-hover-y'), "missing hover Y line");
 check(html.includes('g-hover-readout'), "missing hover readout");

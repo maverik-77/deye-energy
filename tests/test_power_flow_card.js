@@ -142,7 +142,7 @@ check(html.includes('data-flow-arrow="pf-pv-inv"') || html.includes('data-flow-a
 check(/data-flow-arrow="pf-pv-inv"[^>]*d="M [^"]+ L [^"]+ L [^"]+ L [^"]+ Z"/.test(html), "arrow should be a mid-line oriented chevron");
 check(!html.includes('markerWidth="3.5" markerHeight="3.5"'), "clipped arrow marker should be gone");
 check(!html.includes('width="84" height="30" rx="15"'), "on-arrow power label should not be rendered");
-check(html.includes('.pf-flow-active{stroke-width:4!important}') && html.includes('.pf-balls{pointer-events:none}') && html.includes('.pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34'), "flow links should use discrete glow balls over a persistent background path");
+check(html.includes('.pf-flow-active{stroke-width:2!important}') && html.includes('.pf-balls{pointer-events:none}') && html.includes('.pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:2.5;opacity:.34'), "flow links should use discrete glow balls over a persistent background path");
 check(!html.includes('stroke-width="14"'), "oversized link glow should be gone");
 check(html.includes('d="M 600 274.5 L 600 344.5"'), "PV link should run from the halo edge to the smaller inverter ring");
 check(html.includes('d="M 725.5 470 L 814 470"'), "inverter-to-home link should run from the ring to the halo edge");
@@ -173,7 +173,7 @@ const flowDuration = (markup, id) => {
   const m = flowPath(markup, id).match(/data-flow-duration="([\d.]+)"/);
   return m ? Number(m[1]) : NaN;
 };
-check(flowPath(html, 'pf-grid-inv').includes('stroke-width="4"'), "flow paths should keep an explicit stroke width for idle links");
+check(flowPath(html, 'pf-grid-inv').includes('stroke-width="2"'), "flow paths should keep an explicit stroke width for idle links");
 check(!html.includes('<animateMotion') && !html.includes('<mpath') && !html.includes('keyPoints='), "SMIL ball animation should not return");
 check(!html.includes('pfFlowDash') && !html.includes('stroke-dasharray:1 22') && !html.includes('animation:pfFlow'), "CSS dash animation should be gone");
 check(source.includes('state.gap = 60;') && source.includes('watts / 5000'), "power-scaled ball logic should be present");
@@ -182,7 +182,7 @@ check(html.includes('r="7.2"') && html.includes('r="4.2"') && html.includes('fil
 check(html.includes('data-flow-balls="pf-grid-inv"'), "each active link should group its glow balls");
 check(flowPath(html, 'pf-grid-inv').includes('data-flow-direction="-1"'), "export direction should be recorded on the flow path");
 check(/filter id="pf-line-glow" filterUnits="userSpaceOnUse" x="0" y="0" width="1200" height="\d+"/.test(html), "line glow filter should use a user-space region");
-check(html.includes('.pf-flow-line{fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;filter:url(#pf-line-glow)}') && html.includes('.pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34;filter:url(#pf-line-glow)}'), "flow paths should use the user-space glow filter");
+check(html.includes('.pf-flow-line{fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;filter:url(#pf-line-glow)}') && html.includes('.pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:2.5;opacity:.34;filter:url(#pf-line-glow)}'), "flow paths should use the user-space glow filter");
 check(!html.includes('stroke-dasharray:none;filter:url(#pf-glow)'), "straight links should not use the bounding-box glow filter");
 check(html.includes('class="pf-flow-line pf-flow-active"'), "active links should carry the active-flow class");
 check((html.match(/class="pf-flow-line-bg"/g) || []).length === 4, "each link should have a persistent background path");

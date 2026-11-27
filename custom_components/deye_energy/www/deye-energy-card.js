@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.1.06
+// Resource revision: v=0.8.1.07
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -1690,7 +1690,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.1.06 (resource revision v=0.8.1.06)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.1.07 (resource revision v=0.8.1.07)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -5405,7 +5405,7 @@ class DeyeEnergyGraphsCard extends HTMLElement {
     seriesData.forEach((s, idx) => {
       if (!s.points.length) return;
       const d = s.points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p[0]).toFixed(2)} ${y(p[1]).toFixed(2)}`).join(' ');
-      paths += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"/>`;
+      paths += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="0.6" stroke-linejoin="round" stroke-linecap="round"/>`;
       const lv = s.points[s.points.length - 1][1];
       lastVals.push(`<span style="color:${s.color};white-space:nowrap;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${s.color};margin-right:4px;vertical-align:middle;"></span>${this._esc(s.label)}: <strong>${this._esc(lv.toFixed(2))}${this._esc(chart.unit)}</strong></span>`);
       hoverDots += `<circle class="g-hover-dot" data-series="${idx}" r="4" fill="${s.color}" stroke="#eef7ff" stroke-width="1.5" visibility="hidden"></circle>`;
@@ -5522,6 +5522,7 @@ class DeyeEnergyGraphsCard extends HTMLElement {
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px;">
         <label style="font-size:12px;color:#9eb8c8;">From <input class="g-from" type="datetime-local" value="${this._esc(this._customFrom)}" style="margin-left:4px;background:rgba(255,255,255,.04);color:#eef7ff;border:1px solid rgba(118,166,190,.28);border-radius:8px;padding:4px 6px;"></label>
         <label style="font-size:12px;color:#9eb8c8;">To <input class="g-to" type="datetime-local" value="${this._esc(this._customTo)}" style="margin-left:4px;background:rgba(255,255,255,.04);color:#eef7ff;border:1px solid rgba(118,166,190,.28);border-radius:8px;padding:4px 6px;"></label>
+        <button class="g-clear" style="padding:5px 12px;border-radius:999px;border:1px solid rgba(118,166,190,.28);background:rgba(255,255,255,.03);color:#eef7ff;cursor:pointer;font-size:12px;">Clear</button>
         <button class="g-apply" style="padding:5px 12px;border-radius:999px;border:1px solid ${this._customRange ? 'rgba(126,226,45,.65)' : 'rgba(118,166,190,.28)'};background:${this._customRange ? 'rgba(126,226,45,.14)' : 'rgba(255,255,255,.03)'};color:#eef7ff;cursor:pointer;font-size:12px;">Apply range</button>
       </div>`;
     const groupTabs = groups.map(g => {
@@ -5530,9 +5531,12 @@ class DeyeEnergyGraphsCard extends HTMLElement {
     }).join('');
 
     const charts = (activeGroup?.charts || []).map(c => `
-      <div class="g-chart" style="background:rgba(255,255,255,.03);border:1px solid rgba(118,166,190,.16);border-radius:12px;padding:12px;min-width:0;width:100%;box-sizing:border-box;">
+      <div class="g-chart" style="background:rgba(255,255,255,.03);border:1px solid rgba(118,166,190,.16);border-radius:12px;padding:12px;min-width:0;width:100%;box-sizing:border-box;position:relative;">
         <div style="font-size:13px;font-weight:600;color:#eef7ff;margin-bottom:8px;">${this._esc(c.title)}</div>
-        ${this._chartSvg(c)}
+        <div style="position:relative;">
+          ${this._chartSvg(c)}
+          ${this._loading ? `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(6,19,28,.45);backdrop-filter:blur(1px);border-radius:10px;color:#9eb8c8;font-size:13px;gap:8px;"><span style="display:inline-block;width:14px;height:14px;border:2px solid rgba(158,184,200,.25);border-top-color:#5bc0ff;border-radius:50%;animation:gSpin .9s linear infinite;"></span>Loading data…</div>` : ''}
+        </div>
       </div>`).join('');
 
     const err = this._error ? `<div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.35);color:#ffb3b3;font-size:13px;">${this._esc(this._error)}</div>` : '';
@@ -5540,6 +5544,7 @@ class DeyeEnergyGraphsCard extends HTMLElement {
 
     this.innerHTML = `
       <ha-card style="overflow:hidden;font-family:Roboto,Arial,sans-serif;font-size:14px;background:radial-gradient(circle at 18% 0%,rgba(26,106,164,.22),transparent 34%),linear-gradient(180deg,#020913,#06131c 54%,#050b10);border:1px solid rgba(101,142,164,.32);box-shadow:0 18px 45px rgba(0,0,0,.35);color:#eef7ff;--primary-text-color:#eef7ff;--secondary-text-color:#9eb8c8;--divider-color:rgba(118,166,190,.22);--g-muted:#9eb8c8;">
+        <style>@keyframes gSpin{to{transform:rotate(360deg)}}</style>
         <div class="graphs-root" style="padding:16px;">
           <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;">
             <div>
@@ -5561,6 +5566,8 @@ class DeyeEnergyGraphsCard extends HTMLElement {
       btn.addEventListener('click', () => {
         this._range = btn.getAttribute('data-range');
         this._customRange = false;
+        this._customFrom = '';
+        this._customTo = '';
         this._lastSig = '';
         this._render();
         this._fetchHistory();
@@ -5573,13 +5580,46 @@ class DeyeEnergyGraphsCard extends HTMLElement {
         this._render();
       });
     });
+    const fromInput = this.querySelector('.g-from');
+    const toInput = this.querySelector('.g-to');
+    const syncCustomInputs = () => {
+      this._customFrom = fromInput?.value || '';
+      this._customTo = toInput?.value || '';
+    };
+    if (fromInput) {
+      fromInput.addEventListener('input', syncCustomInputs);
+      fromInput.addEventListener('change', syncCustomInputs);
+    }
+    if (toInput) {
+      toInput.addEventListener('input', syncCustomInputs);
+      toInput.addEventListener('change', syncCustomInputs);
+    }
+    const clearBtn = this.querySelector('.g-clear');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => {
+        this._customFrom = '';
+        this._customTo = '';
+        this._customRange = false;
+        this._error = '';
+        if (fromInput) fromInput.value = '';
+        if (toInput) toInput.value = '';
+        this._lastSig = '';
+        this._render();
+      });
+    }
     const applyBtn = this.querySelector('.g-apply');
     if (applyBtn) {
       applyBtn.addEventListener('click', () => {
-        const from = this.querySelector('.g-from')?.value || '';
-        const to = this.querySelector('.g-to')?.value || '';
-        this._customFrom = from;
-        this._customTo = to;
+        syncCustomInputs();
+        const from = this._customFrom;
+        const to = this._customTo;
+        if (!from || !to) {
+          this._error = 'Select both From and To dates before applying a custom range.';
+          this._lastSig = '';
+          this._render();
+          return;
+        }
+        this._error = '';
         this._customRange = true;
         this._lastSig = '';
         this._render();
@@ -6023,12 +6063,12 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     };
     let centerArrows = '';
     if (active && geometry) {
-      const tipOffset = Math.max(0, geometry.length - 2);
+      const tipOffset = geometry.length;
       const pt = this._pointAt(geometry, tipOffset);
       const tan = this._tangentAt(geometry, tipOffset);
       if (transition) {
-        const oldPt = this._pointAt(geometry, 2);
-        const oldTanRaw = this._tangentAt(geometry, 2);
+        const oldPt = this._pointAt(geometry, 0);
+        const oldTanRaw = this._tangentAt(geometry, 0);
         const oldTan = { x: -oldTanRaw.x, y: -oldTanRaw.y };
         centerArrows += arrowHead(oldPt.x, oldPt.y, oldTan, color, oldArrowOpacity, `${id}-old`);
         centerArrows += arrowHead(pt.x, pt.y, tan, color, arrowOpacity, `${id}`);
@@ -6046,7 +6086,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     }
     return `
       <path class="pf-flow-line-bg" d="${d}" stroke="${color}" fill="none"/>
-      <path id="${id}" class="pf-flow-line${active ? ' pf-flow-active' : ''}" data-flow-duration="${state.duration}" data-flow-direction="${dir}" d="${d}" stroke="${active ? color : 'rgba(158,184,200,.18)'}" stroke-width="4" stroke-opacity="${active ? 0.96 : 0.18}" fill="none"/>
+      <path id="${id}" class="pf-flow-line${active ? ' pf-flow-active' : ''}" data-flow-duration="${state.duration}" data-flow-direction="${dir}" d="${d}" stroke="${active ? color : 'rgba(158,184,200,.18)'}" stroke-width="2" stroke-opacity="${active ? 0.96 : 0.18}" fill="none"/>
       ${centerArrows ? `<g data-flow-arrows="${id}">${centerArrows}</g>` : ''}
       ${balls ? `<g class="pf-balls" data-flow-balls="${id}">${balls}</g>` : ''}`;
   }
@@ -6108,7 +6148,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
         if (els && els.arrow) {
           els.arrow.setAttribute('opacity', transition ? transition.newArrow.toFixed(2) : '0.95');
           if (state.geometry) {
-            const tipOffset = Math.max(0, state.geometry.length - 2);
+            const tipOffset = state.geometry.length;
             const pt = this._pointAt(state.geometry, tipOffset);
             const tan = this._tangentAt(state.geometry, tipOffset);
             els.arrow.setAttribute('d', this._arrowPath(pt.x, pt.y, tan));
@@ -6117,8 +6157,8 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
         if (els && els.oldArrow) {
           els.oldArrow.setAttribute('opacity', transition ? transition.oldArrow.toFixed(2) : '0');
           if (state.geometry) {
-            const oldPt = this._pointAt(state.geometry, 2);
-            const oldTanRaw = this._tangentAt(state.geometry, 2);
+            const oldPt = this._pointAt(state.geometry, 0);
+            const oldTanRaw = this._tangentAt(state.geometry, 0);
             els.oldArrow.setAttribute('d', this._arrowPath(oldPt.x, oldPt.y, { x: -oldTanRaw.x, y: -oldTanRaw.y }));
           }
         }
@@ -6342,9 +6382,9 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       const dx = x2 - x1;
       const dy = y2 - y1;
       const cx1 = x1 + dx * bend;
-      const cy1 = y1 + dy * 0.55;
+      const cy1 = y1 + dy * 0.8;
       const cx2 = x2 - dx * bend;
-      const cy2 = y2 - dy * 0.55;
+      const cy2 = y2 - dy * 0.8;
       return `M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
     };
     const angled = (x1, y1, x2, y2, tilt = 18) => {
@@ -6474,8 +6514,8 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
         <style>
           @keyframes pfPulse{0%,100%{opacity:.35;transform:scale(1)}50%{opacity:.05;transform:scale(1.08)}}
           .pf-flow-line{fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;filter:url(#pf-line-glow)}
-          .pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34;filter:url(#pf-line-glow)}
-          .pf-flow-active{stroke-width:4!important}
+          .pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:2.5;opacity:.34;filter:url(#pf-line-glow)}
+          .pf-flow-active{stroke-width:2!important}
           .pf-balls{pointer-events:none}
           .pf-value-click{cursor:pointer;text-decoration:underline dotted rgba(158,184,200,.45);text-underline-offset:3px}
           .pf-value-click:hover{text-decoration-color:currentColor}
@@ -6539,7 +6579,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.1.06",
+  description: "Deye Energy 0.8.1.07",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

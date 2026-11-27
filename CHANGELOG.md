@@ -4,6 +4,18 @@ All notable changes to Deye Energy. Versions before 0.8.0 are the history of the
 upstream Deye Energy Manager project and are not repeated here. Attribution is
 recorded at the bottom of README.md.
 
+## [0.8.1.07] - 2026-11-27
+
+### Changed
+
+- **Power Flow lines/arrows**: reduced flow line/background stroke thickness for a cleaner look and aligned arrowhead tips to the end of active flow paths (notch remains centered on line thickness).
+- **Deye Energy Graphs**: reduced plot line stroke width for crisper edges and added a visible loading overlay/state while history data is being fetched.
+- **Deye Energy Graphs date range UX**: custom From/To inputs now sync on input/change to avoid losing selected values during re-renders; added a Clear button between To and Apply range; range pills clear custom dates; applying an incomplete custom range shows an inline error.
+
+### Fixed
+
+- **Graphs custom range behavior**: prevented custom datetime selections from appearing to clear on card rerender and made clear/apply interactions explicit.
+
 ## [0.8.1.06] - 2026-11-27
 
 ### Changed
