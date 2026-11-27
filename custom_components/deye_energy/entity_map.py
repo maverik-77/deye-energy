@@ -29,6 +29,10 @@ _POWER_FLOW_FORMATS = ("w", "kw", "kwh", "num", "gbp", "pct")
 _POWER_FLOW_CHIP_KINDS = ("import", "export", "bolt", "flame", "pound")
 _POWER_FLOW_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
 _POWER_FLOW_MAX_ROWS = 20
+_GRAPH_MAX_GROUPS = 20
+_GRAPH_MAX_CHARTS_PER_GROUP = 20
+_GRAPH_MAX_SERIES_PER_CHART = 12
+_GRAPH_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
 _POWER_FLOW_BUILTIN_DETAILS = (
     "pv_energy",
     "grid_import", "grid_export", "grid_voltage",
@@ -184,6 +188,101 @@ def validate_power_flow_payload(payload: Any) -> dict[str, Any]:
     }
 
 
+def _clean_label(value: Any, fallback: str, max_len: int = 80) -> str:
+    label = str(value or "").strip()
+    if not label:
+        label = fallback
+    return label[:max_len]
+
+
+def _clean_graph_key(value: Any, fallback: str) -> str:
+    raw = str(value or "").strip().lower().replace(" ", "_")
+    key = "".join(ch for ch in raw if ch.isalnum() or ch in {"_", "-"})
+    return key[:64] or fallback
+
+
+def validate_graphs_payload(payload: Any) -> dict[str, Any]:
+    """Validate and normalize a Deye Energy Graphs display config."""
+    if not isinstance(payload, dict):
+        raise ValueError("Graphs display must be an object")
+    unknown = set(payload) - {"schema_version", "groups"}
+    if unknown:
+        raise ValueError(f"unsupported Graphs display fields: {sorted(unknown)}")
+    groups = payload.get("groups", [])
+    if not isinstance(groups, list) or len(groups) > _GRAPH_MAX_GROUPS:
+        raise ValueError(f"Graphs groups must be a list of at most {_GRAPH_MAX_GROUPS} entries")
+    normalized_groups = []
+    seen_group_keys = set()
+    for gi, group in enumerate(groups):
+        if not isinstance(group, dict):
+            raise ValueError(f"Graphs group {gi} must be an object")
+        unknown = set(group) - {"key", "label", "enabled", "charts"}
+        if unknown:
+            raise ValueError(f"unsupported Graphs group fields: {sorted(unknown)}")
+        gkey = _clean_graph_key(group.get("key"), f"group_{gi+1}")
+        if gkey in seen_group_keys:
+            raise ValueError(f"duplicate Graphs group key: {gkey}")
+        seen_group_keys.add(gkey)
+        glabel = _clean_label(group.get("label"), gkey.replace("_", " ").title())
+        genabled = bool(group.get("enabled", True))
+        charts = group.get("charts", [])
+        if not isinstance(charts, list) or len(charts) > _GRAPH_MAX_CHARTS_PER_GROUP:
+            raise ValueError(f"Graphs charts in {gkey} must be a list of at most {_GRAPH_MAX_CHARTS_PER_GROUP} entries")
+        normalized_charts = []
+        seen_chart_keys = set()
+        for ci, chart in enumerate(charts):
+            if not isinstance(chart, dict):
+                raise ValueError(f"Graphs chart {gkey}/{ci} must be an object")
+            unknown = set(chart) - {"key", "title", "unit", "enabled", "series"}
+            if unknown:
+                raise ValueError(f"unsupported Graphs chart fields: {sorted(unknown)}")
+            ckey = _clean_graph_key(chart.get("key"), f"chart_{ci+1}")
+            if ckey in seen_chart_keys:
+                raise ValueError(f"duplicate Graphs chart key in {gkey}: {ckey}")
+            seen_chart_keys.add(ckey)
+            ctitle = _clean_label(chart.get("title"), ckey.replace("_", " ").title())
+            unit = str(chart.get("unit", "") or "").strip()[:16]
+            cenabled = bool(chart.get("enabled", True))
+            series = chart.get("series", [])
+            if not isinstance(series, list) or len(series) > _GRAPH_MAX_SERIES_PER_CHART:
+                raise ValueError(f"Graphs series in {gkey}/{ckey} must be a list of at most {_GRAPH_MAX_SERIES_PER_CHART} entries")
+            normalized_series = []
+            seen_series_keys = set()
+            for si, ser in enumerate(series):
+                if not isinstance(ser, dict):
+                    raise ValueError(f"Graphs series {gkey}/{ckey}/{si} must be an object")
+                unknown = set(ser) - {"key", "label", "entity", "color", "enabled"}
+                if unknown:
+                    raise ValueError(f"unsupported Graphs series fields: {sorted(unknown)}")
+                skey = _clean_graph_key(ser.get("key"), f"series_{si+1}")
+                if skey in seen_series_keys:
+                    raise ValueError(f"duplicate Graphs series key in {gkey}/{ckey}: {skey}")
+                seen_series_keys.add(skey)
+                slabel = _clean_label(ser.get("label"), skey.replace("_", " ").title())
+                entity = _validate_entity_id(ser.get("entity"), "graphs display payload")
+                color = str(ser.get("color", "") or "").strip()
+                if not color:
+                    color = "#5bc0ff"
+                if not _GRAPH_COLOR.match(color):
+                    raise ValueError(f"invalid Graphs series color in {gkey}/{ckey}/{skey}: {color}")
+                senabled = bool(ser.get("enabled", True))
+                normalized_series.append({"key": skey, "label": slabel, "entity": entity, "color": color, "enabled": senabled})
+            normalized_charts.append({"key": ckey, "title": ctitle, "unit": unit, "enabled": cenabled, "series": normalized_series})
+        normalized_groups.append({"key": gkey, "label": glabel, "enabled": genabled, "charts": normalized_charts})
+    return {"schema_version": 1, "groups": normalized_groups}
+
+
+def _validate_graphs(document: dict[str, Any], source: str) -> None:
+    graphs = document.get("graphs")
+    if graphs is None:
+        return
+    # Reuse the payload validator for structural checks; allow unknown top-level
+    # keys only through explicit validator behavior by checking before normalize.
+    if not isinstance(graphs, dict):
+        raise ValueError(f"graphs in {source} must be an object")
+    validate_graphs_payload(graphs)
+
+
 def _validate_power_flow(document: dict[str, Any], source: str) -> None:
     power_flow = document.get("power_flow")
     if power_flow is None:
@@ -267,6 +366,7 @@ def _load_document(path: Path, *, require_full: bool = True) -> dict[str, Any]:
             if section in profile and not isinstance(profile[section], dict):
                 raise ValueError(f"profiles.{name}.{section} must be an object")
     _validate_power_flow(document, str(path))
+    _validate_graphs(document, str(path))
     return document
 
 
@@ -353,6 +453,9 @@ def _document() -> dict[str, Any]:
             for group, rows in layout.items():
                 if isinstance(rows, list):
                     target.setdefault("node_detail_layout", {})[group] = rows
+    graphs = override.get("graphs")
+    if isinstance(graphs, dict):
+        merged["graphs"] = graphs
     return merged
 
 
@@ -495,6 +598,47 @@ def bundled_document() -> dict[str, Any]:
     """Return a copy of the bundled catalogue (for diagnostics/tests)."""
     return json.loads(json.dumps(_state["bundled"]))
 
+
+
+def graphs_display() -> dict[str, Any]:
+    """Return effective Deye Energy Graphs display config."""
+    graphs = _document().get("graphs", {})
+    return json.loads(json.dumps(graphs))
+
+
+def save_graphs_display(payload: Any) -> dict[str, Any]:
+    """Persist Graphs display config to the user entity map override file."""
+    normalized = validate_graphs_payload(payload)
+    path = power_flow_override_path()
+    if path is None:
+        raise ValueError("Home Assistant configuration directory is unavailable")
+    document: dict[str, Any] = {}
+    if path.is_file():
+        with path.open("r", encoding="utf-8") as handle:
+            loaded = json.load(handle)
+        if not isinstance(loaded, dict):
+            raise ValueError("entity map override must be a JSON object")
+        document = loaded
+    document["graphs"] = normalized
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(document, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        _load_document(temporary, require_full=False)
+        os.replace(temporary, path)
+    except (OSError, ValueError, json.JSONDecodeError) as err:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise ValueError(f"refusing to write invalid entity map override: {err}") from err
+    configure(_state["override_dir"])
+    if _state["override_errors"]:
+        raise ValueError("; ".join(_state["override_errors"]))
+    return graphs_display()
 
 def power_flow_display() -> dict[str, Any]:
     """Return the effective Power Flow mapping/display config for the cards."""

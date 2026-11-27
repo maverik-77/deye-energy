@@ -2,7 +2,7 @@
 
 ![Deye Energy](docs/banner.svg)
 
-[![version](https://img.shields.io/badge/version-0.8.1.07-blue.svg)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.8.1.08-blue.svg)](CHANGELOG.md)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](#quick-start)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.6%2B-18BCF2.svg)](#requirements)
@@ -14,12 +14,7 @@ statistics in a family of Lovelace cards. It is adapted to a Deye inverter
 exposed through MQTT (the Sunsynk / Deye add-on profile) and to a UK-style
 tariff.
 
-> **Release 0.8.1.07:** simplifies Power Flow to Power/Today periods, renders
-> mid-line tangent-oriented arrows on flow paths, halves glow-ball count with a
-> consistent 0–5000 W speed scale, and aligns the Inverter Configuration Power
-> Flow layout selector with other config fields. Manual Schedule remains
-> independent from physical Deye TOU and the unused stored 48-slot model remains
-> removed.
+> **Release 0.8.1.08:** adds an Inverter Config **Graph config** tab to edit/add/remove/enable-disable Deye Energy Graphs groups, charts, series, titles and sensor entities, persisted via `graphs_display` in the shared entity-map override. Power Flow lines/arrows are refined (end-aligned arrow tips, steeper left-right joins, evenly spaced glow balls). Manual Schedule remains independent from physical Deye TOU and the unused stored 48-slot model remains removed.
 
 ## Key features
 
@@ -70,8 +65,9 @@ tariff.
   with a bottom accent for Power flow, Inverter, Grid, Load, and Battery. The
   time-range buttons stay flat and **Apply range** commits a custom range.
   Charts render full-width within the selected group; default entity mappings
-  are overridable in card config (including `entities.ac_output_voltage`);
-  addable to any dashboard.
+  are overridable in card config (including `entities.ac_output_voltage`) or
+  managed from **Inverter Config > Graph config** (edit/add/remove/hide groups,
+  charts, series, titles and sensor entities); addable to any dashboard.
 - **Power flow** card (`custom:deye-energy-power-flow-card`) showing live
   animated power flow between PV, Grid, Inverter, Battery and Home, with
   configurable layout (`cross` default, or `left_right`), straight/curved
@@ -231,7 +227,7 @@ bundled card resource. In **YAML mode** add the resource manually:
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.1.07
+    - url: /deye_energy/deye-energy-card.js?v=0.8.1.08
       type: module
 ```
 

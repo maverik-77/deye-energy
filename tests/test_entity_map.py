@@ -421,6 +421,28 @@ class EntityMapCatalogueTests(unittest.TestCase):
                 [{"builtin": "grid_export"}],
             )
 
+    def test_validate_graphs_payload_rejects_bad_entity(self):
+        graphs = {
+            "schema_version": 1,
+            "groups": [{"key":"g","label":"G","enabled":True,"charts":[{"key":"c","title":"C","unit":"W","enabled":True,"series":[{"key":"s","label":"S","entity":"bad_id","color":"#5bc0ff","enabled":True}]}]}],
+        }
+        with self.assertRaisesRegex(ValueError, "invalid entity id"):
+            entity_map.validate_graphs_payload(graphs)
+
+    def test_save_graphs_display_writes_only_graphs_section(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            entity_map.configure(temp_dir)
+            result = entity_map.save_graphs_display({
+                "schema_version": 1,
+                "groups": [{"key":"g1","label":"Group 1","enabled":True,"charts":[{"key":"c1","title":"Chart 1","unit":"W","enabled":True,"series":[{"key":"s1","label":"S1","entity":"sensor.test","color":"#5bc0ff","enabled":True}]}]}],
+            })
+            self.assertTrue(any(g.get("label") == "Group 1" for g in result.get("groups", [])))
+            override = Path(temp_dir) / "deye_energy_entity_map.json"
+            with override.open("r", encoding="utf-8") as f:
+                saved = json.load(f)
+            self.assertIn("graphs", saved)
+            self.assertEqual(saved["graphs"]["groups"][0]["charts"][0]["series"][0]["entity"], "sensor.test")
+
 
 if __name__ == "__main__":
     unittest.main()

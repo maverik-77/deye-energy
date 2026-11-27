@@ -96,6 +96,9 @@ MANUAL_SCHEDULE_DATA_SCHEMA = vol.Schema(
 POWER_FLOW_DISPLAY_DATA_SCHEMA = vol.Schema(
     {vol.Required("data"): vol.All(cv.string, vol.Length(max=50000))}
 )
+GRAPHS_DISPLAY_DATA_SCHEMA = vol.Schema(
+    {vol.Required("data"): vol.All(cv.string, vol.Length(max=100000))}
+)
 INVERTER_CONFIG_SCHEMA = vol.Schema({})
 APPLY_INVERTER_CONFIG_SCHEMA = vol.Schema(
     {
@@ -127,6 +130,8 @@ SERVICE_NAMES = (
     "sync_inverter_datetime",
     "get_power_flow_display",
     "save_power_flow_display",
+    "get_graphs_display",
+    "save_graphs_display",
 )
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the integration domain before config entries are loaded.
@@ -523,6 +528,19 @@ def _register_services(hass: HomeAssistant) -> None:
         runtime.notify_update()
         return result
 
+    async def handle_get_graphs_display(call: ServiceCall) -> dict[str, Any]:
+        return entity_map.graphs_display()
+
+    async def handle_save_graphs_display(call: ServiceCall) -> dict[str, Any]:
+        payload = _parse_json_payload(call.data["data"], dict)
+        result = await hass.async_add_executor_job(
+            entity_map.save_graphs_display, payload
+        )
+        runtime = _active_runtime()
+        runtime.request_sensor_snapshot_refresh({"ai_state"})
+        runtime.notify_update()
+        return result
+
     hass.services.async_register(DOMAIN, "apply_settings", handle_apply_settings, schema=APPLY_SCHEMA)
     hass.services.async_register(DOMAIN, "manual_sell", handle_manual_sell, schema=MANUAL_SELL_SCHEMA)
     hass.services.async_register(DOMAIN, "charge_now", handle_charge_now, schema=CHARGE_SCHEMA)
@@ -623,6 +641,20 @@ def _register_services(hass: HomeAssistant) -> None:
         "save_power_flow_display",
         handle_save_power_flow_display,
         schema=POWER_FLOW_DISPLAY_DATA_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "get_graphs_display",
+        handle_get_graphs_display,
+        schema=INVERTER_CONFIG_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "save_graphs_display",
+        handle_save_graphs_display,
+        schema=GRAPHS_DISPLAY_DATA_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
 

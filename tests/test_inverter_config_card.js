@@ -376,6 +376,7 @@ function testPowerFlowTabRendersGroupsAndControls() {
   card._inverterConfigSubTab = "power_flow";
   const html = renderHtml(card);
   assert.match(html, /data-inverter-config-subtab="power_flow"/);
+  assert.match(html, /data-inverter-config-subtab="graph_config"/);
   assert.match(html, /Power flow mapping/);
   assert.match(html, /data-pf-entity="pv"/);
   assert.match(html, /sensor\.custom_pv/);
@@ -468,6 +469,43 @@ function testPowerFlowDetailReorderAndRemove() {
   assert.deepEqual(card.powerFlowDraft().node_detail_layout.pv, [{ builtin: "pv_energy" }]);
 }
 
+function testGraphConfigTabRendersAndSaves() {
+  const card = makeCard();
+  card._hass.states["sensor.test_ai_state"] = {
+    state: "ready",
+    attributes: { graphs_display: { schema_version:1, groups:[{key:"g1",label:"Group 1",enabled:true,charts:[{key:"c1",title:"Chart 1",unit:"W",enabled:true,series:[{key:"s1","label":"S1","entity":"sensor.test","color":"#5bc0ff","enabled":true}]}]}] } },
+  };
+  card._hass.services.deye_energy.save_graphs_display = {};
+  card._inverterConfigSubTab = "graph_config";
+  const html = renderHtml(card);
+  assert.match(html, /Deye Energy Graphs configuration/);
+  assert.match(html, /data-gc-save="1"/);
+  assert.match(html, /data-gc-add-group="1"/);
+  assert.match(html, /Group 1/);
+  assert.match(html, /Chart 1/);
+  assert.match(html, /sensor.test/);
+}
+
+async function testGraphConfigSaveSendsPayload() {
+  const card = makeCard();
+  card._hass.states["sensor.test_ai_state"] = {
+    state: "ready",
+    attributes: { graphs_display: { schema_version:1, groups:[] } },
+  };
+  card._hass.services.deye_energy.save_graphs_display = {};
+  card._inverterConfigSubTab = "graph_config";
+  renderHtml(card);
+  const draft = card.graphsDraft();
+  draft.groups = [{key:"g1",label:"G1",enabled:true,charts:[{key:"c1",title:"C1",unit:"W",enabled:true,series:[{key:"s1","label":"S1","entity":"sensor.x","color":"#5bc0ff","enabled":true}]}]}];
+  card._graphsDraftDirty = true;
+  setServiceResponses(card, { save_graphs_display: () => draft });
+  await card.saveGraphsDisplay();
+  const calls = card._serviceCalls.filter(a => a[0]==="deye_energy" && a[1]==="save_graphs_display");
+  assert.equal(calls.length, 1);
+  const payload = JSON.parse(calls[0][2].data);
+  assert.equal(payload.groups[0].charts[0].series[0].entity, "sensor.x");
+}
+
 function testRenderKeepsFocusedTextField() {
   const card = makeCard();
   withPowerFlowState(card);
@@ -500,7 +538,9 @@ module.exports = async function run() {
   await testPowerFlowSaveSendsDraftPayload();
   testPowerFlowDetailReorderAndRemove();
   testRenderKeepsFocusedTextField();
-  console.log("inverter config card: 15 checks passed");
+  testGraphConfigTabRendersAndSaves();
+  await testGraphConfigSaveSendsPayload();
+  console.log("inverter config card: 17 checks passed");
 };
 
 if (require.main === module) module.exports().catch((err) => {

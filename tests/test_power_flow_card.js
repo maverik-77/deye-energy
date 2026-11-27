@@ -139,7 +139,7 @@ check(/<path[^>]*d="M [^"]* [LC] /.test(html), "missing flow path");
 check(html.includes('pf-icon-glow'), "missing icon glow filter");
 check(html.includes('pf-glow'), "missing glow filter");
 check(html.includes('data-flow-arrow="pf-pv-inv"') || html.includes('data-flow-arrows="pf-pv-inv"'), "missing arrow marker");
-check(/data-flow-arrow="pf-pv-inv"[^>]*d="M [^"]+ L [^"]+ L [^"]+ L [^"]+ Z"/.test(html), "arrow should be a mid-line oriented chevron");
+check(/data-flow-arrow="pf-pv-inv"[^>]*d="M [^"]+ L [^"]+ L [^"]+ L [^"]+ Z"/.test(html), "arrow should be an oriented chevron at flow end");
 check(!html.includes('markerWidth="3.5" markerHeight="3.5"'), "clipped arrow marker should be gone");
 check(!html.includes('width="84" height="30" rx="15"'), "on-arrow power label should not be rendered");
 check(html.includes('.pf-flow-active{stroke-width:2!important}') && html.includes('.pf-balls{pointer-events:none}') && html.includes('.pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:2.5;opacity:.34'), "flow links should use discrete glow balls over a persistent background path");
@@ -176,7 +176,7 @@ const flowDuration = (markup, id) => {
 check(flowPath(html, 'pf-grid-inv').includes('stroke-width="2"'), "flow paths should keep an explicit stroke width for idle links");
 check(!html.includes('<animateMotion') && !html.includes('<mpath') && !html.includes('keyPoints='), "SMIL ball animation should not return");
 check(!html.includes('pfFlowDash') && !html.includes('stroke-dasharray:1 22') && !html.includes('animation:pfFlow'), "CSS dash animation should be gone");
-check(source.includes('state.gap = 60;') && source.includes('watts / 5000'), "power-scaled ball logic should be present");
+check(source.includes('targetGap = 60') && source.includes('geometry.length / state.count') && source.includes('watts / 5000'), "power-scaled ball logic should be present");
 check(!source.includes('Math.abs(power) * 0.11'), "old linear power speed should stay gone");
 check(html.includes('r="7.2"') && html.includes('r="4.2"') && html.includes('filter="url(#pf-glow)"'), "glow balls should keep a halo and a filtered core");
 check(html.includes('data-flow-balls="pf-grid-inv"'), "each active link should group its glow balls");

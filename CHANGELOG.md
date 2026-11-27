@@ -4,7 +4,19 @@ All notable changes to Deye Energy. Versions before 0.8.0 are the history of the
 upstream Deye Energy Manager project and are not repeated here. Attribution is
 recorded at the bottom of README.md.
 
-## [0.8.1.07] - 2026-11-27
+## [0.8.1.08] - 2026-11-27
+
+### Added
+
+- **Inverter Config → Graph config tab**: configure Deye Energy Graphs groups/charts/series (title, unit, sensor entity, color, enabled/hidden) directly from Inverter configuration. Supports adding/removing groups, charts, and series, and hiding items via enable/disable.
+- **Graphs display backend services**: added `deye_energy.get_graphs_display` and `deye_energy.save_graphs_display`; configuration is stored in the shared entity-map override `graphs` section and exposed via `sensor.ai_state` `graphs_display`.
+
+### Changed
+
+- **Deye Energy Graphs**: reads configured graph display from `graphs_display` (falls back to built-in defaults when unavailable), so edits/hides in Graph config are reflected in graphs.
+- **Power Flow rendering**: arrow tips align to active line end, left-right curves join at steeper angles, and glow balls are evenly spaced per path to avoid wraparound bunching.
+
+## [0.8.1.08] - 2026-11-27
 
 ### Changed
 

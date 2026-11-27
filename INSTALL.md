@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0 — installation and upgrade
 
-This guide covers a first installation and an upgrade of Deye Energy 0.8.1.07.
+This guide covers a first installation and an upgrade of Deye Energy 0.8.1.08.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 ## 1. Before you start
@@ -44,7 +44,7 @@ integration registers the bundled card resource by itself; nothing to add.
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.1.07
+    - url: /deye_energy/deye-energy-card.js?v=0.8.1.08
       type: module
 ```
 
@@ -55,7 +55,7 @@ type: custom:deye-energy-card
 ```
 
 A sample dashboard is in `dashboard/energy_manager.yaml` (card revision
-`v=0.8.1.07`). After an upgrade, hard-refresh the browser (or clear the app
+`v=0.8.1.08`). After an upgrade, hard-refresh the browser (or clear the app
 cache) so that the new card revision is loaded.
 
 ## 5. First-run checklist
@@ -74,12 +74,14 @@ cache) so that the new card revision is loaded.
 1. Back up Home Assistant.
 2. Update through HACS (or replace the folder) and restart.
 3. Hard-refresh the browser. The resource revision is updated automatically in
-   UI/storage mode; in YAML mode change `v=` to `0.8.1.07`.
+   UI/storage mode; in YAML mode change `v=` to `0.8.1.08`.
 
-**0.8.1.07 behavior update — Power Flow rendering/UX refinements.** Power
-Flow keeps only Power/Today periods, draws mid-line tangent-oriented arrows,
-uses half as many glow balls with consistent 0–5000 W speed scaling, and aligns
-the Inverter Configuration Power Flow layout selector with other config fields.
+**0.8.1.08 behavior update — Graph config and Power Flow polish.** Inverter
+Config adds a **Graph config** tab for editing, adding, removing and
+enabling/disabling Deye Energy Graphs groups/charts/series (title, unit, sensor
+entity, color, visibility), saved via `deye_energy.save_graphs_display` in the
+shared entity-map override. Power Flow arrows align to line endpoints, left-right
+joins use steeper angles, and glow balls are evenly spaced per path.
 Manual Schedule remains independent from physical Deye TOU and the removed
 48-slot stored-slot model / `deye_energy.apply_schedule_patch` remain removed.
 

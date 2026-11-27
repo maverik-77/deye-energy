@@ -272,3 +272,19 @@ save_power_flow_display:
       selector:
         text:
           multiline: true
+
+get_graphs_display:
+  name: Get Deye Energy Graphs display configuration
+  description: Return the effective Deye Energy Graphs groups, charts, series, titles, sensor entities and enabled/hidden flags.
+
+save_graphs_display:
+  name: Save Deye Energy Graphs display configuration
+  description: Save Deye Energy Graphs groups/charts/series configuration to the shared entity-map override file. Only the graphs section is changed.
+  fields:
+    data:
+      name: Graphs configuration JSON
+      description: JSON object with schema_version and groups. Each group/chart/series can be edited, added, removed, or hidden via enabled false. Unknown keys and invalid entity ids/colors are rejected.
+      required: true
+      selector:
+        text:
+          multiline: true

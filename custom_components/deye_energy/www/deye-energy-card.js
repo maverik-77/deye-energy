@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.1.07
+// Resource revision: v=0.8.1.08
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -1690,7 +1690,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.1.07 (resource revision v=0.8.1.07)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.1.08 (resource revision v=0.8.1.08)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -3684,6 +3684,11 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
     this._pfDisplaySource = null;
     this._pfDisplayCache = null;
     this._pfDisplayKey = null;
+    this._graphsDraft = null;
+    this._graphsSaving = false;
+    this._graphsMessage = "";
+    this._graphsDraftDirty = false;
+    this._graphsDraftSource = null;
   }
 
   setConfig(config) {
@@ -4050,6 +4055,7 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
       { key: "battery", label: "Battery" },
       { key: "energy", label: "Energy" },
       { key: "power_flow", label: "Power flow" },
+      { key: "graph_config", label: "Graph config" },
     ];
   }
 
@@ -4099,6 +4105,26 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
       ${message ? `<div class="${message.ok ? "ic-hint ic-ok" : "ic-hint ic-bad"}">${this.escapeHtml(String(message.text))}</div>` : ""}
       <button class="ic-action" data-apply-inverter-config="${this.escapeHtml(String(group.key))}" ${group.writable && !saving ? "" : "disabled"}>${saving ? "Applying…" : `Apply ${label}`}</button>
     </section>`;
+  }
+
+  graphsDisplay() {
+    const states = this._hass?.states || {};
+    const entry = Object.entries(states).find(([id, state]) => id.startsWith("sensor.") && id.endsWith("_ai_state") && state?.attributes?.graphs_display);
+    const source = entry?.[1]?.attributes?.graphs_display;
+    if (!source || typeof source !== "object" || Array.isArray(source)) return { schema_version: 1, groups: [] };
+    return source;
+  }
+
+  graphsDraft() {
+    const display = this.graphsDisplay();
+    const key = JSON.stringify(display);
+    if (!this._graphsDraft || (this._graphsDraftSource !== key && !this._graphsDraftDirty)) {
+      this._graphsDraft = this._pfCopy(display && Object.keys(display).length ? display : { schema_version: 1, groups: [] });
+      if (!Array.isArray(this._graphsDraft.groups)) this._graphsDraft.groups = [];
+      this._graphsDraftSource = key;
+      this._graphsDraftDirty = false;
+    }
+    return this._graphsDraft;
   }
 
   powerFlowDisplay() {
@@ -4465,6 +4491,102 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
     }
   }
 
+  async saveGraphsDisplay() {
+    if (this._graphsSaving) return;
+    if (!this.hasService("deye_energy", "save_graphs_display")) {
+      this._graphsMessage = "The save_graphs_display service is unavailable. Update and restart the integration.";
+      this._render();
+      return;
+    }
+    this._graphsSaving = true;
+    this._graphsMessage = "";
+    this._render();
+    try {
+      const draft = this.graphsDraft();
+      const payload = {
+        schema_version: 1,
+        groups: Array.isArray(draft.groups) ? this._pfCopy(draft.groups) : [],
+      };
+      const response = await this.callServiceWithResponse(
+        "deye_energy",
+        "save_graphs_display",
+        { data: JSON.stringify(payload) }
+      );
+      this._graphsMessage = "Graphs configuration saved.";
+      this._graphsDraftDirty = false;
+      if (response && typeof response === "object") {
+        this._graphsDraft = this._pfCopy(response);
+        this._graphsDraftSource = JSON.stringify(this.graphsDisplay());
+      }
+    } catch (error) {
+      this._graphsMessage = `Save failed: ${String(error?.message || error)}`;
+    } finally {
+      this._graphsSaving = false;
+      this._render();
+    }
+  }
+
+  renderGraphConfigTab() {
+    const draft = this.graphsDraft();
+    const groups = Array.isArray(draft.groups) ? draft.groups : [];
+    const message = this._graphsMessage
+      ? `<div class="ic-hint ${/failed|unavailable/i.test(this._graphsMessage) ? "ic-bad" : "ic-ok"}">${this.escapeHtml(this._graphsMessage)}</div>`
+      : "";
+    const groupHtml = groups.map((group, gi) => {
+      const charts = Array.isArray(group.charts) ? group.charts : [];
+      const chartHtml = charts.map((chart, ci) => {
+        const series = Array.isArray(chart.series) ? chart.series : [];
+        const seriesRows = series.map((ser, si) => `<tr>
+          <td><input class="ic-input" type="text" value="${this.escapeHtml(String(ser.label ?? ""))}" data-gc-series="${gi}:${ci}:${si}:label" placeholder="Label"></td>
+          <td><input class="ic-input ic-mono" type="text" value="${this.escapeHtml(String(ser.entity ?? ""))}" data-gc-series="${gi}:${ci}:${si}:entity" placeholder="sensor.entity_id"></td>
+          <td><input class="ic-input" type="text" value="${this.escapeHtml(String(ser.color ?? "#5bc0ff"))}" data-gc-series="${gi}:${ci}:${si}:color" placeholder="#5bc0ff"></td>
+          <td><label style="display:flex;gap:6px;align-items:center;"><input type="checkbox" data-gc-series-enabled="${gi}:${ci}:${si}" ${ser.enabled === false ? "" : "checked"}> Show</label></td>
+          <td><button class="ic-btn ic-btn-secondary" data-gc-remove-series="${gi}:${ci}:${si}">Remove</button></td>
+        </tr>`).join("");
+        return `<div class="ic-section" style="margin-top:10px;">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between;">
+            <strong>Chart: ${this.escapeHtml(String(chart.title || chart.key || `Chart ${ci+1}`))}</strong>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <label style="display:flex;gap:6px;align-items:center;color:#9eb8c8;"><input type="checkbox" data-gc-chart-enabled="${gi}:${ci}" ${chart.enabled === false ? "" : "checked"}> Enabled</label>
+              <button class="ic-btn ic-btn-secondary" data-gc-remove-chart="${gi}:${ci}">Remove chart</button>
+            </div>
+          </div>
+          <div class="ic-table-wrap"><table class="ic-table"><tbody>
+            <tr><td><strong>Title</strong></td><td><input class="ic-input" type="text" value="${this.escapeHtml(String(chart.title ?? ""))}" data-gc-chart="${gi}:${ci}:title"></td></tr>
+            <tr><td><strong>Unit</strong></td><td><input class="ic-input" type="text" value="${this.escapeHtml(String(chart.unit ?? ""))}" data-gc-chart="${gi}:${ci}:unit" placeholder="W / V / °C / %"></td></tr>
+          </tbody></table></div>
+          <div class="ic-table-wrap"><table class="ic-table"><thead><tr><th>Series label</th><th>Entity</th><th>Color</th><th>Show</th><th></th></tr></thead><tbody>${seriesRows || `<tr><td colspan="5" class="ic-muted">No series. Add one below.</td></tr>`}</tbody></table></div>
+          <button class="ic-btn ic-btn-secondary" data-gc-add-series="${gi}:${ci}">Add series</button>
+        </div>`;
+      }).join("");
+      return `<section class="ic-section">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between;">
+          <h4 style="margin:0;">Group: ${this.escapeHtml(String(group.label || group.key || `Group ${gi+1}`))}</h4>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <label style="display:flex;gap:6px;align-items:center;color:#9eb8c8;"><input type="checkbox" data-gc-group-enabled="${gi}" ${group.enabled === false ? "" : "checked"}> Enabled</label>
+            <button class="ic-btn ic-btn-secondary" data-gc-remove-group="${gi}">Remove group</button>
+          </div>
+        </div>
+        <div class="ic-table-wrap"><table class="ic-table"><tbody>
+          <tr><td><strong>Group title</strong></td><td><input class="ic-input" type="text" value="${this.escapeHtml(String(group.label ?? ""))}" data-gc-group="${gi}:label"></td></tr>
+        </tbody></table></div>
+        ${chartHtml || `<div class="ic-hint">No charts in this group.</div>`}
+        <button class="ic-btn ic-btn-secondary" data-gc-add-chart="${gi}">Add chart</button>
+      </section>`;
+    }).join("");
+
+    return `<section class="ic-section">
+      <h4>Deye Energy Graphs configuration</h4>
+      <p class="ic-hint">Edit graph groups, chart titles, sensor entities, colors, and visibility. Disabled groups/charts/series are hidden from Deye Energy Graphs. Save writes the shared entity-map override and updates graphs without restart.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="ic-btn ic-btn-secondary" data-gc-add-group="1">Add group</button>
+        <button class="ic-action" data-gc-save="1" ${this._graphsSaving ? "disabled" : ""}>${this._graphsSaving ? "Saving…" : "Save graph config"}</button>
+      </div>
+      ${message}
+    </section>
+    ${groupHtml || `<section class="ic-section"><div class="ic-hint">No graph groups configured. Add a group to start.</div></section>`}`;
+  }
+
   renderInverterDatetimeSection() {
     const status = this._inverterDatetimeStatus || this._inverterConfig?.datetime_status || null;
     const syncing = Boolean(this._inverterDatetimeSyncing);
@@ -4550,6 +4672,7 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
       this._inverterConfigMessages, this._pendingApply, this._config?.title || "",
       monitorStates, this.powerFlowStateSignature(), JSON.stringify(this.powerFlowDisplay()),
       JSON.stringify(this._powerFlowDraft), this._powerFlowSaving, this._powerFlowMessage,
+      JSON.stringify(this.graphsDisplay()), JSON.stringify(this._graphsDraft), this._graphsSaving, this._graphsMessage,
     ]);
   }
 
@@ -4666,6 +4789,8 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
       ], shownEntities);
     } else if (active === "power_flow") {
       body = this.renderPowerFlowConfigTab();
+    } else if (active === "graph_config") {
+      body = this.renderGraphConfigTab();
     }
     if (!body) body = `<div class="ic-hint">No data available for this section.</div>`;
 
@@ -4885,6 +5010,52 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
       this._render();
     }));
     this.querySelectorAll("[data-pf-save]").forEach((el) => el.addEventListener("click", () => this.savePowerFlowDisplay()));
+    this.querySelectorAll("[data-gc-save]").forEach((el) => el.addEventListener("click", () => this.saveGraphsDisplay()));
+    this.querySelectorAll("[data-gc-group]").forEach((el) => {
+      const [gi, field] = String(el.dataset.gcGroup).split(":");
+      const update = () => { const g = this.graphsDraft().groups?.[Number(gi)]; if (g) { g[field] = el.value; this._graphsDraftDirty = true; } };
+      el.addEventListener("input", update); el.addEventListener("change", update);
+    });
+    this.querySelectorAll("[data-gc-group-enabled]").forEach((el) => el.addEventListener("change", () => {
+      const g = this.graphsDraft().groups?.[Number(el.dataset.gcGroupEnabled)]; if (g) { g.enabled = el.checked; this._graphsDraftDirty = true; }
+    }));
+    this.querySelectorAll("[data-gc-chart]").forEach((el) => {
+      const [gi, ci, field] = String(el.dataset.gcChart).split(":");
+      const update = () => { const c = this.graphsDraft().groups?.[Number(gi)]?.charts?.[Number(ci)]; if (c) { c[field] = el.value; this._graphsDraftDirty = true; } };
+      el.addEventListener("input", update); el.addEventListener("change", update);
+    });
+    this.querySelectorAll("[data-gc-chart-enabled]").forEach((el) => el.addEventListener("change", () => {
+      const [gi, ci] = String(el.dataset.gcChartEnabled).split(":"); const c = this.graphsDraft().groups?.[Number(gi)]?.charts?.[Number(ci)]; if (c) { c.enabled = el.checked; this._graphsDraftDirty = true; }
+    }));
+    this.querySelectorAll("[data-gc-series]").forEach((el) => {
+      const [gi, ci, si, field] = String(el.dataset.gcSeries).split(":");
+      const update = () => { const ser = this.graphsDraft().groups?.[Number(gi)]?.charts?.[Number(ci)]?.series?.[Number(si)]; if (ser) { ser[field] = el.value; this._graphsDraftDirty = true; } };
+      el.addEventListener("input", update); el.addEventListener("change", update);
+    });
+    this.querySelectorAll("[data-gc-series-enabled]").forEach((el) => el.addEventListener("change", () => {
+      const [gi, ci, si] = String(el.dataset.gcSeriesEnabled).split(":"); const ser = this.graphsDraft().groups?.[Number(gi)]?.charts?.[Number(ci)]?.series?.[Number(si)]; if (ser) { ser.enabled = el.checked; this._graphsDraftDirty = true; }
+    }));
+    this.querySelectorAll("[data-gc-add-group]").forEach((el) => el.addEventListener("click", () => {
+      const d = this.graphsDraft(); d.groups = Array.isArray(d.groups) ? d.groups : [];
+      d.groups.push({ key: `group_${Date.now()}`, label: "New group", enabled: true, charts: [] }); this._graphsDraftDirty = true; this._render();
+    }));
+    this.querySelectorAll("[data-gc-remove-group]").forEach((el) => el.addEventListener("click", () => {
+      const d = this.graphsDraft(); if (Array.isArray(d.groups)) d.groups.splice(Number(el.dataset.gcRemoveGroup), 1); this._graphsDraftDirty = true; this._render();
+    }));
+    this.querySelectorAll("[data-gc-add-chart]").forEach((el) => el.addEventListener("click", () => {
+      const g = this.graphsDraft().groups?.[Number(el.dataset.gcAddChart)]; if (!g) return; g.charts = Array.isArray(g.charts) ? g.charts : [];
+      g.charts.push({ key: `chart_${Date.now()}`, title: "New chart", unit: "W", enabled: true, series: [] }); this._graphsDraftDirty = true; this._render();
+    }));
+    this.querySelectorAll("[data-gc-remove-chart]").forEach((el) => el.addEventListener("click", () => {
+      const [gi, ci] = String(el.dataset.gcRemoveChart).split(":"); const g = this.graphsDraft().groups?.[Number(gi)]; if (g && Array.isArray(g.charts)) g.charts.splice(Number(ci), 1); this._graphsDraftDirty = true; this._render();
+    }));
+    this.querySelectorAll("[data-gc-add-series]").forEach((el) => el.addEventListener("click", () => {
+      const [gi, ci] = String(el.dataset.gcAddSeries).split(":"); const c = this.graphsDraft().groups?.[Number(gi)]?.charts?.[Number(ci)]; if (!c) return; c.series = Array.isArray(c.series) ? c.series : [];
+      c.series.push({ key: `series_${Date.now()}`, label: "New series", entity: "", color: "#5bc0ff", enabled: true }); this._graphsDraftDirty = true; this._render();
+    }));
+    this.querySelectorAll("[data-gc-remove-series]").forEach((el) => el.addEventListener("click", () => {
+      const [gi, ci, si] = String(el.dataset.gcRemoveSeries).split(":"); const c = this.graphsDraft().groups?.[Number(gi)]?.charts?.[Number(ci)]; if (c && Array.isArray(c.series)) c.series.splice(Number(si), 1); this._graphsDraftDirty = true; this._render();
+    }));
     this.querySelectorAll("[data-ic-cancel-apply]").forEach((el) => el.addEventListener("click", () => this.cancelPendingApply()));
     this.querySelectorAll("[data-ic-confirm-apply]").forEach((el) => el.addEventListener("click", () => this.confirmPendingApply()));
     const overlay = this.querySelector("[data-ic-overlay]");
@@ -5159,6 +5330,7 @@ class DeyeEnergyGraphsCard extends HTMLElement {
     this._history = {};
     this._lastFetch = 0;
     this._lastSig = '';
+    this._graphsSig = '';
     this._timer = null;
   }
 
@@ -5185,7 +5357,13 @@ class DeyeEnergyGraphsCard extends HTMLElement {
   set hass(hass) {
     const old = this._hass;
     this._hass = hass;
-    if (!old || (hass && hass.connected !== old.connected)) {
+    const newGraphsSig = JSON.stringify(this._graphsDisplay() || null);
+    const graphsChanged = !old || newGraphsSig !== this._graphsSig;
+    if (graphsChanged) {
+      this._graphsSig = newGraphsSig;
+      this._lastSig = '';
+      this._scheduleFetch(0);
+    } else if (!old || (hass && hass.connected !== old.connected)) {
       this._scheduleFetch(0);
     }
     this._render();
@@ -5235,72 +5413,77 @@ class DeyeEnergyGraphsCard extends HTMLElement {
     return { ...this._defaultEntities(), ...(this._config.entities || {}) };
   }
 
-  _groupDefs() {
+  _graphsDisplay() {
+    const states = this._hass?.states || {};
+    const entry = Object.entries(states).find(([id, state]) => id.startsWith("sensor.") && id.endsWith("_ai_state") && state?.attributes?.graphs_display);
+    const source = entry?.[1]?.attributes?.graphs_display;
+    if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+    return source;
+  }
+
+  _defaultGraphGroups() {
     const e = this._entities();
     return [
-      {
-        key: 'power_flow',
-        title: 'Power flow',
-        charts: [
-          {
-            key: 'power_flow',
-            title: 'Power flow',
-            unit: 'W',
-            series: [
-              { key: 'grid_power', label: 'Grid', entity: e.grid_power, color: '#5bc0ff' },
-              { key: 'load_power', label: 'Load', entity: e.load_power, color: '#f6a619' },
-              { key: 'battery_power', label: 'Battery', entity: e.battery_power, color: '#7ee22d' },
-              { key: 'inverter_power', label: 'Inverter', entity: e.inverter_power, color: '#bc63ff' },
-            ],
-          },
-        ],
-      },
-      {
-        key: 'inverter',
-        title: 'Inverter',
-        charts: [
-          { key: 'ac_output_voltage', title: 'AC output voltage', unit: 'V', series: [{ key: 'ac_output_voltage', label: 'AC output voltage', entity: e.ac_output_voltage, color: '#5bc0ff' }] },
-          { key: 'ac_inverter_output_power', title: 'AC inverter output power', unit: 'W', series: [{ key: 'inverter_power', label: 'Inverter output power', entity: e.inverter_power, color: '#bc63ff' }] },
-          {
-            key: 'inverter_temperatures',
-            title: 'Inverter temperatures',
-            unit: '°C',
-            series: [
-              { key: 'inverter_rad_temperature', label: 'Radiator', entity: e.inverter_rad_temperature, color: '#ff7a45' },
-              { key: 'inverter_dc_transformer_temperature', label: 'DC transformer', entity: e.inverter_dc_transformer_temperature, color: '#f6a619' },
-              { key: 'inverter_ac_temperature', label: 'AC temperature', entity: e.inverter_ac_temperature, color: '#5bc0ff' },
-            ],
-          },
-        ],
-      },
-      {
-        key: 'grid',
-        title: 'Grid',
-        charts: [
-          { key: 'grid_voltage', title: 'Grid voltage', unit: 'V', series: [{ key: 'grid_voltage', label: 'Grid voltage', entity: e.grid_voltage, color: '#5bc0ff' }] },
-          { key: 'grid_frequency', title: 'Grid frequency', unit: 'Hz', series: [{ key: 'grid_frequency', label: 'Grid frequency', entity: e.grid_frequency, color: '#35d66f' }] },
-          { key: 'grid_power', title: 'Grid power (input / output)', unit: 'W', series: [{ key: 'grid_power', label: 'Grid power', entity: e.grid_power, color: '#5bc0ff' }] },
-        ],
-      },
-      {
-        key: 'load',
-        title: 'Load',
-        charts: [
-          { key: 'load_power', title: 'Load power', unit: 'W', series: [{ key: 'load_power', label: 'Load power', entity: e.load_power, color: '#f6a619' }] },
-        ],
-      },
-      {
-        key: 'battery',
-        title: 'Battery',
-        charts: [
-          { key: 'battery_soc', title: 'Battery SOC', unit: '%', series: [{ key: 'battery_soc', label: 'SOC', entity: e.battery_soc, color: '#7ee22d' }] },
-          { key: 'battery_power', title: 'Battery power', unit: 'W', series: [{ key: 'battery_power', label: 'Battery power', entity: e.battery_power, color: '#7ee22d' }] },
-          { key: 'battery_current', title: 'Battery current', unit: 'A', series: [{ key: 'battery_current', label: 'Battery current', entity: e.battery_current, color: '#5bc0ff' }] },
-          { key: 'battery_voltage', title: 'DC voltage', unit: 'V', series: [{ key: 'battery_voltage', label: 'DC voltage', entity: e.battery_voltage, color: '#bc63ff' }] },
-          { key: 'battery_temperatures', title: 'Battery temperature', unit: '°C', series: [{ key: 'battery_temperature', label: 'Battery temperature', entity: e.battery_temperature, color: '#ff7a45' }] },
-        ],
-      },
+      { key: 'power_flow', label: 'Power flow', enabled: true, charts: [{ key: 'power_flow', title: 'Power flow', unit: 'W', enabled: true, series: [
+        { key: 'grid_power', label: 'Grid', entity: e.grid_power, color: '#5bc0ff', enabled: true },
+        { key: 'load_power', label: 'Load', entity: e.load_power, color: '#f6a619', enabled: true },
+        { key: 'battery_power', label: 'Battery', entity: e.battery_power, color: '#7ee22d', enabled: true },
+        { key: 'inverter_power', label: 'Inverter', entity: e.inverter_power, color: '#bc63ff', enabled: true },
+      ]}]},
+      { key: 'inverter', label: 'Inverter', enabled: true, charts: [
+        { key: 'ac_output_voltage', title: 'AC output voltage', unit: 'V', enabled: true, series: [{ key: 'ac_output_voltage', label: 'AC output voltage', entity: e.ac_output_voltage, color: '#5bc0ff', enabled: true }] },
+        { key: 'ac_inverter_output_power', title: 'AC inverter output power', unit: 'W', enabled: true, series: [{ key: 'inverter_power', label: 'Inverter output power', entity: e.inverter_power, color: '#bc63ff', enabled: true }] },
+        { key: 'inverter_temperatures', title: 'Inverter temperatures', unit: '°C', enabled: true, series: [
+          { key: 'inverter_rad_temperature', label: 'Radiator', entity: e.inverter_rad_temperature, color: '#ff7a45', enabled: true },
+          { key: 'inverter_dc_transformer_temperature', label: 'DC transformer', entity: e.inverter_dc_transformer_temperature, color: '#f6a619', enabled: true },
+          { key: 'inverter_ac_temperature', label: 'AC temperature', entity: e.inverter_ac_temperature, color: '#5bc0ff', enabled: true },
+        ]},
+      ]},
+      { key: 'grid', label: 'Grid', enabled: true, charts: [
+        { key: 'grid_voltage', title: 'Grid voltage', unit: 'V', enabled: true, series: [{ key: 'grid_voltage', label: 'Grid voltage', entity: e.grid_voltage, color: '#5bc0ff', enabled: true }] },
+        { key: 'grid_frequency', title: 'Grid frequency', unit: 'Hz', enabled: true, series: [{ key: 'grid_frequency', label: 'Grid frequency', entity: e.grid_frequency, color: '#35d66f', enabled: true }] },
+        { key: 'grid_power', title: 'Grid power (input / output)', unit: 'W', enabled: true, series: [{ key: 'grid_power', label: 'Grid power', entity: e.grid_power, color: '#5bc0ff', enabled: true }] },
+      ]},
+      { key: 'load', label: 'Load', enabled: true, charts: [
+        { key: 'load_power', title: 'Load power', unit: 'W', enabled: true, series: [{ key: 'load_power', label: 'Load power', entity: e.load_power, color: '#f6a619', enabled: true }] },
+      ]},
+      { key: 'battery', label: 'Battery', enabled: true, charts: [
+        { key: 'battery_soc', title: 'Battery SOC', unit: '%', enabled: true, series: [{ key: 'battery_soc', label: 'SOC', entity: e.battery_soc, color: '#7ee22d', enabled: true }] },
+        { key: 'battery_power', title: 'Battery power', unit: 'W', enabled: true, series: [{ key: 'battery_power', label: 'Battery power', entity: e.battery_power, color: '#7ee22d', enabled: true }] },
+        { key: 'battery_current', title: 'Battery current', unit: 'A', enabled: true, series: [{ key: 'battery_current', label: 'Battery current', entity: e.battery_current, color: '#5bc0ff', enabled: true }] },
+        { key: 'battery_voltage', title: 'DC voltage', unit: 'V', enabled: true, series: [{ key: 'battery_voltage', label: 'DC voltage', entity: e.battery_voltage, color: '#bc63ff', enabled: true }] },
+        { key: 'battery_temperatures', title: 'Battery temperature', unit: '°C', enabled: true, series: [{ key: 'battery_temperature', label: 'Battery temperature', entity: e.battery_temperature, color: '#ff7a45', enabled: true }] },
+      ]},
     ];
+  }
+
+  _groupDefs() {
+    const display = this._graphsDisplay();
+    const rawGroups = Array.isArray(display?.groups) && display.groups.length ? display.groups : this._defaultGraphGroups();
+    const groups = rawGroups
+      .filter(g => g && g.enabled !== false)
+      .map(g => ({
+        key: String(g.key || ''),
+        title: String(g.label || g.key || 'Group'),
+        charts: (Array.isArray(g.charts) ? g.charts : [])
+          .filter(c => c && c.enabled !== false)
+          .map(c => ({
+            key: String(c.key || ''),
+            title: String(c.title || c.key || 'Chart'),
+            unit: String(c.unit || ''),
+            series: (Array.isArray(c.series) ? c.series : [])
+              .filter(s => s && s.enabled !== false && String(s.entity || '').trim())
+              .map(s => ({
+                key: String(s.key || ''),
+                label: String(s.label || s.key || 'Series'),
+                entity: String(s.entity || ''),
+                color: String(s.color || '#5bc0ff'),
+              })),
+          }))
+          .filter(c => c.series.length),
+      }))
+      .filter(g => g.charts.length);
+    return groups.length ? groups : this._defaultGraphGroups().map(g => ({ ...g, title: g.label })).map(g => ({ key: g.key, title: g.label, charts: g.charts.map(c => ({ key:c.key, title:c.title, unit:c.unit, series:c.series.filter(s=>s.enabled!==false) })) }));
   }
 
   _allEntityIds() {
@@ -5812,8 +5995,9 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
   }
   _tAtOffset(g, offset) {
     if (!g || !g.length) return 0;
-    const d = ((offset % g.length) + g.length) % g.length;
-    if (g.type === 'line') return d / g.length;
+    const raw = Number(offset) || 0;
+    const d = raw >= g.length ? g.length : ((raw % g.length) + g.length) % g.length;
+    if (g.type === 'line') return g.length ? d / g.length : 0;
     const lut = g.lut || [0, g.length];
     let lo = 0, hi = lut.length - 1;
     while (lo < hi) {
@@ -6025,8 +6209,9 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     }
     state.duration = this._flowDuration(state.power);
     state.geometry = geometry;
-    state.gap = 60;
-    state.count = geometry ? Math.max(1, Math.min(5, Math.floor(geometry.length / state.gap) + 1)) : 1;
+    const targetGap = 60;
+    state.count = geometry ? Math.max(1, Math.min(5, Math.round(geometry.length / targetGap))) : 1;
+    state.gap = geometry ? geometry.length / state.count : targetGap;
     return state;
   }
   _ballPoint(state, index) {
@@ -6381,10 +6566,10 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const curve = (x1, y1, x2, y2, bend = 0.45) => {
       const dx = x2 - x1;
       const dy = y2 - y1;
-      const cx1 = x1 + dx * bend;
-      const cy1 = y1 + dy * 0.8;
-      const cx2 = x2 - dx * bend;
-      const cy2 = y2 - dy * 0.8;
+      const cx1 = x1 + dx * 0.2;
+      const cy1 = y1 + dy * 0.85;
+      const cx2 = x2 - dx * 0.2;
+      const cy2 = y2 - dy * 0.85;
       return `M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
     };
     const angled = (x1, y1, x2, y2, tilt = 18) => {
@@ -6579,7 +6764,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.1.07",
+  description: "Deye Energy 0.8.1.08",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",
