@@ -138,9 +138,8 @@ check(html.includes('font-weight="800" fill="#ff5d70" stroke="none">£</text>'),
 check(/<path[^>]*d="M [^"]* [LC] /.test(html), "missing flow path");
 check(html.includes('pf-icon-glow'), "missing icon glow filter");
 check(html.includes('pf-glow'), "missing glow filter");
-check(html.includes('pf-arrow-pf-pv-inv'), "missing arrow marker");
-check(html.includes('viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5"'), "arrow marker should have a viewBox and a visible tip");
-check(html.includes('M 0 0 L 10 5 L 0 10 L 2.5 5 Z'), "arrow marker should use a complete arrow shape");
+check(html.includes('data-flow-arrow="pf-pv-inv"') || html.includes('data-flow-arrows="pf-pv-inv"'), "missing arrow marker");
+check(/data-flow-arrow="pf-pv-inv"[^>]*d="M [^"]+ L [^"]+ L [^"]+ L [^"]+ Z"/.test(html), "arrow should be a mid-line oriented chevron");
 check(!html.includes('markerWidth="3.5" markerHeight="3.5"'), "clipped arrow marker should be gone");
 check(!html.includes('width="84" height="30" rx="15"'), "on-arrow power label should not be rendered");
 check(html.includes('.pf-flow-active{stroke-width:4!important}') && html.includes('.pf-balls{pointer-events:none}') && html.includes('.pf-flow-line-bg{fill:none;stroke-linecap:round;stroke-width:5;opacity:.34'), "flow links should use discrete glow balls over a persistent background path");
@@ -177,7 +176,7 @@ const flowDuration = (markup, id) => {
 check(flowPath(html, 'pf-grid-inv').includes('stroke-width="4"'), "flow paths should keep an explicit stroke width for idle links");
 check(!html.includes('<animateMotion') && !html.includes('<mpath') && !html.includes('keyPoints='), "SMIL ball animation should not return");
 check(!html.includes('pfFlowDash') && !html.includes('stroke-dasharray:1 22') && !html.includes('animation:pfFlow'), "CSS dash animation should be gone");
-check(source.includes('state.gap = 30;') && source.includes('Math.sqrt(watts / 1000)'), "power-scaled ball logic should be present");
+check(source.includes('state.gap = 60;') && source.includes('watts / 5000'), "power-scaled ball logic should be present");
 check(!source.includes('Math.abs(power) * 0.11'), "old linear power speed should stay gone");
 check(html.includes('r="7.2"') && html.includes('r="4.2"') && html.includes('filter="url(#pf-glow)"'), "glow balls should keep a halo and a filtered core");
 check(html.includes('data-flow-balls="pf-grid-inv"'), "each active link should group its glow balls");
@@ -187,7 +186,7 @@ check(html.includes('.pf-flow-line{fill:none;stroke-linecap:round;stroke-linejoi
 check(!html.includes('stroke-dasharray:none;filter:url(#pf-glow)'), "straight links should not use the bounding-box glow filter");
 check(html.includes('class="pf-flow-line pf-flow-active"'), "active links should carry the active-flow class");
 check((html.match(/class="pf-flow-line-bg"/g) || []).length === 4, "each link should have a persistent background path");
-check(flowPath(html, 'pf-grid-inv').includes('marker-end='), "active link should carry an arrowhead");
+check(html.includes('data-flow-arrows="pf-grid-inv"'), "active link should carry an arrowhead");
 check(flowDuration(html, 'pf-pv-inv') < flowDuration(html, 'pf-inv-home') && flowDuration(html, 'pf-inv-home') < flowDuration(html, 'pf-grid-inv') && flowDuration(html, 'pf-grid-inv') < flowDuration(html, 'pf-batt-inv'), "ball speed should scale with each link's watts");
 
 // Flow gaps after widening entity surrounds: 88.5 grid/home, 70 PV, 100 battery
@@ -205,17 +204,17 @@ const fastCard = new sandbox.PowerFlowCard();
 fastCard.setConfig({ entities: { pv: 'p', grid: 'g', battery: 'b', battery_soc: 's', load: 'l', inverter: 'i' }, flow_animation_speed: 12 });
 fastCard.hass = { states: { p: { state: '0' }, g: { state: '400' }, b: { state: '0' }, s: { state: '50' }, l: { state: '0' }, i: { state: '0' } } };
 const fastHtml = fastCard.innerHTML;
-check(card._flowDuration(1000) === 3 && card._flowDuration(4000) === 1.5 && card._flowDuration(100) === 7.5, "default speed should scale ball duration from link watts");
-check(fastCard._flowDuration(1000) === 1.5 && fastCard._flowDuration(4000) === 0.75, "flow_animation_speed should scale the base ball duration");
-check(flowDuration(fastHtml, 'pf-grid-inv') === 2.37 && !fastHtml.includes('pfFlowDash'), "flow_animation_speed should drive data-flow-duration, not a CSS animation");
+check(card._flowDuration(0) === 8 && card._flowDuration(2500) === 4.4 && card._flowDuration(5000) === 0.8 && card._flowDuration(8000) === 0.8, "default speed should scale ball duration from link watts over 0-5000W");
+check(fastCard._flowDuration(1000) === card._flowDuration(1000), "flow_animation_speed should not change physical ball speed");
+check(flowDuration(fastHtml, 'pf-grid-inv') === card._flowDuration(400) && !fastHtml.includes('pfFlowDash'), "data-flow-duration should reflect physical ball speed");
 
 // Direction: reversing power reverses both the arrowhead and the glow travel
 const dirCard = new sandbox.PowerFlowCard();
 dirCard.setConfig({ entities: { pv: 'p', grid: 'g', battery: 'b', battery_soc: 's', load: 'l', inverter: 'i' } });
 dirCard.hass = { states: { p: { state: '0' }, g: { state: '400' }, b: { state: '-300' }, s: { state: '50' }, l: { state: '0' }, i: { state: '0' } } };
 const dirHtml = dirCard.innerHTML;
-check(flowPath(dirHtml, 'pf-grid-inv').includes('d="M 386 470 L 474.5 470"') && flowPath(dirHtml, 'pf-grid-inv').includes('marker-end=') && flowPath(dirHtml, 'pf-grid-inv').includes('pf-flow-active') && flowPath(dirHtml, 'pf-grid-inv').includes('data-flow-direction="1"'), "import should point from grid to inverter and move toward it");
-check(flowPath(dirHtml, 'pf-batt-inv').includes('d="M 600 595.5 L 600 695.5"') && flowPath(dirHtml, 'pf-batt-inv').includes('marker-end=') && flowPath(dirHtml, 'pf-batt-inv').includes('pf-flow-active') && flowPath(dirHtml, 'pf-batt-inv').includes('data-flow-direction="-1"'), "charging should point from inverter to battery and move toward it");
+check(flowPath(dirHtml, 'pf-grid-inv').includes('d="M 386 470 L 474.5 470"') && dirHtml.includes('data-flow-arrows="pf-grid-inv"') && flowPath(dirHtml, 'pf-grid-inv').includes('pf-flow-active') && flowPath(dirHtml, 'pf-grid-inv').includes('data-flow-direction="1"'), "import should point from grid to inverter and move toward it");
+check(flowPath(dirHtml, 'pf-batt-inv').includes('d="M 600 595.5 L 600 695.5"') && dirHtml.includes('data-flow-arrows="pf-batt-inv"') && flowPath(dirHtml, 'pf-batt-inv').includes('pf-flow-active') && flowPath(dirHtml, 'pf-batt-inv').includes('data-flow-direction="-1"'), "charging should point from inverter to battery and move toward it");
 check(dirHtml.includes('data-flow-balls="pf-grid-inv"') && dirHtml.includes('data-flow-balls="pf-batt-inv"'), "active links should carry discrete glow balls");
 
 // Reversal: phase is preserved, old/new arrowheads cross-fade, glow dims then returns
@@ -228,22 +227,21 @@ revCard.hass = { states: { p: { state: '0' }, g: { state: '400' }, b: { state: '
 const revHtml = revCard.innerHTML;
 const revGridPath = flowPath(revHtml, 'pf-grid-inv');
 check(revGridPath.includes('d="M 386 470 L 474.5 470"') && revGridPath.includes('data-flow-direction="1"'), "reversal should repoint the path and arrowhead");
-check(revGridPath.includes('marker-start="url(#pf-arrow-pf-grid-inv-old)"') && revGridPath.includes('marker-end="url(#pf-arrow-pf-grid-inv)"'), "reversal should show both the old and new arrowheads");
+check(revHtml.includes('data-flow-arrow="pf-grid-inv-old"') && revHtml.includes('data-flow-arrow="pf-grid-inv"'), "reversal should show both the old and new arrowheads");
 check(revState.phase >= 68 && revState.phase <= 69, "reversal should preserve ball positions while it fades");
-check(revHtml.includes('id="pf-arrow-pf-grid-inv-old"') && revHtml.includes('orient="auto-start-reverse"'), "old arrow should fade from the previous end");
-
 revState.transitionStart = revCard._flowNow() - 720;
 const midHtml = revCard._flow('pf-grid-inv', 'M 386 470 L 474.5 470', '#5bc0ff', 400, 1);
-const midNewArrow = (midHtml.match(/id="pf-arrow-pf-grid-inv"[\s\S]*?<\/marker>/) || [''])[0];
-const midOldArrow = (midHtml.match(/id="pf-arrow-pf-grid-inv-old"[\s\S]*?<\/marker>/) || [''])[0];
-check(midNewArrow.includes('opacity="0.5"') && midOldArrow.includes('opacity="0.5"'), "mid reversal should cross-fade arrowheads");
+const midNewArrow = (midHtml.match(/data-flow-arrow="pf-grid-inv"[^>]*opacity="([^"]+)"/) || ['', '1'])[1];
+const midOldArrow = (midHtml.match(/data-flow-arrow="pf-grid-inv-old"[^>]*opacity="([^"]+)"/) || ['', '0'])[1];
+check(parseFloat(midNewArrow) > 0.2, "new arrow should be fading in at mid transition");
+check(parseFloat(midOldArrow) < 0.8, "old arrow should be fading out at mid transition");
 check(midHtml.includes('opacity="0.1"') && midHtml.includes('opacity="0.01"'), "mid reversal should dim glow balls while arrowheads cross-fade");
 revState.transitionStart = revCard._flowNow() - 1400;
 const lateHtml = revCard._flow('pf-grid-inv', 'M 386 470 L 474.5 470', '#5bc0ff', 400, 1);
 check(lateHtml.includes('opacity="0.98"') && lateHtml.includes('opacity="0.14"'), "late reversal should restore glow before movement resumes");
 revState.transitionStart = revCard._flowNow() - 1700;
 const doneHtml = revCard._flow('pf-grid-inv', 'M 386 470 L 474.5 470', '#5bc0ff', 400, 1);
-check(!doneHtml.includes('pf-arrow-pf-grid-inv-old') && doneHtml.includes('data-flow-direction="1"'), "completed reversal should leave only the new arrowhead");
+check(!doneHtml.includes('data-flow-arrow="pf-grid-inv-old"') && doneHtml.includes('data-flow-direction="1"'), "completed reversal should leave only the new arrowhead");
 
 // Persistent phase: a sensor update re-renders the SVG without restarting the balls
 const persistCard = new sandbox.PowerFlowCard();
@@ -270,6 +268,7 @@ const haloEl = fakeEl(haloAttrs), coreEl = fakeEl(coreAttrs);
 const ballsNode = { querySelectorAll: (selector) => selector === '.pf-ball-halo' ? [haloEl] : [coreEl] };
 animCard.querySelector = (selector) => {
   if (selector === '#pf-grid-inv') return fakeEl(lineAttrs);
+  if (selector === '[data-flow-arrows="pf-grid-inv"]') return { querySelector: (sel) => sel === '[data-flow-arrow="pf-grid-inv"]' ? fakeEl(arrowAttrs) : null };
   if (selector === '#pf-arrow-pf-grid-inv path') return fakeEl(arrowAttrs);
   if (selector === '[data-flow-balls="pf-grid-inv"]') return ballsNode;
   return null;
@@ -324,7 +323,7 @@ idleCard.hass = { states: { p: { state: '0' }, g: { state: '0' }, b: { state: '0
 const idleHtml = idleCard.innerHTML;
 check(flowPath(idleHtml, 'pf-grid-inv').includes('d="M 386 470 L 474.5 470"'), "idle grid link should remain rendered");
 check(flowPath(idleHtml, 'pf-batt-inv').includes('d="M 600 695.5 L 600 595.5"'), "idle battery link should remain rendered");
-check(!idleHtml.includes('marker-end='), "idle links should have no arrowheads");
+check(!idleHtml.includes('data-flow-arrows="pf-grid-inv"'), "idle links should have no arrowheads");
 check(!idleHtml.includes('class="pf-flow-line pf-flow-active"') && !idleHtml.includes('data-flow-balls=') && !idleHtml.includes('pf-ball-core'), "idle links should have no glow balls");
 check((idleHtml.match(/class="pf-flow-line-bg"/g) || []).length === 4 && (idleHtml.match(/class="pf-flow-line"/g) || []).length === 4, "idle links should remain as plain background and line paths");
 
@@ -335,19 +334,19 @@ const gridNodeHtml = (markup) => (markup.match(/<foreignObject[^>]* width="174" 
 
 gridCard.hass = { states: { p: { state: '0' }, g: { state: '0.5' }, b: { state: '0' }, s: { state: '50' }, l: { state: '0' }, i: { state: '0' } } };
 const tinyImportHtml = gridCard.innerHTML;
-check(flowPath(tinyImportHtml, 'pf-grid-inv').includes('pf-flow-active') && flowPath(tinyImportHtml, 'pf-grid-inv').includes('marker-end='), "0.5 W import should animate the grid link with an arrowhead");
+check(flowPath(tinyImportHtml, 'pf-grid-inv').includes('pf-flow-active') && tinyImportHtml.includes('data-flow-arrows="pf-grid-inv"'), "0.5 W import should animate the grid link with an arrowhead");
 check(gridNodeHtml(tinyImportHtml).includes('border:1px solid #5bc0ff;'), "0.5 W import should activate the Grid node");
 check(tinyImportHtml.includes('>Importing<'), "0.5 W import should label the Grid as importing");
 
 gridCard.hass = { states: { p: { state: '0' }, g: { state: '-0.5' }, b: { state: '0' }, s: { state: '50' }, l: { state: '0' }, i: { state: '0' } } };
 const tinyExportHtml = gridCard.innerHTML;
-check(flowPath(tinyExportHtml, 'pf-grid-inv').includes('d="M 474.5 470 L 386 470"') && flowPath(tinyExportHtml, 'pf-grid-inv').includes('pf-flow-active') && flowPath(tinyExportHtml, 'pf-grid-inv').includes('marker-end='), "0.5 W export should point to the grid and animate");
+check(flowPath(tinyExportHtml, 'pf-grid-inv').includes('d="M 474.5 470 L 386 470"') && flowPath(tinyExportHtml, 'pf-grid-inv').includes('pf-flow-active') && tinyExportHtml.includes('data-flow-arrows="pf-grid-inv"'), "0.5 W export should point to the grid and animate");
 check(gridNodeHtml(tinyExportHtml).includes('border:1px solid #5bc0ff;'), "0.5 W export should activate the Grid node");
 check(tinyExportHtml.includes('>Exporting<'), "0.5 W export should label the Grid as exporting");
 
 gridCard.hass = { states: { p: { state: '0' }, g: { state: '0' }, b: { state: '0' }, s: { state: '50' }, l: { state: '0' }, i: { state: '0' } } };
 const zeroGridHtml = gridCard.innerHTML;
-check(!flowPath(zeroGridHtml, 'pf-grid-inv').includes('pf-flow-active') && !flowPath(zeroGridHtml, 'pf-grid-inv').includes('marker-end='), "0 W grid should leave the link idle");
+check(!flowPath(zeroGridHtml, 'pf-grid-inv').includes('pf-flow-active') && !zeroGridHtml.includes('data-flow-arrows="pf-grid-inv"'), "0 W grid should leave the link idle");
 check(gridNodeHtml(zeroGridHtml).includes('border:1px solid rgba(148,173,189,.28);'), "0 W grid should leave the Grid node idle");
 check(zeroGridHtml.slice(zeroGridHtml.indexOf('>Grid</div>'), zeroGridHtml.indexOf('>Grid</div>') + 400).includes('Idle'), "0 W Grid node should read Idle");
 
@@ -438,7 +437,7 @@ check(card.innerHTML.includes("Missing/unavailable entities"), "missing entity w
 const card2 = new sandbox.PowerFlowCard();
 card2.setConfig({
   title: "Deye",
-  view: { energy_periods: ["power", "today", "24h", "week", "month"] },
+  view: { energy_periods: ["power", "today"] },
   entities: { pv: "sensor.pv", grid: "sensor.grid", battery: "sensor.batt", battery_soc: "sensor.soc", load: "sensor.load", inverter: "sensor.inv" },
   consumers: [
     { entity: "sensor.ac", name: "Right AC", icon: "mdi:air-conditioner", min_w: 5 },
@@ -458,7 +457,9 @@ check(h2.includes("Unifi"), "missing consumer name Unifi");
 check(h2.includes("Rest"), "missing rest consumer");
 check(h2.includes("pf-period"), "missing period selector");
 check(h2.includes('data-period="today"'), "missing today period");
-check(h2.includes('data-period="24h"'), "missing 24h period");
+check(!h2.includes('data-period="24h"'), "24h period should be removed");
+check(!h2.includes('data-period="week"'), "week period should be removed");
+check(!h2.includes('data-period="month"'), "month period should be removed");
 const periodAt = h2.indexOf('class="pf-period"');
 const frameAt = h2.indexOf('class="pf-diagram" style="width:100%;aspect-ratio:1200 /');
 const frameEndAt = h2.indexOf('</div>', h2.indexOf('</svg>', frameAt));

@@ -1,6 +1,6 @@
 # Deye Energy 0.8.0 — installation and upgrade
 
-This guide covers a first installation and an upgrade of Deye Energy 0.8.1.04.
+This guide covers a first installation and an upgrade of Deye Energy 0.8.1.05.
 Repository: <https://github.com/maverik-77/deye-energy>.
 
 ## 1. Before you start
@@ -44,7 +44,7 @@ integration registers the bundled card resource by itself; nothing to add.
 ```yaml
 lovelace:
   resources:
-    - url: /deye_energy/deye-energy-card.js?v=0.8.1.04
+    - url: /deye_energy/deye-energy-card.js?v=0.8.1.05
       type: module
 ```
 
@@ -55,7 +55,7 @@ type: custom:deye-energy-card
 ```
 
 A sample dashboard is in `dashboard/energy_manager.yaml` (card revision
-`v=0.8.1.04`). After an upgrade, hard-refresh the browser (or clear the app
+`v=0.8.1.05`). After an upgrade, hard-refresh the browser (or clear the app
 cache) so that the new card revision is loaded.
 
 ## 5. First-run checklist
@@ -74,12 +74,12 @@ cache) so that the new card revision is loaded.
 1. Back up Home Assistant.
 2. Update through HACS (or replace the folder) and restart.
 3. Hard-refresh the browser. The resource revision is updated automatically in
-   UI/storage mode; in YAML mode change `v=` to `0.8.1.04`.
+   UI/storage mode; in YAML mode change `v=` to `0.8.1.05`.
 
-**0.8.1.04 behavior update — Power Flow layout refinements.** Left-right
-Power Flow layout uses separated inverter junctions and tighter vertical spacing;
-period filter pills are centered in `left_right` and right-aligned in `cross`.
-Saved `power_flow.layout` is correctly merged from override files at runtime.
+**0.8.1.05 behavior update — Power Flow rendering/UX refinements.** Power
+Flow keeps only Power/Today periods, draws mid-line tangent-oriented arrows,
+uses half as many glow balls with consistent 0–5000 W speed scaling, and aligns
+the Inverter Configuration Power Flow layout selector with other config fields.
 Manual Schedule remains independent from physical Deye TOU and the removed
 48-slot stored-slot model / `deye_energy.apply_schedule_patch` remain removed.
 

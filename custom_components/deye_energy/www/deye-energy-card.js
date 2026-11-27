@@ -1,4 +1,4 @@
-// Resource revision: v=0.8.1.04
+// Resource revision: v=0.8.1.05
 class DeyeEnergyCard extends HTMLElement {
   setConfig(config) {
     this.config = config || {};
@@ -1690,7 +1690,7 @@ class DeyeEnergyCard extends HTMLElement {
       <div><span>Last save</span><strong>${this.formatAppliedAt(attrs.last_saved_at)}</strong></div>
       <div><span>Last applied</span><strong>${this.formatAppliedAt(attrs.last_applied_at)}</strong></div>
       <div><span>Last error</span><strong class="${attrs.last_error && attrs.last_error !== "none" ? "bad" : "good"}">${attrs.last_error && attrs.last_error !== "none" ? this.escapeHtml(attrs.last_error) : "None"}</strong></div>
-      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.1.04 (resource revision v=0.8.1.04)</strong></div>
+      <div><span>Versions</span><strong>Integration ${this.escapeHtml(attrs.integration_version || "0.8.0")} \u00b7 card 0.8.1.05 (resource revision v=0.8.1.05)</strong></div>
     </div>
     ${attemptSection}
     ${capabilitySection}
@@ -4381,13 +4381,10 @@ class DeyeEnergyInverterConfigCard extends HTMLElement {
     return `<section class="ic-section">
         <h4>Power flow layout</h4>
         <p class="ic-hint">Choose how nodes are arranged in the Power Flow card. "Left and right" places PV/Grid on the left, Inverter in the middle, and Battery/Home on the right, with curved connection lines.</p>
-        <div class="pf-edit-row">
-          <label class="ic-muted" for="pf-layout-select">Display layout</label>
-          <select id="pf-layout-select" data-pf-layout="1">
+        <div class="ic-table-wrap"><table class="ic-table"><tbody><tr><td><strong>Display layout</strong></td><td><select class="ic-select" id="pf-layout-select" data-pf-layout="1">
             <option value="cross"${layout === "cross" ? " selected" : ""}>Cross (default)</option>
             <option value="left_right"${layout === "left_right" ? " selected" : ""}>Left and right</option>
-          </select>
-        </div>
+          </select></td></tr></tbody></table></div>
       </section>
       <section class="ic-section">
         <h4>Power flow mapping</h4>
@@ -5642,7 +5639,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
   static getStubConfig() {
     return {
       title: 'Deye Energy Power Flow',
-      view: { energy_periods: ['power', 'today', '24h', 'week', 'month'] },
+      view: { energy_periods: ['power', 'today'] },
       entities: {
         pv: 'sensor.garage_deye_energy_pv_power',
         grid: 'sensor.garage_deye_energy_grid_power',
@@ -5688,9 +5685,11 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     return { speed, duration };
   }
   _flowDuration(power) {
-    const watts = Math.abs(Number(power) || 0);
-    const factor = Math.min(3, Math.max(0.4, Math.sqrt(watts / 1000)));
-    return Number(Math.max(0.35, Math.min(8, this._flowTiming().duration / factor)).toFixed(2));
+    const watts = Math.max(0, Math.min(5000, Math.abs(Number(power) || 0)));
+    const minDuration = 0.8;
+    const maxDuration = 8;
+    const t = watts / 5000;
+    return Number((maxDuration - (maxDuration - minDuration) * t).toFixed(2));
   }
   _flowNow() {
     return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
@@ -5764,15 +5763,17 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       y: mt * mt * mt * p0.y + 3 * mt * mt * t * p1.y + 3 * mt * t * t * p2.y + t * t * t * p3.y,
     };
   }
-  _pointAt(g, offset) {
-    if (!g || !g.length) return { x: 0, y: 0 };
+  _cubicTangent(p0, p1, p2, p3, t) {
+    const mt = 1 - t;
+    return {
+      x: 3 * mt * mt * (p1.x - p0.x) + 6 * mt * t * (p2.x - p1.x) + 3 * t * t * (p3.x - p2.x),
+      y: 3 * mt * mt * (p1.y - p0.y) + 6 * mt * t * (p2.y - p1.y) + 3 * t * t * (p3.y - p2.y),
+    };
+  }
+  _tAtOffset(g, offset) {
+    if (!g || !g.length) return 0;
     const d = ((offset % g.length) + g.length) % g.length;
-    if (g.type === 'line') {
-      return {
-        x: Number((g.x1 + (g.x2 - g.x1) * d / g.length).toFixed(2)),
-        y: Number((g.y1 + (g.y2 - g.y1) * d / g.length).toFixed(2)),
-      };
-    }
+    if (g.type === 'line') return d / g.length;
     const lut = g.lut || [0, g.length];
     let lo = 0, hi = lut.length - 1;
     while (lo < hi) {
@@ -5782,9 +5783,32 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const i = Math.max(1, lo);
     const d0 = lut[i - 1], d1 = lut[i];
     const segT = d1 > d0 ? (d - d0) / (d1 - d0) : 0;
-    const t = ((i - 1) + segT) / g.samples;
-    const pt = this._cubicPoint(g.p0, g.p1, g.p2, g.p3, Math.max(0, Math.min(1, t)));
+    return Math.max(0, Math.min(1, ((i - 1) + segT) / g.samples));
+  }
+  _pointAt(g, offset) {
+    if (!g || !g.length) return { x: 0, y: 0 };
+    if (g.type === 'line') {
+      const t = this._tAtOffset(g, offset);
+      return {
+        x: Number((g.x1 + (g.x2 - g.x1) * t).toFixed(2)),
+        y: Number((g.y1 + (g.y2 - g.y1) * t).toFixed(2)),
+      };
+    }
+    const t = this._tAtOffset(g, offset);
+    const pt = this._cubicPoint(g.p0, g.p1, g.p2, g.p3, t);
     return { x: Number(pt.x.toFixed(2)), y: Number(pt.y.toFixed(2)) };
+  }
+  _tangentAt(g, offset) {
+    if (!g || !g.length) return { x: 1, y: 0 };
+    if (g.type === 'line') {
+      const dx = g.x2 - g.x1, dy = g.y2 - g.y1;
+      const len = Math.sqrt(dx * dx + dy * dy) || 1;
+      return { x: dx / len, y: dy / len };
+    }
+    const t = this._tAtOffset(g, offset);
+    const tan = this._cubicTangent(g.p0, g.p1, g.p2, g.p3, t);
+    const len = Math.sqrt(tan.x * tan.x + tan.y * tan.y) || 1;
+    return { x: tan.x / len, y: tan.y / len };
   }
   _fmtW(v) { if (v == null || !Number.isFinite(v)) return '—'; const abs = Math.abs(v); if (abs >= 10000) return `${(v / 1000).toFixed(1)} kW`; return `${Math.round(v)} W`; }
   _fmtKwh(v) { return v == null || !Number.isFinite(v) ? '—' : `${v.toFixed(2)} kWh`; }
@@ -5848,9 +5872,9 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const override = this._powerFlowDisplay().entities || {};
     return { ...d, ...override, ...(this._config.entities || {}) };
   }
-  _periods() { const p = this._config?.view?.energy_periods; return Array.isArray(p) && p.length ? p.filter(x => ['power','today','24h','week','month'].includes(x)) : ['power','today','24h','week','month']; }
+  _periods() { const p = this._config?.view?.energy_periods; const allowed = ['power','today']; const filtered = Array.isArray(p) && p.length ? p.filter(x => allowed.includes(x)) : allowed; return filtered.length ? filtered : allowed; }
   _isEnergyPeriod() { return this._period !== 'power'; }
-  _periodLabel(p) { return ({power:'Power',today:'Today','24h':'24h',week:'Week',month:'Month'})[p] || p; }
+  _periodLabel(p) { return ({power:'Power',today:'Today'})[p] || p; }
 
   _openMoreInfo(entityId) {
     if (!entityId || !this._hass?.states?.[entityId]) return;
@@ -5863,9 +5887,6 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const end = new Date(now);
     let start = new Date(now);
     if (period === 'today') start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    else if (period === '24h') start = new Date(now.getTime() - 24*3600*1000);
-    else if (period === 'week') start = new Date(now.getTime() - 7*24*3600*1000);
-    else if (period === 'month') start = new Date(now.getTime() - 30*24*3600*1000);
     else start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     return { start: start.toISOString(), end: end.toISOString() };
   }
@@ -5896,7 +5917,7 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const token = ++this._statsToken;
     this._statsKey = key; this._statsLoading = true; this._stats = {};
     try {
-      const periodType = period === 'month' ? 'day' : period === 'week' ? 'day' : period === '24h' ? 'hour' : 'day';
+      const periodType = 'day';
       const res = await this._hass.connection.sendMessagePromise({
         type: 'recorder/statistics_during_period',
         start_time: range.start,
@@ -5964,8 +5985,8 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     }
     state.duration = this._flowDuration(state.power);
     state.geometry = geometry;
-    state.gap = 30;
-    state.count = geometry ? Math.max(1, Math.min(10, Math.floor(geometry.length / state.gap) + 1)) : 1;
+    state.gap = 60;
+    state.count = geometry ? Math.max(1, Math.min(5, Math.floor(geometry.length / state.gap) + 1)) : 1;
     return state;
   }
   _ballPoint(state, index) {
@@ -5985,7 +6006,34 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
     const arrowOpacity = transition ? Number(transition.newArrow.toFixed(2)) : 0.95;
     const oldArrowOpacity = transition ? Number(transition.oldArrow.toFixed(2)) : 0;
     const markerAttrs = active ? `${transition ? `marker-start="url(#pf-arrow-${id}-old)" ` : ''}marker-end="url(#pf-arrow-${id})"` : '';
-    const oldMarker = transition ? `<marker id="pf-arrow-${id}-old" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M 0 0 L 10 5 L 0 10 L 2.5 5 Z" fill="${color}" opacity="${oldArrowOpacity}"/></marker>` : '';
+    const arrowHead = (cx, cy, tan, fill, opacity, key) => {
+      const nx = -tan.y, ny = tan.x;
+      const tipX = cx + tan.x * 7;
+      const tipY = cy + tan.y * 7;
+      const baseX = cx - tan.x * 5;
+      const baseY = cy - tan.y * 5;
+      const w = 6.2;
+      const notchX = cx - tan.x * 1.5;
+      const notchY = cy - tan.y * 1.5;
+      const p1 = `${tipX.toFixed(2)} ${tipY.toFixed(2)}`;
+      const p2 = `${(baseX + nx * w).toFixed(2)} ${(baseY + ny * w).toFixed(2)}`;
+      const p3 = `${notchX.toFixed(2)} ${notchY.toFixed(2)}`;
+      const p4 = `${(baseX - nx * w).toFixed(2)} ${(baseY - ny * w).toFixed(2)}`;
+      return `<path data-flow-arrow="${key}" d="M ${p1} L ${p2} L ${p3} L ${p4} Z" fill="${fill}" opacity="${opacity}"/>`;
+    };
+    let centerArrows = '';
+    if (active && geometry) {
+      const mid = geometry.length / 2;
+      const pt = this._pointAt(geometry, mid);
+      const tan = this._tangentAt(geometry, mid);
+      if (transition) {
+        const oldTan = { x: -tan.x, y: -tan.y };
+        centerArrows += arrowHead(pt.x, pt.y, oldTan, color, oldArrowOpacity, `${id}-old`);
+        centerArrows += arrowHead(pt.x, pt.y, tan, color, arrowOpacity, `${id}`);
+      } else {
+        centerArrows += arrowHead(pt.x, pt.y, tan, color, arrowOpacity, `${id}`);
+      }
+    }
     let balls = '';
     if (active && geometry) {
       for (let i = 0; i < state.count; i += 1) {
@@ -5995,21 +6043,34 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       }
     }
     return `
-      <defs>
-        ${oldMarker}
-        <marker id="pf-arrow-${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto" markerUnits="strokeWidth"><path d="M 0 0 L 10 5 L 0 10 L 2.5 5 Z" fill="${color}" opacity="${arrowOpacity}"/></marker>
-      </defs>
       <path class="pf-flow-line-bg" d="${d}" stroke="${color}" fill="none"/>
-      <path id="${id}" class="pf-flow-line${active ? ' pf-flow-active' : ''}" data-flow-duration="${state.duration}" data-flow-direction="${dir}" d="${d}" stroke="${active ? color : 'rgba(158,184,200,.18)'}" stroke-width="4" stroke-opacity="${active ? 0.96 : 0.18}" fill="none" ${markerAttrs}/>
+      <path id="${id}" class="pf-flow-line${active ? ' pf-flow-active' : ''}" data-flow-duration="${state.duration}" data-flow-direction="${dir}" d="${d}" stroke="${active ? color : 'rgba(158,184,200,.18)'}" stroke-width="4" stroke-opacity="${active ? 0.96 : 0.18}" fill="none"/>
+      ${centerArrows ? `<g data-flow-arrows="${id}">${centerArrows}</g>` : ''}
       ${balls ? `<g class="pf-balls" data-flow-balls="${id}">${balls}</g>` : ''}`;
+  }
+  _arrowPath(cx, cy, tan) {
+    const nx = -tan.y, ny = tan.x;
+    const tipX = cx + tan.x * 7;
+    const tipY = cy + tan.y * 7;
+    const baseX = cx - tan.x * 5;
+    const baseY = cy - tan.y * 5;
+    const w = 6.2;
+    const notchX = cx - tan.x * 1.5;
+    const notchY = cy - tan.y * 1.5;
+    const p1 = `${tipX.toFixed(2)} ${tipY.toFixed(2)}`;
+    const p2 = `${(baseX + nx * w).toFixed(2)} ${(baseY + ny * w).toFixed(2)}`;
+    const p3 = `${notchX.toFixed(2)} ${notchY.toFixed(2)}`;
+    const p4 = `${(baseX - nx * w).toFixed(2)} ${(baseY - ny * w).toFixed(2)}`;
+    return `M ${p1} L ${p2} L ${p3} L ${p4} Z`;
   }
   _bindFlowAnimation() {
     this._flowEls.clear();
     if (typeof this.querySelector !== 'function' || typeof this.querySelectorAll !== 'function') return;
     for (const [id] of this._flowMotion) {
       const line = this.querySelector(`#${id}`) || null;
-      const arrow = this.querySelector(`#pf-arrow-${id} path`) || null;
-      const oldArrow = this.querySelector(`#pf-arrow-${id}-old path`) || null;
+      const arrowsNode = this.querySelector(`[data-flow-arrows="${id}"]`) || null;
+      const arrow = arrowsNode?.querySelector(`[data-flow-arrow="${id}"]`) || this.querySelector(`#pf-arrow-${id} path`) || null;
+      const oldArrow = arrowsNode?.querySelector(`[data-flow-arrow="${id}-old"]`) || this.querySelector(`#pf-arrow-${id}-old path`) || null;
       const ballsNode = this.querySelector(`[data-flow-balls="${id}"]`) || null;
       const halos = ballsNode ? Array.from(ballsNode.querySelectorAll('.pf-ball-halo')) : [];
       const cores = ballsNode ? Array.from(ballsNode.querySelectorAll('.pf-ball-core')) : [];
@@ -6043,8 +6104,24 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
           els.line.setAttribute('stroke-opacity', state.active ? '0.96' : '0.18');
           els.line.setAttribute('data-flow-duration', state.duration);
         }
-        if (els && els.arrow) els.arrow.setAttribute('opacity', transition ? transition.newArrow.toFixed(2) : '0.95');
-        if (els && els.oldArrow) els.oldArrow.setAttribute('opacity', transition ? transition.oldArrow.toFixed(2) : '0');
+        if (els && els.arrow) {
+          els.arrow.setAttribute('opacity', transition ? transition.newArrow.toFixed(2) : '0.95');
+          if (state.geometry) {
+            const mid = state.geometry.length / 2;
+            const pt = this._pointAt(state.geometry, mid);
+            const tan = this._tangentAt(state.geometry, mid);
+            els.arrow.setAttribute('d', this._arrowPath(pt.x, pt.y, tan));
+          }
+        }
+        if (els && els.oldArrow) {
+          els.oldArrow.setAttribute('opacity', transition ? transition.oldArrow.toFixed(2) : '0');
+          if (state.geometry) {
+            const mid = state.geometry.length / 2;
+            const pt = this._pointAt(state.geometry, mid);
+            const tan = this._tangentAt(state.geometry, mid);
+            els.oldArrow.setAttribute('d', this._arrowPath(pt.x, pt.y, { x: -tan.x, y: -tan.y }));
+          }
+        }
         if (els) {
           els.halos.forEach((el, i) => {
             const point = this._ballPoint(state, i);
@@ -6261,11 +6338,26 @@ class DeyeEnergyPowerFlowCard extends HTMLElement {
       return `<rect x="${c[0]-hw}" y="${c[1]-hh}" width="${SURROUND_W}" height="${hh*2}" rx="36" fill="none" stroke="${color}" stroke-width="${HALO_SW}"/>`;
     };
     const straight = (x1, y1, x2, y2) => `M ${x1} ${y1} L ${x2} ${y2}`;
-    const curve = (x1, y1, x2, y2, bend = 0.35) => {
+    const curve = (x1, y1, x2, y2, bend = 0.45) => {
       const dx = x2 - x1;
+      const dy = y2 - y1;
       const cx1 = x1 + dx * bend;
+      const cy1 = y1 + dy * 0.3;
       const cx2 = x2 - dx * bend;
-      return `M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}`;
+      const cy2 = y2 - dy * 0.3;
+      return `M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
+    };
+    const angled = (x1, y1, x2, y2, tilt = 18) => {
+      const dx = x2 - x1;
+      const dy = y2 - y1;
+      const len = Math.sqrt(dx * dx + dy * dy) || 1;
+      const nx = -dy / len;
+      const ny = dx / len;
+      const cx1 = x1 + dx * 0.35 + nx * tilt;
+      const cy1 = y1 + dy * 0.35 + ny * tilt;
+      const cx2 = x2 - dx * 0.35 + nx * tilt;
+      const cy2 = y2 - dy * 0.35 + ny * tilt;
+      return `M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
     };
     const invAttachY = (side, sign) => N.inv[1] + sign * (ringR * 0.45);
     const pvToInv = layout === 'left_right'
@@ -6447,7 +6539,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "deye-energy-card",
   name: "Deye Energy",
-  description: "Deye Energy 0.8.1.04",
+  description: "Deye Energy 0.8.1.05",
 });
 window.customCards.push({
   type: "deye-energy-inverter-config-card",

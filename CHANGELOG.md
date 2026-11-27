@@ -4,12 +4,25 @@ All notable changes to Deye Energy. Versions before 0.8.0 are the history of the
 upstream Deye Energy Manager project and are not repeated here. Attribution is
 recorded at the bottom of README.md.
 
+## [0.8.1.05] - 2026-11-27
+
+### Changed
+
+- **Power Flow periods**: removed 24h/Week/Month period filters from the Power Flow card; only Power and Today remain because longer-period statistics were not reliably available.
+- **Power Flow glow balls**: halved the number of moving glow balls and aligned ball speed across all links to a consistent 0–5000 W range (clamped above 5000 W), independent of path length.
+- **Power Flow arrows**: arrowheads are now rendered at mid-line and oriented along the actual path tangent, so curved/tilted flows no longer show axis-aligned arrow notches/points.
+- **Inverter Configuration UI**: Power Flow layout selector now uses the same table/select style as other inverter configuration fields.
+
+### Fixed
+
+- **Power Flow tests**: updated Power Flow card tests for mid-line arrows, centered left-right period pills, and the Power/Today-only period model.
+
 ## [0.8.1.04] - 2026-11-26
 
 ### Changed
 
 - **Power Flow left-right layout spacing**: separated PV/Battery and Grid/Home inverter attachment points on the inverter ring to avoid shared junctions, and moved left-right nodes upward for a more compact layout.
-- **Power Flow period pill placement**: period filters (Power/Today/24h/Week/Month) are centered at the top of the Power Flow card in `left_right` layout and remain right-aligned in `cross` layout.
+- **Power Flow period pill placement**: period filters (Power/Today) are centered at the top of the Power Flow card in `left_right` layout and remain right-aligned in `cross` layout.
 
 ### Fixed
 
